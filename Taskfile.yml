@@ -1,0 +1,59 @@
+version: "3"
+
+vars:
+  BINARY: hyve
+  BUILD_FLAGS: ""
+
+tasks:
+  default:
+    desc: List available tasks
+    cmd: task --list
+
+  build:
+    desc: Build the hyve binary
+    cmd: go build {{.BUILD_FLAGS}} -o {{.BINARY}} .
+
+  run:
+    desc: Build and run hyve (pass args with -- e.g. task run -- cluster list)
+    deps: [build]
+    cmd: ./{{.BINARY}} {{.CLI_ARGS}}
+
+  dev:
+    desc: Run with go run main.go
+    cmd: go run main.go {{.CLI_ARGS}}
+
+  test:
+    desc: Run all tests
+    cmd: go test ./...
+
+  test:verbose:
+    desc: Run all tests with verbose output
+    cmd: go test -v ./...
+
+  test:race:
+    desc: Run all tests with race detector
+    cmd: go test -race ./...
+
+  test:cover:
+    desc: Run all tests with coverage report
+    cmd: go test -cover ./...
+
+  test:report:
+    desc: Run tests and generate JSON report
+    cmd: go test -race -cover ./... -json > report.json
+
+  vet:
+    desc: Run go vet
+    cmd: go vet ./...
+
+  tidy:
+    desc: Tidy go modules
+    cmd: go mod tidy
+
+  clean:
+    desc: Remove built binary and report artifacts
+    cmd: rm -f {{.BINARY}} report.json coverage.out
+
+  check:
+    desc: Run vet and tests
+    deps: [vet, test]
