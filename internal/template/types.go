@@ -1,0 +1,60 @@
+package template
+
+import "github.com/cbridges1/hyve/internal/types"
+
+// TemplateMetadata represents template metadata
+type TemplateMetadata struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+}
+
+// TemplateWorkflowsSpec defines workflows to run on cluster lifecycle events
+type TemplateWorkflowsSpec struct {
+	OnCreated []string `yaml:"onCreated,omitempty"` // Workflows to run after cluster creation
+	OnDestroy []string `yaml:"onDestroy,omitempty"` // Workflows to run before cluster destruction
+}
+
+// TemplateSpec represents the template specification.
+// Provider-specific account fields are optional in the template; if omitted they
+// must be supplied via the corresponding flag when running `template execute`.
+// A flag value always overrides the template value when both are present.
+type TemplateSpec struct {
+	Provider    string            `yaml:"provider"`
+	Region      string            `yaml:"region"`
+	Nodes       []string          `yaml:"nodes,omitempty"`
+	NodeGroups  []types.NodeGroup `yaml:"nodeGroups,omitempty"`
+	ClusterType string            `yaml:"clusterType"`
+	Ingress     struct {
+		Enabled      bool   `yaml:"enabled"`
+		LoadBalancer bool   `yaml:"loadBalancer"`
+		ChartVersion string `yaml:"chartVersion,omitempty"`
+	} `yaml:"ingress"`
+	Workflows TemplateWorkflowsSpec `yaml:"workflows,omitempty"`
+
+	// AWS-specific configuration (alias names defined in provider-configs/aws.yaml)
+	AWSAccount  string `yaml:"awsAccount,omitempty"`  // AWS account alias
+	AWSVPCName  string `yaml:"awsVpcName,omitempty"`  // VPC alias
+	AWSEKSRole  string `yaml:"awsEksRole,omitempty"`  // EKS cluster role alias
+	AWSNodeRole string `yaml:"awsNodeRole,omitempty"` // EKS node role alias
+
+	// Azure-specific configuration (alias names defined in provider-configs/azure.yaml)
+	AzureSubscription  string `yaml:"azureSubscription,omitempty"`  // Azure subscription alias
+	AzureResourceGroup string `yaml:"azureResourceGroup,omitempty"` // Azure resource group name
+
+	// GCP-specific configuration (alias names defined in provider-configs/gcp.yaml)
+	GCPProject string `yaml:"gcpProject,omitempty"` // GCP project alias
+
+	// Civo-specific configuration
+	CivoOrganization string `yaml:"civoOrganization,omitempty"` // Civo organization alias
+}
+
+// Template represents a complete cluster template definition
+type Template struct {
+	APIVersion string           `yaml:"apiVersion"`
+	Kind       string           `yaml:"kind"`
+	Metadata   TemplateMetadata `yaml:"metadata"`
+	Spec       TemplateSpec     `yaml:"spec"`
+	// Filename is the on-disk filename (e.g. "my-template.yaml"). It is
+	// populated at runtime by the manager and never written to the YAML file.
+	Filename string `yaml:"-"`
+}
