@@ -25,9 +25,9 @@ func runInteractiveTemplate() error {
 				huh.NewSelect[string]().
 					Title("Template — what would you like to do?").
 					Options(
+						huh.NewOption("List templates", "list"),
 						huh.NewOption("Create a template", "create"),
 						huh.NewOption("Execute a template", "execute"),
-						huh.NewOption("List templates", "list"),
 						huh.NewOption("Show template details", "show"),
 						huh.NewOption("Validate a template", "validate"),
 						huh.NewOption("Delete a template", "delete"),

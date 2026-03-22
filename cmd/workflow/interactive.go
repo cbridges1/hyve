@@ -21,9 +21,9 @@ func runInteractiveWorkflow() error {
 				huh.NewSelect[string]().
 					Title("Workflow — what would you like to do?").
 					Options(
+						huh.NewOption("List workflows", "list"),
 						huh.NewOption("Create a workflow", "create"),
 						huh.NewOption("Run a workflow", "run"),
-						huh.NewOption("List workflows", "list"),
 						huh.NewOption("Show workflow details", "show"),
 						huh.NewOption("Validate a workflow", "validate"),
 						huh.NewOption("Delete a workflow", "delete"),

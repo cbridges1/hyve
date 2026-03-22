@@ -24,13 +24,13 @@ func runInteractiveCluster() error {
 				huh.NewSelect[string]().
 					Title("Cluster — what would you like to do?").
 					Options(
+						huh.NewOption("List clusters", "list"),
 						huh.NewOption("Add a new cluster", "add"),
 						huh.NewOption("Import an existing cluster", "import"),
 						huh.NewOption("Modify an existing cluster", "modify"),
 						huh.NewOption("Release a cluster from management", "release"),
 						huh.NewOption("Delete a cluster", "delete"),
 						huh.NewOption("Force-delete a cluster from cloud", "force-delete"),
-						huh.NewOption("List clusters", "list"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&action),

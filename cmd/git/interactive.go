@@ -62,8 +62,8 @@ func interactiveGitRepo() error {
 				huh.NewSelect[string]().
 					Title("Repository — action").
 					Options(
-						huh.NewOption("Add repository", "add"),
 						huh.NewOption("List repositories", "list"),
+						huh.NewOption("Add repository", "add"),
 						huh.NewOption("Use (switch to) repository", "use"),
 						huh.NewOption("Show status", "status"),
 						huh.NewOption("Remove repository", "remove"),

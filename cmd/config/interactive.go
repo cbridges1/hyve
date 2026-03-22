@@ -67,10 +67,10 @@ func interactiveConfigCivo() error {
 				huh.NewSelect[string]().
 					Title("Civo token — action").
 					Options(
+						huh.NewOption("List orgs", "list"),
 						huh.NewOption("Set token", "set"),
 						huh.NewOption("Get token", "get"),
 						huh.NewOption("Clear token", "clear"),
-						huh.NewOption("List orgs", "list"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&action),
@@ -145,8 +145,8 @@ func interactiveConfigGCP() error {
 				huh.NewSelect[string]().
 					Title("GCP project — action").
 					Options(
-						huh.NewOption("Add project alias", "add"),
 						huh.NewOption("List projects", "list"),
+						huh.NewOption("Add project alias", "add"),
 						huh.NewOption("Get project", "get"),
 						huh.NewOption("Remove project alias", "remove"),
 						huh.NewOption("← Back", "back"),
@@ -256,8 +256,8 @@ func interactiveConfigAWSAccount() error {
 				huh.NewSelect[string]().
 					Title("AWS account — action").
 					Options(
-						huh.NewOption("Add", "add"),
 						huh.NewOption("List", "list"),
+						huh.NewOption("Add", "add"),
 						huh.NewOption("Get", "get"),
 						huh.NewOption("Remove", "remove"),
 						huh.NewOption("← Back", "back"),
@@ -326,9 +326,9 @@ func interactiveConfigAWSEKSRole() error {
 				huh.NewSelect[string]().
 					Title("EKS role — action").
 					Options(
+						huh.NewOption("List", "list"),
 						huh.NewOption("Add (register existing)", "add"),
 						huh.NewOption("Create in AWS", "create"),
-						huh.NewOption("List", "list"),
 						huh.NewOption("Get", "get"),
 						huh.NewOption("Remove alias", "remove"),
 						huh.NewOption("← Back", "back"),
@@ -440,9 +440,9 @@ func interactiveConfigAWSVPC() error {
 				huh.NewSelect[string]().
 					Title("VPC — action").
 					Options(
+						huh.NewOption("List", "list"),
 						huh.NewOption("Add (register existing)", "add"),
 						huh.NewOption("Create in AWS", "create"),
-						huh.NewOption("List", "list"),
 						huh.NewOption("Get", "get"),
 						huh.NewOption("Remove alias", "remove"),
 						huh.NewOption("← Back", "back"),
@@ -596,8 +596,8 @@ func interactiveConfigAzureSubscription() error {
 				huh.NewSelect[string]().
 					Title("Subscription — action").
 					Options(
-						huh.NewOption("Add", "add"),
 						huh.NewOption("List", "list"),
+						huh.NewOption("Add", "add"),
 						huh.NewOption("Remove", "remove"),
 						huh.NewOption("← Back", "back"),
 					).
@@ -659,8 +659,8 @@ func interactiveConfigAzureResourceGroup() error {
 				huh.NewSelect[string]().
 					Title("Resource group — action").
 					Options(
-						huh.NewOption("Add (create in Azure)", "add"),
 						huh.NewOption("List", "list"),
+						huh.NewOption("Add (create in Azure)", "add"),
 						huh.NewOption("Delete", "delete"),
 						huh.NewOption("← Back", "back"),
 					).
