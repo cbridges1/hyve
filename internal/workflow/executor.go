@@ -155,10 +155,27 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 }
 
 // setupKubeconfig sets up kubeconfig for the target cluster.
-// If no stored kubeconfig is found, it falls back to fetching from the cloud provider.
+// It always attempts a fresh sync from the provider first (ensuring tokens are
+// current), then falls back to whatever is stored in the database.
 func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string, error) {
 	if e.kubeconfigManager == nil {
 		return "", fmt.Errorf("kubeconfig manager not initialized")
+	}
+
+	// Attempt a fresh sync so credentials are never stale (e.g. GCP bearer tokens).
+	clusterDef, defErr := e.loadClusterDefinition(cluster)
+	if defErr == nil {
+		prov, provErr := e.createProviderFromClusterDef(clusterDef)
+		if provErr == nil {
+			syncer := kubeconfig.NewSyncer(e.kubeconfigManager, prov)
+			if err := syncer.SyncSingleKubeconfig(ctx, cluster); err != nil {
+				log.Printf("Warning: kubeconfig sync failed for cluster '%s', falling back to cached credentials: %v", cluster, err)
+			}
+		} else {
+			log.Printf("Warning: could not create provider for kubeconfig sync: %v", provErr)
+		}
+	} else {
+		log.Printf("Warning: could not load cluster definition for kubeconfig sync: %v", defErr)
 	}
 
 	kc, err := e.kubeconfigManager.GetKubeconfig(cluster)
@@ -169,12 +186,11 @@ func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string,
 	var kubeconfigData string
 
 	if kc == nil {
-		// Fall back to fetching kubeconfig from the cloud provider
+		// Sync didn't store anything — try fetching directly from the provider.
 		log.Printf("No stored kubeconfig found for cluster '%s', fetching from provider...", cluster)
 
-		clusterDef, err := e.loadClusterDefinition(cluster)
-		if err != nil {
-			return "", fmt.Errorf("no kubeconfig found for cluster '%s' and failed to load cluster definition: %w", cluster, err)
+		if defErr != nil {
+			return "", fmt.Errorf("no kubeconfig found for cluster '%s' and failed to load cluster definition: %w", cluster, defErr)
 		}
 
 		prov, err := e.createProviderFromClusterDef(clusterDef)
@@ -194,7 +210,6 @@ func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string,
 
 		kubeconfigData = clusterInfo.Kubeconfig
 
-		// Store for future use
 		if _, err := e.kubeconfigManager.StoreKubeconfig(cluster, kubeconfigData); err != nil {
 			log.Printf("Warning: failed to store kubeconfig for cluster '%s': %v", cluster, err)
 		}

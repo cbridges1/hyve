@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2/google"
 	container "google.golang.org/api/container/v1"
 	"google.golang.org/api/option"
 
@@ -81,6 +82,7 @@ type Provider struct {
 	containerService *container.Service
 	projectID        string
 	region           string
+	credentialsJSON  string
 }
 
 // NewProvider creates a new GCP provider
@@ -105,6 +107,7 @@ func NewProvider(credentialsJSON, projectID, region string) (*Provider, error) {
 		containerService: svc,
 		projectID:        projectID,
 		region:           region,
+		credentialsJSON:  credentialsJSON,
 	}, nil
 }
 
@@ -452,9 +455,16 @@ func (p *Provider) GetClusterInfo(ctx context.Context, name string) (*ClusterInf
 	}, nil
 }
 
-// generateGKEKubeconfig generates a kubeconfig for a GKE cluster using the
-// gke-gcloud-auth-plugin exec credential plugin (analogous to aws eks get-token).
+// generateGKEKubeconfig generates a kubeconfig for a GKE cluster by embedding a
+// short-lived OAuth2 bearer token obtained from the provider's credentials.
+// This avoids any dependency on gke-gcloud-auth-plugin.
 func (p *Provider) generateGKEKubeconfig(clusterName, endpoint, caData string) string {
+	token, err := p.fetchGCPAccessToken()
+	if err != nil || token == "" {
+		log.Printf("Warning: failed to obtain GCP access token for kubeconfig: %v", err)
+		return ""
+	}
+
 	return fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
@@ -471,13 +481,32 @@ current-context: %s
 users:
 - name: %s
   user:
-    exec:
-      apiVersion: client.authentication.k8s.io/v1beta1
-      command: gke-gcloud-auth-plugin
-      installHint: Install gke-gcloud-auth-plugin for use with kubectl by following
-        https://cloud.google.com/blog/products/containers-kubernetes/kubectl-auth-changes-in-gke
-      provideClusterInfo: true
-`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName)
+    token: %s
+`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, token)
+}
+
+// fetchGCPAccessToken returns a short-lived OAuth2 access token using the same
+// credentials the provider was initialised with (explicit JSON or ADC).
+func (p *Provider) fetchGCPAccessToken() (string, error) {
+	ctx := context.Background()
+	scope := "https://www.googleapis.com/auth/cloud-platform"
+
+	var creds *google.Credentials
+	var err error
+	if p.credentialsJSON != "" {
+		creds, err = google.CredentialsFromJSON(ctx, []byte(p.credentialsJSON), scope)
+	} else {
+		creds, err = google.FindDefaultCredentials(ctx, scope)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to load GCP credentials: %w", err)
+	}
+
+	tok, err := creds.TokenSource.Token()
+	if err != nil {
+		return "", fmt.Errorf("failed to obtain access token: %w", err)
+	}
+	return tok.AccessToken, nil
 }
 
 // ListFirewalls lists all firewalls (not directly supported in GKE context)

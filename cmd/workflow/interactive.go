@@ -120,16 +120,48 @@ func interactiveWorkflowRun() error {
 		return err
 	}
 
+	const manualKey = "__manual__"
+	const localKey = "__local__"
+
 	var cluster string
+	clusterNames := shared.FetchClusterNames()
+	opts := make([]huh.Option[string], 0, len(clusterNames)+3)
+	opts = append(opts, huh.NewOption("Enter cluster name manually...", manualKey))
+	opts = append(opts, huh.NewOption("Run locally (no cluster)", localKey))
+	for _, n := range clusterNames {
+		opts = append(opts, huh.NewOption(n, n))
+	}
+
+	var selection string
 	err := shared.NewForm(
 		huh.NewGroup(
-			huh.NewInput().
-				Title("Cluster (leave blank to run locally)").
-				Value(&cluster),
+			huh.NewSelect[string]().
+				Title("Cluster").
+				Options(opts...).
+				Value(&selection),
 		),
 	).Run()
 	if err != nil {
 		return err
+	}
+
+	switch selection {
+	case localKey:
+		// leave cluster empty
+	case manualKey:
+		err = shared.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Cluster name").
+					Validate(shared.RequireNotEmpty).
+					Value(&cluster),
+			),
+		).Run()
+		if err != nil {
+			return err
+		}
+	default:
+		cluster = selection
 	}
 
 	showLogs := true

@@ -215,11 +215,39 @@ func getKubeconfig(cmd *cobra.Command, clusterName string) {
 // UseKubeconfig merges the cluster's kubeconfig into ~/.kube/config and sets it as active context.
 // Exported so the root `use` command can call it.
 func UseKubeconfig(clusterName string) {
+	ctx := context.Background()
+
 	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
 	if err != nil {
 		log.Fatalf("Failed to create kubeconfig manager: %v", err)
 	}
 	defer kubeconfigMgr.Close()
+
+	// Attempt a fresh sync so the stored kubeconfig is up-to-date (e.g. renewed
+	// tokens for GCP). If this fails for any reason we fall through and use
+	// whatever is already in the database.
+	stateMgr, _ := shared.CreateStateManager(ctx)
+	if stateMgr != nil {
+		clusterDefs, err := stateMgr.LoadClusterDefinitions()
+		if err == nil {
+			providerFactory := provider.NewFactory()
+			for _, cd := range clusterDefs {
+				if cd.Metadata.Name != clusterName {
+					continue
+				}
+				prov, err := shared.CreateProviderForCluster(providerFactory, cd)
+				if err != nil {
+					log.Printf("⚠️  Could not create provider for sync: %v", err)
+					break
+				}
+				syncer := kubeconfig.NewSyncer(kubeconfigMgr, prov)
+				if err := syncer.SyncSingleKubeconfig(ctx, clusterName); err != nil {
+					log.Printf("⚠️  Kubeconfig sync failed, using cached credentials: %v", err)
+				}
+				break
+			}
+		}
+	}
 
 	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
 	if err != nil {
