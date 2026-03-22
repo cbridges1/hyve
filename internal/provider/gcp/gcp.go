@@ -411,6 +411,7 @@ func (p *Provider) GetClusterInfo(ctx context.Context, name string) (*ClusterInf
 	rawCluster, rawErr := p.containerService.Projects.Locations.Clusters.Get(clusterPath).Context(ctx).Do()
 
 	var nodeGroups []types.NodeGroup
+	kubeconfig := ""
 	if rawErr == nil && rawCluster != nil {
 		for _, np := range rawCluster.NodePools {
 			if np == nil {
@@ -434,16 +435,49 @@ func (p *Provider) GetClusterInfo(ctx context.Context, name string) (*ClusterInf
 				MaxCount:     max,
 			})
 		}
+
+		if rawCluster.Endpoint != "" && rawCluster.MasterAuth != nil && rawCluster.MasterAuth.ClusterCaCertificate != "" {
+			kubeconfig = p.generateGKEKubeconfig(name, rawCluster.Endpoint, rawCluster.MasterAuth.ClusterCaCertificate)
+		}
 	}
 
 	return &ClusterInfo{
 		Name:       cluster.Name,
 		IPAddress:  cluster.MasterIP,
 		AccessPort: "443",
+		Kubeconfig: kubeconfig,
 		Status:     cluster.Status,
 		ID:         cluster.ID,
 		NodeGroups: nodeGroups,
 	}, nil
+}
+
+// generateGKEKubeconfig generates a kubeconfig for a GKE cluster using the
+// gke-gcloud-auth-plugin exec credential plugin (analogous to aws eks get-token).
+func (p *Provider) generateGKEKubeconfig(clusterName, endpoint, caData string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://%s
+    certificate-authority-data: %s
+  name: %s
+contexts:
+- context:
+    cluster: %s
+    user: %s
+  name: %s
+current-context: %s
+users:
+- name: %s
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: gke-gcloud-auth-plugin
+      installHint: Install gke-gcloud-auth-plugin for use with kubectl by following
+        https://cloud.google.com/blog/products/containers-kubernetes/kubectl-auth-changes-in-gke
+      provideClusterInfo: true
+`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName)
 }
 
 // ListFirewalls lists all firewalls (not directly supported in GKE context)
