@@ -2,14 +2,19 @@ package azure
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v2"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v4"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"github.com/google/uuid"
 
 	"hyve/internal/types"
 )
@@ -547,6 +552,9 @@ func newResourceGroupsClient(subscriptionID, tenantID, clientID, clientSecret st
 }
 
 // CreateResourceGroup creates an Azure resource group in the given subscription.
+// When service principal credentials are provided it also assigns the Contributor
+// role to that principal on the resource group so that CI/CD operations
+// (cluster create / update / delete) can succeed without manual RBAC setup.
 func CreateResourceGroup(ctx context.Context, subscriptionID, resourceGroupName, location, tenantID, clientID, clientSecret string) error {
 	client, err := newResourceGroupsClient(subscriptionID, tenantID, clientID, clientSecret)
 	if err != nil {
@@ -561,7 +569,99 @@ func CreateResourceGroup(ctx context.Context, subscriptionID, resourceGroupName,
 	}
 
 	log.Printf("Azure resource group '%s' created in '%s'", resourceGroupName, location)
+
+	// Assign Contributor role to the service principal so it can manage AKS clusters.
+	// Only applicable in service-principal (CI/CD) mode.
+	if tenantID != "" && clientID != "" && clientSecret != "" {
+		if err := assignContributorRole(ctx, subscriptionID, resourceGroupName, tenantID, clientID, clientSecret); err != nil {
+			log.Printf("⚠️  Warning: Failed to assign Contributor role on resource group '%s': %v", resourceGroupName, err)
+			log.Printf("   Grant the role manually: az role assignment create --assignee %s --role Contributor --scope /subscriptions/%s/resourceGroups/%s", clientID, subscriptionID, resourceGroupName)
+		}
+	}
+
 	return nil
+}
+
+// assignContributorRole assigns the built-in Contributor role to the service
+// principal on the given resource group scope.
+func assignContributorRole(ctx context.Context, subscriptionID, resourceGroupName, tenantID, clientID, clientSecret string) error {
+	cred, err := azidentity.NewClientSecretCredential(tenantID, clientID, clientSecret, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create credential: %w", err)
+	}
+
+	// Obtain an access token and extract the service principal Object ID from
+	// the JWT oid claim — the role assignment API requires the Object ID, not
+	// the Application (client) ID.
+	tok, err := cred.GetToken(ctx, policy.TokenRequestOptions{
+		Scopes: []string{"https://management.azure.com/.default"},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to obtain access token: %w", err)
+	}
+
+	objectID, err := extractOIDFromJWT(tok.Token)
+	if err != nil {
+		return fmt.Errorf("failed to extract service principal object ID from token: %w", err)
+	}
+
+	roleClient, err := armauthorization.NewRoleAssignmentsClient(subscriptionID, cred, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create role assignments client: %w", err)
+	}
+
+	scope := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s", subscriptionID, resourceGroupName)
+	// Well-known built-in Contributor role definition ID.
+	roleDefinitionID := fmt.Sprintf("/subscriptions/%s/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c", subscriptionID)
+
+	// Use a deterministic UUID (v5) so repeated calls are idempotent.
+	assignmentName := uuid.NewSHA1(uuid.NameSpaceURL, []byte(scope+objectID)).String()
+
+	spType := armauthorization.PrincipalTypeServicePrincipal
+	_, err = roleClient.Create(ctx, scope, assignmentName, armauthorization.RoleAssignmentCreateParameters{
+		Properties: &armauthorization.RoleAssignmentProperties{
+			RoleDefinitionID: &roleDefinitionID,
+			PrincipalID:      &objectID,
+			PrincipalType:    &spType,
+		},
+	}, nil)
+	if err != nil {
+		// RoleAssignmentExists is not an error — idempotent.
+		if strings.Contains(err.Error(), "RoleAssignmentExists") {
+			log.Printf("Contributor role already assigned to service principal on resource group '%s'", resourceGroupName)
+			return nil
+		}
+		return fmt.Errorf("failed to create role assignment: %w", err)
+	}
+
+	log.Printf("✅ Contributor role assigned to service principal on resource group '%s'", resourceGroupName)
+	return nil
+}
+
+// extractOIDFromJWT decodes the payload of a JWT and returns the oid claim.
+func extractOIDFromJWT(token string) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("unexpected JWT format")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("failed to base64-decode JWT payload: %w", err)
+	}
+
+	var claims struct {
+		OID string `json:"oid"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	if claims.OID == "" {
+		return "", fmt.Errorf("oid claim missing from token")
+	}
+
+	return claims.OID, nil
 }
 
 // DeleteResourceGroup deletes an Azure resource group from the given subscription.
