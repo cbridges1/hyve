@@ -13,7 +13,6 @@ import (
 
 	"hyve/cmd/cluster"
 	"hyve/cmd/shared"
-	internalcluster "hyve/internal/cluster"
 	"hyve/internal/kubeconfig"
 	"hyve/internal/providerconfig"
 	"hyve/internal/repository"
@@ -543,64 +542,30 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
 	}
 
-	// Create cluster manager
-	prov, err := cluster.CreateProviderForClusterDef(*clusterDef)
-	if err != nil {
-		log.Fatalf("Failed to create provider: %v", err)
-	}
-
-	clusterMgr := internalcluster.NewManager(prov)
-
-	// Create cluster
-	log.Println("\n1️⃣ Creating cluster...")
-	action := clusterMgr.DetermineAction(ctx, *clusterDef)
-
-	var clusterID string
-	if action == types.ActionCreate {
-		createdCluster, err := clusterMgr.Create(ctx, *clusterDef)
-		if err != nil {
-			log.Fatalf("Failed to create cluster: %v", err)
-		}
-		clusterID = createdCluster.ID
-		log.Printf("✅ Cluster '%s' created successfully (ID: %s)", clusterName, clusterID)
-	} else {
-		// Cluster already exists, get its ID
-		existingCluster, err := prov.FindClusterByName(ctx, clusterName)
-		if err != nil {
-			log.Fatalf("Failed to find existing cluster: %v", err)
-		}
-		if existingCluster == nil {
-			log.Fatalf("Cluster '%s' not found", clusterName)
-		}
-		clusterID = existingCluster.ID
-		log.Printf("✅ Cluster '%s' already exists (ID: %s)", clusterName, clusterID)
-	}
-
-	// Wait for cluster to be ready
-	log.Println("\n2️⃣ Waiting for cluster to be ready...")
-	log.Printf("Polling cluster status (this may take several minutes)...")
-	if err := clusterMgr.WaitForReady(ctx, clusterID); err != nil {
-		log.Fatalf("❌ Failed to wait for cluster: %v\nCluster may not be ready. Please check the cluster status manually.", err)
-	}
+	// Reconcile — same path as `hyve cluster add`, supports CI/CD mode.
+	log.Println("\n1️⃣ Reconciling cluster (create + wait for ready)...")
+	shared.RunReconciliation("")
 	log.Printf("✅ Cluster '%s' is ready", clusterName)
 
 	// Sync kubeconfig before running workflows
-	log.Println("\n3️⃣ Syncing kubeconfig...")
-	clusterInfo, err := prov.GetClusterInfo(ctx, clusterName)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to get cluster info: %v", err)
+	log.Println("\n2️⃣ Syncing kubeconfig...")
+	prov, provErr := cluster.CreateProviderForClusterDef(*clusterDef)
+	if provErr != nil {
+		log.Printf("⚠️  Warning: Failed to create provider: %v", provErr)
 		log.Println("Workflows may fail without valid kubeconfig")
 	} else {
-		if clusterInfo.Kubeconfig == "" {
+		clusterInfo, ciErr := prov.GetClusterInfo(ctx, clusterName)
+		if ciErr != nil {
+			log.Printf("⚠️  Warning: Failed to get cluster info: %v", ciErr)
+			log.Println("Workflows may fail without valid kubeconfig")
+		} else if clusterInfo.Kubeconfig == "" {
 			log.Printf("⚠️  Warning: Kubeconfig not yet available for cluster '%s', skipping storage", clusterName)
 		} else {
-			// Save kubeconfig to database
-			kubeconfigMgr, err := kubeconfig.NewManager(currentRepo.Name)
-			if err != nil {
-				log.Printf("⚠️  Warning: Failed to create kubeconfig manager: %v", err)
+			kubeconfigMgr, kcErr := kubeconfig.NewManager(currentRepo.Name)
+			if kcErr != nil {
+				log.Printf("⚠️  Warning: Failed to create kubeconfig manager: %v", kcErr)
 			} else {
 				defer kubeconfigMgr.Close()
-
 				if _, err := kubeconfigMgr.StoreKubeconfig(clusterName, clusterInfo.Kubeconfig); err != nil {
 					log.Printf("⚠️  Warning: Failed to store kubeconfig: %v", err)
 				} else {
@@ -612,7 +577,7 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 
 	// Execute onCreated workflows if any
 	if len(tmpl.Spec.Workflows.OnCreated) > 0 {
-		log.Printf("\n4️⃣ Executing %d onCreated workflow(s)...\n", len(tmpl.Spec.Workflows.OnCreated))
+		log.Printf("\n3️⃣ Executing %d onCreated workflow(s)...\n", len(tmpl.Spec.Workflows.OnCreated))
 
 		// Create workflow manager
 		workflowMgr, err := workflow.NewManager(shared.GetLocalPath())
