@@ -558,21 +558,9 @@ func (r *Reconciler) runWorkflows(ctx context.Context, workflowNames []string, c
 		return
 	}
 
-	// Get local path from current repository
-	repoMgr, err := repository.NewManager()
-	if err != nil {
-		log.Printf("⚠️  Failed to create repository manager: %v", err)
-		return
-	}
-	defer repoMgr.Close()
-	currentRepo, err := repoMgr.GetCurrentRepository()
-	if err != nil {
-		log.Printf("⚠️  Failed to get current repository: %v", err)
-		return
-	}
-
-	// Create workflow manager
-	workflowMgr, err := workflow.NewManager(currentRepo.LocalPath)
+	// Create workflow manager using the local path already known to the state
+	// manager — avoids a database lookup that fails when --path is used.
+	workflowMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
 	if err != nil {
 		log.Printf("⚠️  Failed to create workflow manager: %v", err)
 		return

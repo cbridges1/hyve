@@ -54,6 +54,11 @@ func NewManager(gitRepoURL, localPath, username, token string) (*Manager, error)
 	}, nil
 }
 
+// LocalPath returns the root directory of the local repository checkout.
+func (m *Manager) LocalPath() string {
+	return filepath.Dir(m.stateDir)
+}
+
 // InitializeGitRepo initializes or clones the Git repository
 func (m *Manager) InitializeGitRepo(ctx context.Context) error {
 	return m.gitManager.InitializeRepo(ctx)
