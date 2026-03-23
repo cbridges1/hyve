@@ -11,11 +11,11 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"hyve/cmd/shared"
-	"hyve/internal/config"
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/config"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 func addClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string, onCreated, onDestroy []string) {

@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"hyve/cmd/shared"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Cmd is the cluster command.

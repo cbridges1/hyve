@@ -12,13 +12,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	cluster_pkg "hyve/internal/cluster"
-	"hyve/internal/config"
-	"hyve/internal/kubeconfig"
-	"hyve/internal/provider"
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/types"
+	cluster_pkg "github.com/cbridges1/hyve/internal/cluster"
+	"github.com/cbridges1/hyve/internal/config"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Executor handles workflow execution

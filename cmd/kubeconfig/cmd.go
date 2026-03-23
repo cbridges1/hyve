@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"hyve/cmd/shared"
-	"hyve/internal/kubeconfig"
-	"hyve/internal/provider"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
+	"github.com/cbridges1/hyve/internal/provider"
 )
 
 // Cmd is the root kubeconfig command exposed to the parent.

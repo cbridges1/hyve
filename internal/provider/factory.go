@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"hyve/internal/credentials"
-	"hyve/internal/provider/aws"
-	"hyve/internal/provider/azure"
-	"hyve/internal/provider/civo"
-	"hyve/internal/provider/gcp"
+	"github.com/cbridges1/hyve/internal/credentials"
+	"github.com/cbridges1/hyve/internal/provider/aws"
+	"github.com/cbridges1/hyve/internal/provider/azure"
+	"github.com/cbridges1/hyve/internal/provider/civo"
+	"github.com/cbridges1/hyve/internal/provider/gcp"
 )
 
 // Factory creates provider instances

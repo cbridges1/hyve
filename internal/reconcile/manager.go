@@ -6,14 +6,14 @@ import (
 	"log"
 	"strings"
 
-	"hyve/internal/cluster"
-	"hyve/internal/kubeconfig"
-	"hyve/internal/provider"
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/state"
-	"hyve/internal/types"
-	"hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/cluster"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/state"
+	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // Reconciler handles the reconciliation of clusters using provider abstraction

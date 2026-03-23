@@ -10,13 +10,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"hyve/cmd/shared"
-	internalcluster "hyve/internal/cluster"
-	"hyve/internal/config"
-	"hyve/internal/provider"
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/cmd/shared"
+	internalcluster "github.com/cbridges1/hyve/internal/cluster"
+	"github.com/cbridges1/hyve/internal/config"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromCloud bool) {

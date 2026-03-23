@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Manager handles cluster template operations

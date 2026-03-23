@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"hyve/cmd/shared"
+	"github.com/cbridges1/hyve/cmd/shared"
 )
 
 var reconcileCmd = &cobra.Command{

@@ -10,8 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"hyve/internal/git"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/git"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // ReconcileMode represents how reconciliation should be executed

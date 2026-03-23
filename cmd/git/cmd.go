@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"hyve/internal/credentials"
-	internalgit "hyve/internal/git"
-	"hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/credentials"
+	internalgit "github.com/cbridges1/hyve/internal/git"
+	"github.com/cbridges1/hyve/internal/repository"
 )
 
 // HyveHome returns the effective Hyve home directory.

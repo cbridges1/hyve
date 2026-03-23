@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Cluster represents a generic cluster

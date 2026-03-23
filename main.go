@@ -1,7 +1,7 @@
 package main
 
 import (
-	"hyve/cmd"
+	"github.com/cbridges1/hyve/cmd"
 )
 
 func main() {

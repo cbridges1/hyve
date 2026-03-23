@@ -6,8 +6,8 @@ import (
 	"log"
 	"os"
 
-	"hyve/internal/provider"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Syncer handles synchronization of kubeconfigs from clusters

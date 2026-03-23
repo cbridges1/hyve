@@ -9,9 +9,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"hyve/cmd/shared"
-	"hyve/internal/providerconfig"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 func importClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string) {

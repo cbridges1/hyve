@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"hyve/internal/provider/azure"
-	"hyve/internal/provider/gcp"
+	"github.com/cbridges1/hyve/internal/provider/azure"
+	"github.com/cbridges1/hyve/internal/provider/gcp"
 )
 
 // --- convertAzureCluster status normalisation ---

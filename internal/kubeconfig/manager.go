@@ -12,7 +12,7 @@ import (
 	"log"
 	"time"
 
-	"hyve/internal/database"
+	"github.com/cbridges1/hyve/internal/database"
 )
 
 // Kubeconfig represents stored kubeconfig data

@@ -3,10 +3,10 @@ package shared
 import (
 	gocontext "context"
 
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/template"
-	"hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/template"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // FetchClusterNames returns a slice of cluster names from the current state manager.

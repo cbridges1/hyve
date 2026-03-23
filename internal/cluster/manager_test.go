@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"hyve/internal/provider"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // mockProvider implements the provider.Provider interface for testing

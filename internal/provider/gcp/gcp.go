@@ -11,7 +11,7 @@ import (
 	container "google.golang.org/api/container/v1"
 	"google.golang.org/api/option"
 
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Cluster represents a generic cluster

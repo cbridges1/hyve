@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"hyve/cmd/kubeconfig"
+	"github.com/cbridges1/hyve/cmd/kubeconfig"
 )
 
 var useCmd = &cobra.Command{

@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // newTestManager constructs a Manager directly, bypassing NewManager which requires a git backend.

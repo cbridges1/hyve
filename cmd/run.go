@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"hyve/internal/kubeconfig"
-	"hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
+	"github.com/cbridges1/hyve/internal/repository"
 )
 
 var runCmd = &cobra.Command{

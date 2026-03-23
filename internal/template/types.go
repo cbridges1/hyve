@@ -1,6 +1,6 @@
 package template
 
-import "hyve/internal/types"
+import "github.com/cbridges1/hyve/internal/types"
 
 // TemplateMetadata represents template metadata
 type TemplateMetadata struct {

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"hyve/internal/database"
+	"github.com/cbridges1/hyve/internal/database"
 )
 
 const sampleKubeconfig = `apiVersion: v1

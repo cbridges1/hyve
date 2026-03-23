@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/huh"
 
-	"hyve/cmd/shared"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // RunInteractive runs the interactive cluster menu.

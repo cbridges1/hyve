@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
-	"hyve/cmd/shared"
+	"github.com/cbridges1/hyve/cmd/shared"
 )
 
 // RunInteractive runs the interactive git menu.

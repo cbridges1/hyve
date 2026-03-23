@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // --- convertCluster ---

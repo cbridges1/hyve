@@ -10,11 +10,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"hyve/cmd/shared"
-	"hyve/internal/credentials"
-	"hyve/internal/provider/aws"
-	azureprovider "hyve/internal/provider/azure"
-	"hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/credentials"
+	"github.com/cbridges1/hyve/internal/provider/aws"
+	azureprovider "github.com/cbridges1/hyve/internal/provider/azure"
+	"github.com/cbridges1/hyve/internal/providerconfig"
 )
 
 // Cmd is the root config command exposed to the parent.
@@ -932,7 +932,7 @@ func setCivoToken(orgName, token string) {
 
 	log.Printf("✅ Civo API token stored for organization '%s'", orgName)
 	log.Println()
-	log.Println("💡 The token is encrypted and stored in ~/.hyve/hyve.db")
+	log.Println("💡 The token is encrypted and stored in ~/.github.com/cbridges1/hyve/hyve.db")
 	log.Println("💡 Hyve will now use this token automatically for Civo operations")
 }
 

@@ -1,7 +1,7 @@
 package config
 
 import (
-	"hyve/internal/credentials"
+	"github.com/cbridges1/hyve/internal/credentials"
 )
 
 // Manager handles configuration

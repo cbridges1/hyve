@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Cluster represents a generic cluster

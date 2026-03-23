@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"hyve/internal/credentials"
-	"hyve/internal/reconcile"
-	"hyve/internal/repository"
-	"hyve/internal/state"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/credentials"
+	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/state"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // SyncRepoState performs a git pull to synchronise the local repository with

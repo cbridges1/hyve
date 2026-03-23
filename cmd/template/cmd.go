@@ -11,15 +11,15 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"hyve/cmd/cluster"
-	"hyve/cmd/shared"
-	"hyve/internal/kubeconfig"
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/state"
-	"hyve/internal/template"
-	"hyve/internal/types"
-	"hyve/internal/workflow"
+	"github.com/cbridges1/hyve/cmd/cluster"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/state"
+	"github.com/cbridges1/hyve/internal/template"
+	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // Cmd is the root template command exposed to the parent.

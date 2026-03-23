@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"hyve/cmd/shared"
-	"hyve/internal/workflow"
+	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // Cmd is the root workflow command exposed to the parent.

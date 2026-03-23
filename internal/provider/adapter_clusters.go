@@ -4,10 +4,10 @@ import (
 	"context"
 	"log"
 
-	"hyve/internal/provider/aws"
-	"hyve/internal/provider/azure"
-	"hyve/internal/provider/civo"
-	"hyve/internal/provider/gcp"
+	"github.com/cbridges1/hyve/internal/provider/aws"
+	"github.com/cbridges1/hyve/internal/provider/azure"
+	"github.com/cbridges1/hyve/internal/provider/civo"
+	"github.com/cbridges1/hyve/internal/provider/gcp"
 )
 
 // ListClusters lists all clusters

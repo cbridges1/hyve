@@ -11,7 +11,7 @@ import (
 	"io"
 	"time"
 
-	"hyve/internal/database"
+	"github.com/cbridges1/hyve/internal/database"
 )
 
 // Credentials represents stored Git credentials

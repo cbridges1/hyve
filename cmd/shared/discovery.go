@@ -19,8 +19,8 @@ import (
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/option"
 
-	"hyve/internal/provider"
-	"hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/providerconfig"
 )
 
 // FetchRegionGroups queries the provider API for available regions and groups

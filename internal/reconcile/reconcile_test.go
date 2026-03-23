@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	clusterpkg "hyve/internal/cluster"
-	"hyve/internal/provider"
-	"hyve/internal/types"
+	clusterpkg "github.com/cbridges1/hyve/internal/cluster"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // ── mockProvider ─────────────────────────────────────────────────────────────

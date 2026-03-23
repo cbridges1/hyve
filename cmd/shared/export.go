@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
-	"hyve/internal/cluster"
-	"hyve/internal/provider"
-	"hyve/internal/providerconfig"
-	"hyve/internal/repository"
-	"hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/cluster"
+	"github.com/cbridges1/hyve/internal/provider"
+	"github.com/cbridges1/hyve/internal/providerconfig"
+	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/types"
 )
 
 // ExportClusterInfo exports cluster information to environment variables and GitHub Actions.

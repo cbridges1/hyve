@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"hyve/internal/credentials"
+	"github.com/cbridges1/hyve/internal/credentials"
 )
 
 // RequirementValidator validates workflow requirements

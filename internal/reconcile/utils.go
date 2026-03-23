@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"hyve/internal/cluster"
+	"github.com/cbridges1/hyve/internal/cluster"
 )
 
 // exportClusterInfoToEnv exports cluster information to environment variables
