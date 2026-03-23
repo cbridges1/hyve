@@ -575,42 +575,6 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 		}
 	}
 
-	// Execute onCreated workflows if any
-	if len(tmpl.Spec.Workflows.OnCreated) > 0 {
-		log.Printf("\n3️⃣ Executing %d onCreated workflow(s)...\n", len(tmpl.Spec.Workflows.OnCreated))
-
-		// Create workflow manager
-		workflowMgr, err := workflow.NewManager(shared.GetLocalPath())
-		if err != nil {
-			log.Printf("⚠️  Failed to create workflow manager: %v", err)
-			return
-		}
-
-		// Create executor
-		executor, err := workflow.NewExecutor(workflowMgr, clusterName)
-		if err != nil {
-			log.Printf("⚠️  Failed to create workflow executor: %v", err)
-			return
-		}
-
-		for i, workflowName := range tmpl.Spec.Workflows.OnCreated {
-			log.Printf("\n[%d/%d] Running workflow: %s", i+1, len(tmpl.Spec.Workflows.OnCreated), workflowName)
-
-			// Execute workflow
-			execution, err := executor.RunWorkflow(ctx, workflowName, clusterName)
-			if err != nil {
-				log.Printf("❌ Workflow '%s' failed: %v", workflowName, err)
-				continue
-			}
-
-			if execution.Status == workflow.StatusCompleted {
-				log.Printf("✅ Workflow '%s' completed successfully", workflowName)
-			} else {
-				log.Printf("❌ Workflow '%s' failed", workflowName)
-			}
-		}
-	}
-
 	log.Printf("\n✅ Template execution completed!")
 	log.Printf("\n💡 Cluster '%s' is now available", clusterName)
 	log.Println("💡 Use 'hyve kubeconfig sync' to get the kubeconfig")
