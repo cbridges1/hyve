@@ -34,8 +34,12 @@ func NewReconciler(stateMgr *state.Manager) *Reconciler {
 func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.ClusterDefinition) error {
 	// Load reconcile config to determine strictDelete setting.
 	strictDelete := false
+	log.Printf("Loading repo config from: %s", r.stateMgr.LocalPath())
 	if repoCfg, err := r.stateMgr.LoadRepoConfig(); err == nil {
 		strictDelete = repoCfg.Reconcile.StrictDelete
+		log.Printf("Repo config loaded: mode=%s strictDelete=%v", repoCfg.Reconcile.Mode, strictDelete)
+	} else {
+		log.Printf("Warning: failed to load repo config: %v — defaulting strictDelete=false", err)
 	}
 	if strictDelete {
 		log.Println("Strict-delete mode enabled: cloud clusters not present in YAML will be deleted")
