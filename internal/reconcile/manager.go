@@ -41,40 +41,40 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		log.Println("Strict-delete mode enabled: cloud clusters not present in YAML will be deleted")
 	}
 
+	if len(clusterDefs) == 0 && !strictDelete {
+		log.Println("No cluster definitions found in state/clusters directory — skipping reconcile")
+		return nil
+	}
+
 	regionClusters := make(map[string][]types.ClusterDefinition)
 	for _, clusterDef := range clusterDefs {
 		region := clusterDef.Metadata.Region
 		regionClusters[region] = append(regionClusters[region], clusterDef)
 	}
 
-	if len(clusterDefs) == 0 {
-		log.Println("No cluster definitions found in state/clusters directory — skipping reconcile")
-		return nil
-	} else {
-		for region, clusters := range regionClusters {
-			err := r.reconcileRegion(ctx, region, clusters)
-			if err != nil {
-				log.Printf("Failed to reconcile region %s: %v", region, err)
-			}
+	for region, clusters := range regionClusters {
+		if err := r.reconcileRegion(ctx, region, clusters); err != nil {
+			log.Printf("Failed to reconcile region %s: %v", region, err)
 		}
 	}
 
 	if strictDelete {
-		log.Println("strict-delete: sweeping all configured provider accounts for orphaned clusters...")
+		if len(clusterDefs) == 0 {
+			log.Println("No cluster definitions found — strict-delete sweeping all cloud clusters...")
+		} else {
+			log.Println("strict-delete: sweeping all configured provider accounts for orphaned clusters...")
+		}
 		r.strictDeleteSweep(ctx)
 	}
 
-	if len(clusterDefs) == 0 {
-		return nil
-	}
+	if len(clusterDefs) > 0 {
+		log.Println("Exporting cluster information...")
+		r.exportAllClusterInfo(ctx, clusterDefs)
 
-	log.Println("Exporting cluster information...")
-	r.exportAllClusterInfo(ctx, clusterDefs)
-
-	log.Println("Syncing kubeconfigs...")
-	err := r.syncKubeconfigs(ctx, clusterDefs)
-	if err != nil {
-		log.Printf("Failed to sync kubeconfigs: %v", err)
+		log.Println("Syncing kubeconfigs...")
+		if err := r.syncKubeconfigs(ctx, clusterDefs); err != nil {
+			log.Printf("Failed to sync kubeconfigs: %v", err)
+		}
 	}
 
 	return nil
