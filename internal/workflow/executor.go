@@ -13,7 +13,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	cluster_pkg "github.com/cbridges1/hyve/internal/cluster"
-	"github.com/cbridges1/hyve/internal/config"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 	"github.com/cbridges1/hyve/internal/provider"
 	"github.com/cbridges1/hyve/internal/providerconfig"
@@ -318,7 +317,10 @@ func (e *Executor) exportClusterEnvironmentVariables(ctx context.Context, cluste
 	return nil
 }
 
-// createProviderFromClusterDef creates a provider for the given cluster definition
+// createProviderFromClusterDef creates a provider for the given cluster definition.
+// Credentials are resolved exclusively from provider-configs/*.yaml files in the
+// repository, so this works in CI/CD pipelines where the local SQLite database
+// is not available.
 func (e *Executor) createProviderFromClusterDef(clusterDef *types.ClusterDefinition) (provider.Provider, error) {
 	providerName := clusterDef.Spec.Provider
 	if providerName == "" {
@@ -329,38 +331,52 @@ func (e *Executor) createProviderFromClusterDef(clusterDef *types.ClusterDefinit
 		Region: clusterDef.Metadata.Region,
 	}
 
+	pcMgr := providerconfig.NewManager(e.manager.localPath)
+
 	switch strings.ToLower(providerName) {
 	case "civo":
 		opts.AccountName = clusterDef.Spec.CivoOrganization
-		opts.APIKey = config.NewManager().GetCivoToken(clusterDef.Spec.CivoOrganization)
+		if opts.AccountName != "" {
+			if token, err := pcMgr.GetCivoToken(opts.AccountName); err == nil && token != "" {
+				opts.APIKey = token
+			}
+		}
 	case "aws":
 		opts.AccountName = clusterDef.Spec.AWSAccount
+		if opts.AccountName != "" {
+			keyID, secret, session, _ := pcMgr.GetAWSCredentials(opts.AccountName)
+			opts.AccessKeyID = keyID
+			opts.SecretAccessKey = secret
+			opts.SessionToken = session
+		}
 	case "gcp":
 		opts.AccountName = clusterDef.Spec.GCPProject
-		if clusterDef.Spec.GCPProject != "" {
-			if repoMgr, err := repository.NewManager(); err == nil {
-				defer repoMgr.Close()
-				if currentRepo, err := repoMgr.GetCurrentRepository(); err == nil {
-					pcMgr := providerconfig.NewManager(currentRepo.LocalPath)
-					if projectID, err := pcMgr.GetGCPProjectID(clusterDef.Spec.GCPProject); err == nil {
-						opts.ProjectID = projectID
-					}
-				}
+		if clusterDef.Spec.GCPProjectID != "" {
+			opts.ProjectID = clusterDef.Spec.GCPProjectID
+		} else if opts.AccountName != "" {
+			if projectID, err := pcMgr.GetGCPProjectID(opts.AccountName); err == nil {
+				opts.ProjectID = projectID
 			}
+		}
+		if opts.AccountName != "" {
+			credJSON, _ := pcMgr.GetGCPCredentialsJSON(opts.AccountName)
+			opts.GCPCredentialsJSON = credJSON
 		}
 	case "azure":
 		opts.AccountName = clusterDef.Spec.AzureSubscription
 		opts.AzureResourceGroup = clusterDef.Spec.AzureResourceGroup
-		if clusterDef.Spec.AzureSubscription != "" {
-			if repoMgr, err := repository.NewManager(); err == nil {
-				defer repoMgr.Close()
-				if currentRepo, err := repoMgr.GetCurrentRepository(); err == nil {
-					pcMgr := providerconfig.NewManager(currentRepo.LocalPath)
-					if subID, err := pcMgr.GetAzureSubscriptionID(clusterDef.Spec.AzureSubscription); err == nil {
-						opts.AzureSubscriptionID = subID
-					}
-				}
+		if clusterDef.Spec.AzureSubscriptionID != "" {
+			opts.AzureSubscriptionID = clusterDef.Spec.AzureSubscriptionID
+		} else if opts.AccountName != "" {
+			if subID, err := pcMgr.GetAzureSubscriptionID(opts.AccountName); err == nil {
+				opts.AzureSubscriptionID = subID
 			}
+		}
+		if opts.AccountName != "" {
+			tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(opts.AccountName)
+			opts.AzureTenantID = tenantID
+			opts.AzureClientID = clientID
+			opts.AzureClientSecret = clientSecret
 		}
 	}
 
