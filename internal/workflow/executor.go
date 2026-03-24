@@ -204,10 +204,17 @@ func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string,
 		}
 
 		if clusterInfo == nil || clusterInfo.Kubeconfig == "" {
-			return "", fmt.Errorf("no kubeconfig found for cluster '%s'", cluster)
+			// Last resort: check HYVE_CLUSTER_KUBECONFIG environment variable,
+			// which may be set externally by a CI/CD pipeline step.
+			if envKC := os.Getenv("HYVE_CLUSTER_KUBECONFIG"); envKC != "" {
+				log.Printf("Using kubeconfig from HYVE_CLUSTER_KUBECONFIG environment variable for cluster '%s'", cluster)
+				kubeconfigData = envKC
+			} else {
+				return "", fmt.Errorf("no kubeconfig found for cluster '%s'", cluster)
+			}
+		} else {
+			kubeconfigData = clusterInfo.Kubeconfig
 		}
-
-		kubeconfigData = clusterInfo.Kubeconfig
 
 		if _, err := e.kubeconfigManager.StoreKubeconfig(cluster, kubeconfigData); err != nil {
 			log.Printf("Warning: failed to store kubeconfig for cluster '%s': %v", cluster, err)
