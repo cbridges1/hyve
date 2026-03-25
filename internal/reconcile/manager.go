@@ -50,20 +50,15 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		return nil
 	}
 
-	regionClusters := make(map[string][]types.ClusterDefinition)
-	for _, clusterDef := range clusterDefs {
-		region := clusterDef.Metadata.Region
-		regionClusters[region] = append(regionClusters[region], clusterDef)
-	}
+	// Convergence loop: process one cluster at a time, syncing repo state between each
+	// reconciliation so concurrent pipeline runs are reflected before the next cluster is handled.
+	finalDefs := r.convergenceLoop(ctx, clusterDefs)
 
-	for region, clusters := range regionClusters {
-		if err := r.reconcileRegion(ctx, region, clusters); err != nil {
-			log.Printf("Failed to reconcile region %s: %v", region, err)
-		}
-	}
+	// Orphan cleanup using the final desired state after all reconciliations complete.
+	r.cleanupOrphansByRegion(ctx, finalDefs)
 
 	if strictDelete {
-		if len(clusterDefs) == 0 {
+		if len(finalDefs) == 0 {
 			log.Println("No cluster definitions found — strict-delete sweeping all cloud clusters...")
 		} else {
 			log.Println("strict-delete: sweeping all configured provider accounts for orphaned clusters...")
@@ -71,12 +66,12 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		r.strictDeleteSweep(ctx)
 	}
 
-	if len(clusterDefs) > 0 {
+	if len(finalDefs) > 0 {
 		log.Println("Exporting cluster information...")
-		r.exportAllClusterInfo(ctx, clusterDefs)
+		r.exportAllClusterInfo(ctx, finalDefs)
 
 		log.Println("Syncing kubeconfigs...")
-		if err := r.syncKubeconfigs(ctx, clusterDefs); err != nil {
+		if err := r.syncKubeconfigs(ctx, finalDefs); err != nil {
 			log.Printf("Failed to sync kubeconfigs: %v", err)
 		}
 	}
@@ -84,43 +79,78 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 	return nil
 }
 
-// reconcileRegion reconciles clusters in a specific region
-func (r *Reconciler) reconcileRegion(ctx context.Context, region string, clusters []types.ClusterDefinition) error {
-	log.Printf("Processing region: %s", region)
+// convergenceLoop processes clusters one at a time, syncing the remote repo and reloading
+// cluster definitions between each reconciliation. This ensures that state changes committed
+// by concurrent pipeline runs are reflected before the next cluster is handled, avoiding
+// redundant work and converging to the true desired state faster.
+func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.ClusterDefinition) []types.ClusterDefinition {
+	processed := make(map[string]bool)
+	currentDefs := initialDefs
 
-	// Reconcile all desired clusters
-	for _, clusterDef := range clusters {
-		// Create provider with appropriate options for each cluster
-		prov, err := r.createProviderForCluster(clusterDef)
-		if err != nil {
-			log.Printf("Failed to create provider for cluster %s: %v", clusterDef.Metadata.Name, err)
-			continue
+	for {
+		// Find the next cluster that has not yet been processed in this run.
+		var next *types.ClusterDefinition
+		for i := range currentDefs {
+			if !processed[currentDefs[i].Metadata.Name] {
+				next = &currentDefs[i]
+				break
+			}
+		}
+		if next == nil {
+			break
 		}
 
-		clusterMgr := cluster.NewManager(prov)
+		clusterName := next.Metadata.Name
+		processed[clusterName] = true
 
-		err = r.reconcileCluster(ctx, clusterMgr, clusterDef)
+		log.Printf("Reconciling cluster: %s", clusterName)
+
+		prov, err := r.createProviderForCluster(*next)
 		if err != nil {
-			log.Printf("Failed to reconcile cluster %s: %v", clusterDef.Metadata.Name, err)
+			log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
+		} else {
+			clusterMgr := cluster.NewManager(prov)
+			if err := r.reconcileCluster(ctx, clusterMgr, *next); err != nil {
+				log.Printf("Failed to reconcile cluster %s: %v", clusterName, err)
+			}
+		}
+
+		// Pull latest remote changes so that clusters already reconciled by a
+		// concurrent pipeline run are visible in the next iteration.
+		if err := r.stateMgr.SyncWithRemote(ctx); err != nil {
+			log.Printf("Warning: failed to sync with remote after reconciling %s: %v", clusterName, err)
+		}
+
+		reloaded, err := r.stateMgr.LoadClusterDefinitions()
+		if err != nil {
+			log.Printf("Warning: failed to reload cluster definitions after reconciling %s: %v", clusterName, err)
+		} else {
+			currentDefs = reloaded
 		}
 	}
 
-	// For cleanup, use a default provider (assuming Civo for backward compatibility)
-	// TODO: This should be improved to handle multi-provider cleanup
-	if len(clusters) > 0 {
+	return currentDefs
+}
+
+// cleanupOrphansByRegion removes managed-prefix clusters that are no longer in the desired
+// state, grouped by region so each provider scope is cleaned up independently.
+func (r *Reconciler) cleanupOrphansByRegion(ctx context.Context, clusterDefs []types.ClusterDefinition) {
+	regionClusters := make(map[string][]types.ClusterDefinition)
+	for _, cd := range clusterDefs {
+		regionClusters[cd.Metadata.Region] = append(regionClusters[cd.Metadata.Region], cd)
+	}
+
+	for region, clusters := range regionClusters {
 		prov, err := r.createProviderForCluster(clusters[0])
 		if err != nil {
 			log.Printf("Failed to create provider for cleanup in region %s: %v", region, err)
-			return nil
+			continue
 		}
 		clusterMgr := cluster.NewManager(prov)
-		err = r.cleanupOrphanedResources(ctx, clusterMgr, clusters)
-		if err != nil {
+		if err := r.cleanupOrphanedResources(ctx, clusterMgr, clusters); err != nil {
 			log.Printf("Failed to cleanup orphaned resources in region %s: %v", region, err)
 		}
 	}
-
-	return nil
 }
 
 // createProviderForCluster creates a provider with credentials resolved from the provider
@@ -447,29 +477,6 @@ func dedupRegions(regions []string) []string {
 		}
 	}
 	return out
-}
-
-// cleanupAllRegions handles managed-prefix cleanup when no clusters are defined
-func (r *Reconciler) cleanupAllRegions(ctx context.Context, clusterDefs []types.ClusterDefinition) {
-	// Create a default cluster definition for Civo cleanup
-	// TODO: This should be improved to handle multi-provider cleanup
-	defaultCluster := types.ClusterDefinition{
-		Metadata: types.ClusterMetadata{Region: "PHX1"},
-		Spec:     types.ClusterSpec{Provider: "civo"},
-	}
-
-	prov, err := r.createProviderForCluster(defaultCluster)
-	if err != nil {
-		log.Printf("Failed to create provider for cleanup: %v", err)
-		return
-	}
-
-	clusterMgr := cluster.NewManager(prov)
-
-	err = r.cleanupOrphanedResources(ctx, clusterMgr, clusterDefs)
-	if err != nil {
-		log.Printf("Failed to cleanup orphaned resources: %v", err)
-	}
 }
 
 // exportAllClusterInfo exports information for all active clusters
