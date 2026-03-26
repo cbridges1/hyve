@@ -565,6 +565,9 @@ func (e *Executor) addLog(level, job, step, message string) {
 
 	// Also log to stdout for immediate feedback
 	prefix := fmt.Sprintf("[%s]", level)
+	if e.currentCluster != "" {
+		prefix += fmt.Sprintf("[%s]", e.currentCluster)
+	}
 	if job != "" {
 		prefix += fmt.Sprintf("[%s]", job)
 	}

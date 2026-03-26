@@ -50,6 +50,12 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		return nil
 	}
 
+	if len(clusterDefs) > 0 {
+		log.Printf("═══════════════════════════════════════════")
+		log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
+		log.Printf("═══════════════════════════════════════════")
+	}
+
 	// Convergence loop: process one cluster at a time, syncing repo state between each
 	// reconciliation so concurrent pipeline runs are reflected before the next cluster is handled.
 	finalDefs := r.convergenceLoop(ctx, clusterDefs)
@@ -67,10 +73,11 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 	}
 
 	if len(finalDefs) > 0 {
-		log.Println("Exporting cluster information...")
+		log.Printf("═══════════════════════════════════════════")
+		log.Printf("  Post-reconcile: exporting cluster info & syncing kubeconfigs")
+		log.Printf("═══════════════════════════════════════════")
 		r.exportAllClusterInfo(ctx, finalDefs)
 
-		log.Println("Syncing kubeconfigs...")
 		if err := r.syncKubeconfigs(ctx, finalDefs); err != nil {
 			log.Printf("Failed to sync kubeconfigs: %v", err)
 		}
@@ -103,7 +110,13 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		clusterName := next.Metadata.Name
 		processed[clusterName] = true
 
-		log.Printf("Reconciling cluster: %s", clusterName)
+		providerName := next.Spec.Provider
+		if providerName == "" {
+			providerName = "civo"
+		}
+		log.Printf("───────────────────────────────────────────")
+		log.Printf("  [%s]  provider=%s  region=%s", clusterName, providerName, next.Metadata.Region)
+		log.Printf("───────────────────────────────────────────")
 
 		prov, err := r.createProviderForCluster(*next)
 		if err != nil {
@@ -256,10 +269,10 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.M
 	case types.ActionDelete:
 		return r.deleteCluster(ctx, clusterMgr, clusterDef)
 	case types.ActionNone:
-		log.Printf("Cluster %s is up to date, no action needed", clusterDef.Metadata.Name)
+		log.Printf("[%s] Up to date — no action needed", clusterDef.Metadata.Name)
 		return nil
 	default:
-		log.Printf("Unknown action for cluster %s: %v", clusterDef.Metadata.Name, action)
+		log.Printf("[%s] Unknown action: %v", clusterDef.Metadata.Name, action)
 		return nil
 	}
 }
@@ -272,13 +285,12 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 	}
 
 	if existingCluster != nil {
-		log.Printf("Cluster %s already exists with ID %s, updating status and continuing",
-			clusterDef.Metadata.Name, existingCluster.ID)
-		log.Printf("Cluster %s already exists and is in %s state", clusterDef.Metadata.Name, existingCluster.Status)
+		log.Printf("[%s] Already exists (ID: %s, status: %s) — skipping create",
+			clusterDef.Metadata.Name, existingCluster.ID, existingCluster.Status)
 		return nil
 	}
 
-	log.Printf("Creating cluster with definition: %+v", clusterDef)
+	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
 	createdCluster, err := clusterMgr.Create(ctx, clusterDef)
 	if err != nil {
 		return err
@@ -288,13 +300,12 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 	if err != nil {
 		return err
 	}
-	log.Println("Cluster is ready!")
 
-	log.Printf("Cluster %s created successfully!", clusterDef.Metadata.Name)
+	log.Printf("[%s] ✅ Cluster created successfully", clusterDef.Metadata.Name)
 
 	// Run onCreated workflows if defined
 	if len(clusterDef.Spec.Workflows.OnCreated) > 0 {
-		log.Printf("🔄 Running onCreated workflows for cluster %s...", clusterDef.Metadata.Name)
+		log.Printf("[%s] 🔄 Running onCreated workflows...", clusterDef.Metadata.Name)
 		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnCreated, clusterDef.Metadata.Name)
 	}
 
@@ -314,24 +325,24 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 	}
 
 	if existingCluster == nil {
-		log.Printf("Cluster %s not found, nothing to delete", clusterDef.Metadata.Name)
+		log.Printf("[%s] Not found in cloud — nothing to delete", clusterDef.Metadata.Name)
 		return nil
 	}
 
 	// Run onDestroy workflows before deletion if defined
 	if len(clusterDef.Spec.Workflows.OnDestroy) > 0 {
-		log.Printf("🔄 Running onDestroy workflows for cluster %s...", clusterDef.Metadata.Name)
+		log.Printf("[%s] 🔄 Running onDestroy workflows...", clusterDef.Metadata.Name)
 		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDestroy, clusterDef.Metadata.Name)
 	}
 
-	log.Printf("Deleting cluster %s with ID %s", clusterDef.Metadata.Name, existingCluster.ID)
+	log.Printf("[%s] Deleting cluster (ID: %s)...", clusterDef.Metadata.Name, existingCluster.ID)
 
 	err = clusterMgr.Delete(ctx, existingCluster.ID)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("Cluster %s deleted successfully!", clusterDef.Metadata.Name)
+	log.Printf("[%s] ✅ Cluster deleted successfully", clusterDef.Metadata.Name)
 	return nil
 }
 
@@ -601,18 +612,18 @@ func (r *Reconciler) runWorkflows(ctx context.Context, workflowNames []string, c
 
 	// Run each workflow
 	for _, workflowName := range workflowNames {
-		log.Printf("▶️  Running workflow '%s' for cluster '%s'...", workflowName, clusterName)
+		log.Printf("[%s] ▶  Workflow '%s' starting...", clusterName, workflowName)
 
 		execution, err := executor.RunWorkflow(ctx, workflowName, clusterName)
 		if err != nil {
-			log.Printf("⚠️  Workflow '%s' failed: %v", workflowName, err)
+			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", clusterName, workflowName, err)
 			continue
 		}
 
 		if execution.Status == workflow.StatusCompleted {
-			log.Printf("✅ Workflow '%s' completed successfully", workflowName)
+			log.Printf("[%s] ✅ Workflow '%s' completed", clusterName, workflowName)
 		} else {
-			log.Printf("⚠️  Workflow '%s' finished with status: %s", workflowName, execution.Status)
+			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", clusterName, workflowName, execution.Status)
 		}
 	}
 }
