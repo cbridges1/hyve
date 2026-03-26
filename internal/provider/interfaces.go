@@ -96,6 +96,12 @@ type FirewallProvider interface {
 	FindFirewallByName(ctx context.Context, name string) (*Firewall, error)
 }
 
+// AccessEntryGranter is an optional interface implemented by cloud providers that support
+// granting a principal direct cluster API access (e.g. EKS access entries).
+type AccessEntryGranter interface {
+	EnsureAccessEntry(ctx context.Context, clusterName, principalARN string) error
+}
+
 // Provider combines all provider interfaces
 type Provider interface {
 	ClusterProvider

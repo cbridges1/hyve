@@ -89,6 +89,22 @@ func CreateProviderForCluster(factory *provider.Factory, clusterDef types.Cluste
 		}
 	}
 
+	// Handle AWS-specific configuration
+	if providerName == "aws" && clusterDef.Spec.AWSAccount != "" {
+		repoMgr, err := repository.NewManager()
+		if err == nil {
+			defer repoMgr.Close()
+			if currentRepo, err := repoMgr.GetCurrentRepository(); err == nil {
+				pcMgr := providerconfig.NewManager(currentRepo.LocalPath)
+				if keyID, secret, session, err := pcMgr.GetAWSCredentials(clusterDef.Spec.AWSAccount); err == nil {
+					opts.AccessKeyID = keyID
+					opts.SecretAccessKey = secret
+					opts.SessionToken = session
+				}
+			}
+		}
+	}
+
 	// Handle Azure-specific configuration
 	if providerName == "azure" {
 		opts.AzureResourceGroup = clusterDef.Spec.AzureResourceGroup
