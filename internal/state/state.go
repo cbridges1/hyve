@@ -152,6 +152,48 @@ func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
 	return clusters, nil
 }
 
+// RemoveClusterFile finds and removes the YAML file containing the given cluster
+// definition. It returns an error if no matching file is found or the file
+// cannot be removed. The caller is responsible for committing the deletion.
+func (m *Manager) RemoveClusterFile(clusterName string) error {
+	var found string
+
+	err := filepath.WalkDir(m.stateDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var cluster types.ClusterDefinition
+		if err := yaml.Unmarshal(data, &cluster); err != nil {
+			return nil
+		}
+		if cluster.Metadata.Name == clusterName {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to search for cluster file: %w", err)
+	}
+	if found == "" {
+		return fmt.Errorf("no YAML file found for cluster %s", clusterName)
+	}
+
+	if err := os.Remove(found); err != nil {
+		return fmt.Errorf("failed to remove cluster file %s: %w", found, err)
+	}
+
+	return nil
+}
+
 // ValidateClusterDefinitions validates cluster definitions
 func (m *Manager) ValidateClusterDefinitions(clusters []types.ClusterDefinition) error {
 	// Basic validation can be added here if needed in the future

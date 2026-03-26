@@ -24,6 +24,11 @@ func NewManager(p provider.Provider) *Manager {
 
 // DetermineAction decides what action to take based on desired vs actual state.
 func (m *Manager) DetermineAction(ctx context.Context, desired types.ClusterDefinition) types.ReconcileAction {
+	if desired.Spec.Delete {
+		log.Printf("Cluster %s is marked for deletion (spec.delete: true)", desired.Metadata.Name)
+		return types.ActionDelete
+	}
+
 	cluster, err := m.provider.FindClusterByName(ctx, desired.Metadata.Name)
 	if err != nil {
 		log.Printf("Error checking for existing cluster %s: %v", desired.Metadata.Name, err)

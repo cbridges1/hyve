@@ -110,8 +110,22 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 			log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
 		} else {
 			clusterMgr := cluster.NewManager(prov)
-			if err := r.reconcileCluster(ctx, clusterMgr, *next); err != nil {
-				log.Printf("Failed to reconcile cluster %s: %v", clusterName, err)
+			reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
+			if reconcileErr != nil {
+				log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
+			} else if next.Spec.Delete {
+				// Cluster was successfully deleted — remove its YAML file and push the
+				// change so the repository no longer contains the deletion marker.
+				if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
+					log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
+				} else {
+					commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
+					if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
+						log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
+					} else {
+						log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
+					}
+				}
 			}
 		}
 
