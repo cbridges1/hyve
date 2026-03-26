@@ -18,7 +18,9 @@ func FetchClusterNames() []string {
 	}
 	names := make([]string, 0, len(defs))
 	for _, d := range defs {
-		names = append(names, d.Metadata.Name)
+		if !d.Spec.Delete {
+			names = append(names, d.Metadata.Name)
+		}
 	}
 	return names
 }

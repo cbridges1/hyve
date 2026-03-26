@@ -46,6 +46,7 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 	}
 
 	if deleteFromCloud {
+		// --force-cloud: delete from the cloud provider immediately, then remove the YAML.
 		log.Printf("🗑️ Deleting cluster '%s' from cloud provider...", clusterName)
 		if err := deleteClusterExplicitly(ctx, clusterDef); err != nil {
 			log.Fatalf("❌ Failed to delete cluster '%s' from cloud provider: %v\n\n"+
@@ -53,24 +54,39 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 				"Please resolve the issue and try again.", clusterName, err)
 		}
 		log.Printf("✅ Cloud cluster '%s' deleted", clusterName)
-	} else {
-		log.Printf("📝 Removing cluster YAML — cloud deletion will be handled by reconciliation")
-	}
 
-	if configExists {
-		if err := os.Remove(filePath); err != nil {
-			log.Fatalf("Failed to delete cluster definition file: %v", err)
+		if configExists {
+			if err := os.Remove(filePath); err != nil {
+				log.Fatalf("Failed to delete cluster definition file: %v", err)
+			}
+			shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Delete cluster %s", clusterName))
+			log.Printf("Deleted cluster definition file: %s", filePath)
 		}
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Delete cluster %s", clusterName))
-		log.Printf("Deleted cluster definition file: %s", filePath)
-		log.Printf("Cluster %s has been removed from configuration", clusterName)
+
+		cleanupClusterKubeconfig(clusterName)
+		shared.RunReconciliation("")
 	} else {
-		log.Printf("📝 No configuration file to remove")
+		// Normal path: mark the cluster for deletion so the reconciler runs onDestroy
+		// workflows before removing the cloud cluster and the YAML file.
+		if !configExists {
+			log.Fatalf("Cluster %s configuration does not exist. Use --force --force-cloud to delete from cloud provider anyway.", clusterName)
+		}
+
+		clusterDef.Spec.Delete = true
+		data, err := yaml.Marshal(&clusterDef)
+		if err != nil {
+			log.Fatalf("Failed to marshal cluster definition: %v", err)
+		}
+		if err := os.WriteFile(filePath, data, 0644); err != nil {
+			log.Fatalf("Failed to write cluster definition: %v", err)
+		}
+
+		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Mark cluster %s for deletion", clusterName))
+		log.Printf("📝 Cluster '%s' marked for deletion", clusterName)
+		log.Printf("   The reconciler will run onDestroy workflows, delete the cloud cluster, and remove this file.")
+
+		shared.RunReconciliation("")
 	}
-
-	cleanupClusterKubeconfig(clusterName)
-
-	shared.RunReconciliation("")
 }
 
 func cleanupClusterKubeconfig(clusterName string) {

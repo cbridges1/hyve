@@ -114,8 +114,8 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 			if reconcileErr != nil {
 				log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
 			} else if next.Spec.Delete {
-				// Cluster was successfully deleted — remove its YAML file and push the
-				// change so the repository no longer contains the deletion marker.
+				// onDestroy workflows ran and the cloud cluster was deleted — now
+				// remove the YAML marker and push so the repo reflects the final state.
 				if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
 					log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
 				} else {

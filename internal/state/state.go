@@ -113,48 +113,8 @@ func (m *Manager) LoadRepoConfig() (*RepoConfig, error) {
 	return &cfg, nil
 }
 
-// LoadClusterDefinitions loads all cluster definitions from YAML files
-func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
-	var clusters []types.ClusterDefinition
-
-	err := filepath.WalkDir(m.stateDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
-			return nil
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read file %s: %w", path, err)
-		}
-
-		var cluster types.ClusterDefinition
-		if err := yaml.Unmarshal(data, &cluster); err != nil {
-			return fmt.Errorf("failed to unmarshal YAML file %s: %w", path, err)
-		}
-
-		clusters = append(clusters, cluster)
-		return nil
-	})
-
-	if err != nil {
-		if os.IsNotExist(err) {
-			// clusters/ directory doesn't exist — treat as empty desired state.
-			// ReconcileAll will still run strictDelete if enabled.
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	return clusters, nil
-}
-
 // RemoveClusterFile finds and removes the YAML file containing the given cluster
-// definition. It returns an error if no matching file is found or the file
-// cannot be removed. The caller is responsible for committing the deletion.
+// definition. The caller is responsible for committing the deletion.
 func (m *Manager) RemoveClusterFile(clusterName string) error {
 	var found string
 
@@ -192,6 +152,45 @@ func (m *Manager) RemoveClusterFile(clusterName string) error {
 	}
 
 	return nil
+}
+
+// LoadClusterDefinitions loads all cluster definitions from YAML files
+func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
+	var clusters []types.ClusterDefinition
+
+	err := filepath.WalkDir(m.stateDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read file %s: %w", path, err)
+		}
+
+		var cluster types.ClusterDefinition
+		if err := yaml.Unmarshal(data, &cluster); err != nil {
+			return fmt.Errorf("failed to unmarshal YAML file %s: %w", path, err)
+		}
+
+		clusters = append(clusters, cluster)
+		return nil
+	})
+
+	if err != nil {
+		if os.IsNotExist(err) {
+			// clusters/ directory doesn't exist — treat as empty desired state.
+			// ReconcileAll will still run strictDelete if enabled.
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return clusters, nil
 }
 
 // ValidateClusterDefinitions validates cluster definitions

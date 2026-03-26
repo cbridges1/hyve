@@ -298,7 +298,7 @@ func listClusters() {
 			continue
 		}
 
-		if clusterDef.Kind == "Cluster" {
+		if clusterDef.Kind == "Cluster" && !clusterDef.Spec.Delete {
 			clusters = append(clusters, clusterDef)
 		}
 	}
