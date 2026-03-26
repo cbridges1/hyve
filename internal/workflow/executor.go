@@ -279,6 +279,11 @@ func (e *Executor) exportClusterEnvironmentVariables(ctx context.Context, cluste
 		return fmt.Errorf("failed to load cluster definition: %w", err)
 	}
 
+	// Export provider credentials as standard CLI env vars so that tools like
+	// the aws CLI, gcloud, and the EKS/GKE kubeconfig exec plugins can authenticate
+	// without requiring a locally-installed and configured cloud CLI.
+	e.exportProviderCredentials(clusterDef)
+
 	// Create provider for this cluster
 	prov, err := e.createProviderFromClusterDef(clusterDef)
 	if err != nil {
@@ -322,6 +327,103 @@ func (e *Executor) exportClusterEnvironmentVariables(ctx context.Context, cluste
 	log.Printf("  HYVE_CLUSTER_STATUS=%s", clusterInfo.Status)
 
 	return nil
+}
+
+// exportProviderCredentials sets the standard CLI environment variables for the
+// cluster's cloud provider so that tools invoked by workflow steps (e.g. aws,
+// kubectl with an EKS exec-plugin, gcloud, az) can authenticate using the same
+// credentials stored in provider-configs/*.yaml — no locally-installed CLI login
+// is required.
+func (e *Executor) exportProviderCredentials(clusterDef *types.ClusterDefinition) {
+	providerName := strings.ToLower(clusterDef.Spec.Provider)
+	if providerName == "" {
+		providerName = "civo"
+	}
+
+	pcMgr := providerconfig.NewManager(e.manager.localPath)
+
+	setEnv := func(key, value string) {
+		if value == "" {
+			return
+		}
+		e.variables[key] = value
+		os.Setenv(key, value)
+	}
+
+	switch providerName {
+	case "aws":
+		accountName := clusterDef.Spec.AWSAccount
+		if accountName == "" {
+			return
+		}
+		keyID, secret, session, _ := pcMgr.GetAWSCredentials(accountName)
+		setEnv("AWS_ACCESS_KEY_ID", keyID)
+		setEnv("AWS_SECRET_ACCESS_KEY", secret)
+		setEnv("AWS_SESSION_TOKEN", session)
+		setEnv("AWS_DEFAULT_REGION", clusterDef.Metadata.Region)
+		if keyID != "" {
+			log.Printf("✅ Exported AWS credentials for account '%s' (region: %s)", accountName, clusterDef.Metadata.Region)
+		}
+
+	case "gcp":
+		accountName := clusterDef.Spec.GCPProject
+		if accountName == "" {
+			return
+		}
+		credJSON, err := pcMgr.GetGCPCredentialsJSON(accountName)
+		if err != nil || credJSON == "" {
+			return
+		}
+		// Write credentials to a temp file; GOOGLE_APPLICATION_CREDENTIALS must be a path.
+		tempDir := filepath.Join(os.Getenv("HOME"), ".hyve", "temp")
+		if mkErr := os.MkdirAll(tempDir, 0755); mkErr != nil {
+			log.Printf("Warning: failed to create temp dir for GCP credentials: %v", mkErr)
+			return
+		}
+		credFile := filepath.Join(tempDir, fmt.Sprintf("gcp-creds-%s.json", accountName))
+		if writeErr := os.WriteFile(credFile, []byte(credJSON), 0600); writeErr != nil {
+			log.Printf("Warning: failed to write GCP credentials file: %v", writeErr)
+			return
+		}
+		setEnv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
+		projectID := clusterDef.Spec.GCPProjectID
+		if projectID == "" {
+			projectID, _ = pcMgr.GetGCPProjectID(accountName)
+		}
+		setEnv("CLOUDSDK_CORE_PROJECT", projectID)
+		setEnv("GCLOUD_PROJECT", projectID)
+		log.Printf("✅ Exported GCP credentials for project '%s'", accountName)
+
+	case "azure":
+		accountName := clusterDef.Spec.AzureSubscription
+		if accountName == "" {
+			return
+		}
+		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(accountName)
+		subID := clusterDef.Spec.AzureSubscriptionID
+		if subID == "" {
+			subID, _ = pcMgr.GetAzureSubscriptionID(accountName)
+		}
+		setEnv("AZURE_TENANT_ID", tenantID)
+		setEnv("AZURE_CLIENT_ID", clientID)
+		setEnv("AZURE_CLIENT_SECRET", clientSecret)
+		setEnv("AZURE_SUBSCRIPTION_ID", subID)
+		if clientID != "" {
+			log.Printf("✅ Exported Azure credentials for subscription '%s'", accountName)
+		}
+
+	case "civo":
+		accountName := clusterDef.Spec.CivoOrganization
+		if accountName == "" {
+			return
+		}
+		token, err := pcMgr.GetCivoToken(accountName)
+		if err != nil || token == "" {
+			return
+		}
+		setEnv("CIVO_TOKEN", token)
+		log.Printf("✅ Exported Civo token for organization '%s'", accountName)
+	}
 }
 
 // createProviderFromClusterDef creates a provider for the given cluster definition.
