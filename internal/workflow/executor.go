@@ -227,7 +227,11 @@ func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string,
 	}
 
 	// Create temporary kubeconfig file
-	tempDir := filepath.Join(os.Getenv("HOME"), ".hyve", "temp")
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user home directory: %w", err)
+	}
+	tempDir := filepath.Join(homeDir, ".hyve", "temp")
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
@@ -375,7 +379,12 @@ func (e *Executor) exportProviderCredentials(clusterDef *types.ClusterDefinition
 			return
 		}
 		// Write credentials to a temp file; GOOGLE_APPLICATION_CREDENTIALS must be a path.
-		tempDir := filepath.Join(os.Getenv("HOME"), ".hyve", "temp")
+		homeDir, homeDirErr := os.UserHomeDir()
+		if homeDirErr != nil {
+			log.Printf("Warning: failed to get home directory for GCP credentials: %v", homeDirErr)
+			return
+		}
+		tempDir := filepath.Join(homeDir, ".hyve", "temp")
 		if mkErr := os.MkdirAll(tempDir, 0755); mkErr != nil {
 			log.Printf("Warning: failed to create temp dir for GCP credentials: %v", mkErr)
 			return

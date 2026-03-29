@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -191,12 +192,12 @@ func getKubeconfig(cmd *cobra.Command, clusterName string) {
 		if err != nil {
 			log.Fatalf("Failed to get user home directory: %v", err)
 		}
-		kubeDir := fmt.Sprintf("%s/.kube", homeDir)
+		kubeDir := filepath.Join(homeDir, ".kube")
 		if err := os.MkdirAll(kubeDir, 0755); err != nil {
 			log.Fatalf("Failed to create .kube directory: %v", err)
 		}
 
-		outPath := fmt.Sprintf("%s/config-%s", kubeDir, clusterName)
+		outPath := filepath.Join(kubeDir, "config-"+clusterName)
 		err = os.WriteFile(outPath, []byte(cfg), 0600)
 		if err != nil {
 			log.Fatalf("Failed to write kubeconfig to %s: %v", outPath, err)
@@ -284,12 +285,12 @@ func UseKubeconfig(clusterName string) {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	kubeDir := fmt.Sprintf("%s/.kube", homeDir)
+	kubeDir := filepath.Join(homeDir, ".kube")
 	if err := os.MkdirAll(kubeDir, 0755); err != nil {
 		log.Fatalf("Failed to create .kube directory: %v", err)
 	}
 
-	kubeConfigPath := fmt.Sprintf("%s/config", kubeDir)
+	kubeConfigPath := filepath.Join(kubeDir, "config")
 
 	log.Printf("🔀 Merging cluster '%s' into %s", clusterName, kubeConfigPath)
 
@@ -303,7 +304,7 @@ func UseKubeconfig(clusterName string) {
 			log.Fatalf("Failed to write kubeconfig: %v", err)
 		}
 	} else {
-		backupPath := fmt.Sprintf("%s.backup", kubeConfigPath)
+		backupPath := kubeConfigPath + ".backup"
 		if err := os.WriteFile(backupPath, []byte(existingConfig), 0600); err != nil {
 			log.Printf("⚠️  Warning: Failed to create backup at %s", backupPath)
 		} else {
@@ -362,12 +363,12 @@ func mergeKubeconfig(clusterName string) {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	kubeDir := fmt.Sprintf("%s/.kube", homeDir)
+	kubeDir := filepath.Join(homeDir, ".kube")
 	if err := os.MkdirAll(kubeDir, 0755); err != nil {
 		log.Fatalf("Failed to create .kube directory: %v", err)
 	}
 
-	kubeConfigPath := fmt.Sprintf("%s/config", kubeDir)
+	kubeConfigPath := filepath.Join(kubeDir, "config")
 
 	log.Printf("🔀 Merging cluster '%s' into %s", clusterName, kubeConfigPath)
 
@@ -381,7 +382,7 @@ func mergeKubeconfig(clusterName string) {
 			log.Fatalf("Failed to write kubeconfig: %v", err)
 		}
 	} else {
-		backupPath := fmt.Sprintf("%s.backup", kubeConfigPath)
+		backupPath := kubeConfigPath + ".backup"
 		if err := os.WriteFile(backupPath, []byte(existingConfig), 0600); err != nil {
 			log.Printf("⚠️  Warning: Failed to create backup at %s", backupPath)
 		} else {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cbridges1/hyve/internal/config"
@@ -134,7 +135,7 @@ func RemoveKubeconfig(clusterName string) {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	kubeConfigPath := fmt.Sprintf("%s/.kube/config", homeDir)
+	kubeConfigPath := filepath.Join(homeDir, ".kube", "config")
 
 	if _, err := os.Stat(kubeConfigPath); os.IsNotExist(err) {
 		log.Printf("❌ No kubeconfig found at %s", kubeConfigPath)
@@ -146,7 +147,7 @@ func RemoveKubeconfig(clusterName string) {
 		log.Fatalf("Failed to read kubeconfig: %v", err)
 	}
 
-	backupPath := fmt.Sprintf("%s.backup", kubeConfigPath)
+	backupPath := kubeConfigPath + ".backup"
 	if err := os.WriteFile(backupPath, existingData, 0600); err != nil {
 		log.Printf("⚠️  Warning: Failed to create backup at %s", backupPath)
 	} else {

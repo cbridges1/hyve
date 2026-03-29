@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/cbridges1/hyve/internal/provider"
 	"github.com/cbridges1/hyve/internal/types"
@@ -188,7 +189,7 @@ func (s *Syncer) removeKubeconfigContext(clusterName string) {
 		return
 	}
 
-	kubeConfigPath := homeDir + "/.kube/config"
+	kubeConfigPath := filepath.Join(homeDir, ".kube", "config")
 	data, err := os.ReadFile(kubeConfigPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
