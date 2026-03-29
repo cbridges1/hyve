@@ -177,6 +177,12 @@ func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
 			return fmt.Errorf("failed to unmarshal YAML file %s: %w", path, err)
 		}
 
+		// region may be specified under spec (common pattern) rather than metadata.
+		// Promote it to Metadata.Region so the rest of the system has one canonical location.
+		if cluster.Metadata.Region == "" && cluster.Spec.Region != "" {
+			cluster.Metadata.Region = cluster.Spec.Region
+		}
+
 		clusters = append(clusters, cluster)
 		return nil
 	})

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2/google"
+	compute "google.golang.org/api/compute/v1"
 	container "google.golang.org/api/container/v1"
 	"google.golang.org/api/option"
 
@@ -80,6 +81,7 @@ type ClusterInfo struct {
 // Provider implements the provider interfaces for GCP
 type Provider struct {
 	containerService *container.Service
+	computeService   *compute.Service
 	projectID        string
 	region           string
 	credentialsJSON  string
@@ -89,22 +91,24 @@ type Provider struct {
 func NewProvider(credentialsJSON, projectID, region string) (*Provider, error) {
 	ctx := context.Background()
 
-	var svc *container.Service
-	var err error
-
+	var opts []option.ClientOption
 	if credentialsJSON != "" {
-		svc, err = container.NewService(ctx, option.WithCredentialsJSON([]byte(credentialsJSON)))
-	} else {
-		// Use default credentials (ADC)
-		svc, err = container.NewService(ctx)
+		opts = append(opts, option.WithCredentialsJSON([]byte(credentialsJSON)))
 	}
 
+	containerSvc, err := container.NewService(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GCP container service: %w", err)
 	}
 
+	computeSvc, err := compute.NewService(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCP compute service: %w", err)
+	}
+
 	return &Provider{
-		containerService: svc,
+		containerService: containerSvc,
+		computeService:   computeSvc,
 		projectID:        projectID,
 		region:           region,
 		credentialsJSON:  credentialsJSON,
@@ -123,9 +127,12 @@ func (p *Provider) Region() string {
 
 // clusterPath returns the full path for a cluster
 // Uses the zone for zonal clusters created by this provider
-func (p *Provider) clusterPath(clusterName string) string {
-	zone := p.getDefaultZone()
-	return fmt.Sprintf("projects/%s/locations/%s/clusters/%s", p.projectID, zone, clusterName)
+func (p *Provider) clusterPath(ctx context.Context, clusterName string) (string, error) {
+	zone, err := p.getDefaultZone(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("projects/%s/locations/%s/clusters/%s", p.projectID, zone, clusterName), nil
 }
 
 // clusterPathRegional returns the full path for a cluster using region (for listing)
@@ -171,7 +178,11 @@ func (p *Provider) FindClusterByName(ctx context.Context, name string) (*Cluster
 	// When using the wildcard location "-" or when region is empty, skip the zone-specific
 	// GET (which would produce an invalid zone like "--b" or "-b") and go straight to listing.
 	if p.region != "-" && p.region != "" {
-		cluster, err := p.containerService.Projects.Locations.Clusters.Get(p.clusterPath(name)).Context(ctx).Do()
+		path, err := p.clusterPath(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build cluster path: %w", err)
+		}
+		cluster, err := p.containerService.Projects.Locations.Clusters.Get(path).Context(ctx).Do()
 		if err == nil {
 			return p.convertCluster(cluster), nil
 		}
@@ -204,7 +215,10 @@ func (p *Provider) CreateCluster(ctx context.Context, config *ClusterConfig) (*C
 	log.Printf("Creating GKE cluster %s in region %s", config.Name, p.region)
 
 	// Create a zonal cluster for precise node count control
-	zone := p.getDefaultZone()
+	zone, err := p.getDefaultZone(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine zone: %w", err)
+	}
 	zonalPath := fmt.Sprintf("projects/%s/locations/%s", p.projectID, zone)
 
 	var createReq *container.CreateClusterRequest
@@ -301,41 +315,27 @@ func (p *Provider) CreateCluster(ctx context.Context, config *ClusterConfig) (*C
 	}, nil
 }
 
-// getDefaultZone returns a default zone for the region
-// GCP zones don't follow a consistent pattern, so we use common mappings
-func (p *Provider) getDefaultZone() string {
-	// Common zone suffixes by region - using "-b" as it's most universally available
-	zoneOverrides := map[string]string{
-		"us-east1":             "us-east1-b",
-		"us-east4":             "us-east4-a",
-		"us-central1":          "us-central1-a",
-		"us-west1":             "us-west1-a",
-		"us-west2":             "us-west2-a",
-		"us-west3":             "us-west3-a",
-		"us-west4":             "us-west4-a",
-		"europe-west1":         "europe-west1-b",
-		"europe-west2":         "europe-west2-a",
-		"europe-west3":         "europe-west3-a",
-		"europe-west4":         "europe-west4-a",
-		"europe-north1":        "europe-north1-a",
-		"asia-east1":           "asia-east1-a",
-		"asia-east2":           "asia-east2-a",
-		"asia-northeast1":      "asia-northeast1-a",
-		"asia-northeast2":      "asia-northeast2-a",
-		"asia-northeast3":      "asia-northeast3-a",
-		"asia-south1":          "asia-south1-a",
-		"asia-southeast1":      "asia-southeast1-a",
-		"asia-southeast2":      "asia-southeast2-a",
-		"australia-southeast1": "australia-southeast1-a",
-		"southamerica-east1":   "southamerica-east1-a",
+// getDefaultZone returns the first available zone for the configured region by
+// querying the GCP Compute API. Falls back to region+"-a" if the API call fails.
+func (p *Provider) getDefaultZone(ctx context.Context) (string, error) {
+	fallback := p.region + "-a"
+
+	resp, err := p.computeService.Zones.List(p.projectID).
+		Filter("name eq " + p.region + "-.*").
+		Context(ctx).
+		Do()
+	if err != nil {
+		log.Printf("Warning: could not list GCP zones for region %s, using fallback %s: %v", p.region, fallback, err)
+		return fallback, nil
 	}
 
-	if zone, ok := zoneOverrides[p.region]; ok {
-		return zone
+	if len(resp.Items) == 0 {
+		log.Printf("Warning: no zones found for region %s, using fallback %s", p.region, fallback)
+		return fallback, nil
 	}
 
-	// Default: append "-b" as it's commonly available
-	return p.region + "-b"
+	// Items are returned in alphabetical order; zone-a comes first when available.
+	return resp.Items[0].Name, nil
 }
 
 // UpdateCluster updates an existing cluster
@@ -369,7 +369,10 @@ func (p *Provider) DeleteCluster(ctx context.Context, clusterID string) error {
 // WaitForClusterReady waits for cluster to be ready
 func (p *Provider) WaitForClusterReady(ctx context.Context, clusterID string) error {
 	// Use the default zone path for clusters we created
-	zone := p.getDefaultZone()
+	zone, err := p.getDefaultZone(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to determine zone: %w", err)
+	}
 	clusterPath := fmt.Sprintf("projects/%s/locations/%s/clusters/%s", p.projectID, zone, clusterID)
 
 	for {

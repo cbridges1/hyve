@@ -37,6 +37,7 @@ type WorkflowsSpec struct {
 // ClusterSpec represents the desired cluster configuration
 type ClusterSpec struct {
 	Provider    string        `yaml:"provider"`
+	Region      string        `yaml:"region,omitempty"`
 	Nodes       []string      `yaml:"nodes,omitempty"`
 	NodeGroups  []NodeGroup   `yaml:"nodeGroups,omitempty"`
 	ClusterType string        `yaml:"clusterType"`
