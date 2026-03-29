@@ -277,6 +277,49 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.M
 	}
 }
 
+// resolveAWSAliases fills in resolved ARN/ID fields on the cluster definition
+// from the alias names stored in the provider-config YAML, when the resolved
+// fields are not already present. This allows cluster YAMLs to use short alias
+// names (e.g. awsEksRole: my-role) without requiring the template command to
+// first resolve and write back the full ARNs.
+func (r *Reconciler) resolveAWSAliases(clusterDef *types.ClusterDefinition) {
+	if strings.ToLower(clusterDef.Spec.Provider) != "aws" {
+		return
+	}
+	accountName := clusterDef.Spec.AWSAccount
+	if accountName == "" {
+		return
+	}
+	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
+
+	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRole != "" {
+		if arn, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole); err == nil {
+			clusterDef.Spec.AWSEKSRoleARN = arn
+			log.Printf("[%s] Resolved EKS role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, arn)
+		} else {
+			log.Printf("[%s] Warning: could not resolve EKS role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, err)
+		}
+	}
+
+	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRole != "" {
+		if arn, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole); err == nil {
+			clusterDef.Spec.AWSNodeRoleARN = arn
+			log.Printf("[%s] Resolved node role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, arn)
+		} else {
+			log.Printf("[%s] Warning: could not resolve node role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, err)
+		}
+	}
+
+	if clusterDef.Spec.AWSVPCID == "" && clusterDef.Spec.AWSVPCName != "" {
+		if vpcID, err := pcMgr.GetAWSVPCID(accountName, clusterDef.Spec.AWSVPCName); err == nil {
+			clusterDef.Spec.AWSVPCID = vpcID
+			log.Printf("[%s] Resolved VPC '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, vpcID)
+		} else {
+			log.Printf("[%s] Warning: could not resolve VPC alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, err)
+		}
+	}
+}
+
 // createCluster creates a new cluster
 func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
 	existingCluster, err := clusterMgr.FindByName(ctx, clusterDef.Metadata.Name)
@@ -289,6 +332,11 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 			clusterDef.Metadata.Name, existingCluster.ID, existingCluster.Status)
 		return nil
 	}
+
+	// Resolve AWS alias names (role names, VPC names) to their ARNs/IDs from
+	// provider-configs before passing to the provider, so that cluster YAMLs
+	// do not need to have the full ARNs written into them by the template command.
+	r.resolveAWSAliases(&clusterDef)
 
 	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
 	createdCluster, err := clusterMgr.Create(ctx, clusterDef)
