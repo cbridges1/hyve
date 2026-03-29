@@ -168,9 +168,9 @@ func (p *Provider) GetCluster(ctx context.Context, clusterID string) (*Cluster, 
 
 // FindClusterByName finds a cluster by name
 func (p *Provider) FindClusterByName(ctx context.Context, name string) (*Cluster, error) {
-	// When using the wildcard location "-", skip the zone-specific GET (which would
-	// produce an invalid zone like "--b") and go straight to listing all clusters.
-	if p.region != "-" {
+	// When using the wildcard location "-" or when region is empty, skip the zone-specific
+	// GET (which would produce an invalid zone like "--b" or "-b") and go straight to listing.
+	if p.region != "-" && p.region != "" {
 		cluster, err := p.containerService.Projects.Locations.Clusters.Get(p.clusterPath(name)).Context(ctx).Do()
 		if err == nil {
 			return p.convertCluster(cluster), nil
@@ -180,8 +180,13 @@ func (p *Provider) FindClusterByName(ctx context.Context, name string) (*Cluster
 		}
 	}
 
-	// List all clusters in the location (or all locations when region == "-") and find by name
-	resp, listErr := p.containerService.Projects.Locations.Clusters.List(p.parentPath()).Context(ctx).Do()
+	// List all clusters across all locations when region is empty or "-", otherwise
+	// list only the configured region.
+	listParent := p.parentPath()
+	if p.region == "" || p.region == "-" {
+		listParent = fmt.Sprintf("projects/%s/locations/-", p.projectID)
+	}
+	resp, listErr := p.containerService.Projects.Locations.Clusters.List(listParent).Context(ctx).Do()
 	if listErr != nil {
 		return nil, nil // Cluster not found
 	}
