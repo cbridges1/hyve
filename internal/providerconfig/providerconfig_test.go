@@ -1,6 +1,7 @@
 package providerconfig
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -624,6 +625,281 @@ func TestCivo_Network_OrgNotFound(t *testing.T) {
 	assert.Error(t, mgr.AddCivoNetwork("nonexistent", "net", "id"))
 	_, err := mgr.GetCivoNetworkID("nonexistent", "net")
 	assert.Error(t, err)
+}
+
+// ========== Credential resolution (resolveCredential / env var expansion) ==========
+
+func TestGetCivoToken_LiteralValue(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddCivoOrganization("my-org", "org-123"))
+	// Manually set the token by loading, setting, and saving the config.
+	cfg, err := mgr.LoadCivoConfig()
+	require.NoError(t, err)
+	cfg.Organizations[0].Token = "my-literal-token"
+	require.NoError(t, mgr.SaveCivoConfig(cfg))
+
+	token, err := mgr.GetCivoToken("my-org")
+	require.NoError(t, err)
+	assert.Equal(t, "my-literal-token", token)
+}
+
+func TestGetCivoToken_EnvVarReference(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddCivoOrganization("my-org", "org-123"))
+	cfg, err := mgr.LoadCivoConfig()
+	require.NoError(t, err)
+	cfg.Organizations[0].Token = "${TEST_CIVO_TOKEN}"
+	require.NoError(t, mgr.SaveCivoConfig(cfg))
+
+	t.Setenv("TEST_CIVO_TOKEN", "token-from-env")
+
+	token, err := mgr.GetCivoToken("my-org")
+	require.NoError(t, err)
+	assert.Equal(t, "token-from-env", token)
+}
+
+func TestGetCivoToken_EnvVarUnset_ReturnsEmpty(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddCivoOrganization("my-org", "org-123"))
+	cfg, err := mgr.LoadCivoConfig()
+	require.NoError(t, err)
+	cfg.Organizations[0].Token = "${DEFINITELY_NOT_SET_CIVO_VAR}"
+	require.NoError(t, mgr.SaveCivoConfig(cfg))
+
+	os.Unsetenv("DEFINITELY_NOT_SET_CIVO_VAR")
+
+	token, err := mgr.GetCivoToken("my-org")
+	require.NoError(t, err)
+	assert.Empty(t, token)
+}
+
+func TestGetCivoToken_NotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	_, err := mgr.GetCivoToken("nonexistent")
+	assert.Error(t, err)
+}
+
+func TestGetGCPCredentialsJSON_LiteralValue(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddGCPProject("dev", "dev-project-id"))
+	cfg, err := mgr.LoadGCPConfig()
+	require.NoError(t, err)
+	cfg.Projects[0].CredentialsJSON = `{"type":"service_account"}`
+	require.NoError(t, mgr.SaveGCPConfig(cfg))
+
+	creds, err := mgr.GetGCPCredentialsJSON("dev")
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"service_account"}`, creds)
+}
+
+func TestGetGCPCredentialsJSON_EnvVarReference(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddGCPProject("dev", "dev-project-id"))
+	cfg, err := mgr.LoadGCPConfig()
+	require.NoError(t, err)
+	cfg.Projects[0].CredentialsJSON = "${TEST_GCP_CREDS_JSON}"
+	require.NoError(t, mgr.SaveGCPConfig(cfg))
+
+	t.Setenv("TEST_GCP_CREDS_JSON", `{"type":"service_account","project_id":"dev"}`)
+
+	creds, err := mgr.GetGCPCredentialsJSON("dev")
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"service_account","project_id":"dev"}`, creds)
+}
+
+func TestGetGCPCredentialsJSON_NotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	_, err := mgr.GetGCPCredentialsJSON("nonexistent")
+	assert.Error(t, err)
+}
+
+func TestGetAWSCredentials_LiteralValues(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAWSAccount("prod", "123456789012"))
+	cfg, err := mgr.LoadAWSConfig()
+	require.NoError(t, err)
+	cfg.Accounts[0].AccessKeyID = "AKIAIOSFODNN7EXAMPLE"
+	cfg.Accounts[0].SecretAccessKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	cfg.Accounts[0].SessionToken = ""
+	require.NoError(t, mgr.SaveAWSConfig(cfg))
+
+	keyID, secret, session, err := mgr.GetAWSCredentials("prod")
+	require.NoError(t, err)
+	assert.Equal(t, "AKIAIOSFODNN7EXAMPLE", keyID)
+	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", secret)
+	assert.Empty(t, session)
+}
+
+func TestGetAWSCredentials_EnvVarReferences(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAWSAccount("prod", "123456789012"))
+	cfg, err := mgr.LoadAWSConfig()
+	require.NoError(t, err)
+	cfg.Accounts[0].AccessKeyID = "${TEST_AWS_ACCESS_KEY_ID}"
+	cfg.Accounts[0].SecretAccessKey = "${TEST_AWS_SECRET_ACCESS_KEY}"
+	cfg.Accounts[0].SessionToken = "${TEST_AWS_SESSION_TOKEN}"
+	require.NoError(t, mgr.SaveAWSConfig(cfg))
+
+	t.Setenv("TEST_AWS_ACCESS_KEY_ID", "key-from-env")
+	t.Setenv("TEST_AWS_SECRET_ACCESS_KEY", "secret-from-env")
+	t.Setenv("TEST_AWS_SESSION_TOKEN", "session-from-env")
+
+	keyID, secret, session, err := mgr.GetAWSCredentials("prod")
+	require.NoError(t, err)
+	assert.Equal(t, "key-from-env", keyID)
+	assert.Equal(t, "secret-from-env", secret)
+	assert.Equal(t, "session-from-env", session)
+}
+
+func TestGetAWSCredentials_NotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	_, _, _, err := mgr.GetAWSCredentials("nonexistent")
+	assert.Error(t, err)
+}
+
+func TestGetAzureCredentials_LiteralValues(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	cfg, err := mgr.LoadAzureConfig()
+	require.NoError(t, err)
+	cfg.Subscriptions[0].TenantID = "tenant-abc"
+	cfg.Subscriptions[0].ClientID = "client-def"
+	cfg.Subscriptions[0].ClientSecret = "secret-ghi"
+	require.NoError(t, mgr.SaveAzureConfig(cfg))
+
+	tenantID, clientID, clientSecret, err := mgr.GetAzureCredentials("prod")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-abc", tenantID)
+	assert.Equal(t, "client-def", clientID)
+	assert.Equal(t, "secret-ghi", clientSecret)
+}
+
+func TestGetAzureCredentials_EnvVarReferences(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	cfg, err := mgr.LoadAzureConfig()
+	require.NoError(t, err)
+	cfg.Subscriptions[0].TenantID = "${TEST_AZURE_TENANT_ID}"
+	cfg.Subscriptions[0].ClientID = "${TEST_AZURE_CLIENT_ID}"
+	cfg.Subscriptions[0].ClientSecret = "${TEST_AZURE_CLIENT_SECRET}"
+	require.NoError(t, mgr.SaveAzureConfig(cfg))
+
+	t.Setenv("TEST_AZURE_TENANT_ID", "tenant-from-env")
+	t.Setenv("TEST_AZURE_CLIENT_ID", "client-from-env")
+	t.Setenv("TEST_AZURE_CLIENT_SECRET", "secret-from-env")
+
+	tenantID, clientID, clientSecret, err := mgr.GetAzureCredentials("prod")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-from-env", tenantID)
+	assert.Equal(t, "client-from-env", clientID)
+	assert.Equal(t, "secret-from-env", clientSecret)
+}
+
+func TestGetAzureCredentials_NotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	_, _, _, err := mgr.GetAzureCredentials("nonexistent")
+	assert.Error(t, err)
+}
+
+// ========== Azure Resource Groups ==========
+
+func TestAzure_AddAndGetResourceGroup(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "my-rg", "eastus"))
+
+	groups, err := mgr.ListAzureResourceGroups("prod")
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "my-rg", groups[0].Name)
+	assert.Equal(t, "eastus", groups[0].Location)
+}
+
+func TestAzure_AddResourceGroup_UpdatesLocationOnDuplicate(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "my-rg", "eastus"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "my-rg", "westus"))
+
+	groups, err := mgr.ListAzureResourceGroups("prod")
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "westus", groups[0].Location)
+}
+
+func TestAzure_ListResourceGroups_MultipleGroups(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "rg-1", "eastus"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "rg-2", "westus"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "rg-3", "northeurope"))
+
+	groups, err := mgr.ListAzureResourceGroups("prod")
+	require.NoError(t, err)
+	assert.Len(t, groups, 3)
+}
+
+func TestAzure_RemoveResourceGroup(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "rg-1", "eastus"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "rg-2", "westus"))
+	require.NoError(t, mgr.RemoveAzureResourceGroup("prod", "rg-1"))
+
+	groups, err := mgr.ListAzureResourceGroups("prod")
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "rg-2", groups[0].Name)
+}
+
+func TestAzure_RemoveResourceGroup_NotFound(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-id-123"))
+	assert.Error(t, mgr.RemoveAzureResourceGroup("prod", "nonexistent"))
+}
+
+func TestAzure_AddResourceGroup_SubscriptionNotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	assert.Error(t, mgr.AddAzureResourceGroup("nonexistent", "my-rg", "eastus"))
+}
+
+func TestAzure_ListResourceGroups_SubscriptionNotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	_, err := mgr.ListAzureResourceGroups("nonexistent")
+	assert.Error(t, err)
+}
+
+func TestAzure_ResourceGroupsIsolatedBetweenSubscriptions(t *testing.T) {
+	mgr := newTestManager(t)
+
+	require.NoError(t, mgr.AddAzureSubscription("prod", "sub-prod"))
+	require.NoError(t, mgr.AddAzureSubscription("dev", "sub-dev"))
+	require.NoError(t, mgr.AddAzureResourceGroup("prod", "prod-rg", "eastus"))
+	require.NoError(t, mgr.AddAzureResourceGroup("dev", "dev-rg", "westus"))
+
+	prodGroups, err := mgr.ListAzureResourceGroups("prod")
+	require.NoError(t, err)
+	assert.Len(t, prodGroups, 1)
+	assert.Equal(t, "prod-rg", prodGroups[0].Name)
+
+	devGroups, err := mgr.ListAzureResourceGroups("dev")
+	require.NoError(t, err)
+	assert.Len(t, devGroups, 1)
+	assert.Equal(t, "dev-rg", devGroups[0].Name)
 }
 
 // ========== Config persistence ==========
