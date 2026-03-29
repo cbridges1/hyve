@@ -2,6 +2,7 @@ version: "3"
 
 vars:
   BINARY: hyve
+  EXT: '{{if eq OS "windows"}}.exe{{end}}'
   BUILD_FLAGS: ""
 
 tasks:
@@ -11,12 +12,16 @@ tasks:
 
   build:
     desc: Build the hyve binary
-    cmd: go build {{.BUILD_FLAGS}} -o {{.BINARY}} .
+    cmd: go build {{.BUILD_FLAGS}} -o {{.BINARY}}{{.EXT}} .
 
   run:
     desc: Build and run hyve (pass args with -- e.g. task run -- cluster list)
     deps: [build]
-    cmd: ./{{.BINARY}} {{.CLI_ARGS}}
+    cmds:
+      - cmd: .\{{.BINARY}}{{.EXT}} {{.CLI_ARGS}}
+        platforms: [windows]
+      - cmd: ./{{.BINARY}}{{.EXT}} {{.CLI_ARGS}}
+        platforms: [linux, darwin]
 
   dev:
     desc: Run with go run main.go
@@ -52,7 +57,11 @@ tasks:
 
   clean:
     desc: Remove built binary and report artifacts
-    cmd: rm -f {{.BINARY}} report.json coverage.out
+    cmds:
+      - cmd: del /f "{{.BINARY}}{{.EXT}}" report.json coverage.out 2>nul & exit /b 0
+        platforms: [windows]
+      - cmd: rm -f {{.BINARY}}{{.EXT}} report.json coverage.out
+        platforms: [linux, darwin]
 
   check:
     desc: Run vet and tests
