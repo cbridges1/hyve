@@ -531,6 +531,10 @@ func (e *Executor) loadClusterDefinition(clusterName string) (*types.ClusterDefi
 			return fmt.Errorf("failed to unmarshal cluster definition from %s: %w", path, err)
 		}
 
+		if cluster.Metadata.Region == "" && cluster.Spec.Region != "" {
+			cluster.Metadata.Region = cluster.Spec.Region
+		}
+
 		if cluster.Metadata.Name == clusterName {
 			clusterDef = &cluster
 			return filepath.SkipAll
