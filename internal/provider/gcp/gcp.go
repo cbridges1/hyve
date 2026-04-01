@@ -320,6 +320,10 @@ func (p *Provider) CreateCluster(ctx context.Context, config *ClusterConfig) (*C
 func (p *Provider) getDefaultZone(ctx context.Context) (string, error) {
 	fallback := p.region + "-a"
 
+	if p.computeService == nil {
+		return fallback, nil
+	}
+
 	resp, err := p.computeService.Zones.List(p.projectID).
 		Filter("name eq " + p.region + "-.*").
 		Context(ctx).

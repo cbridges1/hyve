@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -65,7 +65,7 @@ func newDB(configDir string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -220,7 +220,7 @@ func (d *DB) migrateFromRepositoriesDB() error {
 		return nil // No old database to migrate
 	}
 
-	oldDB, err := sql.Open("sqlite3", oldDBPath)
+	oldDB, err := sql.Open("sqlite", oldDBPath)
 	if err != nil {
 		return fmt.Errorf("failed to open old repositories database: %w", err)
 	}

@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,7 @@ import (
 func newTestProvider(projectID, region string) *Provider {
 	return &Provider{
 		containerService: nil,
+		computeService:   nil,
 		projectID:        projectID,
 		region:           region,
 	}
@@ -32,43 +34,33 @@ func TestRegion(t *testing.T) {
 
 // ── getDefaultZone ────────────────────────────────────────────────────────────
 
-func TestGetDefaultZone_KnownMappings(t *testing.T) {
-	cases := []struct {
-		region   string
-		wantZone string
-	}{
-		{"us-east1", "us-east1-b"},
-		{"us-east4", "us-east4-a"},
-		{"us-central1", "us-central1-a"},
-		{"us-west1", "us-west1-a"},
-		{"europe-west1", "europe-west1-b"},
-		{"asia-east1", "asia-east1-a"},
-		{"australia-southeast1", "australia-southeast1-a"},
-		{"southamerica-east1", "southamerica-east1-a"},
-	}
+// getDefaultZone queries the Compute API and falls back to "<region>-a" when
+// the API is unavailable (e.g. in tests with a nil compute service).
 
-	for _, tc := range cases {
-		t.Run(tc.region, func(t *testing.T) {
-			p := newTestProvider("proj", tc.region)
-			assert.Equal(t, tc.wantZone, p.getDefaultZone())
+func TestGetDefaultZone_FallbackWhenAPIUnavailable(t *testing.T) {
+	regions := []string{"us-central1", "us-east1", "europe-west1", "asia-east1", "custom-region1"}
+	ctx := context.Background()
+
+	for _, region := range regions {
+		t.Run(region, func(t *testing.T) {
+			p := newTestProvider("proj", region)
+			// nil computeService → API call fails → fallback to region+"-a"
+			zone, err := p.getDefaultZone(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, region+"-a", zone)
 		})
 	}
-}
-
-func TestGetDefaultZone_UnknownRegionFallback(t *testing.T) {
-	p := newTestProvider("proj", "custom-region1")
-	// Unknown regions fall back to "<region>-b"
-	assert.Equal(t, "custom-region1-b", p.getDefaultZone())
 }
 
 // ── clusterPath ───────────────────────────────────────────────────────────────
 
 func TestClusterPath(t *testing.T) {
+	ctx := context.Background()
 	p := newTestProvider("my-proj", "us-central1")
-	zone := p.getDefaultZone() // us-central1-a
-	got := p.clusterPath("my-cluster")
-	want := "projects/my-proj/locations/" + zone + "/clusters/my-cluster"
-	assert.Equal(t, want, got)
+	// nil computeService → fallback zone is "us-central1-a"
+	got, err := p.clusterPath(ctx, "my-cluster")
+	require.NoError(t, err)
+	assert.Equal(t, "projects/my-proj/locations/us-central1-a/clusters/my-cluster", got)
 }
 
 // ── clusterPathRegional ───────────────────────────────────────────────────────
