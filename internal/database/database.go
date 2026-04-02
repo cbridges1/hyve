@@ -145,7 +145,6 @@ func (d *DB) initialize() error {
 			name TEXT UNIQUE NOT NULL,
 			repo_url TEXT NOT NULL,
 			local_path TEXT NOT NULL,
-			username TEXT,
 			is_current BOOLEAN DEFAULT FALSE,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -226,24 +225,24 @@ func (d *DB) migrateFromRepositoriesDB() error {
 	}
 	defer oldDB.Close()
 
-	rows, err := oldDB.Query(`SELECT name, repo_url, local_path, username, is_current, created_at, updated_at FROM repositories`)
+	rows, err := oldDB.Query(`SELECT name, repo_url, local_path, is_current, created_at, updated_at FROM repositories`)
 	if err != nil {
 		return nil // Table might not exist
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var name, repoURL, localPath, username, createdAt, updatedAt string
+		var name, repoURL, localPath, createdAt, updatedAt string
 		var isCurrent bool
-		if err := rows.Scan(&name, &repoURL, &localPath, &username, &isCurrent, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&name, &repoURL, &localPath, &isCurrent, &createdAt, &updatedAt); err != nil {
 			continue
 		}
 		// Check if already exists
 		var count int
 		d.db.QueryRow(`SELECT COUNT(*) FROM repositories WHERE name = ?`, name).Scan(&count)
 		if count == 0 {
-			d.db.Exec(`INSERT INTO repositories (name, repo_url, local_path, username, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				name, repoURL, localPath, username, isCurrent, createdAt, updatedAt)
+			d.db.Exec(`INSERT INTO repositories (name, repo_url, local_path, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+				name, repoURL, localPath, isCurrent, createdAt, updatedAt)
 		}
 	}
 
