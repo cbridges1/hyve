@@ -103,7 +103,6 @@ func interactiveGitRepoAdd() error {
 	var (
 		name       string
 		repoURL    string
-		username   string
 		setCurrent bool
 	)
 
@@ -111,7 +110,6 @@ func interactiveGitRepoAdd() error {
 		huh.NewGroup(
 			huh.NewInput().Title("Repository alias").Placeholder("production").Validate(shared.RequireNotEmpty).Value(&name),
 			huh.NewInput().Title("Repository URL").Placeholder("https://github.com/org/hyve-state.git").Validate(shared.RequireNotEmpty).Value(&repoURL),
-			huh.NewInput().Title("Git username (optional)").Value(&username),
 			huh.NewConfirm().
 				Title("Set as current active repository?").
 				Affirmative("Yes").
@@ -123,7 +121,7 @@ func interactiveGitRepoAdd() error {
 		return err
 	}
 
-	addGitRepository(name, repoURL, username, setCurrent)
+	addGitRepository(name, repoURL, setCurrent)
 	return nil
 }
 

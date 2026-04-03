@@ -51,14 +51,13 @@ The repository name is used as a friendly identifier for switching between repos
 	Run: func(cmd *cobra.Command, args []string) {
 		repoName := args[0]
 		repoURL, _ := cmd.Flags().GetString("repo-url")
-		username, _ := cmd.Flags().GetString("username")
 		setCurrent, _ := cmd.Flags().GetBool("set-current")
 
 		if repoURL == "" {
 			log.Fatal("Repository URL is required. Use --repo-url flag.")
 		}
 
-		addGitRepository(repoName, repoURL, username, setCurrent)
+		addGitRepository(repoName, repoURL, setCurrent)
 	},
 }
 
@@ -208,7 +207,6 @@ This command:
 
 func init() {
 	gitAddCmd.Flags().StringP("repo-url", "r", "", "Git repository URL (required)")
-	gitAddCmd.Flags().StringP("username", "u", "", "Git username for authentication (stored in repository config)")
 	gitAddCmd.Flags().BoolP("set-current", "c", false, "Set this repository as current after adding")
 
 	gitSyncCmd.Flags().StringP("message", "m", "", "Commit message for local changes before pushing")
@@ -237,7 +235,7 @@ func init() {
 	Cmd.AddCommand(gitSyncCmd)
 }
 
-func addGitRepository(name, repoURL, username string, setCurrent bool) {
+func addGitRepository(name, repoURL string, setCurrent bool) {
 	repositoriesDir := filepath.Join(hyveHome(), "repositories")
 	localPath := filepath.Join(repositoriesDir, strings.ToLower(name))
 
@@ -253,7 +251,7 @@ func addGitRepository(name, repoURL, username string, setCurrent bool) {
 	}
 	defer repoMgr.Close()
 
-	repo, err := repoMgr.AddRepository(name, repoURL, localPath, username)
+	repo, err := repoMgr.AddRepository(name, repoURL, localPath)
 	if err != nil {
 		log.Fatalf("Failed to add repository: %v", err)
 	}
@@ -273,15 +271,13 @@ func addGitRepository(name, repoURL, username string, setCurrent bool) {
 	}
 
 	var authToken string
-	var authUsername string = username
+	var authUsername string
 
 	if credsMgr != nil {
 		if creds, err := credsMgr.GetCredentials(); err == nil && creds != nil {
 			if password, err := creds.GetPassword(); err == nil && password != "" {
 				authToken = password
-				if authUsername == "" {
-					authUsername = creds.Username
-				}
+				authUsername = creds.Username
 			}
 		}
 	}
@@ -306,9 +302,6 @@ func addGitRepository(name, repoURL, username string, setCurrent bool) {
 	log.Printf("Repository '%s' added successfully!", name)
 	log.Printf("Repository URL: %s", repoURL)
 	log.Printf("Local path: %s", localPath)
-	if username != "" {
-		log.Printf("Username: %s", username)
-	}
 	if credsMgr != nil {
 		if creds, _ := credsMgr.GetCredentials(); creds != nil {
 			log.Printf("Authentication: ✅ Global credentials configured")
@@ -355,9 +348,6 @@ func listGitRepositories() {
 		log.Printf("  %s%s", repo.Name, status)
 		log.Printf("    URL: %s", repo.RepoURL)
 		log.Printf("    Local: %s", repo.LocalPath)
-		if repo.Username != "" {
-			log.Printf("    User: %s", repo.Username)
-		}
 		log.Printf("    Added: %s", repo.CreatedAt.Format("2006-01-02 15:04"))
 		log.Println()
 	}
@@ -421,9 +411,6 @@ func showGitStatus() {
 	log.Printf("✅ Current repository: %s", currentRepo.Name)
 	log.Printf("Repository URL: %s", currentRepo.RepoURL)
 	log.Printf("Local path: %s", currentRepo.LocalPath)
-	if currentRepo.Username != "" {
-		log.Printf("Username: %s", currentRepo.Username)
-	}
 
 	credsMgr, err := credentials.NewManager()
 	var globalCreds *credentials.Credentials
@@ -444,14 +431,12 @@ func showGitStatus() {
 
 	log.Println("\nTesting connection...")
 	var authToken string
-	var authUsername = currentRepo.Username
+	var authUsername string
 
 	if globalCreds != nil {
 		if password, err := globalCreds.GetPassword(); err == nil && password != "" {
 			authToken = password
-			if authUsername == "" {
-				authUsername = globalCreds.Username
-			}
+			authUsername = globalCreds.Username
 		}
 	}
 
@@ -730,17 +715,13 @@ func switchGitBranch(branchName string, pull bool) {
 }
 
 func getGitAuth(repo *repository.Repository) (token, username string) {
-	username = repo.Username
-
 	credsMgr, err := credentials.NewManager()
 	if err == nil {
 		defer credsMgr.Close()
 		if creds, err := credsMgr.GetCredentials(); err == nil && creds != nil {
 			if password, err := creds.GetPassword(); err == nil && password != "" {
 				token = password
-				if username == "" {
-					username = creds.Username
-				}
+				username = creds.Username
 			}
 		}
 	}

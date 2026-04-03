@@ -50,20 +50,21 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		return nil
 	}
 
-	regionClusters := make(map[string][]types.ClusterDefinition)
-	for _, clusterDef := range clusterDefs {
-		region := clusterDef.Metadata.Region
-		regionClusters[region] = append(regionClusters[region], clusterDef)
+	if len(clusterDefs) > 0 {
+		log.Printf("═══════════════════════════════════════════")
+		log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
+		log.Printf("═══════════════════════════════════════════")
 	}
 
-	for region, clusters := range regionClusters {
-		if err := r.reconcileRegion(ctx, region, clusters); err != nil {
-			log.Printf("Failed to reconcile region %s: %v", region, err)
-		}
-	}
+	// Convergence loop: process one cluster at a time, syncing repo state between each
+	// reconciliation so concurrent pipeline runs are reflected before the next cluster is handled.
+	finalDefs := r.convergenceLoop(ctx, clusterDefs)
+
+	// Orphan cleanup using the final desired state after all reconciliations complete.
+	r.cleanupOrphansByRegion(ctx, finalDefs)
 
 	if strictDelete {
-		if len(clusterDefs) == 0 {
+		if len(finalDefs) == 0 {
 			log.Println("No cluster definitions found — strict-delete sweeping all cloud clusters...")
 		} else {
 			log.Println("strict-delete: sweeping all configured provider accounts for orphaned clusters...")
@@ -71,12 +72,13 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		r.strictDeleteSweep(ctx)
 	}
 
-	if len(clusterDefs) > 0 {
-		log.Println("Exporting cluster information...")
-		r.exportAllClusterInfo(ctx, clusterDefs)
+	if len(finalDefs) > 0 {
+		log.Printf("═══════════════════════════════════════════")
+		log.Printf("  Post-reconcile: exporting cluster info & syncing kubeconfigs")
+		log.Printf("═══════════════════════════════════════════")
+		r.exportAllClusterInfo(ctx, finalDefs)
 
-		log.Println("Syncing kubeconfigs...")
-		if err := r.syncKubeconfigs(ctx, clusterDefs); err != nil {
+		if err := r.syncKubeconfigs(ctx, finalDefs); err != nil {
 			log.Printf("Failed to sync kubeconfigs: %v", err)
 		}
 	}
@@ -84,43 +86,98 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 	return nil
 }
 
-// reconcileRegion reconciles clusters in a specific region
-func (r *Reconciler) reconcileRegion(ctx context.Context, region string, clusters []types.ClusterDefinition) error {
-	log.Printf("Processing region: %s", region)
+// convergenceLoop processes clusters one at a time, syncing the remote repo and reloading
+// cluster definitions between each reconciliation. This ensures that state changes committed
+// by concurrent pipeline runs are reflected before the next cluster is handled, avoiding
+// redundant work and converging to the true desired state faster.
+func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.ClusterDefinition) []types.ClusterDefinition {
+	processed := make(map[string]bool)
+	currentDefs := initialDefs
 
-	// Reconcile all desired clusters
-	for _, clusterDef := range clusters {
-		// Create provider with appropriate options for each cluster
-		prov, err := r.createProviderForCluster(clusterDef)
-		if err != nil {
-			log.Printf("Failed to create provider for cluster %s: %v", clusterDef.Metadata.Name, err)
-			continue
+	for {
+		// Find the next cluster that has not yet been processed in this run.
+		var next *types.ClusterDefinition
+		for i := range currentDefs {
+			if !processed[currentDefs[i].Metadata.Name] {
+				next = &currentDefs[i]
+				break
+			}
+		}
+		if next == nil {
+			break
 		}
 
-		clusterMgr := cluster.NewManager(prov)
+		clusterName := next.Metadata.Name
+		processed[clusterName] = true
 
-		err = r.reconcileCluster(ctx, clusterMgr, clusterDef)
+		providerName := next.Spec.Provider
+		if providerName == "" {
+			providerName = "civo"
+		}
+		log.Printf("───────────────────────────────────────────")
+		log.Printf("  [%s]  provider=%s  region=%s", clusterName, providerName, next.Metadata.Region)
+		log.Printf("───────────────────────────────────────────")
+
+		prov, err := r.createProviderForCluster(*next)
 		if err != nil {
-			log.Printf("Failed to reconcile cluster %s: %v", clusterDef.Metadata.Name, err)
+			log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
+		} else {
+			clusterMgr := cluster.NewManager(prov)
+			reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
+			if reconcileErr != nil {
+				log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
+			} else if next.Spec.Delete {
+				// onDestroy workflows ran and the cloud cluster was deleted — now
+				// remove the YAML marker and push so the repo reflects the final state.
+				if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
+					log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
+				} else {
+					commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
+					if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
+						log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
+					} else {
+						log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
+					}
+				}
+			}
+		}
+
+		// Pull latest remote changes so that clusters already reconciled by a
+		// concurrent pipeline run are visible in the next iteration.
+		if err := r.stateMgr.SyncWithRemote(ctx); err != nil {
+			log.Printf("Warning: failed to sync with remote after reconciling %s: %v", clusterName, err)
+		}
+
+		reloaded, err := r.stateMgr.LoadClusterDefinitions()
+		if err != nil {
+			log.Printf("Warning: failed to reload cluster definitions after reconciling %s: %v", clusterName, err)
+		} else {
+			currentDefs = reloaded
 		}
 	}
 
-	// For cleanup, use a default provider (assuming Civo for backward compatibility)
-	// TODO: This should be improved to handle multi-provider cleanup
-	if len(clusters) > 0 {
+	return currentDefs
+}
+
+// cleanupOrphansByRegion removes managed-prefix clusters that are no longer in the desired
+// state, grouped by region so each provider scope is cleaned up independently.
+func (r *Reconciler) cleanupOrphansByRegion(ctx context.Context, clusterDefs []types.ClusterDefinition) {
+	regionClusters := make(map[string][]types.ClusterDefinition)
+	for _, cd := range clusterDefs {
+		regionClusters[cd.Metadata.Region] = append(regionClusters[cd.Metadata.Region], cd)
+	}
+
+	for region, clusters := range regionClusters {
 		prov, err := r.createProviderForCluster(clusters[0])
 		if err != nil {
 			log.Printf("Failed to create provider for cleanup in region %s: %v", region, err)
-			return nil
+			continue
 		}
 		clusterMgr := cluster.NewManager(prov)
-		err = r.cleanupOrphanedResources(ctx, clusterMgr, clusters)
-		if err != nil {
+		if err := r.cleanupOrphanedResources(ctx, clusterMgr, clusters); err != nil {
 			log.Printf("Failed to cleanup orphaned resources in region %s: %v", region, err)
 		}
 	}
-
-	return nil
 }
 
 // createProviderForCluster creates a provider with credentials resolved from the provider
@@ -212,11 +269,54 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.M
 	case types.ActionDelete:
 		return r.deleteCluster(ctx, clusterMgr, clusterDef)
 	case types.ActionNone:
-		log.Printf("Cluster %s is up to date, no action needed", clusterDef.Metadata.Name)
+		log.Printf("[%s] Up to date — no action needed", clusterDef.Metadata.Name)
 		return nil
 	default:
-		log.Printf("Unknown action for cluster %s: %v", clusterDef.Metadata.Name, action)
+		log.Printf("[%s] Unknown action: %v", clusterDef.Metadata.Name, action)
 		return nil
+	}
+}
+
+// resolveAWSAliases fills in resolved ARN/ID fields on the cluster definition
+// from the alias names stored in the provider-config YAML, when the resolved
+// fields are not already present. This allows cluster YAMLs to use short alias
+// names (e.g. awsEksRole: my-role) without requiring the template command to
+// first resolve and write back the full ARNs.
+func (r *Reconciler) resolveAWSAliases(clusterDef *types.ClusterDefinition) {
+	if strings.ToLower(clusterDef.Spec.Provider) != "aws" {
+		return
+	}
+	accountName := clusterDef.Spec.AWSAccount
+	if accountName == "" {
+		return
+	}
+	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
+
+	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRole != "" {
+		if arn, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole); err == nil {
+			clusterDef.Spec.AWSEKSRoleARN = arn
+			log.Printf("[%s] Resolved EKS role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, arn)
+		} else {
+			log.Printf("[%s] Warning: could not resolve EKS role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, err)
+		}
+	}
+
+	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRole != "" {
+		if arn, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole); err == nil {
+			clusterDef.Spec.AWSNodeRoleARN = arn
+			log.Printf("[%s] Resolved node role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, arn)
+		} else {
+			log.Printf("[%s] Warning: could not resolve node role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, err)
+		}
+	}
+
+	if clusterDef.Spec.AWSVPCID == "" && clusterDef.Spec.AWSVPCName != "" {
+		if vpcID, err := pcMgr.GetAWSVPCID(accountName, clusterDef.Spec.AWSVPCName); err == nil {
+			clusterDef.Spec.AWSVPCID = vpcID
+			log.Printf("[%s] Resolved VPC '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, vpcID)
+		} else {
+			log.Printf("[%s] Warning: could not resolve VPC alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, err)
+		}
 	}
 }
 
@@ -228,13 +328,17 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 	}
 
 	if existingCluster != nil {
-		log.Printf("Cluster %s already exists with ID %s, updating status and continuing",
-			clusterDef.Metadata.Name, existingCluster.ID)
-		log.Printf("Cluster %s already exists and is in %s state", clusterDef.Metadata.Name, existingCluster.Status)
+		log.Printf("[%s] Already exists (ID: %s, status: %s) — skipping create",
+			clusterDef.Metadata.Name, existingCluster.ID, existingCluster.Status)
 		return nil
 	}
 
-	log.Printf("Creating cluster with definition: %+v", clusterDef)
+	// Resolve AWS alias names (role names, VPC names) to their ARNs/IDs from
+	// provider-configs before passing to the provider, so that cluster YAMLs
+	// do not need to have the full ARNs written into them by the template command.
+	r.resolveAWSAliases(&clusterDef)
+
+	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
 	createdCluster, err := clusterMgr.Create(ctx, clusterDef)
 	if err != nil {
 		return err
@@ -244,13 +348,12 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 	if err != nil {
 		return err
 	}
-	log.Println("Cluster is ready!")
 
-	log.Printf("Cluster %s created successfully!", clusterDef.Metadata.Name)
+	log.Printf("[%s] ✅ Cluster created successfully", clusterDef.Metadata.Name)
 
 	// Run onCreated workflows if defined
 	if len(clusterDef.Spec.Workflows.OnCreated) > 0 {
-		log.Printf("🔄 Running onCreated workflows for cluster %s...", clusterDef.Metadata.Name)
+		log.Printf("[%s] 🔄 Running onCreated workflows...", clusterDef.Metadata.Name)
 		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnCreated, clusterDef.Metadata.Name)
 	}
 
@@ -270,24 +373,24 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 	}
 
 	if existingCluster == nil {
-		log.Printf("Cluster %s not found, nothing to delete", clusterDef.Metadata.Name)
+		log.Printf("[%s] Not found in cloud — nothing to delete", clusterDef.Metadata.Name)
 		return nil
 	}
 
 	// Run onDestroy workflows before deletion if defined
 	if len(clusterDef.Spec.Workflows.OnDestroy) > 0 {
-		log.Printf("🔄 Running onDestroy workflows for cluster %s...", clusterDef.Metadata.Name)
+		log.Printf("[%s] 🔄 Running onDestroy workflows...", clusterDef.Metadata.Name)
 		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDestroy, clusterDef.Metadata.Name)
 	}
 
-	log.Printf("Deleting cluster %s with ID %s", clusterDef.Metadata.Name, existingCluster.ID)
+	log.Printf("[%s] Deleting cluster (ID: %s)...", clusterDef.Metadata.Name, existingCluster.ID)
 
 	err = clusterMgr.Delete(ctx, existingCluster.ID)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("Cluster %s deleted successfully!", clusterDef.Metadata.Name)
+	log.Printf("[%s] ✅ Cluster deleted successfully", clusterDef.Metadata.Name)
 	return nil
 }
 
@@ -449,29 +552,6 @@ func dedupRegions(regions []string) []string {
 	return out
 }
 
-// cleanupAllRegions handles managed-prefix cleanup when no clusters are defined
-func (r *Reconciler) cleanupAllRegions(ctx context.Context, clusterDefs []types.ClusterDefinition) {
-	// Create a default cluster definition for Civo cleanup
-	// TODO: This should be improved to handle multi-provider cleanup
-	defaultCluster := types.ClusterDefinition{
-		Metadata: types.ClusterMetadata{Region: "PHX1"},
-		Spec:     types.ClusterSpec{Provider: "civo"},
-	}
-
-	prov, err := r.createProviderForCluster(defaultCluster)
-	if err != nil {
-		log.Printf("Failed to create provider for cleanup: %v", err)
-		return
-	}
-
-	clusterMgr := cluster.NewManager(prov)
-
-	err = r.cleanupOrphanedResources(ctx, clusterMgr, clusterDefs)
-	if err != nil {
-		log.Printf("Failed to cleanup orphaned resources: %v", err)
-	}
-}
-
 // exportAllClusterInfo exports information for all active clusters
 func (r *Reconciler) exportAllClusterInfo(ctx context.Context, clusterDefs []types.ClusterDefinition) {
 	for _, clusterDef := range clusterDefs {
@@ -580,18 +660,18 @@ func (r *Reconciler) runWorkflows(ctx context.Context, workflowNames []string, c
 
 	// Run each workflow
 	for _, workflowName := range workflowNames {
-		log.Printf("▶️  Running workflow '%s' for cluster '%s'...", workflowName, clusterName)
+		log.Printf("[%s] ▶  Workflow '%s' starting...", clusterName, workflowName)
 
 		execution, err := executor.RunWorkflow(ctx, workflowName, clusterName)
 		if err != nil {
-			log.Printf("⚠️  Workflow '%s' failed: %v", workflowName, err)
+			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", clusterName, workflowName, err)
 			continue
 		}
 
 		if execution.Status == workflow.StatusCompleted {
-			log.Printf("✅ Workflow '%s' completed successfully", workflowName)
+			log.Printf("[%s] ✅ Workflow '%s' completed", clusterName, workflowName)
 		} else {
-			log.Printf("⚠️  Workflow '%s' finished with status: %s", workflowName, execution.Status)
+			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", clusterName, workflowName, execution.Status)
 		}
 	}
 }

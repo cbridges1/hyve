@@ -14,7 +14,6 @@ type Repository struct {
 	Name      string    `json:"name"`
 	RepoURL   string    `json:"repo_url"`
 	LocalPath string    `json:"local_path"`
-	Username  string    `json:"username"`
 	Token     string    `json:"-"` // Not serialized for security (legacy)
 	IsCurrent bool      `json:"is_current"`
 	CreatedAt time.Time `json:"created_at"`
@@ -55,7 +54,7 @@ func (m *Manager) Close() error {
 }
 
 // AddRepository adds a new repository configuration
-func (m *Manager) AddRepository(name, repoURL, localPath, username string) (*Repository, error) {
+func (m *Manager) AddRepository(name, repoURL, localPath string) (*Repository, error) {
 	// Check if repository with this name already exists
 	if exists, err := m.repositoryExists(name); err != nil {
 		return nil, err
@@ -77,11 +76,11 @@ func (m *Manager) AddRepository(name, repoURL, localPath, username string) (*Rep
 	}
 
 	insertSQL := `
-	INSERT INTO repositories (name, repo_url, local_path, username, is_current)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO repositories (name, repo_url, local_path, is_current)
+	VALUES (?, ?, ?, ?)
 	`
 
-	result, err := m.db.Conn().Exec(insertSQL, name, repoURL, localPath, username, isFirst)
+	result, err := m.db.Conn().Exec(insertSQL, name, repoURL, localPath, isFirst)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert repository: %w", err)
 	}
@@ -95,14 +94,14 @@ func (m *Manager) AddRepository(name, repoURL, localPath, username string) (*Rep
 }
 
 // UpdateRepository updates an existing repository configuration
-func (m *Manager) UpdateRepository(name, repoURL, localPath, username string) (*Repository, error) {
+func (m *Manager) UpdateRepository(name, repoURL, localPath string) (*Repository, error) {
 	updateSQL := `
 	UPDATE repositories
-	SET repo_url = ?, local_path = ?, username = ?, updated_at = CURRENT_TIMESTAMP
+	SET repo_url = ?, local_path = ?, updated_at = CURRENT_TIMESTAMP
 	WHERE name = ?
 	`
 
-	result, err := m.db.Conn().Exec(updateSQL, repoURL, localPath, username, name)
+	result, err := m.db.Conn().Exec(updateSQL, repoURL, localPath, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update repository: %w", err)
 	}
@@ -161,7 +160,7 @@ func (m *Manager) DeleteRepository(name string) error {
 // ListRepositories returns all repository configurations
 func (m *Manager) ListRepositories() ([]*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, username, is_current, created_at, updated_at
+	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
 	FROM repositories
 	ORDER BY is_current DESC, name ASC
 	`
@@ -178,7 +177,7 @@ func (m *Manager) ListRepositories() ([]*Repository, error) {
 		var createdAt, updatedAt string
 
 		err := rows.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath,
-			&repo.Username, &repo.IsCurrent, &createdAt, &updatedAt)
+			&repo.IsCurrent, &createdAt, &updatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan repository: %w", err)
 		}
@@ -200,7 +199,7 @@ func (m *Manager) ListRepositories() ([]*Repository, error) {
 // GetRepositoryByName returns a repository by name
 func (m *Manager) GetRepositoryByName(name string) (*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, username, is_current, created_at, updated_at
+	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
 	FROM repositories
 	WHERE name = ?
 	`
@@ -209,7 +208,7 @@ func (m *Manager) GetRepositoryByName(name string) (*Repository, error) {
 	var createdAt, updatedAt string
 
 	err := m.db.Conn().QueryRow(selectSQL, name).Scan(&repo.ID, &repo.Name, &repo.RepoURL,
-		&repo.LocalPath, &repo.Username, &repo.IsCurrent, &createdAt, &updatedAt)
+		&repo.LocalPath, &repo.IsCurrent, &createdAt, &updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("repository '%s' not found", name)
@@ -231,7 +230,7 @@ func (m *Manager) GetRepositoryByName(name string) (*Repository, error) {
 // GetRepositoryByID returns a repository by ID
 func (m *Manager) GetRepositoryByID(id int) (*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, username, is_current, created_at, updated_at
+	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
 	FROM repositories
 	WHERE id = ?
 	`
@@ -240,7 +239,7 @@ func (m *Manager) GetRepositoryByID(id int) (*Repository, error) {
 	var createdAt, updatedAt string
 
 	err := m.db.Conn().QueryRow(selectSQL, id).Scan(&repo.ID, &repo.Name, &repo.RepoURL,
-		&repo.LocalPath, &repo.Username, &repo.IsCurrent, &createdAt, &updatedAt)
+		&repo.LocalPath, &repo.IsCurrent, &createdAt, &updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("repository with ID %d not found", id)
@@ -262,7 +261,7 @@ func (m *Manager) GetRepositoryByID(id int) (*Repository, error) {
 // GetCurrentRepository returns the currently selected repository
 func (m *Manager) GetCurrentRepository() (*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, username, is_current, created_at, updated_at
+	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
 	FROM repositories
 	WHERE is_current = TRUE
 	LIMIT 1
@@ -272,7 +271,7 @@ func (m *Manager) GetCurrentRepository() (*Repository, error) {
 	var createdAt, updatedAt string
 
 	err := m.db.Conn().QueryRow(selectSQL).Scan(&repo.ID, &repo.Name, &repo.RepoURL,
-		&repo.LocalPath, &repo.Username, &repo.IsCurrent, &createdAt, &updatedAt)
+		&repo.LocalPath, &repo.IsCurrent, &createdAt, &updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("no current repository configured")

@@ -2,8 +2,11 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -95,9 +98,12 @@ type ClusterInfo struct {
 
 // Provider implements the provider interfaces for AWS
 type Provider struct {
-	eksClient *eks.Client
-	ec2Client *ec2.Client
-	region    string
+	eksClient       *eks.Client
+	ec2Client       *ec2.Client
+	region          string
+	accessKeyID     string
+	secretAccessKey string
+	sessionToken    string
 }
 
 // validAWSRegions contains common AWS regions for validation
@@ -169,9 +175,12 @@ func NewProvider(accessKeyID, secretAccessKey, sessionToken, region string) (*Pr
 	ec2Client := ec2.NewFromConfig(cfg)
 
 	return &Provider{
-		eksClient: eksClient,
-		ec2Client: ec2Client,
-		region:    region,
+		eksClient:       eksClient,
+		ec2Client:       ec2Client,
+		region:          region,
+		accessKeyID:     accessKeyID,
+		secretAccessKey: secretAccessKey,
+		sessionToken:    sessionToken,
 	}, nil
 }
 
@@ -321,6 +330,11 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 		ResourcesVpcConfig: &ekstypes.VpcConfigRequest{
 			SubnetIds:        subnetIDs,
 			SecurityGroupIds: []string{securityGroupID},
+		},
+		// API_AND_CONFIG_MAP enables both EKS access entries (for programmatic
+		// access grants via hyve use) and the legacy aws-auth ConfigMap.
+		AccessConfig: &ekstypes.CreateAccessConfigRequest{
+			AuthenticationMode: ekstypes.AuthenticationModeApiAndConfigMap,
 		},
 		Tags: map[string]string{
 			"CreatedBy": "hyve",
@@ -1304,10 +1318,25 @@ func (p *Provider) GetClusterInfo(ctx context.Context, name string) (*ClusterInf
 		endpoint = *cluster.Endpoint
 	}
 
-	// Generate kubeconfig for EKS cluster
+	// Generate kubeconfig for EKS cluster.
+	// When no static credentials are stored on the provider (local use), delegate to the
+	// AWS CLI's `eks update-kubeconfig` so the kubeconfig reflects the user's current AWS
+	// identity (default credential chain, named profile, assumed role, etc.).
+	// When static credentials ARE present (CI/CD), fall back to the manual generator which
+	// embeds them in the exec plugin env block so the kubeconfig is self-contained.
 	kubeconfig := ""
 	if cluster.CertificateAuthority != nil && cluster.CertificateAuthority.Data != nil {
-		kubeconfig = p.generateEKSKubeconfig(name, endpoint, *cluster.CertificateAuthority.Data)
+		if p.accessKeyID == "" {
+			// Local mode: use the AWS CLI to produce a standard kubeconfig.
+			if kc, err := p.kubeconfigFromCLI(name); err == nil {
+				kubeconfig = kc
+			} else {
+				log.Printf("⚠️  aws eks update-kubeconfig failed (%v); falling back to built-in generator", err)
+				kubeconfig = p.generateEKSKubeconfig(name, endpoint, *cluster.CertificateAuthority.Data)
+			}
+		} else {
+			kubeconfig = p.generateEKSKubeconfig(name, endpoint, *cluster.CertificateAuthority.Data)
+		}
 	}
 
 	// Fetch node groups
@@ -1360,9 +1389,61 @@ func (p *Provider) GetClusterInfo(ctx context.Context, name string) (*ClusterInf
 	}, nil
 }
 
-// generateEKSKubeconfig generates a kubeconfig for an EKS cluster
+// kubeconfigFromCLI invokes `aws eks update-kubeconfig` to produce a standard kubeconfig for
+// the given cluster using whatever AWS credentials are active in the current environment
+// (default credential chain, named profile, assumed role, etc.). The context name is set
+// to the plain cluster name via --alias so it matches Hyve's naming convention.
+func (p *Provider) kubeconfigFromCLI(clusterName string) (string, error) {
+	// Ensure the AWS CLI is available.
+	if _, err := exec.LookPath("aws"); err != nil {
+		return "", fmt.Errorf("aws CLI not found in PATH")
+	}
+
+	tmpFile, err := os.CreateTemp("", "hyve-kubeconfig-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	cmd := exec.Command("aws", "eks", "update-kubeconfig",
+		"--name", clusterName,
+		"--region", p.region,
+		"--kubeconfig", tmpPath,
+		"--alias", clusterName,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("aws eks update-kubeconfig: %w — %s", err, strings.TrimSpace(string(out)))
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read generated kubeconfig: %w", err)
+	}
+	return string(data), nil
+}
+
+// generateEKSKubeconfig generates a kubeconfig for an EKS cluster.
+// When static credentials are stored on the provider, they are embedded in the exec
+// plugin's env: section so the kubeconfig works regardless of ambient AWS credentials
+// (e.g., when running as root or in a CI/CD environment without ~/.aws configured).
 func (p *Provider) generateEKSKubeconfig(clusterName, endpoint, caData string) string {
-	// Generate kubeconfig that uses aws eks get-token for authentication
+	envSection := ""
+	if p.accessKeyID != "" && p.secretAccessKey != "" {
+		envSection = fmt.Sprintf(`      env:
+        - name: AWS_ACCESS_KEY_ID
+          value: %s
+        - name: AWS_SECRET_ACCESS_KEY
+          value: %s
+`, p.accessKeyID, p.secretAccessKey)
+		if p.sessionToken != "" {
+			envSection += fmt.Sprintf(`        - name: AWS_SESSION_TOKEN
+          value: %s
+`, p.sessionToken)
+		}
+	}
+
 	kubeconfig := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
@@ -1389,9 +1470,106 @@ users:
         - %s
         - --region
         - %s
-`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, p.region)
+%s`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, p.region, envSection)
 
 	return kubeconfig
+}
+
+// EnsureAccessEntry creates an EKS access entry for principalARN (if it does not already
+// exist) and associates AmazonEKSClusterAdminPolicy with cluster scope. This lets a local
+// IAM user/role access the cluster's Kubernetes API without modifying the aws-auth ConfigMap.
+//
+// If the cluster was created with CONFIG_MAP-only authentication mode, it is first upgraded
+// to API_AND_CONFIG_MAP so that access entries are supported. Existing aws-auth ConfigMap
+// entries continue to work after the upgrade.
+func (p *Provider) EnsureAccessEntry(ctx context.Context, clusterName, principalARN string) error {
+	// Attempt to create the access entry. If the cluster is in CONFIG_MAP-only mode,
+	// upgrade it to API_AND_CONFIG_MAP first and retry.
+	if err := p.tryCreateAccessEntry(ctx, clusterName, principalARN); err != nil {
+		var invalidReq *ekstypes.InvalidRequestException
+		if errors.As(err, &invalidReq) {
+			log.Printf("Upgrading cluster %s authentication mode to API_AND_CONFIG_MAP...", clusterName)
+			if upgradeErr := p.upgradeAuthMode(ctx, clusterName); upgradeErr != nil {
+				return fmt.Errorf("failed to upgrade cluster authentication mode: %w", upgradeErr)
+			}
+			// Retry now that the mode supports access entries.
+			if retryErr := p.tryCreateAccessEntry(ctx, clusterName, principalARN); retryErr != nil {
+				return retryErr
+			}
+		} else {
+			return err
+		}
+	}
+
+	_, err := p.eksClient.AssociateAccessPolicy(ctx, &eks.AssociateAccessPolicyInput{
+		ClusterName:  &clusterName,
+		PrincipalArn: &principalARN,
+		PolicyArn:    aws.String("arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"),
+		AccessScope: &ekstypes.AccessScope{
+			Type: ekstypes.AccessScopeTypeCluster,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to associate access policy for %s: %w", principalARN, err)
+	}
+
+	return nil
+}
+
+func (p *Provider) tryCreateAccessEntry(ctx context.Context, clusterName, principalARN string) error {
+	_, err := p.eksClient.CreateAccessEntry(ctx, &eks.CreateAccessEntryInput{
+		ClusterName:  &clusterName,
+		PrincipalArn: &principalARN,
+	})
+	if err != nil {
+		var resourceInUse *ekstypes.ResourceInUseException
+		if errors.As(err, &resourceInUse) {
+			return nil // already exists, proceed to AssociateAccessPolicy
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *Provider) upgradeAuthMode(ctx context.Context, clusterName string) error {
+	_, err := p.eksClient.UpdateClusterConfig(ctx, &eks.UpdateClusterConfigInput{
+		Name: &clusterName,
+		AccessConfig: &ekstypes.UpdateAccessConfigRequest{
+			AuthenticationMode: ekstypes.AuthenticationModeApiAndConfigMap,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// The cluster may still report ACTIVE for a moment before transitioning to
+	// UPDATING. Wait briefly then poll on both the cluster status AND the
+	// authentication mode — the update is only complete when the cluster is
+	// back to ACTIVE *and* the mode reflects the new value.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+	}
+
+	for {
+		desc, err := p.eksClient.DescribeCluster(ctx, &eks.DescribeClusterInput{Name: &clusterName})
+		if err != nil {
+			return fmt.Errorf("failed to poll cluster status: %w", err)
+		}
+		cluster := desc.Cluster
+		if cluster.Status == ekstypes.ClusterStatusActive &&
+			cluster.AccessConfig != nil &&
+			cluster.AccessConfig.AuthenticationMode == ekstypes.AuthenticationModeApiAndConfigMap {
+			return nil
+		}
+		log.Printf("Waiting for cluster %s auth mode update (status: %s)...", clusterName, cluster.Status)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
 }
 
 // ListFirewalls lists all firewalls (security groups in AWS)

@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -190,12 +192,12 @@ func getKubeconfig(cmd *cobra.Command, clusterName string) {
 		if err != nil {
 			log.Fatalf("Failed to get user home directory: %v", err)
 		}
-		kubeDir := fmt.Sprintf("%s/.kube", homeDir)
+		kubeDir := filepath.Join(homeDir, ".kube")
 		if err := os.MkdirAll(kubeDir, 0755); err != nil {
 			log.Fatalf("Failed to create .kube directory: %v", err)
 		}
 
-		outPath := fmt.Sprintf("%s/config-%s", kubeDir, clusterName)
+		outPath := filepath.Join(kubeDir, "config-"+clusterName)
 		err = os.WriteFile(outPath, []byte(cfg), 0600)
 		if err != nil {
 			log.Fatalf("Failed to write kubeconfig to %s: %v", outPath, err)
@@ -240,6 +242,21 @@ func UseKubeconfig(clusterName string) {
 					log.Printf("⚠️  Could not create provider for sync: %v", err)
 					break
 				}
+
+				// For AWS clusters: grant the local IAM identity access to the cluster's
+				// Kubernetes API via EKS access entries so that the kubeconfig generated
+				// with local credentials works without needing to be the cluster creator.
+				if granter, ok := prov.(provider.AccessEntryGranter); ok {
+					if localARN := localAWSCallerARN(); localARN != "" {
+						log.Printf("🔑 Granting local identity %s access to cluster %s...", localARN, clusterName)
+						if err := granter.EnsureAccessEntry(ctx, clusterName, localARN); err != nil {
+							log.Printf("⚠️  Could not grant EKS access entry (cluster may use aws-auth ConfigMap instead): %v", err)
+						} else {
+							log.Printf("✅ Local identity granted cluster admin access")
+						}
+					}
+				}
+
 				syncer := kubeconfig.NewSyncer(kubeconfigMgr, prov)
 				if err := syncer.SyncSingleKubeconfig(ctx, clusterName); err != nil {
 					log.Printf("⚠️  Kubeconfig sync failed, using cached credentials: %v", err)
@@ -268,12 +285,12 @@ func UseKubeconfig(clusterName string) {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	kubeDir := fmt.Sprintf("%s/.kube", homeDir)
+	kubeDir := filepath.Join(homeDir, ".kube")
 	if err := os.MkdirAll(kubeDir, 0755); err != nil {
 		log.Fatalf("Failed to create .kube directory: %v", err)
 	}
 
-	kubeConfigPath := fmt.Sprintf("%s/config", kubeDir)
+	kubeConfigPath := filepath.Join(kubeDir, "config")
 
 	log.Printf("🔀 Merging cluster '%s' into %s", clusterName, kubeConfigPath)
 
@@ -287,7 +304,7 @@ func UseKubeconfig(clusterName string) {
 			log.Fatalf("Failed to write kubeconfig: %v", err)
 		}
 	} else {
-		backupPath := fmt.Sprintf("%s.backup", kubeConfigPath)
+		backupPath := kubeConfigPath + ".backup"
 		if err := os.WriteFile(backupPath, []byte(existingConfig), 0600); err != nil {
 			log.Printf("⚠️  Warning: Failed to create backup at %s", backupPath)
 		} else {
@@ -346,12 +363,12 @@ func mergeKubeconfig(clusterName string) {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	kubeDir := fmt.Sprintf("%s/.kube", homeDir)
+	kubeDir := filepath.Join(homeDir, ".kube")
 	if err := os.MkdirAll(kubeDir, 0755); err != nil {
 		log.Fatalf("Failed to create .kube directory: %v", err)
 	}
 
-	kubeConfigPath := fmt.Sprintf("%s/config", kubeDir)
+	kubeConfigPath := filepath.Join(kubeDir, "config")
 
 	log.Printf("🔀 Merging cluster '%s' into %s", clusterName, kubeConfigPath)
 
@@ -365,7 +382,7 @@ func mergeKubeconfig(clusterName string) {
 			log.Fatalf("Failed to write kubeconfig: %v", err)
 		}
 	} else {
-		backupPath := fmt.Sprintf("%s.backup", kubeConfigPath)
+		backupPath := kubeConfigPath + ".backup"
 		if err := os.WriteFile(backupPath, []byte(existingConfig), 0600); err != nil {
 			log.Printf("⚠️  Warning: Failed to create backup at %s", backupPath)
 		} else {
@@ -411,4 +428,16 @@ func migrateKubeconfigEncryption(oldHostname string) error {
 	log.Println()
 
 	return nil
+}
+
+// localAWSCallerARN returns the ARN of the currently configured AWS identity by running
+// `aws sts get-caller-identity`. Returns an empty string if the AWS CLI is unavailable or
+// no credentials are configured.
+func localAWSCallerARN() string {
+	cmd := exec.Command("aws", "sts", "get-caller-identity", "--query", "Arn", "--output", "text")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

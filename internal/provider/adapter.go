@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+
 	"github.com/cbridges1/hyve/internal/provider/aws"
 	"github.com/cbridges1/hyve/internal/provider/azure"
 	"github.com/cbridges1/hyve/internal/provider/civo"
@@ -41,4 +43,13 @@ func (a *ProviderAdapter) Region() string {
 		return a.gcp.Region()
 	}
 	return a.civo.Region()
+}
+
+// EnsureAccessEntry implements AccessEntryGranter for AWS clusters.
+// Returns nil for non-AWS providers (no-op).
+func (a *ProviderAdapter) EnsureAccessEntry(ctx context.Context, clusterName, principalARN string) error {
+	if a.aws != nil {
+		return a.aws.EnsureAccessEntry(ctx, clusterName, principalARN)
+	}
+	return nil
 }

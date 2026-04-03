@@ -123,6 +123,9 @@ func (f *Factory) CreateProviderWithOptions(providerName string, opts ProviderOp
 		if projectID == "" {
 			projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
 		}
+		if opts.Region == "" {
+			return nil, fmt.Errorf("GCP cluster requires a region (e.g. us-central1). Set 'region' in the cluster definition")
+		}
 		gcpProvider, err := gcp.NewProvider(opts.GCPCredentialsJSON, projectID, opts.Region)
 		if err != nil {
 			return nil, err

@@ -20,30 +20,29 @@ func setupTestDB(t *testing.T) *database.DB {
 func TestAddRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	assert.Equal(t, "test-repo", repo.Name)
 	assert.Equal(t, "https://github.com/test/test.git", repo.RepoURL)
 	assert.Equal(t, "/tmp/test", repo.LocalPath)
-	assert.Equal(t, "testuser", repo.Username)
 	assert.True(t, repo.IsCurrent, "First repository should be set as current")
 }
 
 func TestAddDuplicateRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
-	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test2.git", "/tmp/test2", "testuser2")
+	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test2.git", "/tmp/test2")
 	assert.Error(t, err)
 }
 
 func TestGetRepositoryByName(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	repo, err := mgr.GetRepositoryByName("test-repo")
@@ -61,21 +60,20 @@ func TestGetRepositoryByNameNotFound(t *testing.T) {
 func TestUpdateRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
-	updated, err := mgr.UpdateRepository("test-repo", "https://github.com/test/updated.git", "/tmp/updated", "updateduser")
+	updated, err := mgr.UpdateRepository("test-repo", "https://github.com/test/updated.git", "/tmp/updated")
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://github.com/test/updated.git", updated.RepoURL)
 	assert.Equal(t, "/tmp/updated", updated.LocalPath)
-	assert.Equal(t, "updateduser", updated.Username)
 }
 
 func TestDeleteRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	err = mgr.DeleteRepository("test-repo")
@@ -88,9 +86,9 @@ func TestDeleteRepository(t *testing.T) {
 func TestListRepositories(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1", "user1")
+	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1")
 	require.NoError(t, err)
-	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2", "user2")
+	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2")
 	require.NoError(t, err)
 
 	repos, err := mgr.ListRepositories()
@@ -101,9 +99,9 @@ func TestListRepositories(t *testing.T) {
 func TestSetCurrentRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1", "user1")
+	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1")
 	require.NoError(t, err)
-	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2", "user2")
+	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2")
 	require.NoError(t, err)
 
 	err = mgr.SetCurrentRepository("repo2")
@@ -117,7 +115,7 @@ func TestSetCurrentRepository(t *testing.T) {
 func TestGetCurrentRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	current, err := mgr.GetCurrentRepository()
@@ -139,7 +137,7 @@ func TestHasRepositories(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, has)
 
-	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	has, err = mgr.HasRepositories()
@@ -150,9 +148,9 @@ func TestHasRepositories(t *testing.T) {
 func TestDeleteCurrentRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1", "user1")
+	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1")
 	require.NoError(t, err)
-	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2", "user2")
+	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2")
 	require.NoError(t, err)
 
 	// repo1 should be current (first added)
@@ -168,7 +166,7 @@ func TestDeleteCurrentRepository(t *testing.T) {
 func TestGetRepositoryByID(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	retrieved, err := mgr.GetRepositoryByID(repo.ID)
@@ -179,7 +177,7 @@ func TestGetRepositoryByID(t *testing.T) {
 func TestRepositoryTimestamps(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 
 	assert.False(t, repo.CreatedAt.IsZero(), "Expected CreatedAt to be set")
@@ -193,7 +191,7 @@ func TestDatabasePersistence(t *testing.T) {
 	require.NoError(t, err, "Failed to create first database")
 
 	mgr1 := NewManagerWithDB(db1)
-	_, err = mgr1.AddRepository("persistent-repo", "https://github.com/test/test.git", "/tmp/test", "testuser")
+	_, err = mgr1.AddRepository("persistent-repo", "https://github.com/test/test.git", "/tmp/test")
 	require.NoError(t, err)
 	db1.Close()
 

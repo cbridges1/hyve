@@ -37,11 +37,17 @@ type WorkflowsSpec struct {
 // ClusterSpec represents the desired cluster configuration
 type ClusterSpec struct {
 	Provider    string        `yaml:"provider"`
+	Region      string        `yaml:"region,omitempty"`
 	Nodes       []string      `yaml:"nodes,omitempty"`
 	NodeGroups  []NodeGroup   `yaml:"nodeGroups,omitempty"`
 	ClusterType string        `yaml:"clusterType"`
 	Ingress     IngressSpec   `yaml:"ingress"`
 	Workflows   WorkflowsSpec `yaml:"workflows,omitempty"`
+	// Delete marks this cluster for deletion. When true, the reconciler runs any
+	// onDestroy workflows, deletes the cluster from the cloud provider, and removes
+	// this YAML file from the repository. Do not delete the file directly if you
+	// need onDestroy workflows to run — set this flag instead.
+	Delete bool `yaml:"delete,omitempty"`
 
 	// GCP-specific configuration
 	GCPProject   string `yaml:"gcpProject,omitempty"`   // GCP project name alias

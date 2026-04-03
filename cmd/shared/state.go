@@ -69,15 +69,13 @@ func CreateStateManager(ctx gocontext.Context) (*state.Manager, string) {
 
 	credsMgr, err := credentials.NewManager()
 	var authToken string
-	var authUsername = currentRepo.Username
+	var authUsername string
 	if err == nil {
 		defer credsMgr.Close()
 		if creds, _ := credsMgr.GetCredentials(); creds != nil {
 			if password, err := creds.GetPassword(); err == nil && password != "" {
 				authToken = password
-				if authUsername == "" {
-					authUsername = creds.Username
-				}
+				authUsername = creds.Username
 			}
 		}
 	}
@@ -179,17 +177,13 @@ func ParseNodeGroup(s string) (types.NodeGroup, error) {
 
 // GetAuthCredentials retrieves authentication credentials for git operations
 func GetAuthCredentials(currentRepo *repository.Repository) (username, token string) {
-	username = currentRepo.Username
-
 	credsMgr, err := credentials.NewManager()
 	if err == nil {
 		defer credsMgr.Close()
 		if creds, _ := credsMgr.GetCredentials(); creds != nil {
 			if password, err := creds.GetPassword(); err == nil && password != "" {
 				token = password
-				if username == "" {
-					username = creds.Username
-				}
+				username = creds.Username
 			}
 		}
 	}
@@ -331,16 +325,14 @@ func CreateStateManagerFromRepository(ctx gocontext.Context) (*state.Manager, st
 
 	credsMgr, err := credentials.NewManager()
 	var authToken string
-	var authUsername = currentRepo.Username
+	var authUsername string
 
 	if err == nil {
 		defer credsMgr.Close()
 		if creds, _ := credsMgr.GetCredentials(); creds != nil {
 			if password, err := creds.GetPassword(); err == nil && password != "" {
 				authToken = password
-				if authUsername == "" {
-					authUsername = creds.Username
-				}
+				authUsername = creds.Username
 			}
 		}
 	}

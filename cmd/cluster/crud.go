@@ -14,7 +14,6 @@ import (
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/config"
 	"github.com/cbridges1/hyve/internal/providerconfig"
-	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -250,18 +249,8 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 }
 
 func listClusters() {
-	listRepoMgr, err := repository.NewManager()
-	if err != nil {
-		log.Fatalf("Failed to create repository manager: %v", err)
-	}
-	defer listRepoMgr.Close()
-
-	listCurrentRepo, err := listRepoMgr.GetCurrentRepository()
-	if err != nil {
-		log.Fatalf("No Git repository configured. Add one with: hyve git add <name> --repo-url <url>")
-	}
-
-	clustersDir := filepath.Join(listCurrentRepo.LocalPath, "clusters")
+	ctx := gocontext.Background()
+	_, clustersDir := shared.CreateStateManager(ctx)
 
 	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
 		log.Println("❌ No clusters found")
@@ -298,7 +287,7 @@ func listClusters() {
 			continue
 		}
 
-		if clusterDef.Kind == "Cluster" {
+		if clusterDef.Kind == "Cluster" && !clusterDef.Spec.Delete {
 			clusters = append(clusters, clusterDef)
 		}
 	}

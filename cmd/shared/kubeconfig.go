@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cbridges1/hyve/internal/config"
@@ -89,6 +90,22 @@ func CreateProviderForCluster(factory *provider.Factory, clusterDef types.Cluste
 		}
 	}
 
+	// Handle AWS-specific configuration
+	if providerName == "aws" && clusterDef.Spec.AWSAccount != "" {
+		repoMgr, err := repository.NewManager()
+		if err == nil {
+			defer repoMgr.Close()
+			if currentRepo, err := repoMgr.GetCurrentRepository(); err == nil {
+				pcMgr := providerconfig.NewManager(currentRepo.LocalPath)
+				if keyID, secret, session, err := pcMgr.GetAWSCredentials(clusterDef.Spec.AWSAccount); err == nil {
+					opts.AccessKeyID = keyID
+					opts.SecretAccessKey = secret
+					opts.SessionToken = session
+				}
+			}
+		}
+	}
+
 	// Handle Azure-specific configuration
 	if providerName == "azure" {
 		opts.AzureResourceGroup = clusterDef.Spec.AzureResourceGroup
@@ -118,7 +135,7 @@ func RemoveKubeconfig(clusterName string) {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	kubeConfigPath := fmt.Sprintf("%s/.kube/config", homeDir)
+	kubeConfigPath := filepath.Join(homeDir, ".kube", "config")
 
 	if _, err := os.Stat(kubeConfigPath); os.IsNotExist(err) {
 		log.Printf("❌ No kubeconfig found at %s", kubeConfigPath)
@@ -130,7 +147,7 @@ func RemoveKubeconfig(clusterName string) {
 		log.Fatalf("Failed to read kubeconfig: %v", err)
 	}
 
-	backupPath := fmt.Sprintf("%s.backup", kubeConfigPath)
+	backupPath := kubeConfigPath + ".backup"
 	if err := os.WriteFile(backupPath, existingData, 0600); err != nil {
 		log.Printf("⚠️  Warning: Failed to create backup at %s", backupPath)
 	} else {
