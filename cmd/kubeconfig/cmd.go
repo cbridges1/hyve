@@ -3,6 +3,7 @@ package kubeconfig
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -78,6 +79,49 @@ var kubeconfigRemoveCmd = &cobra.Command{
 	},
 }
 
+var kubeconfigAddExternalCmd = &cobra.Command{
+	Use:   "add-external [cluster-name]",
+	Short: "Import an external cluster's kubeconfig into Hyve",
+	Long: `Import a kubeconfig for a cluster that was not created by Hyve.
+
+The kubeconfig is stored encrypted in the local Hyve database so that
+'hyve use' and workflow execution work the same as for Hyve-managed clusters.
+No Git repository needs to be configured.
+
+Read from a file:
+  hyve kubeconfig add-external my-cluster --file ~/.kube/my-cluster.yaml
+
+Read from stdin:
+  cat ~/.kube/my-cluster.yaml | hyve kubeconfig add-external my-cluster`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		clusterName := args[0]
+		filePath, _ := cmd.Flags().GetString("file")
+		return addExternalKubeconfig(clusterName, filePath)
+	},
+}
+
+var kubeconfigListExternalCmd = &cobra.Command{
+	Use:   "list-external",
+	Short: "List all locally-imported external cluster kubeconfigs",
+	Run: func(cmd *cobra.Command, args []string) {
+		listExternalKubeconfigs()
+	},
+}
+
+var kubeconfigRemoveExternalCmd = &cobra.Command{
+	Use:   "remove-external [cluster-name]",
+	Short: "Remove a locally-imported external cluster kubeconfig",
+	Long: `Remove the kubeconfig for an external cluster from Hyve's local store.
+
+This does not remove it from ~/.kube/config. Use 'hyve kubeconfig remove' for that.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		clusterName := args[0]
+		removeExternalKubeconfig(clusterName)
+	},
+}
+
 var kubeconfigMigrateCmd = &cobra.Command{
 	Use:   "migrate [old-hostname]",
 	Short: "Migrate kubeconfig encryption to new portable format",
@@ -101,12 +145,17 @@ func init() {
 	kubeconfigGetCmd.Flags().BoolP("merge", "m", false, "Merge kubeconfig into ~/.kube/config")
 	kubeconfigGetCmd.Flags().StringP("output", "o", "", "Output file path for kubeconfig")
 
+	kubeconfigAddExternalCmd.Flags().StringP("file", "f", "", "Path to kubeconfig file (reads from stdin if omitted)")
+
 	kubeconfigCmd.AddCommand(kubeconfigSyncCmd)
 	kubeconfigCmd.AddCommand(kubeconfigGetCmd)
 	kubeconfigCmd.AddCommand(kubeconfigUseCmd)
 	kubeconfigCmd.AddCommand(kubeconfigMergeCmd)
 	kubeconfigCmd.AddCommand(kubeconfigRemoveCmd)
 	kubeconfigCmd.AddCommand(kubeconfigMigrateCmd)
+	kubeconfigCmd.AddCommand(kubeconfigAddExternalCmd)
+	kubeconfigCmd.AddCommand(kubeconfigListExternalCmd)
+	kubeconfigCmd.AddCommand(kubeconfigRemoveExternalCmd)
 }
 
 func syncKubeconfigs() {
@@ -157,20 +206,11 @@ func syncKubeconfigs() {
 }
 
 func getKubeconfig(cmd *cobra.Command, clusterName string) {
-	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
+	kubeconfigMgr, kc, err := resolveKubeconfig(clusterName)
 	if err != nil {
-		log.Fatalf("Failed to create kubeconfig manager: %v", err)
+		log.Fatalf("%v", err)
 	}
 	defer kubeconfigMgr.Close()
-
-	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
-	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
-	}
-
-	if kc == nil {
-		log.Fatalf("Kubeconfig not found for cluster %s. Run 'hyve kubeconfig sync' first.", clusterName)
-	}
 
 	cfg, err := kc.GetConfig()
 	if err != nil {
@@ -219,61 +259,56 @@ func getKubeconfig(cmd *cobra.Command, clusterName string) {
 func UseKubeconfig(clusterName string) {
 	ctx := context.Background()
 
-	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
-	if err != nil {
-		log.Fatalf("Failed to create kubeconfig manager: %v", err)
-	}
-	defer kubeconfigMgr.Close()
+	// Attempt a fresh sync for Hyve-managed clusters. External (local-only) clusters
+	// skip this step — their kubeconfig was imported via 'add-external' and is used as-is.
+	if syncMgr, _, err := shared.CreateKubeconfigManager(); err == nil {
+		defer syncMgr.Close()
 
-	// Attempt a fresh sync so the stored kubeconfig is up-to-date (e.g. renewed
-	// tokens for GCP). If this fails for any reason we fall through and use
-	// whatever is already in the database.
-	stateMgr, _ := shared.CreateStateManager(ctx)
-	if stateMgr != nil {
-		clusterDefs, err := stateMgr.LoadClusterDefinitions()
-		if err == nil {
-			providerFactory := provider.NewFactory()
-			for _, cd := range clusterDefs {
-				if cd.Metadata.Name != clusterName {
-					continue
-				}
-				prov, err := shared.CreateProviderForCluster(providerFactory, cd)
-				if err != nil {
-					log.Printf("⚠️  Could not create provider for sync: %v", err)
-					break
-				}
+		stateMgr, _ := shared.CreateStateManager(ctx)
+		if stateMgr != nil {
+			clusterDefs, err := stateMgr.LoadClusterDefinitions()
+			if err == nil {
+				providerFactory := provider.NewFactory()
+				for _, cd := range clusterDefs {
+					if cd.Metadata.Name != clusterName {
+						continue
+					}
+					prov, err := shared.CreateProviderForCluster(providerFactory, cd)
+					if err != nil {
+						log.Printf("⚠️  Could not create provider for sync: %v", err)
+						break
+					}
 
-				// For AWS clusters: grant the local IAM identity access to the cluster's
-				// Kubernetes API via EKS access entries so that the kubeconfig generated
-				// with local credentials works without needing to be the cluster creator.
-				if granter, ok := prov.(provider.AccessEntryGranter); ok {
-					if localARN := localAWSCallerARN(); localARN != "" {
-						log.Printf("🔑 Granting local identity %s access to cluster %s...", localARN, clusterName)
-						if err := granter.EnsureAccessEntry(ctx, clusterName, localARN); err != nil {
-							log.Printf("⚠️  Could not grant EKS access entry (cluster may use aws-auth ConfigMap instead): %v", err)
-						} else {
-							log.Printf("✅ Local identity granted cluster admin access")
+					// For AWS clusters: grant the local IAM identity access to the cluster's
+					// Kubernetes API via EKS access entries so that the kubeconfig generated
+					// with local credentials works without needing to be the cluster creator.
+					if granter, ok := prov.(provider.AccessEntryGranter); ok {
+						if localARN := localAWSCallerARN(); localARN != "" {
+							log.Printf("🔑 Granting local identity %s access to cluster %s...", localARN, clusterName)
+							if err := granter.EnsureAccessEntry(ctx, clusterName, localARN); err != nil {
+								log.Printf("⚠️  Could not grant EKS access entry (cluster may use aws-auth ConfigMap instead): %v", err)
+							} else {
+								log.Printf("✅ Local identity granted cluster admin access")
+							}
 						}
 					}
-				}
 
-				syncer := kubeconfig.NewSyncer(kubeconfigMgr, prov)
-				if err := syncer.SyncSingleKubeconfig(ctx, clusterName); err != nil {
-					log.Printf("⚠️  Kubeconfig sync failed, using cached credentials: %v", err)
+					syncer := kubeconfig.NewSyncer(syncMgr, prov)
+					if err := syncer.SyncSingleKubeconfig(ctx, clusterName); err != nil {
+						log.Printf("⚠️  Kubeconfig sync failed, using cached credentials: %v", err)
+					}
+					break
 				}
-				break
 			}
 		}
 	}
 
-	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
+	// Resolve from repo store or local external store.
+	kubeconfigMgr, kc, err := resolveKubeconfig(clusterName)
 	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
+		log.Fatalf("%v", err)
 	}
-
-	if kc == nil {
-		log.Fatalf("Kubeconfig not found for cluster %s. Run 'hyve kubeconfig sync' first.", clusterName)
-	}
+	defer kubeconfigMgr.Close()
 
 	cfg, err := kc.GetConfig()
 	if err != nil {
@@ -338,20 +373,11 @@ func UseKubeconfig(clusterName string) {
 }
 
 func mergeKubeconfig(clusterName string) {
-	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
+	kubeconfigMgr, kc, err := resolveKubeconfig(clusterName)
 	if err != nil {
-		log.Fatalf("Failed to create kubeconfig manager: %v", err)
+		log.Fatalf("%v", err)
 	}
 	defer kubeconfigMgr.Close()
-
-	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
-	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
-	}
-
-	if kc == nil {
-		log.Fatalf("Kubeconfig not found for cluster %s. Run 'hyve kubeconfig sync' first.", clusterName)
-	}
 
 	cfg, err := kc.GetConfig()
 	if err != nil {
@@ -404,6 +430,116 @@ func mergeKubeconfig(clusterName string) {
 	log.Println("💡 Next steps:")
 	log.Printf("   kubectl config use-context %s", clusterName)
 	log.Println("   kubectl get nodes")
+}
+
+// resolveKubeconfig looks up a stored kubeconfig for clusterName, checking the
+// current repository's store first and then falling back to the local external
+// store. The returned manager must be closed by the caller.
+func resolveKubeconfig(clusterName string) (*kubeconfig.Manager, *kubeconfig.Kubeconfig, error) {
+	// Try the repository-scoped store first.
+	if mgr, _, err := shared.CreateKubeconfigManager(); err == nil {
+		if kc, err := mgr.GetKubeconfig(clusterName); err == nil && kc != nil {
+			return mgr, kc, nil
+		}
+		mgr.Close()
+	}
+
+	// Fall back to the local external store.
+	localMgr, err := shared.CreateLocalKubeconfigManager()
+	if err != nil {
+		return nil, nil, fmt.Errorf("kubeconfig not found for cluster '%s'. "+
+			"Run 'hyve kubeconfig sync' for Hyve-managed clusters, or "+
+			"'hyve kubeconfig add-external %s --file <path>' for external clusters", clusterName, clusterName)
+	}
+	kc, err := localMgr.GetKubeconfig(clusterName)
+	if err != nil || kc == nil {
+		localMgr.Close()
+		return nil, nil, fmt.Errorf("kubeconfig not found for cluster '%s'. "+
+			"Run 'hyve kubeconfig sync' for Hyve-managed clusters, or "+
+			"'hyve kubeconfig add-external %s --file <path>' for external clusters", clusterName, clusterName)
+	}
+	return localMgr, kc, nil
+}
+
+// ── External kubeconfig management ───────────────────────────────────────────
+
+func addExternalKubeconfig(clusterName, filePath string) error {
+	var content []byte
+	var err error
+
+	if filePath != "" {
+		content, err = os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read kubeconfig file: %w", err)
+		}
+	} else {
+		// Check whether stdin has data (piped input).
+		stat, _ := os.Stdin.Stat()
+		if (stat.Mode() & os.ModeCharDevice) != 0 {
+			return fmt.Errorf("no kubeconfig source provided — use --file <path> or pipe kubeconfig via stdin")
+		}
+		content, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("failed to read kubeconfig from stdin: %w", err)
+		}
+	}
+
+	if len(content) == 0 {
+		return fmt.Errorf("kubeconfig is empty")
+	}
+
+	localMgr, err := shared.CreateLocalKubeconfigManager()
+	if err != nil {
+		return fmt.Errorf("failed to create local kubeconfig store: %w", err)
+	}
+	defer localMgr.Close()
+
+	if _, err := localMgr.StoreKubeconfig(clusterName, string(content)); err != nil {
+		return fmt.Errorf("failed to store kubeconfig: %w", err)
+	}
+
+	log.Printf("✅ External kubeconfig stored for cluster '%s'", clusterName)
+	log.Printf("💡 Use it with: hyve use %s", clusterName)
+	return nil
+}
+
+func listExternalKubeconfigs() {
+	localMgr, err := shared.CreateLocalKubeconfigManager()
+	if err != nil {
+		log.Fatalf("Failed to open local kubeconfig store: %v", err)
+	}
+	defer localMgr.Close()
+
+	kcs, err := localMgr.ListKubeconfigs()
+	if err != nil {
+		log.Fatalf("Failed to list external kubeconfigs: %v", err)
+	}
+
+	if len(kcs) == 0 {
+		log.Println("No external kubeconfigs stored.")
+		log.Println("💡 Import one with: hyve kubeconfig add-external <name> --file <path>")
+		return
+	}
+
+	log.Printf("🖥️  External kubeconfigs (%d):\n", len(kcs))
+	for _, kc := range kcs {
+		log.Printf("  %s  (added: %s)", kc.ClusterName, kc.CreatedAt.Format("2006-01-02 15:04"))
+	}
+}
+
+func removeExternalKubeconfig(clusterName string) {
+	localMgr, err := shared.CreateLocalKubeconfigManager()
+	if err != nil {
+		log.Fatalf("Failed to open local kubeconfig store: %v", err)
+	}
+	defer localMgr.Close()
+
+	if err := localMgr.DeleteKubeconfig(clusterName); err != nil {
+		log.Fatalf("Failed to remove external kubeconfig: %v", err)
+	}
+
+	log.Printf("✅ Removed external kubeconfig for cluster '%s'", clusterName)
+	log.Printf("💡 Context may still be present in ~/.kube/config — remove it with: hyve kubeconfig remove %s", clusterName)
 }
 
 func migrateKubeconfigEncryption(oldHostname string) error {

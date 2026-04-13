@@ -41,6 +41,16 @@ type Manager struct {
 	repositoryName string
 }
 
+// LocalRepoName is the sentinel repository name used to store kubeconfigs for
+// clusters that are not managed by Hyve (imported via "hyve kubeconfig add-external").
+const LocalRepoName = "_local"
+
+// NewLocalManager creates a kubeconfig manager for locally-imported external
+// clusters. No Git repository needs to be configured to use this manager.
+func NewLocalManager() (*Manager, error) {
+	return NewManager(LocalRepoName)
+}
+
 // NewManager creates a new kubeconfig manager for a specific repository
 func NewManager(repositoryName string) (*Manager, error) {
 	db, err := database.GetDB()

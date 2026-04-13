@@ -182,6 +182,18 @@ func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string,
 		return "", fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 
+	// If not found in the repo-scoped store, fall back to the local external
+	// store populated by 'hyve kubeconfig add-external'.
+	if kc == nil {
+		if localMgr, localErr := kubeconfig.NewLocalManager(); localErr == nil {
+			defer localMgr.Close()
+			if localKC, localErr := localMgr.GetKubeconfig(cluster); localErr == nil && localKC != nil {
+				kc = localKC
+				log.Printf("Using locally-imported kubeconfig for external cluster '%s'", cluster)
+			}
+		}
+	}
+
 	var kubeconfigData string
 
 	if kc == nil {
