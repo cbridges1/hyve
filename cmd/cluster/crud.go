@@ -17,7 +17,7 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
-func addClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string, onCreated, onDestroy []string) {
+func addClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string, onCreated, onDestroy []string, pause bool, expiresAt string) {
 	ctx := gocontext.Background()
 	stateMgr, stateDir := shared.CreateStateManager(ctx)
 
@@ -115,6 +115,8 @@ func addClusterFromCLI(clusterName, region, providerName string, nodes []string,
 			AWSNodeRoleARN:    awsNodeRoleARN,
 			AzureSubscription: subscriptionName,
 			CivoOrganization:  orgName,
+			Pause:             pause,
+			ExpiresAt:         expiresAt,
 			Workflows: types.WorkflowsSpec{
 				OnCreated: onCreated,
 				OnDestroy: onDestroy,
@@ -219,6 +221,20 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 		}
 		clusterDef.Spec.NodeGroups = nodeGroups
 	}
+	if cmd.Flags().Changed("pause") {
+		clusterDef.Spec.Pause = true
+	}
+	if cmd.Flags().Changed("unpause") {
+		clusterDef.Spec.Pause = false
+	}
+	if cmd.Flags().Changed("expires-at") {
+		val, _ := cmd.Flags().GetString("expires-at")
+		if strings.ToLower(val) == "none" {
+			clusterDef.Spec.ExpiresAt = ""
+		} else {
+			clusterDef.Spec.ExpiresAt = val
+		}
+	}
 
 	updatedData, err := yaml.Marshal(&clusterDef)
 	if err != nil {
@@ -235,6 +251,12 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 	log.Printf("  Provider: %s", clusterDef.Spec.Provider)
 	log.Printf("  Nodes: %v", clusterDef.Spec.Nodes)
 	log.Printf("  Cluster Type: %s", clusterDef.Spec.ClusterType)
+	if clusterDef.Spec.Pause {
+		log.Printf("  Pause: true (reconciliation skipped)")
+	}
+	if clusterDef.Spec.ExpiresAt != "" {
+		log.Printf("  Expires At: %s", clusterDef.Spec.ExpiresAt)
+	}
 
 	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Modify cluster %s", clusterName))
 
@@ -301,7 +323,11 @@ func listClusters() {
 	log.Printf("📦 Clusters (%d):\n", len(clusters))
 
 	for _, cluster := range clusters {
-		log.Printf("  %s", cluster.Metadata.Name)
+		nameLabel := cluster.Metadata.Name
+		if cluster.Spec.Pause {
+			nameLabel += " [paused]"
+		}
+		log.Printf("  %s", nameLabel)
 		log.Printf("    Provider: %s", cluster.Spec.Provider)
 		log.Printf("    Region: %s", cluster.Metadata.Region)
 		if len(cluster.Spec.NodeGroups) > 0 {
@@ -314,6 +340,9 @@ func listClusters() {
 		}
 		if cluster.Spec.Ingress.Enabled {
 			log.Printf("    Ingress: enabled")
+		}
+		if cluster.Spec.ExpiresAt != "" {
+			log.Printf("    Expires At: %s", cluster.Spec.ExpiresAt)
 		}
 		log.Println()
 	}

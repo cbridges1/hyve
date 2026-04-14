@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/cbridges1/hyve/internal/cluster"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
@@ -118,25 +119,44 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		log.Printf("  [%s]  provider=%s  region=%s", clusterName, providerName, next.Metadata.Region)
 		log.Printf("───────────────────────────────────────────")
 
-		prov, err := r.createProviderForCluster(*next)
-		if err != nil {
-			log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
+		if next.Spec.Pause {
+			log.Printf("[%s] Paused — skipping reconciliation", clusterName)
 		} else {
-			clusterMgr := cluster.NewManager(prov)
-			reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
-			if reconcileErr != nil {
-				log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
-			} else if next.Spec.Delete {
-				// onDestroy workflows ran and the cloud cluster was deleted — now
-				// remove the YAML marker and push so the repo reflects the final state.
-				if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
-					log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
+			// Check whether the cluster has passed its expiry time. Treat it
+			// identically to delete: true so that onDestroy workflows run and the
+			// YAML file is cleaned up automatically.
+			if next.Spec.ExpiresAt != "" {
+				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
+					if time.Now().After(t) {
+						log.Printf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion",
+							clusterName, next.Spec.ExpiresAt)
+						next.Spec.Delete = true
+					}
 				} else {
-					commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
-					if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
-						log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
+					log.Printf("[%s] Warning: invalid expiresAt value '%s': %v", clusterName, next.Spec.ExpiresAt, err)
+				}
+			}
+
+			prov, err := r.createProviderForCluster(*next)
+			if err != nil {
+				log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
+			} else {
+				clusterMgr := cluster.NewManager(prov)
+				reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
+				if reconcileErr != nil {
+					log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
+				} else if next.Spec.Delete {
+					// onDestroy workflows ran and the cloud cluster was deleted — now
+					// remove the YAML marker and push so the repo reflects the final state.
+					if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
+						log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
 					} else {
-						log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
+						commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
+						if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
+							log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
+						} else {
+							log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
+						}
 					}
 				}
 			}

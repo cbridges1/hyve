@@ -89,6 +89,8 @@ func interactiveClusterAdd() error {
 		nodeRoleName     string
 		onCreatedNames   []string
 		onDestroyNames   []string
+		pause            bool
+		expiresAt        string
 	)
 
 	err := shared.NewForm(
@@ -195,6 +197,25 @@ func interactiveClusterAdd() error {
 		}
 	}
 
+	// Lifecycle options — pause and expiry
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Pause reconciliation on create?").
+				Description("The cluster definition will be saved but the reconciler will skip it until unpaused.").
+				Affirmative("Yes — pause").
+				Negative("No — reconcile normally").
+				Value(&pause),
+			huh.NewInput().
+				Title("Expiry timestamp (optional — leave blank for no expiry)").
+				Description("RFC 3339 format, e.g. 2026-05-01T00:00:00Z. When this time passes the cluster will be auto-deleted.").
+				Placeholder("2026-05-01T00:00:00Z").
+				Value(&expiresAt),
+		),
+	).Run(); err != nil {
+		return err
+	}
+
 	nodes := splitAndTrim(nodesStr, ",")
 	var confirm bool
 	summary := fmt.Sprintf("Add cluster '%s' on %s in %s with nodes: %s", clusterName, providerName, region, strings.Join(nodes, ", "))
@@ -214,7 +235,7 @@ func interactiveClusterAdd() error {
 		return nil
 	}
 
-	addClusterFromCLI(clusterName, region, providerName, nodes, []types.NodeGroup{}, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, onCreatedNames, onDestroyNames)
+	addClusterFromCLI(clusterName, region, providerName, nodes, []types.NodeGroup{}, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, onCreatedNames, onDestroyNames, pause, expiresAt)
 	return nil
 }
 
@@ -225,12 +246,16 @@ func interactiveClusterModify() error {
 	}
 
 	var region, nodesStr, providerForModify string
+	var currentPause bool
+	var currentExpiresAt string
 	sm, _ := shared.CreateStateManager(gocontext.Background())
 	if sm != nil {
 		defs, _ := sm.LoadClusterDefinitions()
 		for _, d := range defs {
 			if d.Metadata.Name == clusterName {
 				providerForModify = d.Spec.Provider
+				currentPause = d.Spec.Pause
+				currentExpiresAt = d.Spec.ExpiresAt
 				break
 			}
 		}
@@ -244,14 +269,57 @@ func interactiveClusterModify() error {
 		return err
 	}
 
+	// Pause / expiry options
+	pauseAction := "keep"
+	expiresAtInput := currentExpiresAt
+	pauseOpts := []huh.Option[string]{
+		huh.NewOption("Keep current ("+pauseStatus(currentPause)+")", "keep"),
+	}
+	if currentPause {
+		pauseOpts = append(pauseOpts, huh.NewOption("Unpause — resume reconciliation", "unpause"))
+	} else {
+		pauseOpts = append(pauseOpts, huh.NewOption("Pause — skip reconciliation", "pause"))
+	}
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reconciliation pause").
+				Options(pauseOpts...).
+				Value(&pauseAction),
+			huh.NewInput().
+				Title("Expiry timestamp (leave blank or type 'none' to clear)").
+				Description("RFC 3339, e.g. 2026-05-01T00:00:00Z").
+				Placeholder("2026-05-01T00:00:00Z").
+				Value(&expiresAtInput),
+		),
+	).Run(); err != nil {
+		return err
+	}
+
 	modifyCmd.Flags().Set("region", region)
 	if nodesStr != "" {
 		for _, n := range splitAndTrim(nodesStr, ",") {
 			modifyCmd.Flags().Set("nodes", n)
 		}
 	}
+	switch pauseAction {
+	case "pause":
+		modifyCmd.Flags().Set("pause", "true")
+	case "unpause":
+		modifyCmd.Flags().Set("unpause", "true")
+	}
+	if expiresAtInput != currentExpiresAt {
+		modifyCmd.Flags().Set("expires-at", expiresAtInput)
+	}
 	modifyClusterFromCLI(modifyCmd, clusterName)
 	return nil
+}
+
+func pauseStatus(paused bool) string {
+	if paused {
+		return "paused"
+	}
+	return "active"
 }
 
 func interactiveClusterDelete() error {

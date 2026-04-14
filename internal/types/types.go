@@ -49,6 +49,17 @@ type ClusterSpec struct {
 	// need onDestroy workflows to run — set this flag instead.
 	Delete bool `yaml:"delete,omitempty"`
 
+	// Pause skips reconciliation for this cluster while keeping its definition in
+	// the repository. The cluster continues to run in the cloud; Hyve simply does
+	// not compare or modify it until pause is removed.
+	Pause bool `yaml:"pause,omitempty"`
+
+	// ExpiresAt is an optional RFC 3339 timestamp (e.g. "2026-05-01T00:00:00Z").
+	// When the current time is past this value the reconciler treats the cluster as
+	// if delete: true is set — running onDestroy workflows, deleting from the cloud
+	// provider, and removing the YAML file.
+	ExpiresAt string `yaml:"expiresAt,omitempty"`
+
 	// GCP-specific configuration
 	GCPProject   string `yaml:"gcpProject,omitempty"`   // GCP project name alias
 	GCPProjectID string `yaml:"gcpProjectId,omitempty"` // GCP project ID (resolved from alias)

@@ -101,7 +101,10 @@ Use --account-name, --project-name, --subscription-name, or --org-name to specif
 		onCreated, _ := cmd.Flags().GetStringArray("on-created")
 		onDestroy, _ := cmd.Flags().GetStringArray("on-destroy")
 
-		addClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, onCreated, onDestroy)
+		pause, _ := cmd.Flags().GetBool("pause")
+		expiresAt, _ := cmd.Flags().GetString("expires-at")
+
+		addClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, onCreated, onDestroy, pause, expiresAt)
 	},
 }
 
@@ -246,12 +249,17 @@ func init() {
 
 	addCmd.Flags().StringArray("on-created", nil, "Workflow name(s) to run after cluster creation (repeatable)")
 	addCmd.Flags().StringArray("on-destroy", nil, "Workflow name(s) to run before cluster destruction (repeatable)")
+	addCmd.Flags().Bool("pause", false, "Create the cluster in a paused state (reconciliation will be skipped)")
+	addCmd.Flags().String("expires-at", "", "RFC 3339 timestamp after which the cluster is auto-deleted (e.g. 2026-05-01T00:00:00Z)")
 
 	modifyCmd.Flags().StringP("region", "r", "", "Region for the cluster")
 	modifyCmd.Flags().StringP("provider", "p", "", "Cloud provider")
 	modifyCmd.Flags().StringSliceP("nodes", "n", nil, "Node sizes")
 	modifyCmd.Flags().StringP("cluster-type", "t", "", "Type of Kubernetes cluster")
 	modifyCmd.Flags().StringArrayP("node-group", "g", nil, `Node group spec (repeatable): name=workers,type=t3.medium,count=3[,min=1,max=5,disk=50,spot=true,mode=System]`)
+	modifyCmd.Flags().Bool("pause", false, "Pause reconciliation for this cluster")
+	modifyCmd.Flags().Bool("unpause", false, "Resume reconciliation for this cluster (clear the pause flag)")
+	modifyCmd.Flags().String("expires-at", "", "RFC 3339 expiry timestamp (e.g. 2026-05-01T00:00:00Z); set to 'none' to clear")
 
 	deleteCmd.Flags().Bool("force-cloud", false, "With --force: delete from cloud even if no configuration file exists")
 	deleteCmd.Flags().Bool("force", false, "Delete cluster from cloud immediately before removing configuration (bypasses CI/CD)")
