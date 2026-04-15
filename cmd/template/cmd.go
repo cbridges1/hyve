@@ -115,7 +115,8 @@ This command:
 		subscription, _ := cmd.Flags().GetString("subscription")
 		resourceGroup, _ := cmd.Flags().GetString("resource-group")
 		project, _ := cmd.Flags().GetString("project")
-		executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
+		expiresAt, _ := cmd.Flags().GetString("expires-at")
+		executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt)
 	},
 }
 
@@ -159,6 +160,7 @@ func init() {
 	templateExecuteCmd.Flags().StringP("subscription", "s", "", "Azure subscription alias (required for azure provider)")
 	templateExecuteCmd.Flags().StringP("resource-group", "g", "", "Azure resource group name (required for azure provider)")
 	templateExecuteCmd.Flags().StringP("project", "p", "", "GCP project alias (required for gcp provider)")
+	templateExecuteCmd.Flags().String("expires-at", "", "RFC 3339 timestamp after which the cluster is auto-deleted (e.g. 2026-05-01T00:00:00Z)")
 
 	templateCmd.AddCommand(templateCreateCmd)
 	templateCmd.AddCommand(templateListCmd)
@@ -401,7 +403,7 @@ func showTemplate(name string) {
 	log.Println(string(data))
 }
 
-func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string) {
+func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt string) {
 	ctx := context.Background()
 	shared.SyncRepoState(ctx)
 
@@ -468,6 +470,10 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 			"project", "Use 'hyve config gcp project list' to see available projects.")
 	}
 
+	if expiresAt != "" {
+		clusterDef.Spec.ExpiresAt = expiresAt
+	}
+
 	log.Println("📋 Template Details:")
 	log.Printf("  Provider: %s", tmpl.Spec.Provider)
 	log.Printf("  Region: %s", tmpl.Spec.Region)
@@ -478,6 +484,9 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 	}
 	if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
 		log.Printf("  OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
+	}
+	if clusterDef.Spec.ExpiresAt != "" {
+		log.Printf("  Expires At: %s", clusterDef.Spec.ExpiresAt)
 	}
 
 	// Resolve AWS aliases to actual IDs/ARNs before writing the cluster definition.

@@ -226,7 +226,7 @@ func interactiveTemplateExecute() error {
 
 	// Load the template to determine which account fields are already set.
 	// For any missing required fields, prompt the user.
-	var org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string
+	var org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt string
 
 	if tmpl := shared.FetchTemplate(templateName); tmpl != nil {
 		switch strings.ToLower(tmpl.Spec.Provider) {
@@ -288,7 +288,20 @@ func interactiveTemplateExecute() error {
 		}
 	}
 
-	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
+	// Optional expiry
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Expiry timestamp (optional — leave blank for no expiry)").
+				Description("RFC 3339 format, e.g. 2026-05-01T00:00:00Z. When this time passes the cluster will be auto-deleted.").
+				Placeholder("2026-05-01T00:00:00Z").
+				Value(&expiresAt),
+		),
+	).Run(); err != nil {
+		return err
+	}
+
+	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt)
 	return nil
 }
 
