@@ -197,7 +197,7 @@ func interactiveClusterAdd() error {
 		}
 	}
 
-	// Lifecycle options — pause and expiry
+	// Pause option
 	if err := shared.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -206,14 +206,16 @@ func interactiveClusterAdd() error {
 				Affirmative("Yes — pause").
 				Negative("No — reconcile normally").
 				Value(&pause),
-			huh.NewInput().
-				Title("Expiry timestamp (optional — leave blank for no expiry)").
-				Description("RFC 3339 format, e.g. 2026-05-01T00:00:00Z. When this time passes the cluster will be auto-deleted.").
-				Placeholder("2026-05-01T00:00:00Z").
-				Value(&expiresAt),
 		),
 	).Run(); err != nil {
 		return err
+	}
+
+	// Expiry option
+	var expiryErr error
+	expiresAt, expiryErr = shared.PromptExpiresAt("")
+	if expiryErr != nil {
+		return expiryErr
 	}
 
 	nodes := splitAndTrim(nodesStr, ",")
@@ -269,9 +271,8 @@ func interactiveClusterModify() error {
 		return err
 	}
 
-	// Pause / expiry options
+	// Pause option
 	pauseAction := "keep"
-	expiresAtInput := currentExpiresAt
 	pauseOpts := []huh.Option[string]{
 		huh.NewOption("Keep current ("+pauseStatus(currentPause)+")", "keep"),
 	}
@@ -286,14 +287,15 @@ func interactiveClusterModify() error {
 				Title("Reconciliation pause").
 				Options(pauseOpts...).
 				Value(&pauseAction),
-			huh.NewInput().
-				Title("Expiry timestamp (leave blank or type 'none' to clear)").
-				Description("RFC 3339, e.g. 2026-05-01T00:00:00Z").
-				Placeholder("2026-05-01T00:00:00Z").
-				Value(&expiresAtInput),
 		),
 	).Run(); err != nil {
 		return err
+	}
+
+	// Expiry option
+	expiresAtInput, expiryErr := shared.PromptExpiresAt(currentExpiresAt)
+	if expiryErr != nil {
+		return expiryErr
 	}
 
 	modifyCmd.Flags().Set("region", region)

@@ -2,7 +2,10 @@ package shared
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -224,6 +227,141 @@ func SelectFromGroupsOptional(title string, groups []OptionGroup, value *string)
 		*value = selection
 		return nil
 	}
+}
+
+// PromptExpiresAt presents a user-friendly date picker and returns an RFC 3339
+// expiry timestamp, or "" if the user chooses no expiry. Pass the existing
+// value (or "") to pre-populate the custom path.
+func PromptExpiresAt(current string) (string, error) {
+	const (
+		keyNone   = "__none__"
+		key1w     = "__1w__"
+		key2w     = "__2w__"
+		key1m     = "__1m__"
+		key3m     = "__3m__"
+		key6m     = "__6m__"
+		key1y     = "__1y__"
+		keyCustom = "__custom__"
+	)
+
+	now := time.Now().UTC()
+	dateFmt := "Jan 2, 2006"
+
+	presets := []huh.Option[string]{
+		huh.NewOption("No expiry", keyNone),
+		huh.NewOption(fmt.Sprintf("1 week   · %s", now.AddDate(0, 0, 7).Format(dateFmt)), key1w),
+		huh.NewOption(fmt.Sprintf("2 weeks  · %s", now.AddDate(0, 0, 14).Format(dateFmt)), key2w),
+		huh.NewOption(fmt.Sprintf("1 month  · %s", now.AddDate(0, 1, 0).Format(dateFmt)), key1m),
+		huh.NewOption(fmt.Sprintf("3 months · %s", now.AddDate(0, 3, 0).Format(dateFmt)), key3m),
+		huh.NewOption(fmt.Sprintf("6 months · %s", now.AddDate(0, 6, 0).Format(dateFmt)), key6m),
+		huh.NewOption(fmt.Sprintf("1 year   · %s", now.AddDate(1, 0, 0).Format(dateFmt)), key1y),
+		huh.NewOption("Custom date...", keyCustom),
+	}
+
+	// Default selection: keep existing value shown as custom, otherwise no expiry.
+	choice := keyNone
+	if current != "" {
+		choice = keyCustom
+	}
+
+	if err := NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Expiry").
+				Description("The cluster will be automatically deleted after this date.").
+				Options(presets...).
+				Value(&choice),
+		),
+	).Run(); err != nil {
+		return "", err
+	}
+
+	// Resolve preset choices directly to timestamps.
+	switch choice {
+	case keyNone:
+		return "", nil
+	case key1w:
+		return now.AddDate(0, 0, 7).Truncate(24 * time.Hour).Format(time.RFC3339), nil
+	case key2w:
+		return now.AddDate(0, 0, 14).Truncate(24 * time.Hour).Format(time.RFC3339), nil
+	case key1m:
+		return now.AddDate(0, 1, 0).Truncate(24 * time.Hour).Format(time.RFC3339), nil
+	case key3m:
+		return now.AddDate(0, 3, 0).Truncate(24 * time.Hour).Format(time.RFC3339), nil
+	case key6m:
+		return now.AddDate(0, 6, 0).Truncate(24 * time.Hour).Format(time.RFC3339), nil
+	case key1y:
+		return now.AddDate(1, 0, 0).Truncate(24 * time.Hour).Format(time.RFC3339), nil
+	}
+
+	// Custom date path — pre-populate from current value when available.
+	yearStr := fmt.Sprintf("%d", now.Year()+1)
+	monthStr := fmt.Sprintf("%02d", int(now.Month()))
+	dayStr := "01"
+	timeOfDay := "00:00"
+
+	if current != "" {
+		if t, err := time.Parse(time.RFC3339, current); err == nil {
+			yearStr = fmt.Sprintf("%d", t.Year())
+			monthStr = fmt.Sprintf("%02d", int(t.Month()))
+			dayStr = fmt.Sprintf("%02d", t.Day())
+		}
+	}
+
+	// Year options: current year through current+5.
+	yearOpts := make([]huh.Option[string], 6)
+	for i := range yearOpts {
+		y := fmt.Sprintf("%d", now.Year()+i)
+		yearOpts[i] = huh.NewOption(y, y)
+	}
+
+	monthOpts := []huh.Option[string]{
+		huh.NewOption("January", "01"), huh.NewOption("February", "02"),
+		huh.NewOption("March", "03"), huh.NewOption("April", "04"),
+		huh.NewOption("May", "05"), huh.NewOption("June", "06"),
+		huh.NewOption("July", "07"), huh.NewOption("August", "08"),
+		huh.NewOption("September", "09"), huh.NewOption("October", "10"),
+		huh.NewOption("November", "11"), huh.NewOption("December", "12"),
+	}
+
+	timeOpts := []huh.Option[string]{
+		huh.NewOption("Start of day  00:00 UTC", "00:00"),
+		huh.NewOption("Noon          12:00 UTC", "12:00"),
+		huh.NewOption("End of day    23:59 UTC", "23:59"),
+	}
+
+	if err := NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().Title("Year").Options(yearOpts...).Value(&yearStr),
+			huh.NewSelect[string]().Title("Month").Options(monthOpts...).Value(&monthStr),
+			huh.NewInput().
+				Title("Day").
+				Placeholder("01").
+				Validate(func(s string) error {
+					d, err := strconv.Atoi(strings.TrimSpace(s))
+					if err != nil || d < 1 || d > 31 {
+						return errors.New("enter a day between 1 and 31")
+					}
+					return nil
+				}).
+				Value(&dayStr),
+			huh.NewSelect[string]().Title("Time (UTC)").Options(timeOpts...).Value(&timeOfDay),
+		),
+	).Run(); err != nil {
+		return "", err
+	}
+
+	// Normalise day to two digits.
+	if d, err := strconv.Atoi(strings.TrimSpace(dayStr)); err == nil {
+		dayStr = fmt.Sprintf("%02d", d)
+	}
+
+	raw := fmt.Sprintf("%s-%s-%sT%s:00Z", yearStr, monthStr, dayStr, timeOfDay)
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid date combination: %w", err)
+	}
+	return t.Format(time.RFC3339), nil
 }
 
 // SelectFromList presents a huh.Select populated with the given names plus a

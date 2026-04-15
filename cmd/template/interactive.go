@@ -289,16 +289,10 @@ func interactiveTemplateExecute() error {
 	}
 
 	// Optional expiry
-	if err := shared.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Expiry timestamp (optional — leave blank for no expiry)").
-				Description("RFC 3339 format, e.g. 2026-05-01T00:00:00Z. When this time passes the cluster will be auto-deleted.").
-				Placeholder("2026-05-01T00:00:00Z").
-				Value(&expiresAt),
-		),
-	).Run(); err != nil {
-		return err
+	var expiryErr error
+	expiresAt, expiryErr = shared.PromptExpiresAt("")
+	if expiryErr != nil {
+		return expiryErr
 	}
 
 	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt)
