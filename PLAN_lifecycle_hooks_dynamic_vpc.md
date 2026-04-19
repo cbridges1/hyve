@@ -1,17 +1,15 @@
-# Plan: Lifecycle Hooks, Dynamic VPC & Dynamic Resource Group
+# Plan: Lifecycle Hooks & Provider Config Passive Sync
 
 ## Overview
 
 1. **`beforeCreate` hook** — run workflows before a cluster is provisioned
 2. **`afterDelete` hook** — run workflows after a cluster is destroyed
-3. **Dynamic VPC** — automatically create and destroy an AWS VPC around the EKS cluster lifecycle
-4. **Dynamic Resource Group** — automatically create and destroy an Azure resource group around the AKS cluster lifecycle
-5. **Provider config passive sync** — remove fields from provider config YAML files if the referenced resource no longer exists in the cloud
+3. **Provider config passive sync** — remove fields from provider config YAML files if the referenced resource no longer exists in the cloud
 
 **Design notes:**
 - ARNs are never stored in config or cluster specs. Role ARNs are resolved internally at runtime via name lookup.
-- If resource fields (`awsVpcName`, `awsVpcId`, `awsEksRoleName`, `awsNodeRoleName`, `azureResourceGroup`) are absent from the cluster YAML, the reconciler assumes the `beforeCreate` hook will create those resources and export their details as the corresponding environment variables (`HYVE_VPC_NAME`, `HYVE_VPC_ID`, `HYVE_EKS_ROLE_NAME`, `HYVE_NODE_ROLE_NAME`, `HYVE_RESOURCE_GROUP_NAME`). After `beforeCreate` completes, the reconciler reads those env vars, writes the resolved values back to the appropriate provider config YAML, and then proceeds to create the cluster.
-- Provider config files reference pre-existing resources by name. Hyve never creates or deletes these resources declaratively — it only removes stale field entries when the referenced resource no longer exists.
+- If resource fields (`awsVpcName`, `awsVpcId`, `awsEksRoleName`, `awsNodeRoleName`, `azureResourceGroup`) are absent from the cluster YAML, the reconciler assumes the `beforeCreate` hook will export their details as the corresponding environment variables (`HYVE_VPC_NAME`, `HYVE_VPC_ID`, `HYVE_EKS_ROLE_NAME`, `HYVE_NODE_ROLE_NAME`, `HYVE_RESOURCE_GROUP_NAME`). After `beforeCreate` completes, the reconciler reads those env vars, writes the resolved values back to the appropriate provider config YAML, and then proceeds to create the cluster.
+- Provider config files reference pre-existing resources by name. Hyve never creates or deletes these resources — it only removes stale field entries when the referenced resource no longer exists in the cloud.
 
 ---
 
@@ -39,8 +37,8 @@ One file per account/project/subscription. Each file references pre-existing res
 **Create:**
 ```
 [beforeCreate]
-    ↓ (hook creates resources, exports HYVE_* env vars)
-write resolved resource values to provider config YAML, commit, push
+    ↓ (hook exports HYVE_* env vars for any resources it has set up)
+write exported resource values to provider config YAML, commit, push
     ↓
 resolve env var references in cluster spec
     ↓
@@ -66,7 +64,7 @@ remove cluster YAML, commit, push
 
 ## Exported Environment Variables
 
-All variables are set before `beforeCreate` runs and remain available to all subsequent hooks.
+These variables are exported by the `beforeCreate` hook and read by the reconciler after the hook completes. The reconciler writes any resolved values back to the provider config YAML before proceeding to create the cluster.
 
 | Variable | Description |
 |---|---|
@@ -76,8 +74,8 @@ All variables are set before `beforeCreate` runs and remain available to all sub
 | `HYVE_SUBNET_IDS` | Comma-separated list of all subnet IDs |
 | `HYVE_PRIVATE_SUBNET_IDS` | Comma-separated private subnet IDs |
 | `HYVE_PUBLIC_SUBNET_IDS` | Comma-separated public subnet IDs |
-| `HYVE_EKS_ROLE_NAME` | IAM role name for the EKS control plane (if resolved) |
-| `HYVE_NODE_ROLE_NAME` | IAM role name for EKS node groups (if resolved) |
+| `HYVE_EKS_ROLE_NAME` | IAM role name for the EKS control plane |
+| `HYVE_NODE_ROLE_NAME` | IAM role name for EKS node groups |
 | `HYVE_RESOURCE_GROUP_NAME` | Azure resource group name |
 | `HYVE_RESOURCE_GROUP_ID` | Full Azure resource ID for the group |
 | `HYVE_RESOURCE_GROUP_LOCATION` | Azure region/location |
@@ -100,12 +98,9 @@ type WorkflowsSpec struct {
 Add to `ClusterSpec`:
 
 ```go
-DynamicVPC           DynamicVPCSpec           `yaml:"dynamicVpc,omitempty"`
-DynamicVPCID         string                   `yaml:"dynamicVpcId,omitempty"`
-DynamicResourceGroup DynamicResourceGroupSpec `yaml:"dynamicResourceGroup,omitempty"`
-DynamicResourceGroupName string               `yaml:"dynamicResourceGroupName,omitempty"`
-AWSEKSRoleName       string                   `yaml:"awsEksRoleName,omitempty"`
-AWSNodeRoleName      string                   `yaml:"awsNodeRoleName,omitempty"`
+AWSVPCId       string `yaml:"awsVpcId,omitempty"`
+AWSEKSRoleName string `yaml:"awsEksRoleName,omitempty"`
+AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"`
 ```
 
 Remove `AWSEKSRoleArn` and `AWSNodeRoleArn` from `ClusterSpec`.
@@ -116,7 +111,7 @@ Remove `AWSEKSRoleArn` and `AWSNodeRoleArn` from `ClusterSpec`.
 
 ### EKS — fully implicit
 
-No VPC or role config needed. VPC is created automatically; roles are expected from `beforeCreate`.
+No VPC or role fields in YAML. The `beforeCreate` hook is expected to set up any required resources and export the corresponding `HYVE_*` env vars; the reconciler reads them and writes the resolved values to the provider config YAML before creating the cluster.
 
 ```yaml
 apiVersion: v1
@@ -143,7 +138,7 @@ spec:
       - destroy-iam-roles
 ```
 
-### EKS — explicit role names, dynamic VPC
+### EKS — explicit VPC ID and role names
 
 ```yaml
 apiVersion: v1
@@ -155,9 +150,7 @@ spec:
   awsAccount: prod
   region: us-east-1
   clusterType: eks
-  dynamicVpc:
-    enabled: true
-    cidr: 10.1.0.0/16
+  awsVpcId: vpc-0abc123456789
   awsEksRoleName: my-eks-role
   awsNodeRoleName: my-node-role
   nodeGroups:
@@ -166,9 +159,9 @@ spec:
       count: 2
 ```
 
-### AKS — fully implicit
+### AKS — resource group supplied via hook
 
-Resource group is created automatically.
+The `beforeCreate` hook exports `HYVE_RESOURCE_GROUP_NAME`; the reconciler writes it to the provider config YAML before creating the cluster.
 
 ```yaml
 apiVersion: v1
@@ -184,9 +177,14 @@ spec:
     - name: workers
       instanceType: Standard_D2s_v3
       count: 3
+  workflows:
+    beforeCreate:
+      - create-resource-group
+    afterDelete:
+      - destroy-resource-group
 ```
 
-### Template with dynamic VPC and role creation
+### Template with hook-based role creation
 
 ```yaml
 apiVersion: v1
@@ -197,9 +195,6 @@ spec:
   provider: aws
   region: us-east-1
   clusterType: eks
-  dynamicVpc:
-    enabled: true
-    cidr: 10.0.0.0/16
   nodeGroups:
     - name: workers
       instanceType: t3.medium
@@ -236,16 +231,16 @@ spec:
 
 | File | Change |
 |---|---|
-| `internal/types/types.go` | Add `BeforeCreate`, `AfterDelete` to `WorkflowsSpec`; add `DynamicVPCSpec`, `DynamicResourceGroupSpec`, role name fields; remove ARN fields |
-| `internal/cluster/provider.go` | Add `CreateVPC`, `DeleteVPC`, `CreateResourceGroup`, `DeleteResourceGroup` to interface; add role name → ARN lookup |
-| `internal/cluster/aws/provider.go` | Implement VPC methods and role name lookup |
-| `internal/cluster/azure/provider.go` | Implement resource group methods; stub VPC methods |
-| `internal/cluster/civo/provider.go` | Stub all new methods |
-| `internal/cluster/gcp/provider.go` | Stub all new methods |
-| `internal/reconcile/manager.go` | Add VPC/RG creation before `ActionCreate`; add `afterDelete` and resource destruction after `ActionDelete` |
-| `internal/reconcile/vars.go` | New: `resolveSpecVars`, `exportVPCEnv`, `exportResourceGroupEnv` |
-| `internal/template/template.go` | Add `BeforeCreate`, `AfterDelete`, `DynamicVPC`, `DynamicResourceGroup` to template types |
-| `cmd/cluster/cmd.go` | Add new flags; replace ARN flags with name flags |
+| `internal/types/types.go` | Add `BeforeCreate`, `AfterDelete` to `WorkflowsSpec`; add `AWSVPCId`, `AWSEKSRoleName`, `AWSNodeRoleName` to `ClusterSpec`; remove ARN fields |
+| `internal/cluster/provider.go` | Add role name → ARN lookup |
+| `internal/cluster/aws/provider.go` | Implement role name lookup |
+| `internal/cluster/azure/provider.go` | No new provider methods required |
+| `internal/cluster/civo/provider.go` | No new provider methods required |
+| `internal/cluster/gcp/provider.go` | No new provider methods required |
+| `internal/reconcile/manager.go` | Add `beforeCreate` hook execution and env var write-back before `ActionCreate`; add `afterDelete` hook execution and passive sync after `ActionDelete` |
+| `internal/reconcile/vars.go` | New: `resolveSpecVars`, reads `HYVE_*` env vars and writes to provider config YAML |
+| `internal/template/types.go` | Add `BeforeCreate`, `AfterDelete` to `TemplateWorkflowsSpec`; add `AWSVPCId`, `AWSEKSRoleName`, `AWSNodeRoleName` to `TemplateSpec`; remove ARN fields |
+| `cmd/cluster/cmd.go` | Add `--before-create`, `--after-delete`, `--eks-role-name`, `--node-role-name` flags; remove ARN flags |
 | `cmd/cluster/crud.go` | Pass new fields through add/modify; update list display |
 | `cmd/cluster/interactive.go` | Add TUI steps for new fields |
 | `cmd/template/cmd.go` | Mirror new flags |
