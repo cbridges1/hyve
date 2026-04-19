@@ -476,6 +476,104 @@ func TestTemplateWithGCPConfig_YAMLRoundtrip(t *testing.T) {
 	assert.Equal(t, "my-gcp-project", retrieved.Spec.GCPProject)
 }
 
+// ── Schedule field ────────────────────────────────────────────────────────────
+
+func TestTemplateWithSchedule_YAMLRoundtrip(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	template := &Template{
+		Metadata: TemplateMetadata{Name: "schedule-template"},
+		Spec: TemplateSpec{
+			Provider:    "civo",
+			Region:      "NYC1",
+			Nodes:       []string{"g4s.kube.small"},
+			ClusterType: "k3s",
+			Schedule:    "0 20 * * 5",
+		},
+	}
+
+	err := manager.CreateTemplate(template)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("schedule-template")
+	require.NoError(t, err)
+	assert.Equal(t, "0 20 * * 5", retrieved.Spec.Schedule)
+}
+
+func TestTemplateWithoutSchedule_FieldOmitted(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	template := &Template{
+		Metadata: TemplateMetadata{Name: "no-schedule-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "NYC1",
+			Nodes:    []string{"g4s.kube.small"},
+		},
+	}
+
+	err := manager.CreateTemplate(template)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("no-schedule-template")
+	require.NoError(t, err)
+	assert.Empty(t, retrieved.Spec.Schedule)
+}
+
+func TestConvertToClusterDefinition_ScheduleDoesNotSetExpiresAt(t *testing.T) {
+	// Schedule-to-expiresAt conversion is a cmd-layer concern, not manager.
+	// ConvertToClusterDefinition must NOT evaluate the cron expression.
+	manager, _ := setupTemplateTest(t)
+
+	template := &Template{
+		Metadata: TemplateMetadata{Name: "cron-convert-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "NYC1",
+			Nodes:    []string{"g4s.kube.small"},
+			Schedule: "0 0 * * *",
+		},
+	}
+
+	clusterDef := manager.ConvertToClusterDefinition(template, "my-cluster")
+	require.NotNil(t, clusterDef)
+	assert.Empty(t, clusterDef.Spec.ExpiresAt, "ConvertToClusterDefinition should not evaluate the cron schedule")
+}
+
+func TestTemplateWithSchedule_AllCronExpressions(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	cases := []struct {
+		name     string
+		schedule string
+	}{
+		{"wildcard", "* * * * *"},
+		{"daily-midnight", "0 0 * * *"},
+		{"weekday-evening", "0 20 * * 5"},
+		{"first-of-month", "0 0 1 * *"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmpl := &Template{
+				Metadata: TemplateMetadata{Name: "sched-" + c.name},
+				Spec: TemplateSpec{
+					Provider: "civo",
+					Region:   "NYC1",
+					Nodes:    []string{"g4s.kube.small"},
+					Schedule: c.schedule,
+				},
+			}
+			err := manager.CreateTemplate(tmpl)
+			require.NoError(t, err)
+
+			retrieved, err := manager.GetTemplate("sched-" + c.name)
+			require.NoError(t, err)
+			assert.Equal(t, c.schedule, retrieved.Spec.Schedule)
+		})
+	}
+}
+
 func TestTemplateWithIngress(t *testing.T) {
 	manager, _ := setupTemplateTest(t)
 

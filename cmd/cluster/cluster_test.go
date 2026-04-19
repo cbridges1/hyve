@@ -13,6 +13,10 @@ import (
 // buildClusterDef is the core logic extracted from addClusterFromCLI so we can
 // unit-test it without a git repository or cloud provider.
 func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreated, onDestroy []string) types.ClusterDefinition {
+	return buildClusterDefFull(clusterName, region, providerName, nodes, nodeGroups, clusterType, onCreated, onDestroy, false, "")
+}
+
+func buildClusterDefFull(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreated, onDestroy []string, pause bool, expiresAt string) types.ClusterDefinition {
 	return types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
@@ -33,6 +37,8 @@ func buildClusterDef(clusterName, region, providerName string, nodes []string, n
 				Enabled:      true,
 				LoadBalancer: true,
 			},
+			Pause:     pause,
+			ExpiresAt: expiresAt,
 		},
 	}
 }
@@ -172,6 +178,127 @@ func TestWorkflowsWrittenToFile(t *testing.T) {
 	}
 	if len(loaded.Spec.Workflows.OnDestroy) != 1 || loaded.Spec.Workflows.OnDestroy[0] != "on-destroy-wf" {
 		t.Errorf("on-destroy not persisted: %v", loaded.Spec.Workflows.OnDestroy)
+	}
+}
+
+func TestBuildClusterDef_PauseTrue(t *testing.T) {
+	def := buildClusterDefFull("paused-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, true, "")
+	if !def.Spec.Pause {
+		t.Error("expected Pause to be true")
+	}
+}
+
+func TestBuildClusterDef_PauseFalse_Default(t *testing.T) {
+	def := buildClusterDef("normal-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil)
+	if def.Spec.Pause {
+		t.Error("expected Pause to be false by default")
+	}
+}
+
+func TestBuildClusterDef_ExpiresAt(t *testing.T) {
+	expiry := "2026-12-31T23:59:00Z"
+	def := buildClusterDefFull("expiry-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, false, expiry)
+	if def.Spec.ExpiresAt != expiry {
+		t.Errorf("expected ExpiresAt %q, got %q", expiry, def.Spec.ExpiresAt)
+	}
+}
+
+func TestBuildClusterDef_PauseSerializesToYAML(t *testing.T) {
+	def := buildClusterDefFull("paused-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, true, "")
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	yamlStr := string(data)
+	if !contains(yamlStr, "pause: true") {
+		t.Errorf("expected 'pause: true' in YAML output:\n%s", yamlStr)
+	}
+}
+
+func TestBuildClusterDef_PauseFalseOmittedFromYAML(t *testing.T) {
+	def := buildClusterDef("normal-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil)
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	yamlStr := string(data)
+	if contains(yamlStr, "pause:") {
+		t.Errorf("expected 'pause' to be omitted when false:\n%s", yamlStr)
+	}
+}
+
+func TestBuildClusterDef_ExpiresAtSerializesToYAML(t *testing.T) {
+	expiry := "2026-12-31T23:59:00Z"
+	def := buildClusterDefFull("expiry-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, false, expiry)
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	var roundtrip types.ClusterDefinition
+	if err := yaml.Unmarshal(data, &roundtrip); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
+
+	if roundtrip.Spec.ExpiresAt != expiry {
+		t.Errorf("ExpiresAt did not survive YAML round-trip: got %q", roundtrip.Spec.ExpiresAt)
+	}
+}
+
+func TestBuildClusterDef_ExpiresAtEmptyOmittedFromYAML(t *testing.T) {
+	def := buildClusterDef("no-expiry-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil)
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	yamlStr := string(data)
+	if contains(yamlStr, "expiresAt:") {
+		t.Errorf("expected 'expiresAt' to be omitted when empty:\n%s", yamlStr)
+	}
+}
+
+func TestAddCmdFlags_PauseAndExpiresAt(t *testing.T) {
+	pauseFlag := addCmd.Flags().Lookup("pause")
+	if pauseFlag == nil {
+		t.Fatal("--pause flag not registered on addCmd")
+	}
+	if pauseFlag.Value.Type() != "bool" {
+		t.Errorf("expected --pause to be bool, got %s", pauseFlag.Value.Type())
+	}
+
+	expiresAtFlag := addCmd.Flags().Lookup("expires-at")
+	if expiresAtFlag == nil {
+		t.Fatal("--expires-at flag not registered on addCmd")
+	}
+	if expiresAtFlag.Value.Type() != "string" {
+		t.Errorf("expected --expires-at to be string, got %s", expiresAtFlag.Value.Type())
+	}
+}
+
+func TestModifyCmdFlags_PauseUnpauseExpiresAt(t *testing.T) {
+	pauseFlag := modifyCmd.Flags().Lookup("pause")
+	if pauseFlag == nil {
+		t.Fatal("--pause flag not registered on modifyCmd")
+	}
+
+	unpauseFlag := modifyCmd.Flags().Lookup("unpause")
+	if unpauseFlag == nil {
+		t.Fatal("--unpause flag not registered on modifyCmd")
+	}
+
+	expiresAtFlag := modifyCmd.Flags().Lookup("expires-at")
+	if expiresAtFlag == nil {
+		t.Fatal("--expires-at flag not registered on modifyCmd")
+	}
+	if expiresAtFlag.Value.Type() != "string" {
+		t.Errorf("expected --expires-at to be string, got %s", expiresAtFlag.Value.Type())
 	}
 }
 

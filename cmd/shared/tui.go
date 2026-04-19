@@ -498,69 +498,222 @@ func validateCronExpr(s string) error {
 	return nil
 }
 
-// PromptSchedule presents an interactive schedule picker and returns a 5-field
-// cron expression. Returns ("", nil) for no schedule and ("", ErrBack) on cancel.
-func PromptSchedule(current string) (string, error) {
-	const noSched = "__none__"
-	const custom = "__custom__"
-	const back = "__back__"
+// ── Cron picker model (Bubble Tea) ───────────────────────────────────────────
 
-	now := time.Now()
+const (
+	cronFieldMinute = iota
+	cronFieldHour
+	cronFieldDayOfMonth
+	cronFieldMonth
+	cronFieldDayOfWeek
+	cronFieldCount
+)
 
-	type preset struct{ label, expr string }
-	presets := []preset{
-		{"Daily at midnight", "0 0 * * *"},
-		{"Daily at noon", "0 12 * * *"},
-		{"Daily at 8pm", "0 20 * * *"},
-		{"Every Friday at 5pm", "0 17 * * 5"},
-		{"Every Sunday at midnight", "0 0 * * 0"},
-		{"Every weekday at 6pm", "0 18 * * 1-5"},
+var (
+	cronRanges      = [cronFieldCount][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 6}}
+	cronMonthNames  = [12]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+	cronDayNames    = [7]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	cronFieldLabels = [cronFieldCount]string{"Minute", "Hour", "Day", "Month", "Weekday"}
+)
+
+type cronPickerModel struct {
+	focused    int
+	values     [cronFieldCount]int // -1 = * (any)
+	done       bool
+	noSchedule bool
+	cancelled  bool
+}
+
+func newCronPickerModel(current string) cronPickerModel {
+	m := cronPickerModel{}
+	for i := range m.values {
+		m.values[i] = -1
 	}
-
-	opts := make([]huh.Option[string], 0, len(presets)+3)
-	for _, p := range presets {
-		label := p.label
-		if next, err := CronNextOccurrence(p.expr, now); err == nil {
-			label += " · Next: " + next.Format("Jan 2 at 15:04")
+	if current != "" {
+		if fields := strings.Fields(current); len(fields) == 5 {
+			for i, f := range fields {
+				if f != "*" {
+					if n, err := strconv.Atoi(f); err == nil {
+						m.values[i] = n
+					}
+				}
+			}
 		}
-		opts = append(opts, huh.NewOption(label, p.expr))
 	}
-	opts = append(opts, huh.NewOption("Custom cron expression...", custom))
-	opts = append(opts, huh.NewOption("No schedule", noSched))
-	opts = append(opts, huh.NewOption("← Back", back))
+	return m
+}
 
-	selected := current
-	if err := NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Expiry schedule").
-			Description("At execution time, the cluster's expiry is set to the next occurrence of this schedule").
-			Options(opts...).
-			Value(&selected),
-	)).Run(); err != nil {
+func (m cronPickerModel) Init() tea.Cmd { return nil }
+
+func (m cronPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch km.String() {
+	case "ctrl+c":
+		m.cancelled = true
+		m.done = true
+		return m, tea.Quit
+	case "esc":
+		m.noSchedule = true
+		m.done = true
+		return m, tea.Quit
+	case "enter":
+		m.done = true
+		return m, tea.Quit
+	case "left", "h":
+		if m.focused > 0 {
+			m.focused--
+		}
+	case "right", "l":
+		if m.focused < cronFieldCount-1 {
+			m.focused++
+		}
+	case "up", "k":
+		m = m.cronStep(1)
+	case "down", "j":
+		m = m.cronStep(-1)
+	}
+	return m, nil
+}
+
+func (m cronPickerModel) cronStep(delta int) cronPickerModel {
+	lo, hi := cronRanges[m.focused][0], cronRanges[m.focused][1]
+	v := m.values[m.focused]
+	if v == -1 {
+		if delta > 0 {
+			m.values[m.focused] = lo
+		} else {
+			m.values[m.focused] = hi
+		}
+	} else {
+		v += delta
+		if v > hi || v < lo {
+			m.values[m.focused] = -1
+		} else {
+			m.values[m.focused] = v
+		}
+	}
+	return m
+}
+
+func (m cronPickerModel) fieldDisplay(i int) string {
+	v := m.values[i]
+	if v == -1 {
+		return "*"
+	}
+	switch i {
+	case cronFieldMinute, cronFieldHour:
+		return fmt.Sprintf("%02d", v)
+	case cronFieldMonth:
+		return cronMonthNames[v-1]
+	case cronFieldDayOfWeek:
+		return cronDayNames[v]
+	default:
+		return fmt.Sprintf("%d", v)
+	}
+}
+
+func (m cronPickerModel) toCronExpr() string {
+	parts := make([]string, cronFieldCount)
+	for i, v := range m.values {
+		if v == -1 {
+			parts[i] = "*"
+		} else {
+			parts[i] = strconv.Itoa(v)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func (m cronPickerModel) nextStr() string {
+	expr := m.toCronExpr()
+	if expr == "* * * * *" {
+		return "every minute"
+	}
+	next, err := CronNextOccurrence(expr, time.Now())
+	if err != nil {
+		return "—"
+	}
+	return next.Format("Jan 2, 2006 at 15:04")
+}
+
+func (m cronPickerModel) View() string {
+	yellow := lipgloss.Color("#F5C518")
+	blue := lipgloss.Color("#4A9FD5")
+	muted := lipgloss.Color("#6B7280")
+	white := lipgloss.Color("#F9FAFB")
+	green := lipgloss.Color("#22c55e")
+
+	focusedVal := lipgloss.NewStyle().Foreground(yellow).Bold(true)
+	normalVal := lipgloss.NewStyle().Foreground(white)
+	focusedLbl := lipgloss.NewStyle().Foreground(blue)
+	normalLbl := lipgloss.NewStyle().Foreground(muted)
+	titleStyle := lipgloss.NewStyle().Foreground(yellow).Bold(true)
+	hintStyle := lipgloss.NewStyle().Foreground(muted)
+	arrowStyle := lipgloss.NewStyle().Foreground(yellow)
+	dimArrow := lipgloss.NewStyle().Foreground(lipgloss.Color("#374151"))
+	nextStyle := lipgloss.NewStyle().Foreground(green)
+	nextLbl := lipgloss.NewStyle().Foreground(muted)
+
+	var upRow, valRow, dnRow, lblRow strings.Builder
+	for i := 0; i < cronFieldCount; i++ {
+		display := m.fieldDisplay(i)
+		label := cronFieldLabels[i]
+		w := max(len(display), len(label)) + 2
+		if i > 0 {
+			sep := "   "
+			upRow.WriteString(sep)
+			valRow.WriteString(sep)
+			dnRow.WriteString(sep)
+			lblRow.WriteString(sep)
+		}
+		if i == m.focused {
+			upRow.WriteString(arrowStyle.Render(padCenter("▲", w)))
+			valRow.WriteString(focusedVal.Render(padCenter(display, w)))
+			dnRow.WriteString(arrowStyle.Render(padCenter("▼", w)))
+			lblRow.WriteString(focusedLbl.Render(padCenter(label, w)))
+		} else {
+			upRow.WriteString(dimArrow.Render(padCenter(" ", w)))
+			valRow.WriteString(normalVal.Render(padCenter(display, w)))
+			dnRow.WriteString(dimArrow.Render(padCenter(" ", w)))
+			lblRow.WriteString(normalLbl.Render(padCenter(label, w)))
+		}
+	}
+
+	hint := hintStyle.Render("↑ ↓  change   ← →  navigate   enter  confirm   esc  no schedule   ctrl+c  cancel")
+	preview := nextLbl.Render("Next: ") + nextStyle.Render(m.nextStr())
+
+	return "\n" +
+		"  " + titleStyle.Render("Expiry schedule") + "\n\n" +
+		"  " + upRow.String() + "\n" +
+		"  " + valRow.String() + "\n" +
+		"  " + dnRow.String() + "\n" +
+		"  " + lblRow.String() + "\n\n" +
+		"  " + preview + "\n\n" +
+		"  " + hint + "\n\n"
+}
+
+// PromptSchedule runs a single-screen cron picker with ←/→ navigation between
+// Minute, Hour, Day, Month, and Weekday fields. All fields default to * (any).
+//
+//   - enter    → returns the cron expression
+//   - esc      → returns ("", nil) — no schedule, execution continues
+//   - ctrl+c   → returns ("", ErrBack) — cancels the entire operation
+func PromptSchedule(current string) (string, error) {
+	m, err := tea.NewProgram(newCronPickerModel(current)).Run()
+	if err != nil {
 		return "", err
 	}
-
-	switch selected {
-	case back:
+	result := m.(cronPickerModel)
+	if result.cancelled {
 		return "", ErrBack
-	case noSched:
-		return "", nil
-	case custom:
-		expr := current
-		if err := NewForm(huh.NewGroup(
-			huh.NewInput().
-				Title("Cron expression").
-				Description("5 fields: minute hour day-of-month month day-of-week  (e.g. 0 20 * * 5)").
-				Placeholder("0 20 * * 5").
-				Value(&expr).
-				Validate(validateCronExpr),
-		)).Run(); err != nil {
-			return "", err
-		}
-		return expr, nil
-	default:
-		return selected, nil
 	}
+	if result.noSchedule {
+		return "", nil
+	}
+	return result.toCronExpr(), nil
 }
 
 // SelectFromList presents a huh.Select populated with the given names plus a
