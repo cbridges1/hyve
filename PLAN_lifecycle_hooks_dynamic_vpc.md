@@ -230,10 +230,6 @@ spec:
 
 `--eks-role-arn` and `--node-role-arn` are removed.
 
-### New flags — `hyve template execute`
-
-Same as above, minus `--dynamic-resource-group-name`.
-
 ---
 
 ## File Change Summary

@@ -3,6 +3,7 @@ package shared
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -430,6 +431,136 @@ func PromptExpiresAt(current string) (string, error) {
 		return "", fmt.Errorf("invalid date: %w", err)
 	}
 	return t.Format(time.RFC3339), nil
+}
+
+// ── Cron schedule picker ─────────────────────────────────────────────────────
+
+// CronNextOccurrence returns the next time after `from` that matches the given
+// 5-field cron expression (minute hour dom month dow). Supports *, single
+// numbers, ranges (1-5), and comma-separated lists (1,2,3).
+func CronNextOccurrence(expr string, from time.Time) (time.Time, error) {
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return time.Time{}, fmt.Errorf("cron expression must have 5 fields, got %d", len(fields))
+	}
+
+	matchField := func(field string, val int) (bool, error) {
+		if field == "*" {
+			return true, nil
+		}
+		for _, part := range strings.Split(field, ",") {
+			if strings.Contains(part, "-") {
+				bounds := strings.SplitN(part, "-", 2)
+				lo, err1 := strconv.Atoi(bounds[0])
+				hi, err2 := strconv.Atoi(bounds[1])
+				if err1 != nil || err2 != nil {
+					return false, fmt.Errorf("invalid range %q", part)
+				}
+				if val >= lo && val <= hi {
+					return true, nil
+				}
+			} else {
+				n, err := strconv.Atoi(part)
+				if err != nil {
+					return false, fmt.Errorf("invalid field value %q", part)
+				}
+				if val == n {
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	}
+
+	t := from.Truncate(time.Minute).Add(time.Minute)
+	end := from.Add(366 * 24 * time.Hour)
+	for t.Before(end) {
+		minOK, _ := matchField(fields[0], t.Minute())
+		hrOK, _ := matchField(fields[1], t.Hour())
+		domOK, _ := matchField(fields[2], t.Day())
+		monOK, _ := matchField(fields[3], int(t.Month()))
+		dowOK, _ := matchField(fields[4], int(t.Weekday()))
+		if minOK && hrOK && domOK && monOK && dowOK {
+			return t, nil
+		}
+		t = t.Add(time.Minute)
+	}
+	return time.Time{}, fmt.Errorf("no occurrence found within one year for %q", expr)
+}
+
+func validateCronExpr(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return errors.New("cron expression is required")
+	}
+	if _, err := CronNextOccurrence(s, time.Now()); err != nil {
+		return fmt.Errorf("invalid cron expression: %w", err)
+	}
+	return nil
+}
+
+// PromptSchedule presents an interactive schedule picker and returns a 5-field
+// cron expression. Returns ("", nil) for no schedule and ("", ErrBack) on cancel.
+func PromptSchedule(current string) (string, error) {
+	const noSched = "__none__"
+	const custom = "__custom__"
+	const back = "__back__"
+
+	now := time.Now()
+
+	type preset struct{ label, expr string }
+	presets := []preset{
+		{"Daily at midnight", "0 0 * * *"},
+		{"Daily at noon", "0 12 * * *"},
+		{"Daily at 8pm", "0 20 * * *"},
+		{"Every Friday at 5pm", "0 17 * * 5"},
+		{"Every Sunday at midnight", "0 0 * * 0"},
+		{"Every weekday at 6pm", "0 18 * * 1-5"},
+	}
+
+	opts := make([]huh.Option[string], 0, len(presets)+3)
+	for _, p := range presets {
+		label := p.label
+		if next, err := CronNextOccurrence(p.expr, now); err == nil {
+			label += " · Next: " + next.Format("Jan 2 at 15:04")
+		}
+		opts = append(opts, huh.NewOption(label, p.expr))
+	}
+	opts = append(opts, huh.NewOption("Custom cron expression...", custom))
+	opts = append(opts, huh.NewOption("No schedule", noSched))
+	opts = append(opts, huh.NewOption("← Back", back))
+
+	selected := current
+	if err := NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Expiry schedule").
+			Description("At execution time, the cluster's expiry is set to the next occurrence of this schedule").
+			Options(opts...).
+			Value(&selected),
+	)).Run(); err != nil {
+		return "", err
+	}
+
+	switch selected {
+	case back:
+		return "", ErrBack
+	case noSched:
+		return "", nil
+	case custom:
+		expr := current
+		if err := NewForm(huh.NewGroup(
+			huh.NewInput().
+				Title("Cron expression").
+				Description("5 fields: minute hour day-of-month month day-of-week  (e.g. 0 20 * * 5)").
+				Placeholder("0 20 * * 5").
+				Value(&expr).
+				Validate(validateCronExpr),
+		)).Run(); err != nil {
+			return "", err
+		}
+		return expr, nil
+	default:
+		return selected, nil
+	}
 }
 
 // SelectFromList presents a huh.Select populated with the given names plus a

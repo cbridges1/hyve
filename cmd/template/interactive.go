@@ -79,6 +79,7 @@ func interactiveTemplateCreate() error {
 		clusterType    string
 		onCreatedNames []string
 		onDestroyNames []string
+		schedule       string
 	)
 
 	err := shared.NewForm(
@@ -203,9 +204,16 @@ func interactiveTemplateCreate() error {
 		}
 	}
 
+	// Optional expiry schedule
+	var schedErr error
+	schedule, schedErr = shared.PromptSchedule("")
+	if schedErr != nil {
+		return schedErr
+	}
+
 	onCreatedStr := strings.Join(onCreatedNames, ",")
 	onDestroyStr := strings.Join(onDestroyNames, ",")
-	createTemplate(name, description, provider, region, nodesSizes, clusterType, nodeGroups, onCreatedStr, onDestroyStr)
+	createTemplate(name, description, provider, region, nodesSizes, clusterType, nodeGroups, onCreatedStr, onDestroyStr, schedule)
 	return nil
 }
 
@@ -226,7 +234,7 @@ func interactiveTemplateExecute() error {
 
 	// Load the template to determine which account fields are already set.
 	// For any missing required fields, prompt the user.
-	var org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt string
+	var org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string
 
 	if tmpl := shared.FetchTemplate(templateName); tmpl != nil {
 		switch strings.ToLower(tmpl.Spec.Provider) {
@@ -288,14 +296,7 @@ func interactiveTemplateExecute() error {
 		}
 	}
 
-	// Optional expiry
-	var expiryErr error
-	expiresAt, expiryErr = shared.PromptExpiresAt("")
-	if expiryErr != nil {
-		return expiryErr
-	}
-
-	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt)
+	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -48,6 +49,7 @@ and workflows to execute upon cluster creation or destruction.`,
 		clusterType, _ := cmd.Flags().GetString("cluster-type")
 		onCreatedWorkflows, _ := cmd.Flags().GetString("on-created")
 		onDestroyWorkflows, _ := cmd.Flags().GetString("on-destroy")
+		schedule, _ := cmd.Flags().GetString("schedule")
 
 		var nodeGroups []types.NodeGroup
 		if ngStrs, _ := cmd.Flags().GetStringArray("node-group"); len(ngStrs) > 0 {
@@ -60,7 +62,7 @@ and workflows to execute upon cluster creation or destruction.`,
 			}
 		}
 
-		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups, onCreatedWorkflows, onDestroyWorkflows)
+		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups, onCreatedWorkflows, onDestroyWorkflows, schedule)
 	},
 }
 
@@ -115,8 +117,7 @@ This command:
 		subscription, _ := cmd.Flags().GetString("subscription")
 		resourceGroup, _ := cmd.Flags().GetString("resource-group")
 		project, _ := cmd.Flags().GetString("project")
-		expiresAt, _ := cmd.Flags().GetString("expires-at")
-		executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt)
+		executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
 	},
 }
 
@@ -151,6 +152,7 @@ func init() {
 	templateCreateCmd.Flags().StringP("cluster-type", "t", "k3s", "Kubernetes cluster type")
 	templateCreateCmd.Flags().StringP("on-created", "c", "", "Workflows to run after cluster creation (comma-separated)")
 	templateCreateCmd.Flags().String("on-destroy", "", "Workflows to run before cluster destruction (comma-separated)")
+	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5' — every Friday at 8pm); evaluated at execute time")
 
 	templateExecuteCmd.Flags().StringP("org", "o", "", "Civo organization name (required for civo provider)")
 	templateExecuteCmd.Flags().StringP("account", "a", "", "AWS account alias (required for aws provider)")
@@ -160,7 +162,6 @@ func init() {
 	templateExecuteCmd.Flags().StringP("subscription", "s", "", "Azure subscription alias (required for azure provider)")
 	templateExecuteCmd.Flags().StringP("resource-group", "g", "", "Azure resource group name (required for azure provider)")
 	templateExecuteCmd.Flags().StringP("project", "p", "", "GCP project alias (required for gcp provider)")
-	templateExecuteCmd.Flags().String("expires-at", "", "RFC 3339 timestamp after which the cluster is auto-deleted (e.g. 2026-05-01T00:00:00Z)")
 
 	templateCmd.AddCommand(templateCreateCmd)
 	templateCmd.AddCommand(templateListCmd)
@@ -170,7 +171,7 @@ func init() {
 	templateCmd.AddCommand(templateValidateCmd)
 }
 
-func createTemplate(name, description, provider, region, nodesSizes, clusterType string, nodeGroups []types.NodeGroup, onCreatedStr, onDestroyStr string) {
+func createTemplate(name, description, provider, region, nodesSizes, clusterType string, nodeGroups []types.NodeGroup, onCreatedStr, onDestroyStr, schedule string) {
 	// cluster-type is only meaningful for Civo
 	if strings.ToLower(provider) != "civo" {
 		if clusterType != "" && clusterType != "k3s" {
@@ -240,6 +241,7 @@ func createTemplate(name, description, provider, region, nodesSizes, clusterType
 				OnCreated: onCreatedWorkflows,
 				OnDestroy: onDestroyWorkflows,
 			},
+			Schedule: schedule,
 		},
 	}
 
@@ -270,6 +272,9 @@ func createTemplate(name, description, provider, region, nodesSizes, clusterType
 	}
 	if len(onDestroyWorkflows) > 0 {
 		log.Printf("  OnDestroy Workflows: %s", strings.Join(onDestroyWorkflows, ", "))
+	}
+	if schedule != "" {
+		log.Printf("  Expiry Schedule: %s", schedule)
 	}
 
 	log.Println("\n💡 Execute this template with:")
@@ -322,6 +327,9 @@ func listTemplates() {
 		}
 		if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
 			log.Printf("    OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
+		}
+		if tmpl.Spec.Schedule != "" {
+			log.Printf("    Expiry Schedule: %s", tmpl.Spec.Schedule)
 		}
 		log.Println()
 	}
@@ -403,7 +411,7 @@ func showTemplate(name string) {
 	log.Println(string(data))
 }
 
-func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project, expiresAt string) {
+func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string) {
 	ctx := context.Background()
 	shared.SyncRepoState(ctx)
 
@@ -470,8 +478,13 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 			"project", "Use 'hyve config gcp project list' to see available projects.")
 	}
 
-	if expiresAt != "" {
-		clusterDef.Spec.ExpiresAt = expiresAt
+	// Derive expiresAt from the template's cron schedule, if set.
+	if tmpl.Spec.Schedule != "" {
+		next, err := shared.CronNextOccurrence(tmpl.Spec.Schedule, time.Now())
+		if err != nil {
+			log.Fatalf("Failed to evaluate schedule %q: %v", tmpl.Spec.Schedule, err)
+		}
+		clusterDef.Spec.ExpiresAt = next.Format(time.RFC3339)
 	}
 
 	log.Println("📋 Template Details:")
@@ -485,8 +498,8 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 	if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
 		log.Printf("  OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
 	}
-	if clusterDef.Spec.ExpiresAt != "" {
-		log.Printf("  Expires At: %s", clusterDef.Spec.ExpiresAt)
+	if tmpl.Spec.Schedule != "" {
+		log.Printf("  Expiry Schedule: %s → %s", tmpl.Spec.Schedule, clusterDef.Spec.ExpiresAt)
 	}
 
 	// Resolve AWS aliases to actual IDs/ARNs before writing the cluster definition.

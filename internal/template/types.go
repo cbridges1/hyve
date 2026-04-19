@@ -31,6 +31,11 @@ type TemplateSpec struct {
 	} `yaml:"ingress"`
 	Workflows TemplateWorkflowsSpec `yaml:"workflows,omitempty"`
 
+	// Schedule is a 5-field cron expression (e.g. "0 20 * * 5").
+	// At template execution time the next occurrence is calculated and written
+	// to the generated cluster's spec.expiresAt field.
+	Schedule string `yaml:"schedule,omitempty"`
+
 	// AWS-specific configuration (alias names defined in provider-configs/aws.yaml)
 	AWSAccount  string `yaml:"awsAccount,omitempty"`  // AWS account alias
 	AWSVPCName  string `yaml:"awsVpcName,omitempty"`  // VPC alias
