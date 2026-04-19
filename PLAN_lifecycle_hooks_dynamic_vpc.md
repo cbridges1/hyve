@@ -224,10 +224,6 @@ spec:
 ```
 --before-create stringArray         Workflows to run before cluster creation
 --after-delete  stringArray         Workflows to run after cluster deletion
---dynamic-vpc                       (EKS) Auto-create and destroy a VPC
---dynamic-vpc-cidr string           CIDR for the dynamic VPC (default: 10.0.0.0/16)
---dynamic-resource-group            (AKS) Auto-create and destroy a resource group
---dynamic-resource-group-name       Name for the auto-created resource group
 --eks-role-name string              IAM role name for the EKS control plane
 --node-role-name string             IAM role name for EKS node groups
 ```
