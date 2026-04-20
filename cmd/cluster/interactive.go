@@ -197,7 +197,29 @@ func interactiveClusterAdd() error {
 		}
 	}
 
-	// Pause option
+	// Expiry option — opt in explicitly
+	var setExpiry bool
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Set an expiry for this cluster?").
+				Description("The cluster will be automatically deleted when the expiry time is reached.").
+				Affirmative("Yes — set expiry").
+				Negative("No — run indefinitely").
+				Value(&setExpiry),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	if setExpiry {
+		var expiryErr error
+		expiresAt, expiryErr = shared.PromptExpiresAt("")
+		if expiryErr != nil {
+			return expiryErr
+		}
+	}
+
+	// Pause option — asked last
 	if err := shared.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -209,13 +231,6 @@ func interactiveClusterAdd() error {
 		),
 	).Run(); err != nil {
 		return err
-	}
-
-	// Expiry option
-	var expiryErr error
-	expiresAt, expiryErr = shared.PromptExpiresAt("")
-	if expiryErr != nil {
-		return expiryErr
 	}
 
 	nodes := splitAndTrim(nodesStr, ",")
