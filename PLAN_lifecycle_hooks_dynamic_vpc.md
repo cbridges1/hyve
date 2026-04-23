@@ -225,7 +225,15 @@ spec:
 
 ## CLI Changes
 
-### New flags — `hyve cluster add` / `hyve cluster modify`
+### New commands
+
+- `hyve cluster show [cluster-name]` — print the full cluster definition YAML and a summary of live fields (provider, region, node groups, workflows, pause state, expiry). Reads from the repo definition; does not make cloud API calls.
+
+### Renamed commands
+
+- `hyve cluster add` → `hyve cluster create`
+
+### New flags — `hyve cluster create` / `hyve cluster modify`
 
 ```
 --before-create stringArray         Workflows to run before cluster creation
@@ -301,6 +309,34 @@ Changes committed and pushed.
 
 ---
 
+## Documentation Changes — `hyve-docs`
+
+### New pages
+
+| File | Content |
+|---|---|
+| `cli/sync.mdx` | Full reference for `hyve sync` — flags, interactive flow, what gets written |
+
+### Updated pages
+
+| File | Change |
+|---|---|
+| `cli/cluster.mdx` | Rename `hyve cluster add` → `hyve cluster create` throughout; add `hyve cluster show` section; remove `hyve cluster import` and `hyve cluster release` sections |
+| `cli/overview.mdx` | Update command listing: `add` → `create`; add `show`; remove `import`, `release`; add `sync` |
+| `cli/config.mdx` | Remove AWS VPC create/delete, role create/delete, and Azure resource group create/delete subcommand entries |
+| `concepts/clusters.mdx` | Update all `hyve cluster add` examples to `hyve cluster create` |
+| `guides/cluster-management.mdx` | Update all `cluster add` examples to `cluster create`; replace import/release guidance with `hyve sync` |
+| `guides/cicd.mdx` | Update any `cluster add` references to `cluster create` |
+| `guides/access-control.mdx` | Update any `cluster add` references to `cluster create` |
+| `guides/kubeconfig-management.mdx` | Update any `cluster add` references to `cluster create` |
+| `concepts/gitops.mdx` | Update any `cluster add` references to `cluster create` |
+| `concepts/repositories.mdx` | Update any `cluster add` references to `cluster create` |
+| `quickstart.mdx` | Update any `cluster add` references to `cluster create` |
+| `index.mdx` | Update any `cluster add` references to `cluster create` |
+| `configuration.mdx` | Update any `cluster add` references to `cluster create` |
+
+---
+
 ## File Change Summary
 
 | File | Change |
@@ -315,9 +351,9 @@ Changes committed and pushed.
 | `internal/reconcile/sync.go` | New: `syncProviderConfigFields`, queries cloud for all resources referenced per account/subscription/project and reconciles YAML fields (add missing, remove stale); called once per reconcile regardless of action |
 | `internal/reconcile/vars.go` | New: `resolveSpecVars`, reads `HYVE_*` env vars and writes to provider config YAML |
 | `internal/template/types.go` | Add `BeforeCreate`, `AfterDelete` to `TemplateWorkflowsSpec`; add `AWSVPCId`, `AWSEKSRoleName`, `AWSNodeRoleName` to `TemplateSpec`; remove ARN fields |
-| `cmd/cluster/cmd.go` | Add `--before-create`, `--after-delete`, `--eks-role-name`, `--node-role-name` flags; remove ARN flags |
-| `cmd/cluster/crud.go` | Pass new fields through add/modify; update list display |
-| `cmd/cluster/interactive.go` | Add TUI steps for new fields; remove `release` and `import` interactive flows |
+| `cmd/cluster/cmd.go` | Rename `add` command to `create`; add `show` command; add `--before-create`, `--after-delete`, `--eks-role-name`, `--node-role-name` flags; remove ARN flags |
+| `cmd/cluster/crud.go` | Pass new fields through create/modify; add `showCluster` function; update list display |
+| `cmd/cluster/interactive.go` | Add `show` to interactive cluster menu; add TUI steps for new fields; remove `release` and `import` interactive flows |
 | `cmd/cluster/release.go` | Delete — `release` command removed |
 | `cmd/cluster/import.go` | Delete — replaced by `hyve sync` |
 | `cmd/config/aws.go` | Remove VPC create/delete, role create/delete subcommands |
