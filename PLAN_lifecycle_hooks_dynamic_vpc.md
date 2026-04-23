@@ -311,9 +311,16 @@ Changes committed and pushed.
 
 ## Workflow Scheduling & On-Demand Execution
 
-The reconciler is the **single execution path** for all workflow runs — local and CI/CD alike. There is no separate direct executor.
+Hyve supports two categories of cluster, and `hyve workflow run` takes the appropriate execution path based on which category the target cluster belongs to:
 
-### `pendingWorkflows` — Git-audited, unified queue
+- **Managed cluster** — has a cluster definition YAML in the repository. All workflow execution goes through the reconciler; the Git log is the audit trail.
+- **External/local cluster** — registered via `hyve kubeconfig add-external`; no cluster definition exists in the repository. Workflows execute directly against the kubeconfig; there is no Git write.
+
+### Managed clusters — reconciler-driven
+
+The reconciler is the single execution path for all workflow runs against managed clusters — local and CI/CD alike.
+
+#### `pendingWorkflows` — Git-audited queue
 
 Add `pendingWorkflows []PendingWorkflow` to `ClusterSpec`. The reconciler processes this list on every reconcile cycle:
 
@@ -341,7 +348,7 @@ for each entry: check runAt — if absent or past, execute workflow
 remove executed entries, commit + push
 ```
 
-### `workflowSchedules` — recurring, cron-driven
+#### `workflowSchedules` — recurring, cron-driven
 
 Add `workflowSchedules` to `ClusterSpec` to map workflow names to cron expressions. On every reconcile run the reconciler evaluates each schedule; when one is due it appends a `PendingWorkflow` entry with the next due `runAt` timestamp to `pendingWorkflows`, which is then processed in the same cycle.
 
@@ -356,11 +363,9 @@ spec:
 
 Timing granularity is determined by the reconcile cadence (e.g. hourly). This is the same mechanism that drives `expiresAt` cluster deletion.
 
-### `hyve workflow run` — on-demand trigger
+#### `hyve workflow run` — on-demand trigger (managed)
 
-`hyve workflow run <workflow> --cluster <cluster>` appends a `PendingWorkflow` entry with no `runAt` to the cluster YAML (commit + push) and then **triggers the reconciler directly** — in both local and CI/CD mode. The reconciler sees the pending entry, executes the workflow immediately, clears the entry, and commits.
-
-This means there is one execution path regardless of how the run was initiated: the reconciler always executes workflows and the Git log always reflects what ran and when.
+`hyve workflow run <workflow> --cluster <cluster>` appends a `PendingWorkflow` entry with no `runAt` to the cluster YAML (commit + push) and then triggers the reconciler directly — in both local and CI/CD mode. The reconciler sees the pending entry, executes the workflow immediately, clears the entry, and commits.
 
 ```
 hyve workflow run rotate-certs --cluster prod-eks
@@ -374,14 +379,33 @@ reconciler executes rotate-certs against prod-eks
 clears pendingWorkflows entry, commits + pushes
 ```
 
+### External/local clusters — direct execution
+
+Clusters registered via `hyve kubeconfig add-external` (e.g. k3d, unsupported providers, or any cluster with a local kubeconfig) have no cluster definition YAML in the repository. `pendingWorkflows` and `workflowSchedules` do not apply to them.
+
+`hyve workflow run <workflow> --cluster <cluster>` detects that the cluster is external and executes the workflow directly against the stored kubeconfig — no Git write, no reconciler involved.
+
+```
+hyve workflow run bootstrap --cluster local-k3d
+    ↓
+cluster has no managed definition → resolve kubeconfig from local external store
+    ↓
+execute workflow directly against kubeconfig
+    ↓
+stream output; done
+```
+
+`workflowSchedules` and scheduled `pendingWorkflows` are not available for external clusters. For recurring runs against external clusters, use the host scheduler (cron, GitHub Actions schedule, etc.) to invoke `hyve workflow run` directly.
+
 ### Comparison
 
-| | `pendingWorkflows` (no `runAt`) | `pendingWorkflows` (with `runAt`) | `workflowSchedules` |
-|---|---|---|---|
-| Trigger | Git commit or `hyve workflow run` | Git commit (manual schedule) | Automatic (cron) |
-| Timing | Immediate (next reconcile) | When `runAt` timestamp is reached | Next reconcile after schedule is due |
-| Git audit trail | Yes — entry set and cleared | Yes — entry set and cleared | Yes — via `pendingWorkflows` |
-| Use case | Ad-hoc or on-demand runs | One-off future runs | Recurring maintenance |
+| | Managed: `pendingWorkflows` (no `runAt`) | Managed: `pendingWorkflows` (with `runAt`) | Managed: `workflowSchedules` | External: `hyve workflow run` |
+|---|---|---|---|---|
+| Cluster type | Managed | Managed | Managed | External/local |
+| Trigger | Git commit or `hyve workflow run` | Git commit (manual schedule) | Automatic (cron) | `hyve workflow run` |
+| Execution | Reconciler | Reconciler (when due) | Reconciler | Direct |
+| Git audit trail | Yes | Yes | Yes — via `pendingWorkflows` | No |
+| Use case | Ad-hoc / on-demand | One-off future runs | Recurring maintenance | Local/unsupported clusters |
 
 ### Type Changes
 
@@ -412,7 +436,7 @@ type WorkflowSchedule struct {
 |---|---|
 | `internal/types/types.go` | Add `PendingWorkflows`, `WorkflowSchedules`, `PendingWorkflow`, `WorkflowSchedule` to `ClusterSpec` |
 | `internal/reconcile/manager.go` | On every reconcile: evaluate `workflowSchedules` and append due entries to `pendingWorkflows`; execute all immediately-due `pendingWorkflows` entries (absent or past `runAt`); clear executed entries and commit |
-| `cmd/workflow/cmd.go` | `hyve workflow run` appends a `PendingWorkflow` (no `runAt`) to the cluster YAML, commits + pushes, then triggers the reconciler (local: subprocess; CI/CD: dispatches pipeline run) |
+| `cmd/workflow/cmd.go` | `hyve workflow run`: detect managed vs external cluster; for managed — append `PendingWorkflow` (no `runAt`), commit + push, trigger reconciler; for external — resolve kubeconfig from local store and execute directly |
 
 ---
 
