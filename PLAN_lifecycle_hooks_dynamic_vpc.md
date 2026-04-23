@@ -311,33 +311,39 @@ Changes committed and pushed.
 
 ## Workflow Scheduling & On-Demand Execution
 
-### `pendingWorkflows` — async, Git-audited
+The reconciler is the **single execution path** for all workflow runs — local and CI/CD alike. There is no separate direct executor.
 
-Add `pendingWorkflows []string` to `ClusterSpec`. Setting this field on a cluster definition and committing triggers execution on the next reconcile run. The reconciler detects a non-empty list, runs each workflow in order against the cluster, then clears the field and commits.
+### `pendingWorkflows` — Git-audited, unified queue
+
+Add `pendingWorkflows []PendingWorkflow` to `ClusterSpec`. The reconciler processes this list on every reconcile cycle:
+
+- Entry with **no `runAt`** — execute immediately on the next reconcile.
+- Entry with a **`runAt` timestamp** — execute when the current time is at or after that timestamp.
+
+After executing an entry the reconciler removes it from the list and commits the cleared YAML.
 
 ```yaml
 spec:
   pendingWorkflows:
-    - rotate-certs
-    - sync-secrets
+    - workflow: rotate-certs              # no runAt → runs on next reconcile
+    - workflow: sync-secrets
+      runAt: "2026-06-01T03:00:00Z"      # scheduled → runs when due
 ```
 
-Flow:
+Flow (both local and CI/CD):
 ```
-commit: add pendingWorkflows to cluster YAML
+entry written to pendingWorkflows in cluster YAML
     ↓
-push triggers reconcile pipeline (or next scheduled run picks it up)
+reconciler runs (triggered or scheduled)
     ↓
-reconciler sees pendingWorkflows on cluster
+for each entry: check runAt — if absent or past, execute workflow
     ↓
-runs each workflow in order against the cluster
-    ↓
-clears pendingWorkflows, commits + pushes
+remove executed entries, commit + push
 ```
 
 ### `workflowSchedules` — recurring, cron-driven
 
-Add `workflowSchedules` to `ClusterSpec` to map workflow names to cron expressions. On every reconcile run the reconciler evaluates each schedule; when one is due it appends the workflow to `pendingWorkflows`, which is then executed in the same cycle.
+Add `workflowSchedules` to `ClusterSpec` to map workflow names to cron expressions. On every reconcile run the reconciler evaluates each schedule; when one is due it appends a `PendingWorkflow` entry with the next due `runAt` timestamp to `pendingWorkflows`, which is then processed in the same cycle.
 
 ```yaml
 spec:
@@ -350,53 +356,50 @@ spec:
 
 Timing granularity is determined by the reconcile cadence (e.g. hourly). This is the same mechanism that drives `expiresAt` cluster deletion.
 
-### `hyve workflow run` — immediate, synchronous
+### `hyve workflow run` — on-demand trigger
 
-For runs that cannot wait for the next reconcile cycle, `hyve workflow run <workflow> --cluster <cluster>` executes immediately and streams output directly. In CI/CD mode this is wired to a `workflow_dispatch` GitHub Actions job so users can trigger it from the Actions UI or via `gh workflow run` without making a commit.
+`hyve workflow run <workflow> --cluster <cluster>` appends a `PendingWorkflow` entry with no `runAt` to the cluster YAML (commit + push) and then **triggers the reconciler directly** — in both local and CI/CD mode. The reconciler sees the pending entry, executes the workflow immediately, clears the entry, and commits.
 
-```yaml
-# .github/workflows/run-workflow.yml
-on:
-  workflow_dispatch:
-    inputs:
-      workflow:
-        description: Workflow name
-        required: true
-      cluster:
-        description: Target cluster
-        required: true
+This means there is one execution path regardless of how the run was initiated: the reconciler always executes workflows and the Git log always reflects what ran and when.
 
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - run: hyve workflow run ${{ inputs.workflow }} --cluster ${{ inputs.cluster }}
 ```
-
-Output is visible directly in the Actions log. Optionally, `hyve workflow run` in CI/CD mode can write a result entry back to the cluster YAML after completion to preserve the audit trail in Git.
+hyve workflow run rotate-certs --cluster prod-eks
+    ↓
+appends { workflow: rotate-certs } to pendingWorkflows, commits + pushes
+    ↓
+triggers reconciler (local: subprocess; CI/CD: dispatches pipeline run)
+    ↓
+reconciler executes rotate-certs against prod-eks
+    ↓
+clears pendingWorkflows entry, commits + pushes
+```
 
 ### Comparison
 
-| | `pendingWorkflows` | `workflowSchedules` | `hyve workflow run` |
+| | `pendingWorkflows` (no `runAt`) | `pendingWorkflows` (with `runAt`) | `workflowSchedules` |
 |---|---|---|---|
-| Trigger | Git commit | Automatic (cron) | Manual / `workflow_dispatch` |
-| Timing | Next reconcile | Next reconcile after schedule is due | Immediate |
-| Output | Actions log | Actions log | Actions log (streaming) |
-| Git audit trail | Yes — field set and cleared | Yes — via `pendingWorkflows` | Optional |
-| Use case | Async one-off runs | Recurring maintenance | Urgent or ad-hoc runs |
+| Trigger | Git commit or `hyve workflow run` | Git commit (manual schedule) | Automatic (cron) |
+| Timing | Immediate (next reconcile) | When `runAt` timestamp is reached | Next reconcile after schedule is due |
+| Git audit trail | Yes — entry set and cleared | Yes — entry set and cleared | Yes — via `pendingWorkflows` |
+| Use case | Ad-hoc or on-demand runs | One-off future runs | Recurring maintenance |
 
 ### Type Changes
 
 Add to `ClusterSpec`:
 
 ```go
-PendingWorkflows  []string              `yaml:"pendingWorkflows,omitempty"`
-WorkflowSchedules []WorkflowSchedule    `yaml:"workflowSchedules,omitempty"`
+PendingWorkflows  []PendingWorkflow     `yaml:"pendingWorkflows,omitempty"`
+WorkflowSchedules []WorkflowSchedule   `yaml:"workflowSchedules,omitempty"`
 ```
 
-New type:
+New types:
 
 ```go
+type PendingWorkflow struct {
+    Workflow string `yaml:"workflow"`
+    RunAt    string `yaml:"runAt,omitempty"` // RFC 3339; absent = run immediately
+}
+
 type WorkflowSchedule struct {
     Workflow string `yaml:"workflow"`
     Schedule string `yaml:"schedule"` // 5-field cron expression
@@ -407,9 +410,9 @@ type WorkflowSchedule struct {
 
 | File | Change |
 |---|---|
-| `internal/types/types.go` | Add `PendingWorkflows`, `WorkflowSchedules`, `WorkflowSchedule` to `ClusterSpec` |
-| `internal/reconcile/manager.go` | After cluster reconciliation, evaluate `workflowSchedules` and append due workflows to `pendingWorkflows`; execute and clear `pendingWorkflows` |
-| `cmd/workflow/cmd.go` | Ensure `hyve workflow run --cluster` works in CI/CD mode; add optional result write-back to cluster YAML |
+| `internal/types/types.go` | Add `PendingWorkflows`, `WorkflowSchedules`, `PendingWorkflow`, `WorkflowSchedule` to `ClusterSpec` |
+| `internal/reconcile/manager.go` | On every reconcile: evaluate `workflowSchedules` and append due entries to `pendingWorkflows`; execute all immediately-due `pendingWorkflows` entries (absent or past `runAt`); clear executed entries and commit |
+| `cmd/workflow/cmd.go` | `hyve workflow run` appends a `PendingWorkflow` (no `runAt`) to the cluster YAML, commits + pushes, then triggers the reconciler (local: subprocess; CI/CD: dispatches pipeline run) |
 
 ---
 
@@ -427,7 +430,7 @@ type WorkflowSchedule struct {
 |---|---|
 | `cli/cluster.mdx` | Rename `hyve cluster add` → `hyve cluster create` throughout; add `hyve cluster show` section; remove `hyve cluster import` and `hyve cluster release` sections; document `pendingWorkflows` and `workflowSchedules` spec fields |
 | `cli/sync.mdx` | Full reference for `hyve sync` — flags, interactive flow, what gets written |
-| `cli/workflow.mdx` | Document `hyve workflow run --cluster` for CI/CD mode; add `workflow_dispatch` example |
+| `cli/workflow.mdx` | Document `hyve workflow run --cluster`; explain that it commits to `pendingWorkflows` and triggers the reconciler in both local and CI/CD mode |
 | `cli/overview.mdx` | Update command listing: `add` → `create`; add `show`; remove `import`, `release`; add `sync` |
 | `cli/config.mdx` | Remove AWS VPC create/delete, role create/delete, and Azure resource group create/delete subcommand entries |
 | `concepts/clusters.mdx` | Update all `hyve cluster add` examples to `hyve cluster create` |
@@ -447,7 +450,7 @@ type WorkflowSchedule struct {
 
 | File | Change |
 |---|---|
-| `internal/types/types.go` | Add `BeforeCreate`, `AfterDelete` to `WorkflowsSpec`; add `AWSVPCId`, `AWSEKSRoleName`, `AWSNodeRoleName`, `PendingWorkflows`, `WorkflowSchedules` to `ClusterSpec`; add `WorkflowSchedule` type; remove ARN fields |
+| `internal/types/types.go` | Add `BeforeCreate`, `AfterDelete` to `WorkflowsSpec`; add `AWSVPCId`, `AWSEKSRoleName`, `AWSNodeRoleName`, `PendingWorkflows`, `WorkflowSchedules` to `ClusterSpec`; add `PendingWorkflow`, `WorkflowSchedule` types; remove ARN fields |
 | `internal/cluster/provider.go` | Add role name → ARN lookup; remove all resource provisioning methods (`CreateVPC`, `DeleteVPC`, `CreateRole`, `DeleteRole`, `CreateResourceGroup`, `DeleteResourceGroup`) |
 | `internal/cluster/aws/provider.go` | Implement role name lookup; remove VPC and role provisioning implementations |
 | `internal/cluster/azure/provider.go` | Remove resource group provisioning implementations |
