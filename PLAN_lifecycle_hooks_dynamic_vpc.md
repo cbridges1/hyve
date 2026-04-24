@@ -481,3 +481,30 @@ type WorkflowSchedule struct {
 | `cmd/sync/discover.go` | New: per-provider cluster discovery; constructs `ClusterDefinition` from live cloud state |
 | `cmd/template/cmd.go` | Mirror new flags |
 | `cmd/template/interactive.go` | Mirror TUI additions |
+
+---
+
+## Summary of Changes
+
+### What's being added
+
+- **Lifecycle hooks** — clusters can now declare workflows to run at four points in their lifecycle: `beforeCreate`, `onCreated`, `onDestroy`, and `afterDelete`. The reconciler executes them automatically and exports any `HYVE_*` env vars from `beforeCreate` back into the provider config YAML before creating the cluster.
+- **Passive provider config sync** — on every reconcile run, hyve queries each cloud account and reconciles the provider config YAML: adding fields for resources that exist but aren't listed, and removing fields for resources that no longer exist. This runs unconditionally, not just when a hook fires.
+- **Workflow scheduling** — clusters can declare `workflowSchedules` (cron-driven, recurring) and `pendingWorkflows` (a queue of one-off runs). The reconciler processes both on every cycle. Entries without a `runAt` execute immediately; entries with a `runAt` timestamp execute when due.
+- **`hyve workflow run`** — triggers an immediate workflow run. With `--cluster` it commits a `pendingWorkflows` entry and triggers the reconciler. Without `--cluster` it executes directly against the active kubeconfig, so any cluster works with no registration required.
+- **`hyve sync`** — new command that discovers unmanaged clusters and orphaned provider config resources across all configured cloud accounts and imports them into the repository interactively.
+- **`hyve cluster show`** — new command that prints the full definition and a live summary for a cluster.
+- **Resource name fields** — `awsVpcId`, `awsEksRoleName`, `awsNodeRoleName` replace the old ARN fields on `ClusterSpec`. Role ARNs are resolved at runtime by name lookup.
+
+### What's being removed
+
+- **ARN fields** — `awsEksRoleArn` and `awsNodeRoleArn` replaced by name-based fields; ARNs resolved internally.
+- **Infrastructure provisioning commands** — hyve no longer creates or deletes VPCs, IAM roles, or Azure resource groups. All supporting infrastructure is provisioned externally (IaC or `beforeCreate` hooks). The `hyve config aws vpc`, `hyve config aws eks-role`, `hyve config aws node-role`, and `hyve config azure resource-group` subcommands are removed.
+- **`hyve cluster import`** — replaced by `hyve sync`, which discovers all unmanaged clusters in one pass instead of requiring the cluster name up front.
+- **`hyve cluster release`** — removed. Git is always authoritative; a released cluster would simply be re-discovered on the next sync.
+- **`hyve kubeconfig add-external` / `list-external` / `remove-external`** — removed. Hyve uses whatever kubeconfig context is active; users manage contexts with standard tooling (`k3d kubeconfig merge`, `aws eks update-kubeconfig`, etc.).
+- **Local kubeconfig store** — the SQLite-backed local store and `_local` sentinel are removed along with the `add-external` commands.
+
+### What's being renamed
+
+- **`hyve cluster add` → `hyve cluster create`** — more intuitive and consistent with standard CLI conventions.
