@@ -10,6 +10,7 @@ import (
 	"github.com/cbridges1/hyve/cmd/config"
 	gitpkg "github.com/cbridges1/hyve/cmd/git"
 	"github.com/cbridges1/hyve/cmd/kubeconfig"
+	synccmd "github.com/cbridges1/hyve/cmd/sync"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 	"github.com/cbridges1/hyve/internal/database"
@@ -70,6 +71,7 @@ func init() {
 	rootCmd.AddCommand(gitpkg.Cmd)
 	rootCmd.AddCommand(kubeconfig.Cmd)
 	rootCmd.AddCommand(config.Cmd)
+	rootCmd.AddCommand(synccmd.Cmd)
 	rootCmd.AddCommand(useCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(workflow.Cmd)

@@ -25,10 +25,9 @@ func runInteractiveCluster() error {
 					Title("Cluster — what would you like to do?").
 					Options(
 						huh.NewOption("List clusters", "list"),
-						huh.NewOption("Add a new cluster", "add"),
-						huh.NewOption("Import an existing cluster", "import"),
+						huh.NewOption("Show cluster details", "show"),
+						huh.NewOption("Create a new cluster", "create"),
 						huh.NewOption("Modify an existing cluster", "modify"),
-						huh.NewOption("Release a cluster from management", "release"),
 						huh.NewOption("Delete a cluster", "delete"),
 						huh.NewOption("Force-delete a cluster from cloud", "force-delete"),
 						huh.NewOption("← Back", "back"),
@@ -45,16 +44,12 @@ func runInteractiveCluster() error {
 			return shared.ErrBack
 		case "list":
 			listClusters()
-		case "add":
-			if err := interactiveClusterAdd(); err != nil && err != shared.ErrBack {
+		case "show":
+			if err := interactiveClusterShow(); err != nil && err != shared.ErrBack {
 				return err
 			}
-		case "import":
-			if err := interactiveClusterImport(); err != nil && err != shared.ErrBack {
-				return err
-			}
-		case "release":
-			if err := interactiveClusterRelease(); err != nil && err != shared.ErrBack {
+		case "create":
+			if err := interactiveClusterCreate(); err != nil && err != shared.ErrBack {
 				return err
 			}
 		case "modify":
@@ -73,7 +68,16 @@ func runInteractiveCluster() error {
 	}
 }
 
-func interactiveClusterAdd() error {
+func interactiveClusterShow() error {
+	clusterName := ""
+	if err := shared.SelectFromList("Cluster to show", shared.FetchClusterNames(), &clusterName); err != nil {
+		return err
+	}
+	showCluster(clusterName)
+	return nil
+}
+
+func interactiveClusterCreate() error {
 	var (
 		clusterName      string
 		providerName     string
@@ -87,8 +91,10 @@ func interactiveClusterAdd() error {
 		vpcName          string
 		eksRoleName      string
 		nodeRoleName     string
+		beforeCreate     []string
 		onCreatedNames   []string
 		onDestroyNames   []string
+		afterDelete      []string
 		pause            bool
 		expiresAt        string
 	)
@@ -153,13 +159,13 @@ func interactiveClusterAdd() error {
 		if err := shared.SelectFromList("AWS account alias", shared.FetchAWSAccountNames(), &accountName); err != nil {
 			return err
 		}
-		if err := shared.SelectFromList("VPC alias", shared.FetchAWSVPCNames(accountName), &vpcName); err != nil {
+		if err := shared.SelectFromList("VPC alias (optional — press enter to skip)", shared.FetchAWSVPCNames(accountName), &vpcName); err != nil {
 			return err
 		}
-		if err := shared.SelectFromList("EKS role alias", shared.FetchAWSEKSRoleNames(accountName), &eksRoleName); err != nil {
+		if err := shared.SelectFromList("EKS role name (optional — press enter to skip)", shared.FetchAWSEKSRoleNames(accountName), &eksRoleName); err != nil {
 			return err
 		}
-		if err := shared.SelectFromList("Node role alias", shared.FetchAWSNodeRoleNames(accountName), &nodeRoleName); err != nil {
+		if err := shared.SelectFromList("Node role name (optional — press enter to skip)", shared.FetchAWSNodeRoleNames(accountName), &nodeRoleName); err != nil {
 			return err
 		}
 	case "gcp":
@@ -184,6 +190,10 @@ func interactiveClusterAdd() error {
 		if err := shared.NewForm(
 			huh.NewGroup(
 				huh.NewMultiSelect[string]().
+					Title("Before-create workflows (optional — space to select, enter to confirm)").
+					Options(makeOpts()...).
+					Value(&beforeCreate),
+				huh.NewMultiSelect[string]().
 					Title("On-created workflows (optional — space to select, enter to confirm)").
 					Options(makeOpts()...).
 					Value(&onCreatedNames),
@@ -191,6 +201,10 @@ func interactiveClusterAdd() error {
 					Title("On-destroy workflows (optional — space to select, enter to confirm)").
 					Options(makeOpts()...).
 					Value(&onDestroyNames),
+				huh.NewMultiSelect[string]().
+					Title("After-delete workflows (optional — space to select, enter to confirm)").
+					Options(makeOpts()...).
+					Value(&afterDelete),
 			),
 		).Run(); err != nil {
 			return err
@@ -235,7 +249,7 @@ func interactiveClusterAdd() error {
 
 	nodes := splitAndTrim(nodesStr, ",")
 	var confirm bool
-	summary := fmt.Sprintf("Add cluster '%s' on %s in %s with nodes: %s", clusterName, providerName, region, strings.Join(nodes, ", "))
+	summary := fmt.Sprintf("Create cluster '%s' on %s in %s with nodes: %s", clusterName, providerName, region, strings.Join(nodes, ", "))
 	err = shared.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -252,7 +266,7 @@ func interactiveClusterAdd() error {
 		return nil
 	}
 
-	addClusterFromCLI(clusterName, region, providerName, nodes, []types.NodeGroup{}, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, onCreatedNames, onDestroyNames, pause, expiresAt)
+	createClusterFromCLI(clusterName, region, providerName, nodes, []types.NodeGroup{}, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, beforeCreate, onCreatedNames, onDestroyNames, afterDelete, pause, expiresAt)
 	return nil
 }
 
@@ -498,192 +512,4 @@ func splitAndTrim(s, sep string) []string {
 		}
 	}
 	return out
-}
-
-func interactiveClusterImport() error {
-	if sm, _ := shared.CreateStateManager(gocontext.Background()); sm != nil {
-		if repoCfg, err := sm.LoadRepoConfig(); err == nil && repoCfg.Reconcile.StrictDelete {
-			fmt.Println("❌ Import is disabled: this repository has strictDelete enabled.")
-			fmt.Println("   In strict-delete mode hyve owns the full desired-state; importing an unmanaged cluster would cause it to be deleted on the next reconciliation.")
-			return nil
-		}
-	}
-
-	var (
-		providerName string
-		accountAlias string
-		region       string
-		clusterName  string
-		vpcName      string
-		eksRoleName  string
-		nodeRoleName string
-	)
-
-	err := shared.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Cloud provider").
-				Options(
-					huh.NewOption("Civo", "civo"),
-					huh.NewOption("AWS (EKS)", "aws"),
-					huh.NewOption("GCP (GKE)", "gcp"),
-					huh.NewOption("Azure (AKS)", "azure"),
-					huh.NewOption("← Back", "back"),
-				).
-				Value(&providerName),
-		),
-	).Run()
-	if err != nil {
-		return err
-	}
-	if providerName == "back" {
-		return shared.ErrBack
-	}
-
-	switch providerName {
-	case "civo":
-		if err := shared.SelectFromList("Civo organization", shared.FetchCivoOrgNames(), &accountAlias); err != nil {
-			return err
-		}
-	case "aws":
-		if err := shared.SelectFromList("AWS account alias", shared.FetchAWSAccountNames(), &accountAlias); err != nil {
-			return err
-		}
-		if err := shared.SelectFromList("VPC alias", shared.FetchAWSVPCNames(accountAlias), &vpcName); err != nil {
-			return err
-		}
-		if err := shared.SelectFromList("EKS role alias", shared.FetchAWSEKSRoleNames(accountAlias), &eksRoleName); err != nil {
-			return err
-		}
-		if err := shared.SelectFromList("Node role alias", shared.FetchAWSNodeRoleNames(accountAlias), &nodeRoleName); err != nil {
-			return err
-		}
-	case "gcp":
-		if err := shared.SelectFromList("GCP project alias", shared.FetchGCPProjectNames(), &accountAlias); err != nil {
-			return err
-		}
-	case "azure":
-		if err := shared.SelectFromList("Azure subscription alias", shared.FetchAzureSubscriptionNames(), &accountAlias); err != nil {
-			return err
-		}
-	}
-
-	ctx := gocontext.Background()
-	if err := shared.SelectFromGroups("Region", shared.FetchRegionGroups(ctx, providerName, accountAlias), defaultRegionPlaceholder(providerName), &region); err != nil {
-		return err
-	}
-
-	cloudNames := shared.FetchCloudClusterNames(ctx, providerName, region, accountAlias)
-	const manualKey = "__manual__"
-	if len(cloudNames) > 0 {
-		opts := make([]huh.Option[string], 0, len(cloudNames)+2)
-		opts = append(opts, huh.NewOption("Enter manually...", manualKey))
-		for _, n := range cloudNames {
-			opts = append(opts, huh.NewOption(n, n))
-		}
-		opts = append(opts, huh.NewOption("← Back", "__back__"))
-
-		selection := ""
-		if err := shared.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Select cluster to import").
-					Options(opts...).
-					Value(&selection),
-			),
-		).Run(); err != nil {
-			return err
-		}
-		switch selection {
-		case "__back__":
-			return shared.ErrBack
-		case manualKey:
-			// fall through to manual input below
-		default:
-			clusterName = selection
-		}
-	}
-
-	if clusterName == "" {
-		if err := shared.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Cluster name (must match the name in your cloud provider)").
-					Placeholder("my-cluster").
-					Validate(shared.RequireNotEmpty).
-					Value(&clusterName),
-			),
-		).Run(); err != nil {
-			return err
-		}
-	}
-
-	var orgName, projectName, subscriptionName, accountName string
-	switch providerName {
-	case "civo":
-		orgName = accountAlias
-	case "aws":
-		accountName = accountAlias
-	case "gcp":
-		projectName = accountAlias
-	case "azure":
-		subscriptionName = accountAlias
-	}
-
-	var confirm bool
-	summary := fmt.Sprintf("Import '%s' (%s, %s) into hyve — cloud cluster will NOT be reprovisioned", clusterName, providerName, region)
-	err = shared.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(summary).
-				Affirmative("Import").
-				Negative("Cancel").
-				Value(&confirm),
-		),
-	).Run()
-	if err != nil {
-		return err
-	}
-	if !confirm {
-		return nil
-	}
-
-	importClusterFromCLI(clusterName, region, providerName, nil, []types.NodeGroup{}, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName)
-	return nil
-}
-
-func interactiveClusterRelease() error {
-	if sm, _ := shared.CreateStateManager(gocontext.Background()); sm != nil {
-		if repoCfg, err := sm.LoadRepoConfig(); err == nil && repoCfg.Reconcile.StrictDelete {
-			fmt.Println("❌ Release is disabled: this repository has strictDelete enabled.")
-			fmt.Println("   In strict-delete mode removing a cluster definition would cause the cloud cluster to be deleted on the next reconciliation.")
-			fmt.Println("   Use 'hyve cluster delete' instead.")
-			return nil
-		}
-	}
-
-	clusterName := ""
-	if err := shared.SelectFromList("Cluster to release from management", shared.FetchClusterNames(), &clusterName); err != nil {
-		return err
-	}
-
-	var confirm bool
-	err := shared.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(fmt.Sprintf("Release '%s' from hyve management? The cloud cluster will NOT be deleted.", clusterName)).
-				Affirmative("Yes, release").
-				Negative("Cancel").
-				Value(&confirm),
-		),
-	).Run()
-	if err != nil {
-		return err
-	}
-	if !confirm {
-		return nil
-	}
-
-	releaseClusterFromCLI(clusterName)
-	return nil
 }

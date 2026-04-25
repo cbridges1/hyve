@@ -63,6 +63,18 @@ func (m *Manager) FindByName(ctx context.Context, name string) (*provider.Cluste
 
 // Create creates a new cluster
 func (m *Manager) Create(ctx context.Context, clusterDef types.ClusterDefinition) (*provider.Cluster, error) {
+	// Resolve EKS role ARN: prefer the runtime-resolved ARN, then fall back to
+	// constructing it from the direct role name + account ID (predictable ARN format).
+	eksRoleARN := clusterDef.Spec.AWSEKSRoleARN
+	if eksRoleARN == "" && clusterDef.Spec.AWSEKSRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+		eksRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSEKSRoleName)
+	}
+
+	nodeRoleARN := clusterDef.Spec.AWSNodeRoleARN
+	if nodeRoleARN == "" && clusterDef.Spec.AWSNodeRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+		nodeRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSNodeRoleName)
+	}
+
 	config := &provider.ClusterConfig{
 		Name:        clusterDef.Metadata.Name,
 		Region:      clusterDef.Metadata.Region,
@@ -70,8 +82,8 @@ func (m *Manager) Create(ctx context.Context, clusterDef types.ClusterDefinition
 		NodeGroups:  clusterDef.Spec.NodeGroups,
 		ClusterType: clusterDef.Spec.ClusterType,
 		// AWS-specific configuration
-		AWSRoleARN:     clusterDef.Spec.AWSEKSRoleARN,
-		AWSNodeRoleARN: clusterDef.Spec.AWSNodeRoleARN,
+		AWSRoleARN:     eksRoleARN,
+		AWSNodeRoleARN: nodeRoleARN,
 		AWSVPCID:       clusterDef.Spec.AWSVPCID,
 	}
 

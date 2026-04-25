@@ -10,8 +10,10 @@ type TemplateMetadata struct {
 
 // TemplateWorkflowsSpec defines workflows to run on cluster lifecycle events
 type TemplateWorkflowsSpec struct {
-	OnCreated []string `yaml:"onCreated,omitempty"` // Workflows to run after cluster creation
-	OnDestroy []string `yaml:"onDestroy,omitempty"` // Workflows to run before cluster destruction
+	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation
+	OnCreated    []string `yaml:"onCreated,omitempty"`    // Workflows to run after cluster creation
+	OnDestroy    []string `yaml:"onDestroy,omitempty"`    // Workflows to run before cluster destruction
+	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion
 }
 
 // TemplateSpec represents the template specification.
@@ -37,10 +39,12 @@ type TemplateSpec struct {
 	Schedule string `yaml:"schedule,omitempty"`
 
 	// AWS-specific configuration (alias names defined in provider-configs/aws.yaml)
-	AWSAccount  string `yaml:"awsAccount,omitempty"`  // AWS account alias
-	AWSVPCName  string `yaml:"awsVpcName,omitempty"`  // VPC alias
-	AWSEKSRole  string `yaml:"awsEksRole,omitempty"`  // EKS cluster role alias
-	AWSNodeRole string `yaml:"awsNodeRole,omitempty"` // EKS node role alias
+	AWSAccount      string `yaml:"awsAccount,omitempty"`      // AWS account alias
+	AWSVPCName      string `yaml:"awsVpcName,omitempty"`      // VPC alias
+	AWSEKSRole      string `yaml:"awsEksRole,omitempty"`      // EKS cluster role alias (provider-config reference)
+	AWSNodeRole     string `yaml:"awsNodeRole,omitempty"`     // EKS node role alias (provider-config reference)
+	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // Direct IAM role name for EKS control plane
+	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // Direct IAM role name for EKS node groups
 
 	// Azure-specific configuration (alias names defined in provider-configs/azure.yaml)
 	AzureSubscription  string `yaml:"azureSubscription,omitempty"`  // Azure subscription alias

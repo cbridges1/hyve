@@ -15,12 +15,6 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
-// CreateLocalKubeconfigManager creates a kubeconfig manager for locally-imported
-// external clusters. No Git repository needs to be configured.
-func CreateLocalKubeconfigManager() (*kubeconfig.Manager, error) {
-	return kubeconfig.NewLocalManager()
-}
-
 // CreateKubeconfigManager creates a kubeconfig manager for the current repository
 func CreateKubeconfigManager() (*kubeconfig.Manager, string, error) {
 	repoMgr, err := repository.NewManager()

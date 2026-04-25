@@ -297,40 +297,50 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.M
 	}
 }
 
-// resolveAWSAliases fills in resolved ARN/ID fields on the cluster definition
-// from the alias names stored in the provider-config YAML, when the resolved
-// fields are not already present. This allows cluster YAMLs to use short alias
-// names (e.g. awsEksRole: my-role) without requiring the template command to
-// first resolve and write back the full ARNs.
+// resolveAWSAliases fills in runtime ARN/ID fields on the cluster definition.
+// For roles: checks provider-config alias (awsEksRole) first, then falls back to
+// constructing the ARN from the direct name field (awsEksRoleName) + account ID.
+// For VPCs: resolves awsVpcName alias to awsVpcId from provider-config.
+// All resolved values are stored in runtime-only fields (yaml:"-") so they are
+// never written back to the cluster YAML.
 func (r *Reconciler) resolveAWSAliases(clusterDef *types.ClusterDefinition) {
 	if strings.ToLower(clusterDef.Spec.Provider) != "aws" {
 		return
 	}
 	accountName := clusterDef.Spec.AWSAccount
-	if accountName == "" {
-		return
-	}
 	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
 
-	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRole != "" {
-		if arn, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole); err == nil {
-			clusterDef.Spec.AWSEKSRoleARN = arn
-			log.Printf("[%s] Resolved EKS role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, arn)
-		} else {
-			log.Printf("[%s] Warning: could not resolve EKS role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, err)
+	// Resolve EKS role ARN: provider-config alias takes precedence over direct name.
+	if clusterDef.Spec.AWSEKSRoleARN == "" {
+		if accountName != "" && clusterDef.Spec.AWSEKSRole != "" {
+			if arn, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole); err == nil {
+				clusterDef.Spec.AWSEKSRoleARN = arn
+				log.Printf("[%s] Resolved EKS role alias '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, arn)
+			} else {
+				log.Printf("[%s] Warning: could not resolve EKS role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, err)
+			}
+		} else if clusterDef.Spec.AWSEKSRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+			clusterDef.Spec.AWSEKSRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSEKSRoleName)
+			log.Printf("[%s] Constructed EKS role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRoleName)
 		}
 	}
 
-	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRole != "" {
-		if arn, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole); err == nil {
-			clusterDef.Spec.AWSNodeRoleARN = arn
-			log.Printf("[%s] Resolved node role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, arn)
-		} else {
-			log.Printf("[%s] Warning: could not resolve node role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, err)
+	// Resolve node role ARN: provider-config alias takes precedence over direct name.
+	if clusterDef.Spec.AWSNodeRoleARN == "" {
+		if accountName != "" && clusterDef.Spec.AWSNodeRole != "" {
+			if arn, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole); err == nil {
+				clusterDef.Spec.AWSNodeRoleARN = arn
+				log.Printf("[%s] Resolved node role alias '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, arn)
+			} else {
+				log.Printf("[%s] Warning: could not resolve node role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, err)
+			}
+		} else if clusterDef.Spec.AWSNodeRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+			clusterDef.Spec.AWSNodeRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSNodeRoleName)
+			log.Printf("[%s] Constructed node role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRoleName)
 		}
 	}
 
-	if clusterDef.Spec.AWSVPCID == "" && clusterDef.Spec.AWSVPCName != "" {
+	if clusterDef.Spec.AWSVPCID == "" && accountName != "" && clusterDef.Spec.AWSVPCName != "" {
 		if vpcID, err := pcMgr.GetAWSVPCID(accountName, clusterDef.Spec.AWSVPCName); err == nil {
 			clusterDef.Spec.AWSVPCID = vpcID
 			log.Printf("[%s] Resolved VPC '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, vpcID)
@@ -353,9 +363,17 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 		return nil
 	}
 
-	// Resolve AWS alias names (role names, VPC names) to their ARNs/IDs from
-	// provider-configs before passing to the provider, so that cluster YAMLs
-	// do not need to have the full ARNs written into them by the template command.
+	// Run beforeCreate workflows. After they complete, read any HYVE_* env vars
+	// they exported and write the resolved values back to the provider config YAML.
+	if len(clusterDef.Spec.Workflows.BeforeCreate) > 0 {
+		log.Printf("[%s] 🔄 Running beforeCreate workflows...", clusterDef.Metadata.Name)
+		r.runWorkflows(ctx, clusterDef.Spec.Workflows.BeforeCreate, clusterDef.Metadata.Name)
+		if err := resolveHookEnvVars(ctx, r.stateMgr, &clusterDef); err != nil {
+			log.Printf("[%s] Warning: failed to resolve hook env vars: %v", clusterDef.Metadata.Name, err)
+		}
+	}
+
+	// Resolve AWS alias names (role names, VPC names) to their runtime ARNs/IDs.
 	r.resolveAWSAliases(&clusterDef)
 
 	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
@@ -411,6 +429,13 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 	}
 
 	log.Printf("[%s] ✅ Cluster deleted successfully", clusterDef.Metadata.Name)
+
+	// Run afterDelete workflows now that the cloud cluster is gone
+	if len(clusterDef.Spec.Workflows.AfterDelete) > 0 {
+		log.Printf("[%s] 🔄 Running afterDelete workflows...", clusterDef.Metadata.Name)
+		r.runWorkflows(ctx, clusterDef.Spec.Workflows.AfterDelete, clusterDef.Metadata.Name)
+	}
+
 	return nil
 }
 

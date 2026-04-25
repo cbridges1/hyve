@@ -115,18 +115,18 @@ func TestBuildClusterDef_EmptyWorkflowsOmittedFromYAML(t *testing.T) {
 }
 
 func TestAddCmdFlags_OnCreatedAndOnDestroy(t *testing.T) {
-	// Verify the flags are registered on addCmd
-	onCreatedFlag := addCmd.Flags().Lookup("on-created")
+	// Verify the flags are registered on createCmd
+	onCreatedFlag := createCmd.Flags().Lookup("on-created")
 	if onCreatedFlag == nil {
-		t.Fatal("--on-created flag not registered on addCmd")
+		t.Fatal("--on-created flag not registered on createCmd")
 	}
 	if onCreatedFlag.Value.Type() != "stringArray" {
 		t.Errorf("expected --on-created to be stringArray, got %s", onCreatedFlag.Value.Type())
 	}
 
-	onDestroyFlag := addCmd.Flags().Lookup("on-destroy")
+	onDestroyFlag := createCmd.Flags().Lookup("on-destroy")
 	if onDestroyFlag == nil {
-		t.Fatal("--on-destroy flag not registered on addCmd")
+		t.Fatal("--on-destroy flag not registered on createCmd")
 	}
 	if onDestroyFlag.Value.Type() != "stringArray" {
 		t.Errorf("expected --on-destroy to be stringArray, got %s", onDestroyFlag.Value.Type())
@@ -134,11 +134,11 @@ func TestAddCmdFlags_OnCreatedAndOnDestroy(t *testing.T) {
 }
 
 func TestAddCmdFlags_OnCreatedAndOnDestroy_Repeatable(t *testing.T) {
-	// Reset addCmd flags to avoid state from other tests
-	addCmd.Flags().Set("on-created", "wf-one")
-	addCmd.Flags().Set("on-created", "wf-two")
+	// Reset createCmd flags to avoid state from other tests
+	createCmd.Flags().Set("on-created", "wf-one")
+	createCmd.Flags().Set("on-created", "wf-two")
 
-	vals, err := addCmd.Flags().GetStringArray("on-created")
+	vals, err := createCmd.Flags().GetStringArray("on-created")
 	if err != nil {
 		t.Fatalf("GetStringArray failed: %v", err)
 	}
@@ -265,17 +265,17 @@ func TestBuildClusterDef_ExpiresAtEmptyOmittedFromYAML(t *testing.T) {
 }
 
 func TestAddCmdFlags_PauseAndExpiresAt(t *testing.T) {
-	pauseFlag := addCmd.Flags().Lookup("pause")
+	pauseFlag := createCmd.Flags().Lookup("pause")
 	if pauseFlag == nil {
-		t.Fatal("--pause flag not registered on addCmd")
+		t.Fatal("--pause flag not registered on createCmd")
 	}
 	if pauseFlag.Value.Type() != "bool" {
 		t.Errorf("expected --pause to be bool, got %s", pauseFlag.Value.Type())
 	}
 
-	expiresAtFlag := addCmd.Flags().Lookup("expires-at")
+	expiresAtFlag := createCmd.Flags().Lookup("expires-at")
 	if expiresAtFlag == nil {
-		t.Fatal("--expires-at flag not registered on addCmd")
+		t.Fatal("--expires-at flag not registered on createCmd")
 	}
 	if expiresAtFlag.Value.Type() != "string" {
 		t.Errorf("expected --expires-at to be string, got %s", expiresAtFlag.Value.Type())

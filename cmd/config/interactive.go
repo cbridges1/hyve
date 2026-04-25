@@ -328,7 +328,6 @@ func interactiveConfigAWSEKSRole() error {
 					Options(
 						huh.NewOption("List", "list"),
 						huh.NewOption("Add (register existing)", "add"),
-						huh.NewOption("Create in AWS", "create"),
 						huh.NewOption("Get", "get"),
 						huh.NewOption("Remove alias", "remove"),
 						huh.NewOption("← Back", "back"),
@@ -369,27 +368,6 @@ func interactiveConfigAWSEKSRole() error {
 			configAWSEKSRoleAddCmd.Flags().Set("name", name)
 			configAWSEKSRoleAddCmd.Flags().Set("role-arn", roleARN)
 			configAWSEKSRoleAddCmd.Run(configAWSEKSRoleAddCmd, nil)
-		case "create":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			var name, roleName, region string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Role alias").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("IAM role name in AWS").Placeholder("hyve-eks-role").Validate(shared.RequireNotEmpty).Value(&roleName),
-					huh.NewInput().Title("Region").Placeholder("us-east-1").Validate(shared.RequireNotEmpty).Value(&region),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAWSEKSRoleCreateCmd.Flags().Set("account", account)
-			configAWSEKSRoleCreateCmd.Flags().Set("name", name)
-			configAWSEKSRoleCreateCmd.Flags().Set("role-name", roleName)
-			configAWSEKSRoleCreateCmd.Flags().Set("region", region)
-			configAWSEKSRoleCreateCmd.Run(configAWSEKSRoleCreateCmd, nil)
 		case "get":
 			account := ""
 			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
@@ -442,7 +420,6 @@ func interactiveConfigAWSVPC() error {
 					Options(
 						huh.NewOption("List", "list"),
 						huh.NewOption("Add (register existing)", "add"),
-						huh.NewOption("Create in AWS", "create"),
 						huh.NewOption("Get", "get"),
 						huh.NewOption("Remove alias", "remove"),
 						huh.NewOption("← Back", "back"),
@@ -483,33 +460,6 @@ func interactiveConfigAWSVPC() error {
 			configAWSVPCAddCmd.Flags().Set("name", name)
 			configAWSVPCAddCmd.Flags().Set("id", id)
 			configAWSVPCAddCmd.Run(configAWSVPCAddCmd, nil)
-		case "create":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			var name, region, cidr, subnets string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("VPC alias").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("Region").Placeholder("us-east-1").Validate(shared.RequireNotEmpty).Value(&region),
-					huh.NewInput().Title("CIDR block (optional)").Placeholder("10.0.0.0/16").Value(&cidr),
-					huh.NewInput().Title("Subnet CIDRs, comma-separated (optional)").Placeholder("10.0.1.0/24,10.0.2.0/24").Value(&subnets),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAWSVPCCreateCmd.Flags().Set("account", account)
-			configAWSVPCCreateCmd.Flags().Set("name", name)
-			configAWSVPCCreateCmd.Flags().Set("region", region)
-			if cidr != "" {
-				configAWSVPCCreateCmd.Flags().Set("cidr", cidr)
-			}
-			if subnets != "" {
-				configAWSVPCCreateCmd.Flags().Set("subnets", subnets)
-			}
-			configAWSVPCCreateCmd.Run(configAWSVPCCreateCmd, nil)
 		case "get":
 			account := ""
 			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
@@ -660,8 +610,6 @@ func interactiveConfigAzureResourceGroup() error {
 					Title("Resource group — action").
 					Options(
 						huh.NewOption("List", "list"),
-						huh.NewOption("Add (create in Azure)", "add"),
-						huh.NewOption("Delete", "delete"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&action),
@@ -681,51 +629,6 @@ func interactiveConfigAzureResourceGroup() error {
 			}
 			configAzureListResourceGroupsCmd.Flags().Set("subscription", sub)
 			configAzureListResourceGroupsCmd.Run(configAzureListResourceGroupsCmd, nil)
-		case "add":
-			sub := ""
-			if err := shared.SelectFromList("Subscription alias", shared.FetchAzureSubscriptionNames(), &sub); err != nil {
-				return err
-			}
-			var name, location string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Resource group name").Placeholder("hyve-rg").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("Location/region").Placeholder("eastus").Validate(shared.RequireNotEmpty).Value(&location),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAzureAddResourceGroupCmd.Flags().Set("subscription", sub)
-			configAzureAddResourceGroupCmd.Flags().Set("name", name)
-			configAzureAddResourceGroupCmd.Flags().Set("location", location)
-			configAzureAddResourceGroupCmd.Run(configAzureAddResourceGroupCmd, nil)
-		case "delete":
-			sub := ""
-			if err := shared.SelectFromList("Subscription alias", shared.FetchAzureSubscriptionNames(), &sub); err != nil {
-				return err
-			}
-			name := ""
-			if err := shared.SelectFromList("Resource group to delete", shared.FetchAzureResourceGroupNames(sub), &name); err != nil {
-				return err
-			}
-			var confirm bool
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("Delete resource group '%s' from subscription '%s'? This cannot be undone.", name, sub)).
-						Value(&confirm),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			if !confirm {
-				continue
-			}
-			configAzureDeleteResourceGroupCmd.Flags().Set("subscription", sub)
-			configAzureDeleteResourceGroupCmd.Flags().Set("name", name)
-			configAzureDeleteResourceGroupCmd.Run(configAzureDeleteResourceGroupCmd, nil)
 		}
 	}
 }

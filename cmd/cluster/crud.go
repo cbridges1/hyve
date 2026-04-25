@@ -17,7 +17,7 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
-func addClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string, onCreated, onDestroy []string, pause bool, expiresAt string) {
+func createClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string, beforeCreate, onCreated, onDestroy, afterDelete []string, pause bool, expiresAt string) {
 	ctx := gocontext.Background()
 	stateMgr, stateDir := shared.CreateStateManager(ctx)
 
@@ -44,46 +44,34 @@ func addClusterFromCLI(clusterName, region, providerName string, nodes []string,
 		log.Printf("Using GCP project '%s' (ID: %s)", projectName, gcpProjectID)
 	}
 
-	var awsAccountID, awsVPCID, awsEKSRoleARN, awsNodeRoleARN string
+	var awsAccountID string
+	var awsVPCID string
 	if providerName == "aws" {
-		awsAccountID, err = pcMgr.GetAWSAccountID(accountName)
-		if err != nil {
-			log.Fatalf("AWS account alias '%s' not found in repository configuration.\n"+
-				"Use 'hyve config aws account add --name %s --id <account-id>' to add it.", accountName, accountName)
+		if accountName != "" {
+			awsAccountID, err = pcMgr.GetAWSAccountID(accountName)
+			if err != nil {
+				log.Fatalf("AWS account alias '%s' not found in repository configuration.\n"+
+					"Use 'hyve config aws account add --name %s --id <account-id>' to add it.", accountName, accountName)
+			}
+			log.Printf("Using AWS account '%s' (ID: %s)", accountName, awsAccountID)
 		}
-		log.Printf("Using AWS account '%s' (ID: %s)", accountName, awsAccountID)
 
+		// VPC name is resolved to ID via provider config alias if provided.
 		if vpcName != "" {
 			awsVPCID, err = pcMgr.GetAWSVPCID(accountName, vpcName)
 			if err != nil {
-				log.Fatalf("AWS VPC alias '%s' not found in account '%s'.\n"+
-					"Use 'hyve config use aws %s' to set the account, then:\n"+
-					"  hyve config aws vpc add --name %s --id <vpc-id>\n"+
-					"Or use 'hyve config aws vpc create --name %s --region %s' to create one.", vpcName, accountName, accountName, vpcName, vpcName, region)
+				log.Printf("Warning: AWS VPC alias '%s' not found in account '%s' — storing name only.", vpcName, accountName)
+			} else {
+				log.Printf("Using AWS VPC '%s' (ID: %s)", vpcName, awsVPCID)
 			}
-			log.Printf("Using AWS VPC '%s' (ID: %s)", vpcName, awsVPCID)
 		}
 
+		// EKS role and node role are stored as direct names; ARNs are resolved at reconcile time.
 		if eksRoleName != "" {
-			awsEKSRoleARN, err = pcMgr.GetAWSEKSRoleARN(accountName, eksRoleName)
-			if err != nil {
-				log.Fatalf("AWS EKS role alias '%s' not found in account '%s'.\n"+
-					"Use 'hyve config use aws %s' to set the account, then:\n"+
-					"  hyve config aws eks-role add --name %s --role-arn <arn>\n"+
-					"Or use 'hyve config aws eks-role create --name %s --role-name <name> --region %s' to create one.", eksRoleName, accountName, accountName, eksRoleName, eksRoleName, region)
-			}
-			log.Printf("Using AWS EKS role '%s' (ARN: %s)", eksRoleName, awsEKSRoleARN)
+			log.Printf("EKS role name: %s (ARN resolved at reconcile time)", eksRoleName)
 		}
-
 		if nodeRoleName != "" {
-			awsNodeRoleARN, err = pcMgr.GetAWSNodeRoleARN(accountName, nodeRoleName)
-			if err != nil {
-				log.Fatalf("AWS node role alias '%s' not found in account '%s'.\n"+
-					"Use 'hyve config use aws %s' to set the account, then:\n"+
-					"  hyve config aws node-role add --name %s --role-arn <arn>\n"+
-					"Or use 'hyve config aws node-role create --name %s --role-name <name> --region %s' to create one.", nodeRoleName, accountName, accountName, nodeRoleName, nodeRoleName, region)
-			}
-			log.Printf("Using AWS node role '%s' (ARN: %s)", nodeRoleName, awsNodeRoleARN)
+			log.Printf("Node role name: %s (ARN resolved at reconcile time)", nodeRoleName)
 		}
 	}
 
@@ -109,17 +97,17 @@ func addClusterFromCLI(clusterName, region, providerName string, nodes []string,
 			AWSAccountID:      awsAccountID,
 			AWSVPCName:        vpcName,
 			AWSVPCID:          awsVPCID,
-			AWSEKSRole:        eksRoleName,
-			AWSEKSRoleARN:     awsEKSRoleARN,
-			AWSNodeRole:       nodeRoleName,
-			AWSNodeRoleARN:    awsNodeRoleARN,
+			AWSEKSRoleName:    eksRoleName,
+			AWSNodeRoleName:   nodeRoleName,
 			AzureSubscription: subscriptionName,
 			CivoOrganization:  orgName,
 			Pause:             pause,
 			ExpiresAt:         expiresAt,
 			Workflows: types.WorkflowsSpec{
-				OnCreated: onCreated,
-				OnDestroy: onDestroy,
+				BeforeCreate: beforeCreate,
+				OnCreated:    onCreated,
+				OnDestroy:    onDestroy,
+				AfterDelete:  afterDelete,
 			},
 			Ingress: types.IngressSpec{
 				Enabled:      true,
@@ -149,10 +137,10 @@ func addClusterFromCLI(clusterName, region, providerName string, nodes []string,
 	if awsVPCID != "" {
 		log.Printf("  AWS VPC: %s (ID: %s)", vpcName, awsVPCID)
 	}
-	if awsEKSRoleARN != "" {
+	if eksRoleName != "" {
 		log.Printf("  AWS EKS Role: %s", eksRoleName)
 	}
-	if awsNodeRoleARN != "" {
+	if nodeRoleName != "" {
 		log.Printf("  AWS Node Role: %s", nodeRoleName)
 	}
 
@@ -176,7 +164,7 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 	filePath := filepath.Join(stateDir, clusterName+".yaml")
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		log.Fatalf("Cluster %s does not exist. Use 'add' action to create it.", clusterName)
+		log.Fatalf("Cluster %s does not exist. Use 'create' action to create it.", clusterName)
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -235,6 +223,22 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 			clusterDef.Spec.ExpiresAt = val
 		}
 	}
+	if cmd.Flags().Changed("before-create") {
+		vals, _ := cmd.Flags().GetStringArray("before-create")
+		clusterDef.Spec.Workflows.BeforeCreate = vals
+	}
+	if cmd.Flags().Changed("after-delete") {
+		vals, _ := cmd.Flags().GetStringArray("after-delete")
+		clusterDef.Spec.Workflows.AfterDelete = vals
+	}
+	if cmd.Flags().Changed("eks-role-name") {
+		val, _ := cmd.Flags().GetString("eks-role-name")
+		clusterDef.Spec.AWSEKSRoleName = val
+	}
+	if cmd.Flags().Changed("node-role-name") {
+		val, _ := cmd.Flags().GetString("node-role-name")
+		clusterDef.Spec.AWSNodeRoleName = val
+	}
 
 	updatedData, err := yaml.Marshal(&clusterDef)
 	if err != nil {
@@ -270,13 +274,66 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 	}
 }
 
+func showCluster(clusterName string) {
+	ctx := gocontext.Background()
+	_, clustersDir := shared.CreateStateManager(ctx)
+	filePath := filepath.Join(clustersDir, clusterName+".yaml")
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Fatalf("Cluster '%s' not found. Use 'hyve cluster list' to see available clusters.", clusterName)
+		}
+		log.Fatalf("Failed to read cluster file: %v", err)
+	}
+
+	var clusterDef types.ClusterDefinition
+	if err := yaml.Unmarshal(data, &clusterDef); err != nil {
+		log.Fatalf("Failed to parse cluster definition: %v", err)
+	}
+
+	fmt.Printf("---\n%s", string(data))
+	fmt.Println()
+	fmt.Printf("Summary:\n")
+	fmt.Printf("  Name:     %s\n", clusterDef.Metadata.Name)
+	fmt.Printf("  Provider: %s\n", clusterDef.Spec.Provider)
+	fmt.Printf("  Region:   %s\n", clusterDef.Metadata.Region)
+	if len(clusterDef.Spec.NodeGroups) > 0 {
+		fmt.Printf("  NodeGroups:\n")
+		for _, ng := range clusterDef.Spec.NodeGroups {
+			fmt.Printf("    - %s: %s x%d\n", ng.Name, ng.InstanceType, ng.Count)
+		}
+	}
+	if clusterDef.Spec.Pause {
+		fmt.Printf("  Pause:    true\n")
+	}
+	if clusterDef.Spec.ExpiresAt != "" {
+		fmt.Printf("  ExpiresAt: %s\n", clusterDef.Spec.ExpiresAt)
+	}
+	if len(clusterDef.Spec.Workflows.BeforeCreate) > 0 {
+		fmt.Printf("  BeforeCreate: %v\n", clusterDef.Spec.Workflows.BeforeCreate)
+	}
+	if len(clusterDef.Spec.Workflows.OnCreated) > 0 {
+		fmt.Printf("  OnCreated: %v\n", clusterDef.Spec.Workflows.OnCreated)
+	}
+	if len(clusterDef.Spec.Workflows.OnDestroy) > 0 {
+		fmt.Printf("  OnDestroy: %v\n", clusterDef.Spec.Workflows.OnDestroy)
+	}
+	if len(clusterDef.Spec.Workflows.AfterDelete) > 0 {
+		fmt.Printf("  AfterDelete: %v\n", clusterDef.Spec.Workflows.AfterDelete)
+	}
+	if len(clusterDef.Spec.PendingWorkflows) > 0 {
+		fmt.Printf("  PendingWorkflows: %d queued\n", len(clusterDef.Spec.PendingWorkflows))
+	}
+}
+
 func listClusters() {
 	ctx := gocontext.Background()
 	_, clustersDir := shared.CreateStateManager(ctx)
 
 	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
 		log.Println("❌ No clusters found")
-		log.Println("\n💡 Run 'hyve cluster add <name>' to create a cluster")
+		log.Println("\n💡 Run 'hyve cluster create <name>' to create a cluster")
 		return
 	}
 
@@ -316,7 +373,7 @@ func listClusters() {
 
 	if len(clusters) == 0 {
 		log.Println("❌ No clusters found")
-		log.Println("\n💡 Run 'hyve cluster add <name>' to create a cluster")
+		log.Println("\n💡 Run 'hyve cluster create <name>' to create a cluster")
 		return
 	}
 
@@ -348,7 +405,8 @@ func listClusters() {
 	}
 
 	log.Println("💡 Commands:")
-	log.Println("  hyve cluster add <name>       # Add a new cluster")
+	log.Println("  hyve cluster create <name>    # Create a new cluster")
+	log.Println("  hyve cluster show <name>      # Show cluster definition")
 	log.Println("  hyve cluster modify <name>    # Modify an existing cluster")
 	log.Println("  hyve cluster delete <name>    # Delete a cluster")
 	log.Println("  hyve reconcile                # Apply cluster changes to cloud")

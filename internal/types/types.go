@@ -30,8 +30,22 @@ type IngressSpec struct {
 
 // WorkflowsSpec defines workflows to run on cluster lifecycle events
 type WorkflowsSpec struct {
-	OnCreated []string `yaml:"onCreated,omitempty"` // Workflows to run after cluster creation
-	OnDestroy []string `yaml:"onDestroy,omitempty"` // Workflows to run before cluster destruction
+	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation
+	OnCreated    []string `yaml:"onCreated,omitempty"`    // Workflows to run after cluster creation
+	OnDestroy    []string `yaml:"onDestroy,omitempty"`    // Workflows to run before cluster destruction
+	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion
+}
+
+// PendingWorkflow represents a one-off workflow queued for execution
+type PendingWorkflow struct {
+	Workflow string `yaml:"workflow"`
+	RunAt    string `yaml:"runAt,omitempty"` // RFC 3339; absent = run immediately
+}
+
+// WorkflowSchedule maps a workflow name to a cron expression for recurring execution
+type WorkflowSchedule struct {
+	Workflow string `yaml:"workflow"`
+	Schedule string `yaml:"schedule"` // 5-field cron expression
 }
 
 // ClusterSpec represents the desired cluster configuration
@@ -43,6 +57,17 @@ type ClusterSpec struct {
 	ClusterType string        `yaml:"clusterType"`
 	Ingress     IngressSpec   `yaml:"ingress"`
 	Workflows   WorkflowsSpec `yaml:"workflows,omitempty"`
+
+	// PendingWorkflows is a Git-audited queue of one-off workflow runs. Entries without
+	// a runAt execute immediately on the next reconcile; entries with a runAt execute
+	// when the current time is at or past that timestamp. The reconciler removes entries
+	// after executing them and commits the cleared YAML.
+	PendingWorkflows []PendingWorkflow `yaml:"pendingWorkflows,omitempty"`
+
+	// WorkflowSchedules maps workflow names to cron expressions. On every reconcile the
+	// reconciler evaluates each schedule and appends due entries to PendingWorkflows.
+	WorkflowSchedules []WorkflowSchedule `yaml:"workflowSchedules,omitempty"`
+
 	// Delete marks this cluster for deletion. When true, the reconciler runs any
 	// onDestroy workflows, deletes the cluster from the cloud provider, and removes
 	// this YAML file from the repository. Do not delete the file directly if you
@@ -65,14 +90,19 @@ type ClusterSpec struct {
 	GCPProjectID string `yaml:"gcpProjectId,omitempty"` // GCP project ID (resolved from alias)
 
 	// AWS-specific configuration
-	AWSAccount     string `yaml:"awsAccount,omitempty"`     // AWS account name alias
-	AWSAccountID   string `yaml:"awsAccountId,omitempty"`   // AWS account ID (resolved from alias)
-	AWSVPCName     string `yaml:"awsVpcName,omitempty"`     // AWS VPC name alias
-	AWSVPCID       string `yaml:"awsVpcId,omitempty"`       // AWS VPC ID (resolved from alias)
-	AWSEKSRole     string `yaml:"awsEksRole,omitempty"`     // AWS EKS role name alias
-	AWSEKSRoleARN  string `yaml:"awsEksRoleArn,omitempty"`  // AWS EKS role ARN (resolved from alias)
-	AWSNodeRole    string `yaml:"awsNodeRole,omitempty"`    // AWS EKS node role name alias
-	AWSNodeRoleARN string `yaml:"awsNodeRoleArn,omitempty"` // AWS EKS node role ARN (resolved from alias)
+	AWSAccount      string `yaml:"awsAccount,omitempty"`      // AWS account name alias
+	AWSAccountID    string `yaml:"awsAccountId,omitempty"`    // AWS account ID (resolved from alias)
+	AWSVPCName      string `yaml:"awsVpcName,omitempty"`      // AWS VPC name alias
+	AWSVPCID        string `yaml:"awsVpcId,omitempty"`        // AWS VPC ID (resolved from alias)
+	AWSEKSRole      string `yaml:"awsEksRole,omitempty"`      // AWS EKS role name alias (provider-config reference)
+	AWSNodeRole     string `yaml:"awsNodeRole,omitempty"`     // AWS EKS node role name alias (provider-config reference)
+	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // Direct IAM role name for EKS control plane
+	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // Direct IAM role name for EKS node groups
+
+	// AWSEKSRoleARN and AWSNodeRoleARN are runtime-only fields populated during
+	// reconciliation via alias or name lookup. They are never serialized to YAML.
+	AWSEKSRoleARN  string `yaml:"-"`
+	AWSNodeRoleARN string `yaml:"-"`
 
 	// Azure-specific configuration
 	AzureSubscription   string `yaml:"azureSubscription,omitempty"`   // Azure subscription name alias
