@@ -164,7 +164,7 @@ func TestNewRequirementValidator(t *testing.T) {
 	require.NoError(t, err)
 	defer validator.Close()
 
-	assert.NotNil(t, validator.credsMgr)
+	assert.NotNil(t, validator)
 }
 
 func TestRequirementValidator_Close(t *testing.T) {
@@ -172,15 +172,13 @@ func TestRequirementValidator_Close(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NoError(t, validator.Close())
-
-	// Test closing with nil credsMgr
-	validator2 := &RequirementValidator{credsMgr: nil}
-	assert.NoError(t, validator2.Close())
 }
 
-func TestValidateSecret_CivoProvider_Required_NoEnvVar(t *testing.T) {
-	// getCivoOrgName() returns "" so the DB path is skipped.
-	// A required Civo secret absent from the environment must fail.
+func TestValidateSecret_CivoProvider_Required_NoCredentials(t *testing.T) {
+	// With no CIVO_TOKEN env var and no ~/.civo.json, validation must fail.
+	t.Setenv("CIVO_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+
 	validator, err := NewRequirementValidator()
 	require.NoError(t, err)
 	defer validator.Close()

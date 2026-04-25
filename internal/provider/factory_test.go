@@ -59,6 +59,10 @@ func TestCreateProviderWithOptions_UnsupportedProvider(t *testing.T) {
 }
 
 func TestCreateProviderWithOptions_CivoEmptyToken(t *testing.T) {
+	// Ensure no token is available from any source.
+	t.Setenv("CIVO_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+
 	f := NewFactory()
 	_, err := f.CreateProviderWithOptions("civo", ProviderOptions{Region: "PHX1"})
 	require.Error(t, err)

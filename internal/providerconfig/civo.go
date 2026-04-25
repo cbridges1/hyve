@@ -1,11 +1,43 @@
 package providerconfig
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
+
+type civoCLIConfig struct {
+	APIKeys map[string]string `json:"apikeys"`
+	Meta    struct {
+		CurrentAPIKey string `json:"current_apikey"`
+	} `json:"meta"`
+}
+
+// ReadCivoCLIToken reads the active Civo API token from ~/.civo.json,
+// the credential file written by the Civo CLI.
+// Returns an empty string if the file is absent or malformed.
+func ReadCivoCLIToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".civo.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg civoCLIConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	key := cfg.Meta.CurrentAPIKey
+	if key == "" {
+		return ""
+	}
+	return cfg.APIKeys[key]
+}
 
 // CivoNetwork represents a named Civo network
 type CivoNetwork struct {

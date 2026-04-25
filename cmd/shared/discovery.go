@@ -175,6 +175,11 @@ func getCivoClient(orgName string) (*civogo.Client, error) {
 			}
 		}
 	}
+	if token := providerconfig.ReadCivoCLIToken(); token != "" {
+		if client, err := civogo.NewClient(token, ""); err == nil {
+			return client, nil
+		}
+	}
 	token := os.Getenv("CIVO_TOKEN")
 	if token == "" {
 		return nil, fmt.Errorf("no Civo credentials available")

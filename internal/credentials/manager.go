@@ -394,31 +394,3 @@ func (m *Manager) ClearSecret(name, secretType string) error {
 	}
 	return nil
 }
-
-// SecretTypeCivo is the type identifier for Civo API tokens in the secrets table.
-const SecretTypeCivo = "civo"
-
-// CivoTokenName returns the secrets table name for a Civo organization's token.
-func CivoTokenName(orgName string) string {
-	return orgName + "-token"
-}
-
-// StoreCivoToken stores the Civo API token for the given organization.
-func (m *Manager) StoreCivoToken(orgName, token string) error {
-	return m.StoreSecret(CivoTokenName(orgName), SecretTypeCivo, token)
-}
-
-// GetCivoToken retrieves the Civo API token for the given organization.
-func (m *Manager) GetCivoToken(orgName string) (string, error) {
-	return m.GetSecret(CivoTokenName(orgName), SecretTypeCivo)
-}
-
-// HasCivoToken checks if a Civo token is stored for the given organization.
-func (m *Manager) HasCivoToken(orgName string) (bool, error) {
-	return m.HasSecret(CivoTokenName(orgName), SecretTypeCivo)
-}
-
-// ClearCivoToken removes the Civo API token for the given organization.
-func (m *Manager) ClearCivoToken(orgName string) error {
-	return m.ClearSecret(CivoTokenName(orgName), SecretTypeCivo)
-}

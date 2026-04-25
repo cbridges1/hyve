@@ -12,7 +12,6 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	internalcluster "github.com/cbridges1/hyve/internal/cluster"
-	"github.com/cbridges1/hyve/internal/config"
 	"github.com/cbridges1/hyve/internal/provider"
 	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/repository"
@@ -172,13 +171,12 @@ func createProviderForClusterDef(clusterDef types.ClusterDefinition) (provider.P
 	}
 
 	if providerName == "civo" {
-		configMgr := config.NewManager()
-		apiKey := configMgr.GetCivoToken(clusterDef.Spec.CivoOrganization)
+		apiKey := providerconfig.ReadCivoCLIToken()
 		if apiKey == "" {
 			apiKey = os.Getenv("CIVO_TOKEN")
 		}
 		if apiKey == "" {
-			return nil, fmt.Errorf("Civo API token not found. Please run 'hyve config civo token set --org %s' or set CIVO_TOKEN environment variable", clusterDef.Spec.CivoOrganization)
+			return nil, fmt.Errorf("Civo API token not found. Log in with the Civo CLI ('civo apikey') or set the CIVO_TOKEN environment variable")
 		}
 		opts.APIKey = apiKey
 	}
@@ -255,13 +253,12 @@ func forceDeleteClusterFromCloud(clusterName, region, providerName, projectName 
 	opts := provider.ProviderOptions{}
 
 	if providerName == "civo" {
-		configMgr := config.NewManager()
-		apiKey := configMgr.GetCivoToken(projectName)
+		apiKey := providerconfig.ReadCivoCLIToken()
 		if apiKey == "" {
 			apiKey = os.Getenv("CIVO_TOKEN")
 		}
 		if apiKey == "" {
-			log.Fatalf("Civo API token not found. Please run 'hyve config civo token set --org %s' or set CIVO_TOKEN environment variable", projectName)
+			log.Fatalf("Civo API token not found. Log in with the Civo CLI ('civo apikey') or set the CIVO_TOKEN environment variable")
 		}
 		opts.APIKey = apiKey
 	}

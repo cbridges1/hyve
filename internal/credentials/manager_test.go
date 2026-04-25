@@ -70,53 +70,6 @@ func TestClearCredentials(t *testing.T) {
 	assert.False(t, hasCredsAfter)
 }
 
-// TestStoreAndGetCivoToken tests Civo token storage and retrieval
-func TestStoreAndGetCivoToken(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	token := "test-civo-token-123"
-	err := mgr.StoreCivoToken("myorg", token)
-	require.NoError(t, err)
-
-	retrievedToken, err := mgr.GetCivoToken("myorg")
-	require.NoError(t, err)
-	assert.Equal(t, token, retrievedToken)
-}
-
-// TestUpdateCivoToken tests updating an existing Civo token
-func TestUpdateCivoToken(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	err := mgr.StoreCivoToken("myorg", "old-token")
-	require.NoError(t, err)
-
-	err = mgr.StoreCivoToken("myorg", "new-token")
-	require.NoError(t, err)
-
-	retrievedToken, err := mgr.GetCivoToken("myorg")
-	require.NoError(t, err)
-	assert.Equal(t, "new-token", retrievedToken)
-}
-
-// TestClearCivoToken tests removing a Civo token
-func TestClearCivoToken(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	err := mgr.StoreCivoToken("myorg", "test-token")
-	require.NoError(t, err)
-
-	hasToken, err := mgr.HasCivoToken("myorg")
-	require.NoError(t, err)
-	assert.True(t, hasToken)
-
-	err = mgr.ClearCivoToken("myorg")
-	require.NoError(t, err)
-
-	hasTokenAfter, err := mgr.HasCivoToken("myorg")
-	require.NoError(t, err)
-	assert.False(t, hasTokenAfter)
-}
-
 // TestEncryptionDecryption tests that encryption/decryption works correctly
 func TestEncryptionDecryption(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
@@ -151,21 +104,8 @@ func TestEmptyValues(t *testing.T) {
 	_, err = mgr.StoreCredentials("username", "")
 	assert.Error(t, err, "Expected error for empty password")
 
-	err = mgr.StoreCivoToken("myorg", "")
-	assert.Error(t, err, "Expected error for empty token")
-}
-
-// TestGetNonExistentCivoToken tests retrieving a token that doesn't exist
-func TestGetNonExistentCivoToken(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	token, err := mgr.GetCivoToken("myorg")
-	require.NoError(t, err)
-	assert.Empty(t, token)
-
-	hasToken, err := mgr.HasCivoToken("myorg")
-	require.NoError(t, err)
-	assert.False(t, hasToken)
+	err = mgr.StoreSecret("mykey", "mytype", "")
+	assert.Error(t, err, "Expected error for empty secret value")
 }
 
 // TestMultipleSecrets tests storing multiple named secrets
@@ -177,9 +117,9 @@ func TestMultipleSecrets(t *testing.T) {
 		value      string
 	}
 	secrets := map[string]secretEntry{
-		"myorg-token":  {SecretTypeCivo, "civo-token-123"},
 		"docker-token": {"docker", "docker-token-456"},
 		"github-token": {"github", "github-token-789"},
+		"npm-token":    {"npm", "npm-token-012"},
 	}
 
 	for name, entry := range secrets {
@@ -206,9 +146,6 @@ func TestMultipleSecrets(t *testing.T) {
 	hasDocker, _ := mgr.HasSecret("docker-token", "docker")
 	assert.False(t, hasDocker)
 
-	hasCivo, _ := mgr.HasSecret("myorg-token", SecretTypeCivo)
-	assert.True(t, hasCivo)
-
 	hasGithub, _ := mgr.HasSecret("github-token", "github")
 	assert.True(t, hasGithub)
 }
@@ -217,10 +154,10 @@ func TestMultipleSecrets(t *testing.T) {
 func TestStoreSecretValidation(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	err := mgr.StoreSecret("", SecretTypeCivo, "value")
+	err := mgr.StoreSecret("", "mytype", "value")
 	assert.Error(t, err, "Expected error for empty secret name")
 
-	err = mgr.StoreSecret("myorg-token", SecretTypeCivo, "")
+	err = mgr.StoreSecret("mykey", "mytype", "")
 	assert.Error(t, err, "Expected error for empty secret value")
 }
 
@@ -232,7 +169,7 @@ func TestDatabasePersistence(t *testing.T) {
 	require.NoError(t, err, "Failed to create first database")
 
 	mgr1 := NewManagerWithDB(db1)
-	err = mgr1.StoreCivoToken("myorg", "persistent-token")
+	err = mgr1.StoreSecret("myorg-token", "mytype", "persistent-token")
 	require.NoError(t, err)
 	db1.Close()
 
@@ -241,7 +178,7 @@ func TestDatabasePersistence(t *testing.T) {
 	defer db2.Close()
 
 	mgr2 := NewManagerWithDB(db2)
-	token, err := mgr2.GetCivoToken("myorg")
+	token, err := mgr2.GetSecret("myorg-token", "mytype")
 	require.NoError(t, err)
 	assert.Equal(t, "persistent-token", token)
 

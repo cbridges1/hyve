@@ -7,31 +7,19 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cbridges1/hyve/internal/credentials"
+	"github.com/cbridges1/hyve/internal/providerconfig"
 )
 
 // RequirementValidator validates workflow requirements
-type RequirementValidator struct {
-	credsMgr *credentials.Manager
-}
+type RequirementValidator struct{}
 
 // NewRequirementValidator creates a new requirement validator
 func NewRequirementValidator() (*RequirementValidator, error) {
-	credsMgr, err := credentials.NewManager()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create credentials manager: %w", err)
-	}
-
-	return &RequirementValidator{
-		credsMgr: credsMgr,
-	}, nil
+	return &RequirementValidator{}, nil
 }
 
-// Close closes the validator and releases resources
+// Close is a no-op retained for API compatibility.
 func (v *RequirementValidator) Close() error {
-	if v.credsMgr != nil {
-		return v.credsMgr.Close()
-	}
 	return nil
 }
 
@@ -101,19 +89,8 @@ func (v *RequirementValidator) validateSecret(secret SecretRequirement) error {
 	// Handle different providers
 	switch secret.Provider {
 	case "civo":
-		// Civo tokens are stored in our credentials database, keyed by org name
-		orgName := getCivoOrgName()
-		if orgName != "" {
-			hasToken, err := v.credsMgr.HasCivoToken(orgName)
-			if err != nil {
-				if secret.Required {
-					return fmt.Errorf("error checking secret '%s' for provider '%s': %w", secret.Name, secret.Provider, err)
-				}
-				return nil // Non-required secret, ignore errors
-			}
-			if hasToken {
-				return nil // Secret available in database
-			}
+		if providerconfig.ReadCivoCLIToken() != "" {
+			return nil
 		}
 
 	case "aws", "gcp", "azure":
@@ -139,7 +116,7 @@ func (v *RequirementValidator) validateSecret(secret SecretRequirement) error {
 		suggestions := []string{}
 		switch secret.Provider {
 		case "civo":
-			suggestions = append(suggestions, "hyve config civo token set")
+			suggestions = append(suggestions, "civo apikey")
 		case "aws":
 			suggestions = append(suggestions, "aws configure")
 		case "gcp":
@@ -228,24 +205,14 @@ func (v *RequirementValidator) LoadSecretsIntoEnvironment(requirements *Workflow
 			continue
 		}
 
-		// Only Civo stores credentials in our database
-		// AWS, GCP, Azure use native CLI authentication
+		// For Civo, read the token from ~/.civo.json (local mode) or CIVO_TOKEN env var.
+		// AWS, GCP, Azure use native CLI authentication.
 		if secret.Provider == "civo" {
-			orgName := getCivoOrgName()
-			var token string
-			var err error
-			if orgName != "" {
-				token, err = v.credsMgr.GetCivoToken(orgName)
-				if err != nil {
-					if secret.Required {
-						return fmt.Errorf("failed to load secret '%s' from Civo credentials: %w", secret.Name, err)
-					}
-					continue // Skip non-required secrets on error
-				}
+			token := providerconfig.ReadCivoCLIToken()
+			if token == "" {
+				token = os.Getenv("CIVO_TOKEN")
 			}
-
 			if token != "" {
-				// Set environment variable
 				if err := os.Setenv(secret.Name, token); err != nil {
 					return fmt.Errorf("failed to set environment variable '%s': %w", secret.Name, err)
 				}
@@ -255,10 +222,4 @@ func (v *RequirementValidator) LoadSecretsIntoEnvironment(requirements *Workflow
 	}
 
 	return nil
-}
-
-// getCivoOrgName returns the current Civo organization name.
-// Without a context system, this returns empty string; callers handle the empty case gracefully.
-func getCivoOrgName() string {
-	return ""
 }

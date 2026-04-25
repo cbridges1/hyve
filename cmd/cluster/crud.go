@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	"github.com/cbridges1/hyve/internal/config"
 	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/types"
 )
@@ -146,12 +145,16 @@ func createClusterFromCLI(clusterName, region, providerName string, nodes []stri
 
 	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Add cluster %s", clusterName))
 
-	log.Printf("Exporting cluster information...")
-	configMgr := config.NewManager()
-	if apiKey := configMgr.GetCivoToken(clusterDef.Spec.CivoOrganization); apiKey != "" {
-		err := shared.ExportClusterInfo(ctx, apiKey, clusterDef)
-		if err != nil {
-			log.Printf("Warning: Failed to export cluster info: %v", err)
+	if clusterDef.Spec.Provider == "civo" || clusterDef.Spec.Provider == "" {
+		log.Printf("Exporting cluster information...")
+		apiKey := providerconfig.ReadCivoCLIToken()
+		if apiKey == "" {
+			apiKey = os.Getenv("CIVO_TOKEN")
+		}
+		if apiKey != "" {
+			if err := shared.ExportClusterInfo(ctx, apiKey, clusterDef); err != nil {
+				log.Printf("Warning: Failed to export cluster info: %v", err)
+			}
 		}
 	}
 
@@ -264,12 +267,16 @@ func modifyClusterFromCLI(cmd *cobra.Command, clusterName string) {
 
 	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Modify cluster %s", clusterName))
 
-	log.Printf("Exporting cluster information...")
-	configMgr := config.NewManager()
-	if apiKey := configMgr.GetCivoToken(clusterDef.Spec.CivoOrganization); apiKey != "" {
-		err := shared.ExportClusterInfo(ctx, apiKey, clusterDef)
-		if err != nil {
-			log.Printf("Warning: Failed to export cluster info: %v", err)
+	if clusterDef.Spec.Provider == "civo" || clusterDef.Spec.Provider == "" {
+		log.Printf("Exporting cluster information...")
+		apiKey := providerconfig.ReadCivoCLIToken()
+		if apiKey == "" {
+			apiKey = os.Getenv("CIVO_TOKEN")
+		}
+		if apiKey != "" {
+			if err := shared.ExportClusterInfo(ctx, apiKey, clusterDef); err != nil {
+				log.Printf("Warning: Failed to export cluster info: %v", err)
+			}
 		}
 	}
 }
