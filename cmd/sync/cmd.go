@@ -2,11 +2,13 @@ package sync
 
 import (
 	gocontext "context"
+	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/reconcile"
 )
 
 // Cmd is the sync command exposed to the parent.
@@ -72,12 +74,17 @@ func runSync(providerFilter, accountFilter string, dryRun bool) error {
 
 	if len(unmanaged) == 0 {
 		log.Println("✅ No unmanaged clusters found.")
-		return nil
-	}
+	} else {
+		log.Printf("Unmanaged clusters found (%d):\n", len(unmanaged))
+		for _, d := range unmanaged {
+			log.Printf("  [%s / %s]  %s", d.provider, d.region, d.name)
+		}
 
-	log.Printf("Unmanaged clusters found (%d):\n", len(unmanaged))
-	for _, d := range unmanaged {
-		log.Printf("  [%s / %s]  %s", d.provider, d.region, d.name)
+		if !dryRun {
+			if err := importSelected(ctx, stateMgr, stateDir, unmanaged, existingNames); err != nil {
+				return err
+			}
+		}
 	}
 
 	if dryRun {
@@ -85,5 +92,16 @@ func runSync(providerFilter, accountFilter string, dryRun bool) error {
 		return nil
 	}
 
-	return importSelected(ctx, stateMgr, stateDir, unmanaged, existingNames)
+	// Provider config resources sync: query each account for VPCs, IAM roles,
+	// resource groups, and networks — reconcile the provider config YAML files.
+	log.Println("\nProvider config sync: scanning cloud accounts...")
+	added, removed := reconcile.SyncProviderConfigFields(ctx, stateMgr)
+	if added+removed > 0 {
+		log.Printf("Provider config sync: %d resource(s) added, %d resource(s) removed", added, removed)
+		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("hyve sync: provider config sync (%d added, %d removed)", added, removed))
+	} else {
+		log.Println("Provider config sync: no changes")
+	}
+
+	return nil
 }

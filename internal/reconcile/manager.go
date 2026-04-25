@@ -57,6 +57,19 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		log.Printf("═══════════════════════════════════════════")
 	}
 
+	// Passive provider config sync: query cloud accounts and reconcile YAML fields.
+	log.Printf("Provider config sync: scanning cloud accounts...")
+	added, removed := SyncProviderConfigFields(ctx, r.stateMgr)
+	if added+removed > 0 {
+		log.Printf("Provider config sync: %d resource(s) added, %d resource(s) removed", added, removed)
+		msg := fmt.Sprintf("chore: provider config sync (%d added, %d removed)", added, removed)
+		if commitErr := r.stateMgr.CommitAndPush(ctx, msg); commitErr != nil {
+			log.Printf("Warning: failed to commit provider config sync changes: %v", commitErr)
+		}
+	} else {
+		log.Printf("Provider config sync: no changes")
+	}
+
 	// Convergence loop: process one cluster at a time, syncing repo state between each
 	// reconciliation so concurrent pipeline runs are reflected before the next cluster is handled.
 	finalDefs := r.convergenceLoop(ctx, clusterDefs)

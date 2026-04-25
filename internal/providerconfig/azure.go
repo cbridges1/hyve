@@ -3,6 +3,8 @@ package providerconfig
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,111 +25,110 @@ type AzureSubscription struct {
 	ResourceGroups []AzureResourceGroup `yaml:"resource_groups,omitempty"`
 }
 
-// AzureConfig represents Azure-specific configuration
+// AzureConfig represents Azure-specific configuration (aggregated view across all subscription files)
 type AzureConfig struct {
 	Subscriptions []AzureSubscription `yaml:"subscriptions,omitempty"`
 }
 
-// LoadAzureConfig loads the Azure configuration from the repository
-func (m *Manager) LoadAzureConfig() (*AzureConfig, error) {
-	configPath := m.getConfigPath("azure")
+// LoadAzureSubscription reads the config file for a single named Azure subscription.
+// Returns (nil, nil) when no file exists for that subscription.
+func (m *Manager) LoadAzureSubscription(name string) (*AzureSubscription, error) {
+	path := m.getAccountConfigPath("azure", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read Azure subscription config: %w", err)
+	}
+	var sub AzureSubscription
+	if err := yaml.Unmarshal(data, &sub); err != nil {
+		return nil, fmt.Errorf("failed to parse Azure subscription config: %w", err)
+	}
+	return &sub, nil
+}
 
-	data, err := os.ReadFile(configPath)
+// SaveAzureSubscription writes the config for a single Azure subscription to its own file.
+func (m *Manager) SaveAzureSubscription(sub *AzureSubscription) error {
+	if err := m.ensureProviderDir("azure"); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(sub)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Azure subscription config: %w", err)
+	}
+	path := m.getAccountConfigPath("azure", sub.Name)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write Azure subscription config: %w", err)
+	}
+	return nil
+}
+
+// LoadAzureConfig reads all per-subscription files under provider-configs/azure/ and
+// returns them as a single aggregated AzureConfig.
+func (m *Manager) LoadAzureConfig() (*AzureConfig, error) {
+	dir := m.getProviderDir("azure")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &AzureConfig{}, nil
 		}
-		return nil, fmt.Errorf("failed to read Azure config: %w", err)
+		return nil, fmt.Errorf("failed to read Azure config directory: %w", err)
 	}
 
 	var config AzureConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse Azure config: %w", err)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", e.Name(), err)
+		}
+		var sub AzureSubscription
+		if err := yaml.Unmarshal(data, &sub); err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", e.Name(), err)
+		}
+		config.Subscriptions = append(config.Subscriptions, sub)
 	}
-
 	return &config, nil
 }
 
-// SaveAzureConfig saves the Azure configuration to the repository
-func (m *Manager) SaveAzureConfig(config *AzureConfig) error {
-	if err := m.ensureConfigDir(); err != nil {
-		return err
-	}
-
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal Azure config: %w", err)
-	}
-
-	configPath := m.getConfigPath("azure")
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write Azure config: %w", err)
-	}
-
-	return nil
-}
-
-// AddAzureSubscription adds a named subscription to the Azure configuration
+// AddAzureSubscription adds or updates a named subscription.
 func (m *Manager) AddAzureSubscription(name, subscriptionID string) error {
-	config, err := m.LoadAzureConfig()
+	sub, err := m.LoadAzureSubscription(name)
 	if err != nil {
 		return err
 	}
-
-	for i, s := range config.Subscriptions {
-		if s.Name == name {
-			config.Subscriptions[i].SubscriptionID = subscriptionID
-			return m.SaveAzureConfig(config)
-		}
+	if sub == nil {
+		sub = &AzureSubscription{Name: name}
 	}
-
-	config.Subscriptions = append(config.Subscriptions, AzureSubscription{
-		Name:           name,
-		SubscriptionID: subscriptionID,
-	})
-
-	return m.SaveAzureConfig(config)
+	sub.SubscriptionID = subscriptionID
+	return m.SaveAzureSubscription(sub)
 }
 
-// RemoveAzureSubscription removes a subscription by name
+// RemoveAzureSubscription removes a subscription by deleting its config file.
 func (m *Manager) RemoveAzureSubscription(name string) error {
-	config, err := m.LoadAzureConfig()
-	if err != nil {
-		return err
-	}
-
-	filtered := []AzureSubscription{}
-	found := false
-	for _, s := range config.Subscriptions {
-		if s.Name != name {
-			filtered = append(filtered, s)
-		} else {
-			found = true
-		}
-	}
-
-	if !found {
+	path := m.getAccountConfigPath("azure", name)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("subscription '%s' not found", name)
 	}
-
-	config.Subscriptions = filtered
-	return m.SaveAzureConfig(config)
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove Azure subscription config: %w", err)
+	}
+	return nil
 }
 
 // GetAzureSubscriptionID returns the subscription ID for a given name
 func (m *Manager) GetAzureSubscriptionID(name string) (string, error) {
-	config, err := m.LoadAzureConfig()
+	sub, err := m.LoadAzureSubscription(name)
 	if err != nil {
 		return "", err
 	}
-
-	for _, s := range config.Subscriptions {
-		if s.Name == name {
-			return s.SubscriptionID, nil
-		}
+	if sub == nil {
+		return "", fmt.Errorf("Azure subscription '%s' not found", name)
 	}
-
-	return "", fmt.Errorf("Azure subscription '%s' not found", name)
+	return sub.SubscriptionID, nil
 }
 
 // ListAzureSubscriptions returns all configured subscriptions
@@ -136,95 +137,70 @@ func (m *Manager) ListAzureSubscriptions() ([]AzureSubscription, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return config.Subscriptions, nil
 }
 
 // HasAzureSubscription checks if a subscription with the given name exists
 func (m *Manager) HasAzureSubscription(name string) (bool, error) {
-	config, err := m.LoadAzureConfig()
+	sub, err := m.LoadAzureSubscription(name)
 	if err != nil {
 		return false, err
 	}
-
-	for _, s := range config.Subscriptions {
-		if s.Name == name {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return sub != nil, nil
 }
 
 // AddAzureResourceGroup adds a resource group to a named subscription
 func (m *Manager) AddAzureResourceGroup(subscriptionName, rgName, location string) error {
-	config, err := m.LoadAzureConfig()
+	sub, err := m.LoadAzureSubscription(subscriptionName)
 	if err != nil {
 		return err
 	}
-
-	for i, s := range config.Subscriptions {
-		if s.Name != subscriptionName {
-			continue
-		}
-		for j, rg := range s.ResourceGroups {
-			if rg.Name == rgName {
-				config.Subscriptions[i].ResourceGroups[j].Location = location
-				return m.SaveAzureConfig(config)
-			}
-		}
-		config.Subscriptions[i].ResourceGroups = append(config.Subscriptions[i].ResourceGroups, AzureResourceGroup{
-			Name:     rgName,
-			Location: location,
-		})
-		return m.SaveAzureConfig(config)
+	if sub == nil {
+		return fmt.Errorf("subscription '%s' not found", subscriptionName)
 	}
-
-	return fmt.Errorf("subscription '%s' not found", subscriptionName)
+	for i, rg := range sub.ResourceGroups {
+		if rg.Name == rgName {
+			sub.ResourceGroups[i].Location = location
+			return m.SaveAzureSubscription(sub)
+		}
+	}
+	sub.ResourceGroups = append(sub.ResourceGroups, AzureResourceGroup{Name: rgName, Location: location})
+	return m.SaveAzureSubscription(sub)
 }
 
 // ListAzureResourceGroups returns all resource groups for a named subscription
 func (m *Manager) ListAzureResourceGroups(subscriptionName string) ([]AzureResourceGroup, error) {
-	config, err := m.LoadAzureConfig()
+	sub, err := m.LoadAzureSubscription(subscriptionName)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, s := range config.Subscriptions {
-		if s.Name == subscriptionName {
-			return s.ResourceGroups, nil
-		}
+	if sub == nil {
+		return nil, fmt.Errorf("subscription '%s' not found", subscriptionName)
 	}
-
-	return nil, fmt.Errorf("subscription '%s' not found", subscriptionName)
+	return sub.ResourceGroups, nil
 }
 
 // RemoveAzureResourceGroup removes a resource group from a named subscription
 func (m *Manager) RemoveAzureResourceGroup(subscriptionName, rgName string) error {
-	config, err := m.LoadAzureConfig()
+	sub, err := m.LoadAzureSubscription(subscriptionName)
 	if err != nil {
 		return err
 	}
-
-	for i, s := range config.Subscriptions {
-		if s.Name != subscriptionName {
-			continue
-		}
-		filtered := []AzureResourceGroup{}
-		found := false
-		for _, rg := range s.ResourceGroups {
-			if rg.Name != rgName {
-				filtered = append(filtered, rg)
-			} else {
-				found = true
-			}
-		}
-		if !found {
-			return fmt.Errorf("resource group '%s' not found in subscription '%s'", rgName, subscriptionName)
-		}
-		config.Subscriptions[i].ResourceGroups = filtered
-		return m.SaveAzureConfig(config)
+	if sub == nil {
+		return fmt.Errorf("subscription '%s' not found", subscriptionName)
 	}
-
-	return fmt.Errorf("subscription '%s' not found", subscriptionName)
+	filtered := []AzureResourceGroup{}
+	found := false
+	for _, rg := range sub.ResourceGroups {
+		if rg.Name != rgName {
+			filtered = append(filtered, rg)
+		} else {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("resource group '%s' not found in subscription '%s'", rgName, subscriptionName)
+	}
+	sub.ResourceGroups = filtered
+	return m.SaveAzureSubscription(sub)
 }
