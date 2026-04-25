@@ -12,12 +12,18 @@ import (
 // Cmd is the sync command exposed to the parent.
 var Cmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Discover and import unmanaged clusters",
-	Long: `Scan all configured cloud accounts and compare against repo definitions.
+	Short: "Discover unmanaged clusters and reconcile provider config resources",
+	Long: `Scan all configured cloud accounts and perform two operations:
 
-Unmanaged clusters (running in the cloud but absent from the repo) are listed
-and the user selects which to import. Provider config resources (VPCs, IAM
-roles, resource groups) are reconciled automatically.
+Clusters — compare running cloud clusters against repo definitions. Unmanaged
+clusters (present in the cloud, absent from the repo) are listed and the user
+selects which to import.
+
+Provider config resources — query each account for VPCs, IAM roles, and
+resource groups and reconcile the provider config YAML files immediately,
+adding missing entries and removing stale ones.
+
+Both steps commit and push if any changes were made.
 
 Replaces 'hyve cluster import'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {

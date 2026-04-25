@@ -41,6 +41,13 @@ type Manager struct {
 	gitManager *git.SystemBackend
 }
 
+// NewManagerFromPath creates a Manager backed by an existing local directory
+// (no git remote required). stateDir must be the clusters/ subdirectory path;
+// GetStateRoot() will return its parent.
+func NewManagerFromPath(stateDir string) *Manager {
+	return &Manager{stateDir: stateDir}
+}
+
 // NewManager creates a new state manager with Git repository support
 func NewManager(gitRepoURL, localPath, username, token string) (*Manager, error) {
 	gitMgr, err := git.NewBackend(gitRepoURL, localPath, username, token)
