@@ -304,6 +304,90 @@ func TestTemplateWithWorkflows(t *testing.T) {
 	assert.Equal(t, []string{"cleanup"}, retrieved.Spec.Workflows.OnDestroy)
 }
 
+func TestTemplateWithAllFourHooks_YAMLRoundtrip(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	tmpl := &Template{
+		Metadata: TemplateMetadata{Name: "all-hooks-template"},
+		Spec: TemplateSpec{
+			Provider:    "civo",
+			Region:      "PHX1",
+			Nodes:       []string{"g4s.kube.small"},
+			ClusterType: "k3s",
+			Workflows: TemplateWorkflowsSpec{
+				BeforeCreate: []string{"provision-vpc", "provision-roles"},
+				OnCreated:    []string{"notify-slack"},
+				OnDestroy:    []string{"drain-nodes"},
+				AfterDelete:  []string{"cleanup-vpc", "cleanup-roles"},
+			},
+		},
+	}
+
+	err := manager.CreateTemplate(tmpl)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("all-hooks-template")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"provision-vpc", "provision-roles"}, retrieved.Spec.Workflows.BeforeCreate)
+	assert.Equal(t, []string{"notify-slack"}, retrieved.Spec.Workflows.OnCreated)
+	assert.Equal(t, []string{"drain-nodes"}, retrieved.Spec.Workflows.OnDestroy)
+	assert.Equal(t, []string{"cleanup-vpc", "cleanup-roles"}, retrieved.Spec.Workflows.AfterDelete)
+}
+
+func TestTemplateHooks_EmptyFieldsOmitted(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	tmpl := &Template{
+		Metadata: TemplateMetadata{Name: "partial-hooks-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "PHX1",
+			Nodes:    []string{"g4s.kube.small"},
+			Workflows: TemplateWorkflowsSpec{
+				OnCreated: []string{"wf-a"},
+			},
+		},
+	}
+
+	err := manager.CreateTemplate(tmpl)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("partial-hooks-template")
+	require.NoError(t, err)
+
+	assert.Nil(t, retrieved.Spec.Workflows.BeforeCreate, "BeforeCreate should be nil when not set")
+	assert.Nil(t, retrieved.Spec.Workflows.OnDestroy, "OnDestroy should be nil when not set")
+	assert.Nil(t, retrieved.Spec.Workflows.AfterDelete, "AfterDelete should be nil when not set")
+	assert.Equal(t, []string{"wf-a"}, retrieved.Spec.Workflows.OnCreated)
+}
+
+func TestConvertToClusterDefinition_AllFourHooksCopied(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	tmpl := &Template{
+		Metadata: TemplateMetadata{Name: "hooks-convert-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "PHX1",
+			Nodes:    []string{"g4s.kube.small"},
+			Workflows: TemplateWorkflowsSpec{
+				BeforeCreate: []string{"before-a"},
+				OnCreated:    []string{"created-a"},
+				OnDestroy:    []string{"destroy-a"},
+				AfterDelete:  []string{"after-a"},
+			},
+		},
+	}
+
+	clusterDef := manager.ConvertToClusterDefinition(tmpl, "my-cluster")
+	require.NotNil(t, clusterDef)
+	assert.Equal(t, []string{"before-a"}, clusterDef.Spec.Workflows.BeforeCreate)
+	assert.Equal(t, []string{"created-a"}, clusterDef.Spec.Workflows.OnCreated)
+	assert.Equal(t, []string{"destroy-a"}, clusterDef.Spec.Workflows.OnDestroy)
+	assert.Equal(t, []string{"after-a"}, clusterDef.Spec.Workflows.AfterDelete)
+}
+
 // Provider-specific account fields are optional in templates.
 // If set in the template they are used directly; if a CLI flag is also provided
 // it overrides the template value. If neither is set, execution fails.
@@ -371,22 +455,22 @@ func TestConvertToClusterDefinition_AWSFields(t *testing.T) {
 	template := &Template{
 		Metadata: TemplateMetadata{Name: "aws-template"},
 		Spec: TemplateSpec{
-			Provider:    "aws",
-			Region:      "us-east-1",
-			ClusterType: "eks",
-			AWSAccount:  "prod",
-			AWSVPCName:  "prod-vpc",
-			AWSEKSRole:  "eks-role",
-			AWSNodeRole: "node-role",
+			Provider:        "aws",
+			Region:          "us-east-1",
+			ClusterType:     "eks",
+			AWSAccount:      "prod",
+			AWSVPCID:        "vpc-abc123",
+			AWSEKSRoleName:  "eks-role",
+			AWSNodeRoleName: "node-role",
 		},
 	}
 
 	clusterDef := manager.ConvertToClusterDefinition(template, "my-cluster")
 	require.NotNil(t, clusterDef)
 	assert.Equal(t, "prod", clusterDef.Spec.AWSAccount)
-	assert.Equal(t, "prod-vpc", clusterDef.Spec.AWSVPCName)
-	assert.Equal(t, "eks-role", clusterDef.Spec.AWSEKSRole)
-	assert.Equal(t, "node-role", clusterDef.Spec.AWSNodeRole)
+	assert.Equal(t, "vpc-abc123", clusterDef.Spec.AWSVPCID)
+	assert.Equal(t, "eks-role", clusterDef.Spec.AWSEKSRoleName)
+	assert.Equal(t, "node-role", clusterDef.Spec.AWSNodeRoleName)
 }
 
 func TestConvertToClusterDefinition_FlagOverridesTemplateValue(t *testing.T) {

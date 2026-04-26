@@ -50,30 +50,6 @@ func TestResolveHookEnvVars_AWS_VPCIDNotOverwritten(t *testing.T) {
 	assert.Equal(t, "vpc-existing", def.Spec.AWSVPCID, "existing VPC ID must not be overwritten")
 }
 
-func TestResolveHookEnvVars_AWS_VPCNameSet(t *testing.T) {
-	mgr, _ := makeStateManager(t)
-	t.Setenv("HYVE_VPC_NAME", "my-vpc")
-
-	def := &types.ClusterDefinition{
-		Metadata: types.ClusterMetadata{Name: "test-cluster"},
-		Spec:     types.ClusterSpec{Provider: "aws"},
-	}
-	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
-	assert.Equal(t, "my-vpc", def.Spec.AWSVPCName)
-}
-
-func TestResolveHookEnvVars_AWS_VPCNameNotOverwritten(t *testing.T) {
-	mgr, _ := makeStateManager(t)
-	t.Setenv("HYVE_VPC_NAME", "hook-vpc")
-
-	def := &types.ClusterDefinition{
-		Metadata: types.ClusterMetadata{Name: "test-cluster"},
-		Spec:     types.ClusterSpec{Provider: "aws", AWSVPCName: "pre-existing-vpc"},
-	}
-	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
-	assert.Equal(t, "pre-existing-vpc", def.Spec.AWSVPCName)
-}
-
 func TestResolveHookEnvVars_AWS_EKSRoleNameSet(t *testing.T) {
 	mgr, _ := makeStateManager(t)
 	t.Setenv("HYVE_EKS_ROLE_NAME", "eks-control-plane-role")
@@ -131,7 +107,6 @@ func TestResolveHookEnvVars_AWS_AllVarsEmpty(t *testing.T) {
 	}
 	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
 	assert.Empty(t, def.Spec.AWSVPCID)
-	assert.Empty(t, def.Spec.AWSVPCName)
 	assert.Empty(t, def.Spec.AWSEKSRoleName)
 	assert.Empty(t, def.Spec.AWSNodeRoleName)
 }

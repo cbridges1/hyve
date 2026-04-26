@@ -193,8 +193,10 @@ func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName str
 				ChartVersion: template.Spec.Ingress.ChartVersion,
 			},
 			Workflows: types.WorkflowsSpec{
-				OnCreated: template.Spec.Workflows.OnCreated,
-				OnDestroy: template.Spec.Workflows.OnDestroy,
+				BeforeCreate: template.Spec.Workflows.BeforeCreate,
+				OnCreated:    template.Spec.Workflows.OnCreated,
+				OnDestroy:    template.Spec.Workflows.OnDestroy,
+				AfterDelete:  template.Spec.Workflows.AfterDelete,
 			},
 			// AWS-specific fields
 			AWSAccount:      template.Spec.AWSAccount,

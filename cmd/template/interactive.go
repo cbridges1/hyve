@@ -251,10 +251,25 @@ func interactiveTemplateCreate() error {
 	}
 
 	// Optional expiry schedule
-	var schedErr error
-	schedule, schedErr = shared.PromptSchedule("")
-	if schedErr != nil {
-		return schedErr
+	var setSchedule bool
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Set an expiry schedule for this template?").
+				Description("Clusters created from this template will be automatically deleted on the given schedule.").
+				Affirmative("Yes — set schedule").
+				Negative("No — no expiry").
+				Value(&setSchedule),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	if setSchedule {
+		var schedErr error
+		schedule, schedErr = shared.PromptSchedule("")
+		if schedErr != nil {
+			return schedErr
+		}
 	}
 
 	createTemplate(
