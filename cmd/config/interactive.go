@@ -68,6 +68,9 @@ func interactiveConfigCivo() error {
 					Title("Civo — action").
 					Options(
 						huh.NewOption("List orgs", "list"),
+						huh.NewOption("Add org", "add"),
+						huh.NewOption("Get org", "get"),
+						huh.NewOption("Remove org", "remove"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&action),
@@ -82,6 +85,53 @@ func interactiveConfigCivo() error {
 			return shared.ErrBack
 		case "list":
 			configCivoOrgListCmd.Run(configCivoOrgListCmd, nil)
+		case "add":
+			var name, orgID string
+			err = shared.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Organization alias").
+						Placeholder("prod").
+						Validate(shared.RequireNotEmpty).
+						Value(&name),
+					huh.NewInput().
+						Title("Civo organization ID (optional)").
+						Placeholder("org-abc123").
+						Value(&orgID),
+				),
+			).Run()
+			if err != nil {
+				return err
+			}
+			configCivoOrgAddCmd.Flags().Set("name", name)
+			configCivoOrgAddCmd.Flags().Set("id", orgID)
+			configCivoOrgAddCmd.Run(configCivoOrgAddCmd, nil)
+		case "get":
+			alias := ""
+			if err := shared.SelectFromList("Organization alias", shared.FetchCivoOrgNames(), &alias); err != nil {
+				return err
+			}
+			configCivoOrgGetCmd.Run(configCivoOrgGetCmd, []string{alias})
+		case "remove":
+			alias := ""
+			if err := shared.SelectFromList("Organization to remove", shared.FetchCivoOrgNames(), &alias); err != nil {
+				return err
+			}
+			var confirm bool
+			err = shared.NewForm(
+				huh.NewGroup(
+					huh.NewConfirm().
+						Title(fmt.Sprintf("Remove Civo organization '%s'?", alias)).
+						Value(&confirm),
+				),
+			).Run()
+			if err != nil {
+				return err
+			}
+			if !confirm {
+				continue
+			}
+			configCivoOrgRemoveCmd.Run(configCivoOrgRemoveCmd, []string{alias})
 		}
 	}
 }

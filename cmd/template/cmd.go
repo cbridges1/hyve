@@ -46,8 +46,18 @@ and workflows to execute upon cluster creation or destruction.`,
 		region, _ := cmd.Flags().GetString("region")
 		nodes, _ := cmd.Flags().GetString("nodes")
 		clusterType, _ := cmd.Flags().GetString("cluster-type")
-		onCreatedWorkflows, _ := cmd.Flags().GetString("on-created")
-		onDestroyWorkflows, _ := cmd.Flags().GetString("on-destroy")
+		orgName, _ := cmd.Flags().GetString("org")
+		accountName, _ := cmd.Flags().GetString("account")
+		vpcID, _ := cmd.Flags().GetString("vpc-id")
+		eksRoleName, _ := cmd.Flags().GetString("eks-role-name")
+		nodeRoleName, _ := cmd.Flags().GetString("node-role-name")
+		subscription, _ := cmd.Flags().GetString("subscription")
+		resourceGroup, _ := cmd.Flags().GetString("resource-group")
+		project, _ := cmd.Flags().GetString("project")
+		beforeCreate, _ := cmd.Flags().GetString("before-create")
+		onCreated, _ := cmd.Flags().GetString("on-created")
+		onDestroy, _ := cmd.Flags().GetString("on-destroy")
+		afterDelete, _ := cmd.Flags().GetString("after-delete")
 		schedule, _ := cmd.Flags().GetString("schedule")
 
 		var nodeGroups []types.NodeGroup
@@ -61,7 +71,9 @@ and workflows to execute upon cluster creation or destruction.`,
 			}
 		}
 
-		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups, onCreatedWorkflows, onDestroyWorkflows, schedule)
+		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups,
+			orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project,
+			beforeCreate, onCreated, onDestroy, afterDelete, schedule)
 	},
 }
 
@@ -149,8 +161,18 @@ func init() {
 	templateCreateCmd.Flags().StringP("nodes", "n", "g4s.kube.small", "Node sizes (comma-separated, Civo only)")
 	templateCreateCmd.Flags().StringArrayP("node-group", "g", nil, `Node group spec (repeatable): name=workers,type=t3.medium,count=3[,min=1,max=5,disk=50,spot=true,mode=System]`)
 	templateCreateCmd.Flags().StringP("cluster-type", "t", "k3s", "Kubernetes cluster type")
+	templateCreateCmd.Flags().StringP("org", "o", "", "Civo organization alias (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("account", "a", "", "AWS account alias (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("vpc-id", "v", "", "AWS VPC ID (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("eks-role-name", "e", "", "IAM role name for EKS control plane (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("node-role-name", "N", "", "IAM role name for EKS node groups (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("subscription", "s", "", "Azure subscription alias (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("resource-group", "G", "", "Azure resource group (embedded in template; optional)")
+	templateCreateCmd.Flags().StringP("project", "P", "", "GCP project alias (embedded in template; optional)")
+	templateCreateCmd.Flags().String("before-create", "", "Workflows to run before cluster creation (comma-separated)")
 	templateCreateCmd.Flags().StringP("on-created", "c", "", "Workflows to run after cluster creation (comma-separated)")
 	templateCreateCmd.Flags().String("on-destroy", "", "Workflows to run before cluster destruction (comma-separated)")
+	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5' — every Friday at 8pm); evaluated at execute time")
 
 	templateExecuteCmd.Flags().StringP("org", "o", "", "Civo organization name (required for civo provider)")
@@ -170,7 +192,13 @@ func init() {
 	templateCmd.AddCommand(templateValidateCmd)
 }
 
-func createTemplate(name, description, provider, region, nodesSizes, clusterType string, nodeGroups []types.NodeGroup, onCreatedStr, onDestroyStr, schedule string) {
+func createTemplate(
+	name, description, provider, region, nodesSizes, clusterType string,
+	nodeGroups []types.NodeGroup,
+	orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string,
+	beforeCreateStr, onCreatedStr, onDestroyStr, afterDeleteStr string,
+	schedule string,
+) {
 	// cluster-type is only meaningful for Civo
 	if strings.ToLower(provider) != "civo" {
 		if clusterType != "" && clusterType != "k3s" {
@@ -204,22 +232,18 @@ func createTemplate(name, description, provider, region, nodesSizes, clusterType
 		nodes[i] = strings.TrimSpace(node)
 	}
 
-	// Parse onCreated workflows
-	var onCreatedWorkflows []string
-	if onCreatedStr != "" {
-		onCreatedWorkflows = strings.Split(onCreatedStr, ",")
-		for i, wf := range onCreatedWorkflows {
-			onCreatedWorkflows[i] = strings.TrimSpace(wf)
+	parseWorkflows := func(s string) []string {
+		if s == "" {
+			return nil
 		}
-	}
-
-	// Parse onDestroy workflows
-	var onDestroyWorkflows []string
-	if onDestroyStr != "" {
-		onDestroyWorkflows = strings.Split(onDestroyStr, ",")
-		for i, wf := range onDestroyWorkflows {
-			onDestroyWorkflows[i] = strings.TrimSpace(wf)
+		parts := strings.Split(s, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
 		}
+		return out
 	}
 
 	// Create template
@@ -231,14 +255,24 @@ func createTemplate(name, description, provider, region, nodesSizes, clusterType
 			Description: description,
 		},
 		Spec: template.TemplateSpec{
-			Provider:    provider,
-			Region:      region,
-			Nodes:       nodes,
-			NodeGroups:  nodeGroups,
-			ClusterType: clusterType,
+			Provider:           provider,
+			Region:             region,
+			Nodes:              nodes,
+			NodeGroups:         nodeGroups,
+			ClusterType:        clusterType,
+			CivoOrganization:   orgName,
+			AWSAccount:         accountName,
+			AWSVPCID:           vpcID,
+			AWSEKSRoleName:     eksRoleName,
+			AWSNodeRoleName:    nodeRoleName,
+			AzureSubscription:  subscription,
+			AzureResourceGroup: resourceGroup,
+			GCPProject:         project,
 			Workflows: template.TemplateWorkflowsSpec{
-				OnCreated: onCreatedWorkflows,
-				OnDestroy: onDestroyWorkflows,
+				BeforeCreate: parseWorkflows(beforeCreateStr),
+				OnCreated:    parseWorkflows(onCreatedStr),
+				OnDestroy:    parseWorkflows(onDestroyStr),
+				AfterDelete:  parseWorkflows(afterDeleteStr),
 			},
 			Schedule: schedule,
 		},
@@ -266,11 +300,17 @@ func createTemplate(name, description, provider, region, nodesSizes, clusterType
 	log.Printf("  Region: %s", region)
 	log.Printf("  Nodes: %s", strings.Join(nodes, ", "))
 	log.Printf("  Cluster Type: %s", clusterType)
-	if len(onCreatedWorkflows) > 0 {
-		log.Printf("  OnCreated Workflows: %s", strings.Join(onCreatedWorkflows, ", "))
+	if wf := tmpl.Spec.Workflows.BeforeCreate; len(wf) > 0 {
+		log.Printf("  BeforeCreate Workflows: %s", strings.Join(wf, ", "))
 	}
-	if len(onDestroyWorkflows) > 0 {
-		log.Printf("  OnDestroy Workflows: %s", strings.Join(onDestroyWorkflows, ", "))
+	if wf := tmpl.Spec.Workflows.OnCreated; len(wf) > 0 {
+		log.Printf("  OnCreated Workflows: %s", strings.Join(wf, ", "))
+	}
+	if wf := tmpl.Spec.Workflows.OnDestroy; len(wf) > 0 {
+		log.Printf("  OnDestroy Workflows: %s", strings.Join(wf, ", "))
+	}
+	if wf := tmpl.Spec.Workflows.AfterDelete; len(wf) > 0 {
+		log.Printf("  AfterDelete Workflows: %s", strings.Join(wf, ", "))
 	}
 	if schedule != "" {
 		log.Printf("  Expiry Schedule: %s", schedule)

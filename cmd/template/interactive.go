@@ -3,15 +3,12 @@ package template
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	"github.com/cbridges1/hyve/internal/cloudlookup"
-	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -74,15 +71,25 @@ func runInteractiveTemplate() error {
 
 func interactiveTemplateCreate() error {
 	var (
-		name           string
-		description    string
-		provider       string
-		region         string
-		nodesSizes     string
-		clusterType    string
-		onCreatedNames []string
-		onDestroyNames []string
-		schedule       string
+		name             string
+		description      string
+		provider         string
+		region           string
+		nodesSizes       string
+		clusterType      string
+		orgName          string
+		accountName      string
+		vpcID            string
+		eksRoleName      string
+		nodeRoleName     string
+		subscriptionName string
+		resourceGroup    string
+		projectName      string
+		beforeCreate     []string
+		onCreatedNames   []string
+		onDestroyNames   []string
+		afterDelete      []string
+		schedule         string
 	)
 
 	err := shared.NewForm(
@@ -108,16 +115,46 @@ func interactiveTemplateCreate() error {
 		return shared.ErrBack
 	}
 
+	// Account / org / project / subscription first — so region/node API calls can authenticate.
 	ctx := context.Background()
-	if err := shared.SelectFromGroups("Region", shared.FetchRegionGroups(ctx, provider, ""), "us-east-1", &region); err != nil {
+	accountAlias := ""
+	switch provider {
+	case "civo":
+		if err := shared.SelectFromList("Civo organization", shared.FetchCivoOrgNames(), &orgName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = orgName
+	case "aws":
+		if err := shared.SelectFromList("AWS account alias", shared.FetchAWSAccountNames(), &accountName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = accountName
+	case "gcp":
+		if err := shared.SelectFromList("GCP project alias", shared.FetchGCPProjectNames(), &projectName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = projectName
+	case "azure":
+		if err := shared.SelectFromList("Azure subscription alias", shared.FetchAzureSubscriptionNames(), &subscriptionName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = subscriptionName
+	}
+
+	regionGroups := shared.FetchRegionGroups(ctx, provider, accountAlias)
+	if len(regionGroups) == 0 {
+		if err := shared.ShowNoCloudDataWarning(provider); err != nil {
+			return err
+		}
+	}
+	if err := shared.SelectFromGroups("Region", regionGroups, "us-east-1", &region); err != nil {
 		return err
 	}
-	if err := shared.SelectFromGroups("Node size", shared.FetchNodeGroups(ctx, provider, region, ""), "g4s.kube.medium", &nodesSizes); err != nil {
+	if err := shared.SelectFromGroups("Node size", shared.FetchNodeGroups(ctx, provider, region, accountAlias), "g4s.kube.medium", &nodesSizes); err != nil {
 		return err
 	}
 
 	// For non-Civo providers collect node group details (count, name, scaling).
-	// Civo uses the flat node size list; AWS/GCP/Azure need node groups with counts.
 	var nodeGroups []types.NodeGroup
 	if provider != "civo" {
 		var ngName, ngCountStr, ngMinStr, ngMaxStr string
@@ -152,18 +189,17 @@ func interactiveTemplateCreate() error {
 		}
 		min, _ := strconv.Atoi(ngMinStr)
 		max, _ := strconv.Atoi(ngMaxStr)
-		ng := types.NodeGroup{
+		nodeGroups = append(nodeGroups, types.NodeGroup{
 			Name:         ngName,
 			InstanceType: nodesSizes,
 			Count:        count,
 			MinCount:     min,
 			MaxCount:     max,
-		}
-		nodeGroups = append(nodeGroups, ng)
-		nodesSizes = "" // NodeGroups takes precedence; clear the flat nodes field
+		})
+		nodesSizes = ""
 	}
 
-	// Cluster type is only applicable to Civo
+	// Cluster type only applies to Civo
 	if provider == "civo" {
 		err = shared.NewForm(
 			huh.NewGroup(
@@ -181,30 +217,37 @@ func interactiveTemplateCreate() error {
 		}
 	}
 
-	// Workflow attachment — optional last step
-	if wfNames := shared.FetchWorkflowNames(); len(wfNames) > 0 {
-		makeOpts := func() []huh.Option[string] {
-			opts := make([]huh.Option[string], len(wfNames))
-			for i, wf := range wfNames {
-				opts[i] = huh.NewOption(wf, wf)
-			}
-			return opts
-		}
-		err = shared.NewForm(
-			huh.NewGroup(
-				huh.NewMultiSelect[string]().
-					Title("On-created workflows (optional — space to select, enter to confirm)").
-					Options(makeOpts()...).
-					Value(&onCreatedNames),
-				huh.NewMultiSelect[string]().
-					Title("On-destroy workflows (optional — space to select, enter to confirm)").
-					Options(makeOpts()...).
-					Value(&onDestroyNames),
-			),
-		).Run()
-		if err != nil {
+	// Provider-specific cloud resource selection
+	switch provider {
+	case "aws":
+		if err := shared.SelectAWSVPC(ctx, accountName, region, &vpcID); err != nil && err != shared.ErrBack {
 			return err
 		}
+		if err := shared.SelectAWSRole(ctx, accountName, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		if err := shared.SelectAWSRole(ctx, accountName, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
+			return err
+		}
+	case "azure":
+		if err := shared.SelectAzureRG(ctx, subscriptionName, &resourceGroup); err != nil && err != shared.ErrBack {
+			return err
+		}
+	}
+
+	// Lifecycle hooks — one screen per hook
+	wfNames := shared.FetchWorkflowNames()
+	if err := shared.SelectWorkflowHook("Before-create workflows (optional)", wfNames, &beforeCreate); err != nil {
+		return err
+	}
+	if err := shared.SelectWorkflowHook("On-created workflows (optional)", wfNames, &onCreatedNames); err != nil {
+		return err
+	}
+	if err := shared.SelectWorkflowHook("On-destroy workflows (optional)", wfNames, &onDestroyNames); err != nil {
+		return err
+	}
+	if err := shared.SelectWorkflowHook("After-delete workflows (optional)", wfNames, &afterDelete); err != nil {
+		return err
 	}
 
 	// Optional expiry schedule
@@ -214,9 +257,15 @@ func interactiveTemplateCreate() error {
 		return schedErr
 	}
 
-	onCreatedStr := strings.Join(onCreatedNames, ",")
-	onDestroyStr := strings.Join(onDestroyNames, ",")
-	createTemplate(name, description, provider, region, nodesSizes, clusterType, nodeGroups, onCreatedStr, onDestroyStr, schedule)
+	createTemplate(
+		name, description, provider, region, nodesSizes, clusterType, nodeGroups,
+		orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscriptionName, resourceGroup, projectName,
+		strings.Join(beforeCreate, ","),
+		strings.Join(onCreatedNames, ","),
+		strings.Join(onDestroyNames, ","),
+		strings.Join(afterDelete, ","),
+		schedule,
+	)
 	return nil
 }
 
@@ -260,17 +309,17 @@ func interactiveTemplateExecute() error {
 			eksRoleName = tmpl.Spec.AWSEKSRoleName
 			nodeRoleName = tmpl.Spec.AWSNodeRoleName
 			if vpcID == "" {
-				if err := tmplSelectAWSVPC(context.Background(), account, tmpl.Spec.Region, &vpcID); err != nil && err != shared.ErrBack {
+				if err := shared.SelectAWSVPC(context.Background(), account, tmpl.Spec.Region, &vpcID); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
 			if eksRoleName == "" {
-				if err := tmplSelectAWSRole(context.Background(), account, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
+				if err := shared.SelectAWSRole(context.Background(), account, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
 			if nodeRoleName == "" {
-				if err := tmplSelectAWSRole(context.Background(), account, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
+				if err := shared.SelectAWSRole(context.Background(), account, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
@@ -292,7 +341,7 @@ func interactiveTemplateExecute() error {
 			}
 			resourceGroup = tmpl.Spec.AzureResourceGroup
 			if resourceGroup == "" {
-				if err := tmplSelectAzureRG(context.Background(), subscription, &resourceGroup); err != nil && err != shared.ErrBack {
+				if err := shared.SelectAzureRG(context.Background(), subscription, &resourceGroup); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
@@ -345,163 +394,5 @@ func interactiveTemplateDelete() error {
 	}
 
 	deleteTemplate(name)
-	return nil
-}
-
-func tmplSelectAWSVPC(ctx context.Context, accountName, region string, vpcID *string) error {
-	var method string
-	if err := shared.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("AWS VPC").
-			Options(
-				huh.NewOption("Fetch from AWS", "fetch"),
-				huh.NewOption("Enter VPC ID manually", "manual"),
-				huh.NewOption("Skip (set via HYVE_VPC_ID hook)", "skip"),
-			).
-			Value(&method),
-	)).Run(); err != nil {
-		return err
-	}
-	switch method {
-	case "skip":
-		return nil
-	case "manual":
-		return shared.NewForm(huh.NewGroup(
-			huh.NewInput().Title("VPC ID (e.g. vpc-0abc123)").Value(vpcID),
-		)).Run()
-	case "fetch":
-		keyID, secret, token, err := providerconfig.NewManager(shared.GetRepoPath()).GetAWSCredentials(accountName)
-		if err != nil || keyID == "" {
-			log.Printf("Could not fetch AWS credentials for account '%s' — enter manually.", accountName)
-			return shared.NewForm(huh.NewGroup(
-				huh.NewInput().Title("VPC ID (e.g. vpc-0abc123)").Value(vpcID),
-			)).Run()
-		}
-		vpcs, lookupErr := cloudlookup.ListVPCs(ctx, cloudlookup.AWSCreds{
-			AccessKeyID:     keyID,
-			SecretAccessKey: secret,
-			SessionToken:    token,
-		}, region)
-		if lookupErr != nil || len(vpcs) == 0 {
-			log.Printf("No VPCs found in region %s: %v — enter manually.", region, lookupErr)
-			return shared.NewForm(huh.NewGroup(
-				huh.NewInput().Title("VPC ID (e.g. vpc-0abc123)").Value(vpcID),
-			)).Run()
-		}
-		opts := make([]huh.Option[string], 0, len(vpcs)+1)
-		for _, v := range vpcs {
-			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%s, %s)", v.Name, v.ID, v.CIDR), v.ID))
-		}
-		opts = append(opts, huh.NewOption("Skip", ""))
-		return shared.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().Title("Select VPC").Options(opts...).Value(vpcID),
-		)).Run()
-	}
-	return nil
-}
-
-func tmplSelectAWSRole(ctx context.Context, accountName, title string, roleName *string) error {
-	var method string
-	if err := shared.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title(title).
-			Options(
-				huh.NewOption("Fetch from AWS", "fetch"),
-				huh.NewOption("Enter role name manually", "manual"),
-				huh.NewOption("Skip (set via hook)", "skip"),
-			).
-			Value(&method),
-	)).Run(); err != nil {
-		return err
-	}
-	switch method {
-	case "skip":
-		return nil
-	case "manual":
-		return shared.NewForm(huh.NewGroup(
-			huh.NewInput().Title("IAM role name").Value(roleName),
-		)).Run()
-	case "fetch":
-		keyID, secret, token, err := providerconfig.NewManager(shared.GetRepoPath()).GetAWSCredentials(accountName)
-		if err != nil || keyID == "" {
-			log.Printf("Could not fetch AWS credentials for account '%s' — enter manually.", accountName)
-			return shared.NewForm(huh.NewGroup(
-				huh.NewInput().Title("IAM role name").Value(roleName),
-			)).Run()
-		}
-		roles, lookupErr := cloudlookup.ListIAMRoles(ctx, cloudlookup.AWSCreds{
-			AccessKeyID:     keyID,
-			SecretAccessKey: secret,
-			SessionToken:    token,
-		}, "")
-		if lookupErr != nil || len(roles) == 0 {
-			log.Printf("No IAM roles found: %v — enter manually.", lookupErr)
-			return shared.NewForm(huh.NewGroup(
-				huh.NewInput().Title("IAM role name").Value(roleName),
-			)).Run()
-		}
-		opts := make([]huh.Option[string], 0, len(roles)+1)
-		for _, r := range roles {
-			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%s)", r.Name, r.ARN), r.Name))
-		}
-		opts = append(opts, huh.NewOption("Skip", ""))
-		return shared.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().Title("Select IAM role").Options(opts...).Value(roleName),
-		)).Run()
-	}
-	return nil
-}
-
-func tmplSelectAzureRG(ctx context.Context, subscriptionName string, resourceGroup *string) error {
-	var method string
-	if err := shared.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Azure resource group").
-			Options(
-				huh.NewOption("Fetch from Azure", "fetch"),
-				huh.NewOption("Enter resource group name manually", "manual"),
-				huh.NewOption("Skip (set via HYVE_RESOURCE_GROUP_NAME hook)", "skip"),
-			).
-			Value(&method),
-	)).Run(); err != nil {
-		return err
-	}
-	switch method {
-	case "skip":
-		return nil
-	case "manual":
-		return shared.NewForm(huh.NewGroup(
-			huh.NewInput().Title("Resource group name").Value(resourceGroup),
-		)).Run()
-	case "fetch":
-		pcMgr := providerconfig.NewManager(shared.GetRepoPath())
-		subID, err := pcMgr.GetAzureSubscriptionID(subscriptionName)
-		if err != nil || subID == "" {
-			log.Printf("Could not resolve subscription ID for '%s' — enter manually.", subscriptionName)
-			return shared.NewForm(huh.NewGroup(
-				huh.NewInput().Title("Resource group name").Value(resourceGroup),
-			)).Run()
-		}
-		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(subscriptionName)
-		rgs, lookupErr := cloudlookup.ListResourceGroups(ctx, cloudlookup.AzureCreds{
-			TenantID:     tenantID,
-			ClientID:     clientID,
-			ClientSecret: clientSecret,
-		}, subID)
-		if lookupErr != nil || len(rgs) == 0 {
-			log.Printf("No resource groups found: %v — enter manually.", lookupErr)
-			return shared.NewForm(huh.NewGroup(
-				huh.NewInput().Title("Resource group name").Value(resourceGroup),
-			)).Run()
-		}
-		opts := make([]huh.Option[string], 0, len(rgs)+1)
-		for _, rg := range rgs {
-			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%s)", rg.Name, rg.Location), rg.Name))
-		}
-		opts = append(opts, huh.NewOption("Skip", ""))
-		return shared.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().Title("Select resource group").Options(opts...).Value(resourceGroup),
-		)).Run()
-	}
 	return nil
 }

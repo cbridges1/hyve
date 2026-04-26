@@ -238,12 +238,13 @@ The organization is stored in provider-configs/civo.yaml in the current reposito
 The name can then be used as an alias when creating clusters.
 
 Examples:
-  hyve config civo org add --name prod --id org-abc123
-  hyve config civo org add --name dev --id org-def456`,
+  hyve config civo org add --name prod --id org-abc123 --token ${CIVO_TOKEN}
+  hyve config civo org add --name dev --id org-def456 --token abc123token`,
 	Run: func(cmd *cobra.Command, args []string) {
 		name, _ := cmd.Flags().GetString("name")
 		orgID, _ := cmd.Flags().GetString("id")
-		addCivoOrganization(name, orgID)
+		token, _ := cmd.Flags().GetString("token")
+		addCivoOrganization(name, orgID, token)
 	},
 }
 
@@ -305,9 +306,9 @@ func init() {
 
 	// Civo subcommands
 	configCivoOrgAddCmd.Flags().StringP("name", "n", "", "Friendly name/alias for the organization (required)")
-	configCivoOrgAddCmd.Flags().StringP("id", "i", "", "Civo organization ID (required)")
+	configCivoOrgAddCmd.Flags().StringP("id", "i", "", "Civo organization ID (optional)")
+	configCivoOrgAddCmd.Flags().StringP("token", "t", "", "Civo API token (literal or ${ENV_VAR} reference; optional)")
 	configCivoOrgAddCmd.MarkFlagRequired("name")
-	configCivoOrgAddCmd.MarkFlagRequired("id")
 
 	configCivoOrgCmd.AddCommand(configCivoOrgAddCmd, configCivoOrgRemoveCmd, configCivoOrgListCmd, configCivoOrgGetCmd)
 	configCivoCmd.AddCommand(configCivoOrgCmd)
@@ -591,12 +592,9 @@ func listAzureSubscriptionIDs() {
 
 // Civo helper functions
 
-func addCivoOrganization(name, orgID string) {
+func addCivoOrganization(name, orgID, token string) {
 	if name == "" {
 		log.Fatal("Organization name is required (--name)")
-	}
-	if orgID == "" {
-		log.Fatal("Organization ID is required (--id)")
 	}
 
 	repoPath := getRepoPath()
@@ -607,8 +605,19 @@ func addCivoOrganization(name, orgID string) {
 		log.Fatalf("Failed to check Civo config: %v", err)
 	}
 
-	if err := mgr.AddCivoOrganization(name, orgID); err != nil {
-		log.Fatalf("Failed to add Civo organization: %v", err)
+	// Load existing entry (if any) to preserve unset fields.
+	org, _ := mgr.LoadCivoOrganization(name)
+	if org == nil {
+		org = &providerconfig.CivoOrganization{Name: name}
+	}
+	if orgID != "" {
+		org.OrgID = orgID
+	}
+	if token != "" {
+		org.Token = token
+	}
+	if err := mgr.SaveCivoOrganization(org); err != nil {
+		log.Fatalf("Failed to save Civo organization: %v", err)
 	}
 
 	if exists {
@@ -617,11 +626,14 @@ func addCivoOrganization(name, orgID string) {
 		log.Printf("✅ Added Civo organization '%s':\n", name)
 	}
 	log.Printf("   Name:  %s", name)
-	log.Printf("   Org ID: %s", orgID)
+	if orgID != "" {
+		log.Printf("   Org ID: %s", orgID)
+	}
+	if token != "" {
+		log.Printf("   Token: (stored)")
+	}
 	log.Println()
 	log.Println("💡 The configuration is stored in provider-configs/civo.yaml")
-	log.Println("💡 Set this as the current organization with:")
-	log.Printf("   hyve config use civo %s", name)
 }
 
 func removeCivoOrganization(name string) {

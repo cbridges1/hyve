@@ -100,10 +100,10 @@ func SelectFromGroups(title string, groups []OptionGroup, placeholder string, va
 	const backKey = "__back__"
 	for {
 		groupOpts := make([]huh.Option[string], 0, len(groups)+2)
-		groupOpts = append(groupOpts, huh.NewOption("Enter manually...", manualKey))
 		for _, g := range groups {
 			groupOpts = append(groupOpts, huh.NewOption(g.Name, g.Name))
 		}
+		groupOpts = append(groupOpts, huh.NewOption("Enter manually...", manualKey))
 		groupOpts = append(groupOpts, huh.NewOption("← Back", backKey))
 
 		selectedGroup := ""
@@ -167,11 +167,11 @@ func SelectFromGroupsOptional(title string, groups []OptionGroup, value *string)
 	const noChangeKey = "__nochange__"
 	for {
 		groupOpts := make([]huh.Option[string], 0, len(groups)+3)
-		groupOpts = append(groupOpts, huh.NewOption("Enter manually...", manualKey))
-		groupOpts = append(groupOpts, huh.NewOption("No change (keep current)", noChangeKey))
 		for _, g := range groups {
 			groupOpts = append(groupOpts, huh.NewOption(g.Name, g.Name))
 		}
+		groupOpts = append(groupOpts, huh.NewOption("Enter manually...", manualKey))
+		groupOpts = append(groupOpts, huh.NewOption("No change (keep current)", noChangeKey))
 		groupOpts = append(groupOpts, huh.NewOption("← Back", backKey))
 
 		selectedGroup := ""
