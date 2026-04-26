@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -59,10 +60,11 @@ func syncAWSProviderConfig(ctx context.Context, pcMgr *providerconfig.Manager) (
 	return
 }
 
-func buildAWSConfig(ctx context.Context, pcMgr *providerconfig.Manager, accountName string) (aws.Config, error) {
-	region := "us-east-1"
+func buildAWSConfig(ctx context.Context, pcMgr *providerconfig.Manager, accountName, region string) (aws.Config, error) {
 	var opts []func(*awsconfig.LoadOptions) error
-	opts = append(opts, awsconfig.WithRegion(region))
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
 
 	if accountName != "" {
 		keyID, secret, token, err := pcMgr.GetAWSCredentials(accountName)
@@ -76,23 +78,63 @@ func buildAWSConfig(ctx context.Context, pcMgr *providerconfig.Manager, accountN
 	return awsconfig.LoadDefaultConfig(ctx, opts...)
 }
 
+// resolveAWSRegions returns the regions to scan for an account. Uses the account's
+// configured Regions list if set; otherwise queries EC2 for all enabled regions.
+func resolveAWSRegions(ctx context.Context, pcMgr *providerconfig.Manager, accountName string) ([]string, error) {
+	acct, err := pcMgr.GetAWSAccount(accountName)
+	if err != nil {
+		return nil, err
+	}
+	if len(acct.Regions) > 0 {
+		return acct.Regions, nil
+	}
+	// No regions configured — discover all enabled regions.
+	cfg, err := buildAWSConfig(ctx, pcMgr, accountName, "us-east-1")
+	if err != nil {
+		return nil, fmt.Errorf("failed to build AWS config for region discovery: %w", err)
+	}
+	out, err := ec2.NewFromConfig(cfg).DescribeRegions(ctx, &ec2.DescribeRegionsInput{
+		AllRegions: aws.Bool(false),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover AWS regions: %w", err)
+	}
+	var regions []string
+	for _, r := range out.Regions {
+		if r.RegionName != nil {
+			regions = append(regions, *r.RegionName)
+		}
+	}
+	return regions, nil
+}
+
 func syncAWSAccount(ctx context.Context, pcMgr *providerconfig.Manager, accountName string) (added, removed int) {
-	cfg, err := buildAWSConfig(ctx, pcMgr, accountName)
+	// IAM is a global service — any regional endpoint returns account-wide results.
+	iamCfg, err := buildAWSConfig(ctx, pcMgr, accountName, "us-east-1")
 	if err != nil {
 		log.Printf("provider-config sync [aws/%s]: failed to build AWS config: %v", accountName, err)
 		return
 	}
-
-	ec2Client := ec2.NewFromConfig(cfg)
-	iamClient := iam.NewFromConfig(cfg)
-
-	a, r := syncAWSVPCs(ctx, pcMgr, accountName, ec2Client)
+	a, r := syncAWSIAMRoles(ctx, pcMgr, accountName, iam.NewFromConfig(iamCfg))
 	added += a
 	removed += r
 
-	a, r = syncAWSIAMRoles(ctx, pcMgr, accountName, iamClient)
-	added += a
-	removed += r
+	// VPCs are regional — scan each configured region, or all enabled regions.
+	regions, err := resolveAWSRegions(ctx, pcMgr, accountName)
+	if err != nil {
+		log.Printf("provider-config sync [aws/%s]: failed to resolve regions: %v", accountName, err)
+		return
+	}
+	for _, region := range regions {
+		regionCfg, err := buildAWSConfig(ctx, pcMgr, accountName, region)
+		if err != nil {
+			log.Printf("provider-config sync [aws/%s/%s]: failed to build config: %v", accountName, region, err)
+			continue
+		}
+		a, r := syncAWSVPCs(ctx, pcMgr, accountName, ec2.NewFromConfig(regionCfg))
+		added += a
+		removed += r
+	}
 
 	return
 }
@@ -171,7 +213,7 @@ func syncAWSIAMRoles(ctx context.Context, pcMgr *providerconfig.Manager, account
 		return
 	}
 	for _, r := range eksRoles {
-		if err := verifyIAMRole(ctx, iamClient, r.Name); err != nil {
+		if err := verifyIAMRole(ctx, iamClient, r.RoleARN); err != nil {
 			if removeErr := pcMgr.RemoveAWSEKSRole(accountName, r.Name); removeErr != nil {
 				log.Printf("provider-config sync [aws/%s]: failed to remove stale EKS role '%s': %v", accountName, r.Name, removeErr)
 				continue
@@ -187,7 +229,7 @@ func syncAWSIAMRoles(ctx context.Context, pcMgr *providerconfig.Manager, account
 		return
 	}
 	for _, r := range nodeRoles {
-		if err := verifyIAMRole(ctx, iamClient, r.Name); err != nil {
+		if err := verifyIAMRole(ctx, iamClient, r.RoleARN); err != nil {
 			if removeErr := pcMgr.RemoveAWSNodeRole(accountName, r.Name); removeErr != nil {
 				log.Printf("provider-config sync [aws/%s]: failed to remove stale node role '%s': %v", accountName, r.Name, removeErr)
 				continue
@@ -200,7 +242,11 @@ func syncAWSIAMRoles(ctx context.Context, pcMgr *providerconfig.Manager, account
 	return
 }
 
-func verifyIAMRole(ctx context.Context, iamClient *iam.Client, roleName string) error {
+func verifyIAMRole(ctx context.Context, iamClient *iam.Client, roleARN string) error {
+	// ARN format: arn:aws:iam::<account>:role/<RoleName>
+	// GetRole requires the actual role name, not the ARN or the config alias.
+	parts := strings.Split(roleARN, "/")
+	roleName := parts[len(parts)-1]
 	_, err := iamClient.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(roleName)})
 	return err
 }
