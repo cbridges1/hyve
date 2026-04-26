@@ -3,12 +3,15 @@ package template
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/cloudlookup"
+	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -234,7 +237,7 @@ func interactiveTemplateExecute() error {
 
 	// Load the template to determine which account fields are already set.
 	// For any missing required fields, prompt the user.
-	var org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string
+	var org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string
 
 	if tmpl := shared.FetchTemplate(templateName); tmpl != nil {
 		switch strings.ToLower(tmpl.Spec.Provider) {
@@ -253,21 +256,21 @@ func interactiveTemplateExecute() error {
 					return err
 				}
 			}
-			vpcName = tmpl.Spec.AWSVPCName
-			if vpcName == "" {
-				if err := shared.SelectFromList("VPC alias", shared.FetchAWSVPCNames(account), &vpcName); err != nil && err != shared.ErrBack {
+			vpcID = tmpl.Spec.AWSVPCID
+			eksRoleName = tmpl.Spec.AWSEKSRoleName
+			nodeRoleName = tmpl.Spec.AWSNodeRoleName
+			if vpcID == "" {
+				if err := tmplSelectAWSVPC(context.Background(), account, tmpl.Spec.Region, &vpcID); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
-			eksRole = tmpl.Spec.AWSEKSRole
-			if eksRole == "" {
-				if err := shared.SelectFromList("EKS role alias", shared.FetchAWSEKSRoleNames(account), &eksRole); err != nil && err != shared.ErrBack {
+			if eksRoleName == "" {
+				if err := tmplSelectAWSRole(context.Background(), account, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
-			nodeRole = tmpl.Spec.AWSNodeRole
-			if nodeRole == "" {
-				if err := shared.SelectFromList("Node role alias", shared.FetchAWSNodeRoleNames(account), &nodeRole); err != nil && err != shared.ErrBack {
+			if nodeRoleName == "" {
+				if err := tmplSelectAWSRole(context.Background(), account, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
@@ -289,14 +292,14 @@ func interactiveTemplateExecute() error {
 			}
 			resourceGroup = tmpl.Spec.AzureResourceGroup
 			if resourceGroup == "" {
-				if err := shared.SelectFromList("Azure resource group", shared.FetchAzureResourceGroupNames(subscription), &resourceGroup); err != nil && err != shared.ErrBack {
+				if err := tmplSelectAzureRG(context.Background(), subscription, &resourceGroup); err != nil && err != shared.ErrBack {
 					return err
 				}
 			}
 		}
 	}
 
-	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
+	executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project)
 	return nil
 }
 
@@ -342,5 +345,163 @@ func interactiveTemplateDelete() error {
 	}
 
 	deleteTemplate(name)
+	return nil
+}
+
+func tmplSelectAWSVPC(ctx context.Context, accountName, region string, vpcID *string) error {
+	var method string
+	if err := shared.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("AWS VPC").
+			Options(
+				huh.NewOption("Fetch from AWS", "fetch"),
+				huh.NewOption("Enter VPC ID manually", "manual"),
+				huh.NewOption("Skip (set via HYVE_VPC_ID hook)", "skip"),
+			).
+			Value(&method),
+	)).Run(); err != nil {
+		return err
+	}
+	switch method {
+	case "skip":
+		return nil
+	case "manual":
+		return shared.NewForm(huh.NewGroup(
+			huh.NewInput().Title("VPC ID (e.g. vpc-0abc123)").Value(vpcID),
+		)).Run()
+	case "fetch":
+		keyID, secret, token, err := providerconfig.NewManager(shared.GetRepoPath()).GetAWSCredentials(accountName)
+		if err != nil || keyID == "" {
+			log.Printf("Could not fetch AWS credentials for account '%s' — enter manually.", accountName)
+			return shared.NewForm(huh.NewGroup(
+				huh.NewInput().Title("VPC ID (e.g. vpc-0abc123)").Value(vpcID),
+			)).Run()
+		}
+		vpcs, lookupErr := cloudlookup.ListVPCs(ctx, cloudlookup.AWSCreds{
+			AccessKeyID:     keyID,
+			SecretAccessKey: secret,
+			SessionToken:    token,
+		}, region)
+		if lookupErr != nil || len(vpcs) == 0 {
+			log.Printf("No VPCs found in region %s: %v — enter manually.", region, lookupErr)
+			return shared.NewForm(huh.NewGroup(
+				huh.NewInput().Title("VPC ID (e.g. vpc-0abc123)").Value(vpcID),
+			)).Run()
+		}
+		opts := make([]huh.Option[string], 0, len(vpcs)+1)
+		for _, v := range vpcs {
+			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%s, %s)", v.Name, v.ID, v.CIDR), v.ID))
+		}
+		opts = append(opts, huh.NewOption("Skip", ""))
+		return shared.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().Title("Select VPC").Options(opts...).Value(vpcID),
+		)).Run()
+	}
+	return nil
+}
+
+func tmplSelectAWSRole(ctx context.Context, accountName, title string, roleName *string) error {
+	var method string
+	if err := shared.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(title).
+			Options(
+				huh.NewOption("Fetch from AWS", "fetch"),
+				huh.NewOption("Enter role name manually", "manual"),
+				huh.NewOption("Skip (set via hook)", "skip"),
+			).
+			Value(&method),
+	)).Run(); err != nil {
+		return err
+	}
+	switch method {
+	case "skip":
+		return nil
+	case "manual":
+		return shared.NewForm(huh.NewGroup(
+			huh.NewInput().Title("IAM role name").Value(roleName),
+		)).Run()
+	case "fetch":
+		keyID, secret, token, err := providerconfig.NewManager(shared.GetRepoPath()).GetAWSCredentials(accountName)
+		if err != nil || keyID == "" {
+			log.Printf("Could not fetch AWS credentials for account '%s' — enter manually.", accountName)
+			return shared.NewForm(huh.NewGroup(
+				huh.NewInput().Title("IAM role name").Value(roleName),
+			)).Run()
+		}
+		roles, lookupErr := cloudlookup.ListIAMRoles(ctx, cloudlookup.AWSCreds{
+			AccessKeyID:     keyID,
+			SecretAccessKey: secret,
+			SessionToken:    token,
+		}, "")
+		if lookupErr != nil || len(roles) == 0 {
+			log.Printf("No IAM roles found: %v — enter manually.", lookupErr)
+			return shared.NewForm(huh.NewGroup(
+				huh.NewInput().Title("IAM role name").Value(roleName),
+			)).Run()
+		}
+		opts := make([]huh.Option[string], 0, len(roles)+1)
+		for _, r := range roles {
+			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%s)", r.Name, r.ARN), r.Name))
+		}
+		opts = append(opts, huh.NewOption("Skip", ""))
+		return shared.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().Title("Select IAM role").Options(opts...).Value(roleName),
+		)).Run()
+	}
+	return nil
+}
+
+func tmplSelectAzureRG(ctx context.Context, subscriptionName string, resourceGroup *string) error {
+	var method string
+	if err := shared.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Azure resource group").
+			Options(
+				huh.NewOption("Fetch from Azure", "fetch"),
+				huh.NewOption("Enter resource group name manually", "manual"),
+				huh.NewOption("Skip (set via HYVE_RESOURCE_GROUP_NAME hook)", "skip"),
+			).
+			Value(&method),
+	)).Run(); err != nil {
+		return err
+	}
+	switch method {
+	case "skip":
+		return nil
+	case "manual":
+		return shared.NewForm(huh.NewGroup(
+			huh.NewInput().Title("Resource group name").Value(resourceGroup),
+		)).Run()
+	case "fetch":
+		pcMgr := providerconfig.NewManager(shared.GetRepoPath())
+		subID, err := pcMgr.GetAzureSubscriptionID(subscriptionName)
+		if err != nil || subID == "" {
+			log.Printf("Could not resolve subscription ID for '%s' — enter manually.", subscriptionName)
+			return shared.NewForm(huh.NewGroup(
+				huh.NewInput().Title("Resource group name").Value(resourceGroup),
+			)).Run()
+		}
+		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(subscriptionName)
+		rgs, lookupErr := cloudlookup.ListResourceGroups(ctx, cloudlookup.AzureCreds{
+			TenantID:     tenantID,
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+		}, subID)
+		if lookupErr != nil || len(rgs) == 0 {
+			log.Printf("No resource groups found: %v — enter manually.", lookupErr)
+			return shared.NewForm(huh.NewGroup(
+				huh.NewInput().Title("Resource group name").Value(resourceGroup),
+			)).Run()
+		}
+		opts := make([]huh.Option[string], 0, len(rgs)+1)
+		for _, rg := range rgs {
+			opts = append(opts, huh.NewOption(fmt.Sprintf("%s (%s)", rg.Name, rg.Location), rg.Name))
+		}
+		opts = append(opts, huh.NewOption("Skip", ""))
+		return shared.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().Title("Select resource group").Options(opts...).Value(resourceGroup),
+		)).Run()
+	}
 	return nil
 }

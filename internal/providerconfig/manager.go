@@ -27,21 +27,15 @@ func (m *Manager) getConfigDir() string {
 	return filepath.Join(m.repoPath, ProviderConfigDir)
 }
 
-// getProviderDir returns the per-provider subdirectory (e.g. provider-configs/aws/)
-func (m *Manager) getProviderDir(provider string) string {
-	return filepath.Join(m.repoPath, ProviderConfigDir, provider)
+// getConfigPath returns the path to the single flat config file for a provider.
+func (m *Manager) getConfigPath(provider string) string {
+	return filepath.Join(m.repoPath, ProviderConfigDir, fmt.Sprintf("%s.yaml", provider))
 }
 
-// getAccountConfigPath returns the path to a single account/project/subscription config file.
-func (m *Manager) getAccountConfigPath(provider, name string) string {
-	return filepath.Join(m.getProviderDir(provider), fmt.Sprintf("%s.yaml", name))
-}
-
-// ensureProviderDir creates the provider subdirectory if it doesn't exist.
-func (m *Manager) ensureProviderDir(provider string) error {
-	dir := m.getProviderDir(provider)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create %s provider config directory: %w", provider, err)
+// ensureConfigDir creates the provider-configs directory if it doesn't exist.
+func (m *Manager) ensureConfigDir() error {
+	if err := os.MkdirAll(m.getConfigDir(), 0755); err != nil {
+		return fmt.Errorf("failed to create provider-configs directory: %w", err)
 	}
 	return nil
 }
@@ -54,6 +48,12 @@ func resolveCredential(v string) string {
 		return os.Getenv(strings.TrimSpace(v[2 : len(v)-1]))
 	}
 	return v
+}
+
+// ConfigExists checks whether the config file for the given provider exists.
+func (m *Manager) ConfigExists(provider string) bool {
+	_, err := os.Stat(m.getConfigPath(provider))
+	return err == nil
 }
 
 // GetGCPCredentialsJSON returns the service account credentials JSON for a GCP project.
@@ -97,58 +97,4 @@ func (m *Manager) GetAzureCredentials(subscriptionName string) (tenantID, client
 		return
 	}
 	return resolveCredential(sub.TenantID), resolveCredential(sub.ClientID), resolveCredential(sub.ClientSecret), nil
-}
-
-// ConfigExists checks whether at least one config file exists for the given provider.
-func (m *Manager) ConfigExists(provider string) bool {
-	entries, err := os.ReadDir(m.getProviderDir(provider))
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if !e.IsDir() && len(e.Name()) > 5 && e.Name()[len(e.Name())-5:] == ".yaml" {
-			return true
-		}
-	}
-	return false
-}
-
-// SaveAWSConfig writes each account in config to its own per-account file.
-func (m *Manager) SaveAWSConfig(config *AWSConfig) error {
-	for i := range config.Accounts {
-		if err := m.SaveAWSAccount(&config.Accounts[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// SaveAzureConfig writes each subscription in config to its own per-subscription file.
-func (m *Manager) SaveAzureConfig(config *AzureConfig) error {
-	for i := range config.Subscriptions {
-		if err := m.SaveAzureSubscription(&config.Subscriptions[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// SaveGCPConfig writes each project in config to its own per-project file.
-func (m *Manager) SaveGCPConfig(config *GCPConfig) error {
-	for i := range config.Projects {
-		if err := m.SaveGCPProject(&config.Projects[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// SaveCivoConfig writes each organization in config to its own per-org file.
-func (m *Manager) SaveCivoConfig(config *CivoConfig) error {
-	for i := range config.Organizations {
-		if err := m.SaveCivoOrganization(&config.Organizations[i]); err != nil {
-			return err
-		}
-	}
-	return nil
 }

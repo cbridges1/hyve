@@ -15,7 +15,6 @@ import (
 	"github.com/cbridges1/hyve/cmd/cluster"
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
-	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/template"
@@ -92,13 +91,13 @@ var templateExecuteCmd = &cobra.Command{
 	Long: `Execute a cluster template to create a new cluster.
 
 The provider type in the template determines which account flag is required:
-  --org         Civo organization name    (required for civo)
-  --account     AWS account alias         (required for aws)
-  --vpc-name    AWS VPC alias             (required for aws)
-  --eks-role    AWS EKS cluster role alias (required for aws)
-  --node-role   AWS node role alias        (required for aws)
-  --subscription  Azure subscription alias  (required for azure)
-  --resource-group Azure resource group    (required for azure)
+  --org            Civo organization name    (required for civo)
+  --account        AWS account alias         (required for aws)
+  --vpc-id         AWS VPC ID               (optional for aws)
+  --eks-role-name  IAM role name for EKS     (optional for aws)
+  --node-role-name IAM role name for nodes   (optional for aws)
+  --subscription   Azure subscription alias  (required for azure)
+  --resource-group Azure resource group      (required for azure)
   --project     GCP project alias          (required for gcp)
 
 This command:
@@ -111,13 +110,13 @@ This command:
 		clusterName := args[1]
 		org, _ := cmd.Flags().GetString("org")
 		account, _ := cmd.Flags().GetString("account")
-		vpcName, _ := cmd.Flags().GetString("vpc-name")
-		eksRole, _ := cmd.Flags().GetString("eks-role")
-		nodeRole, _ := cmd.Flags().GetString("node-role")
+		vpcID, _ := cmd.Flags().GetString("vpc-id")
+		eksRoleName, _ := cmd.Flags().GetString("eks-role-name")
+		nodeRoleName, _ := cmd.Flags().GetString("node-role-name")
 		subscription, _ := cmd.Flags().GetString("subscription")
 		resourceGroup, _ := cmd.Flags().GetString("resource-group")
 		project, _ := cmd.Flags().GetString("project")
-		executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
+		executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project)
 	},
 }
 
@@ -156,9 +155,9 @@ func init() {
 
 	templateExecuteCmd.Flags().StringP("org", "o", "", "Civo organization name (required for civo provider)")
 	templateExecuteCmd.Flags().StringP("account", "a", "", "AWS account alias (required for aws provider)")
-	templateExecuteCmd.Flags().StringP("vpc-name", "v", "", "AWS VPC alias (required for aws provider)")
-	templateExecuteCmd.Flags().StringP("eks-role", "e", "", "AWS EKS cluster role alias (required for aws provider)")
-	templateExecuteCmd.Flags().StringP("node-role", "n", "", "AWS node role alias (required for aws provider)")
+	templateExecuteCmd.Flags().StringP("vpc-id", "v", "", "AWS VPC ID")
+	templateExecuteCmd.Flags().StringP("eks-role-name", "e", "", "IAM role name for EKS control plane")
+	templateExecuteCmd.Flags().StringP("node-role-name", "n", "", "IAM role name for EKS node groups")
 	templateExecuteCmd.Flags().StringP("subscription", "s", "", "Azure subscription alias (required for azure provider)")
 	templateExecuteCmd.Flags().StringP("resource-group", "g", "", "Azure resource group name (required for azure provider)")
 	templateExecuteCmd.Flags().StringP("project", "p", "", "GCP project alias (required for gcp provider)")
@@ -411,7 +410,7 @@ func showTemplate(name string) {
 	log.Println(string(data))
 }
 
-func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string) {
+func executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string) {
 	ctx := context.Background()
 	shared.SyncRepoState(ctx)
 
@@ -462,12 +461,21 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 	case "aws":
 		clusterDef.Spec.AWSAccount = resolve(account, clusterDef.Spec.AWSAccount,
 			"account", "Use 'hyve config aws account list' to see available accounts.")
-		clusterDef.Spec.AWSVPCName = resolve(vpcName, clusterDef.Spec.AWSVPCName,
-			"vpc-name", fmt.Sprintf("Use 'hyve config aws vpc list --account %s'.", clusterDef.Spec.AWSAccount))
-		clusterDef.Spec.AWSEKSRole = resolve(eksRole, clusterDef.Spec.AWSEKSRole,
-			"eks-role", fmt.Sprintf("Use 'hyve config aws eks-role list --account %s'.", clusterDef.Spec.AWSAccount))
-		clusterDef.Spec.AWSNodeRole = resolve(nodeRole, clusterDef.Spec.AWSNodeRole,
-			"node-role", fmt.Sprintf("Use 'hyve config aws node-role list --account %s'.", clusterDef.Spec.AWSAccount))
+		if vpcID != "" {
+			clusterDef.Spec.AWSVPCID = vpcID
+		} else if clusterDef.Spec.AWSVPCID == "" && tmpl.Spec.AWSVPCID != "" {
+			clusterDef.Spec.AWSVPCID = tmpl.Spec.AWSVPCID
+		}
+		if eksRoleName != "" {
+			clusterDef.Spec.AWSEKSRoleName = eksRoleName
+		} else if clusterDef.Spec.AWSEKSRoleName == "" && tmpl.Spec.AWSEKSRoleName != "" {
+			clusterDef.Spec.AWSEKSRoleName = tmpl.Spec.AWSEKSRoleName
+		}
+		if nodeRoleName != "" {
+			clusterDef.Spec.AWSNodeRoleName = nodeRoleName
+		} else if clusterDef.Spec.AWSNodeRoleName == "" && tmpl.Spec.AWSNodeRoleName != "" {
+			clusterDef.Spec.AWSNodeRoleName = tmpl.Spec.AWSNodeRoleName
+		}
 	case "azure":
 		clusterDef.Spec.AzureSubscription = resolve(subscription, clusterDef.Spec.AzureSubscription,
 			"subscription", "Use 'hyve config azure subscription list' to see available subscriptions.")
@@ -500,39 +508,6 @@ func executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, 
 	}
 	if tmpl.Spec.Schedule != "" {
 		log.Printf("  Expiry Schedule: %s → %s", tmpl.Spec.Schedule, clusterDef.Spec.ExpiresAt)
-	}
-
-	// Resolve AWS aliases to actual IDs/ARNs before writing the cluster definition.
-	if strings.ToLower(clusterDef.Spec.Provider) == "aws" && clusterDef.Spec.AWSAccount != "" {
-		pcMgr := providerconfig.NewManager(currentRepo.LocalPath)
-		accountName := clusterDef.Spec.AWSAccount
-
-		if clusterDef.Spec.AWSVPCName != "" && clusterDef.Spec.AWSVPCID == "" {
-			vpcID, err := pcMgr.GetAWSVPCID(accountName, clusterDef.Spec.AWSVPCName)
-			if err != nil {
-				log.Fatalf("AWS VPC '%s' not found in account '%s': %v", clusterDef.Spec.AWSVPCName, accountName, err)
-			}
-			clusterDef.Spec.AWSVPCID = vpcID
-			log.Printf("  Resolved VPC '%s' → %s", clusterDef.Spec.AWSVPCName, vpcID)
-		}
-
-		if clusterDef.Spec.AWSEKSRole != "" && clusterDef.Spec.AWSEKSRoleARN == "" {
-			roleARN, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole)
-			if err != nil {
-				log.Fatalf("AWS EKS role '%s' not found in account '%s': %v", clusterDef.Spec.AWSEKSRole, accountName, err)
-			}
-			clusterDef.Spec.AWSEKSRoleARN = roleARN
-			log.Printf("  Resolved EKS role '%s' → %s", clusterDef.Spec.AWSEKSRole, roleARN)
-		}
-
-		if clusterDef.Spec.AWSNodeRole != "" && clusterDef.Spec.AWSNodeRoleARN == "" {
-			roleARN, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole)
-			if err != nil {
-				log.Fatalf("AWS node role '%s' not found in account '%s': %v", clusterDef.Spec.AWSNodeRole, accountName, err)
-			}
-			clusterDef.Spec.AWSNodeRoleARN = roleARN
-			log.Printf("  Resolved node role '%s' → %s", clusterDef.Spec.AWSNodeRole, roleARN)
-		}
 	}
 
 	// Save cluster definition to clusters directory

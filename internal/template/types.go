@@ -38,13 +38,11 @@ type TemplateSpec struct {
 	// to the generated cluster's spec.expiresAt field.
 	Schedule string `yaml:"schedule,omitempty"`
 
-	// AWS-specific configuration (alias names defined in provider-configs/aws.yaml)
+	// AWS-specific configuration
 	AWSAccount      string `yaml:"awsAccount,omitempty"`      // AWS account alias
-	AWSVPCName      string `yaml:"awsVpcName,omitempty"`      // VPC alias
-	AWSEKSRole      string `yaml:"awsEksRole,omitempty"`      // EKS cluster role alias (provider-config reference)
-	AWSNodeRole     string `yaml:"awsNodeRole,omitempty"`     // EKS node role alias (provider-config reference)
-	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // Direct IAM role name for EKS control plane
-	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // Direct IAM role name for EKS node groups
+	AWSVPCID        string `yaml:"awsVpcId,omitempty"`        // AWS VPC ID
+	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // IAM role name for EKS control plane
+	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // IAM role name for EKS node groups
 
 	// Azure-specific configuration (alias names defined in provider-configs/azure.yaml)
 	AzureSubscription  string `yaml:"azureSubscription,omitempty"`  // Azure subscription alias

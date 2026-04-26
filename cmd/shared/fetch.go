@@ -133,48 +133,6 @@ func FetchAWSAccountNames() []string {
 	return names
 }
 
-// FetchAWSEKSRoleNames returns a slice of AWS EKS role names for a given account.
-func FetchAWSEKSRoleNames(account string) []string {
-	mgr := providerconfig.NewManager(GetRepoPath())
-	roles, err := mgr.ListAWSEKSRoles(account)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(roles))
-	for _, r := range roles {
-		names = append(names, r.Name)
-	}
-	return names
-}
-
-// FetchAWSNodeRoleNames returns a slice of AWS node role names for a given account.
-func FetchAWSNodeRoleNames(account string) []string {
-	mgr := providerconfig.NewManager(GetRepoPath())
-	roles, err := mgr.ListAWSNodeRoles(account)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(roles))
-	for _, r := range roles {
-		names = append(names, r.Name)
-	}
-	return names
-}
-
-// FetchAWSVPCNames returns a slice of AWS VPC names for a given account.
-func FetchAWSVPCNames(account string) []string {
-	mgr := providerconfig.NewManager(GetRepoPath())
-	vpcs, err := mgr.ListAWSVPCs(account)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(vpcs))
-	for _, v := range vpcs {
-		names = append(names, v.Name)
-	}
-	return names
-}
-
 // FetchGCPProjectNames returns a slice of GCP project names.
 func FetchGCPProjectNames() []string {
 	mgr := providerconfig.NewManager(GetRepoPath())
@@ -199,20 +157,6 @@ func FetchAzureSubscriptionNames() []string {
 	names := make([]string, 0, len(subs))
 	for _, s := range subs {
 		names = append(names, s.Name)
-	}
-	return names
-}
-
-// FetchAzureResourceGroupNames returns a slice of Azure resource group names for a given subscription.
-func FetchAzureResourceGroupNames(subscription string) []string {
-	mgr := providerconfig.NewManager(GetRepoPath())
-	rgs, err := mgr.ListAzureResourceGroups(subscription)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(rgs))
-	for _, rg := range rgs {
-		names = append(names, rg.Name)
 	}
 	return names
 }

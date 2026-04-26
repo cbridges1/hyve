@@ -196,17 +196,17 @@ func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName str
 				OnCreated: template.Spec.Workflows.OnCreated,
 				OnDestroy: template.Spec.Workflows.OnDestroy,
 			},
-			// AWS-specific alias names (resolved to IDs during template execution)
-			AWSAccount:  template.Spec.AWSAccount,
-			AWSVPCName:  template.Spec.AWSVPCName,
-			AWSEKSRole:  template.Spec.AWSEKSRole,
-			AWSNodeRole: template.Spec.AWSNodeRole,
-			// Azure-specific alias names
+			// AWS-specific fields
+			AWSAccount:      template.Spec.AWSAccount,
+			AWSVPCID:        template.Spec.AWSVPCID,
+			AWSEKSRoleName:  template.Spec.AWSEKSRoleName,
+			AWSNodeRoleName: template.Spec.AWSNodeRoleName,
+			// Azure-specific fields
 			AzureSubscription:  template.Spec.AzureSubscription,
 			AzureResourceGroup: template.Spec.AzureResourceGroup,
-			// GCP-specific alias names
+			// GCP-specific fields
 			GCPProject: template.Spec.GCPProject,
-			// Civo-specific alias names
+			// Civo-specific fields
 			CivoOrganization: template.Spec.CivoOrganization,
 		},
 	}

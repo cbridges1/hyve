@@ -3,8 +3,6 @@ package providerconfig
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,73 +14,71 @@ type GCPProject struct {
 	CredentialsJSON string `yaml:"credentials_json,omitempty"`
 }
 
-// GCPConfig represents GCP-specific configuration (aggregated view across all project files)
+// GCPConfig represents GCP-specific configuration
 type GCPConfig struct {
 	Projects []GCPProject `yaml:"projects"`
 }
 
-// LoadGCPProject reads the config file for a single named GCP project.
-// Returns (nil, nil) when no file exists for that project.
-func (m *Manager) LoadGCPProject(name string) (*GCPProject, error) {
-	path := m.getAccountConfigPath("gcp", name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read GCP project config: %w", err)
-	}
-	var proj GCPProject
-	if err := yaml.Unmarshal(data, &proj); err != nil {
-		return nil, fmt.Errorf("failed to parse GCP project config: %w", err)
-	}
-	return &proj, nil
-}
-
-// SaveGCPProject writes the config for a single GCP project to its own file.
-func (m *Manager) SaveGCPProject(proj *GCPProject) error {
-	if err := m.ensureProviderDir("gcp"); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(proj)
-	if err != nil {
-		return fmt.Errorf("failed to marshal GCP project config: %w", err)
-	}
-	path := m.getAccountConfigPath("gcp", proj.Name)
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write GCP project config: %w", err)
-	}
-	return nil
-}
-
-// LoadGCPConfig reads all per-project files under provider-configs/gcp/ and
-// returns them as a single aggregated GCPConfig.
+// LoadGCPConfig reads provider-configs/gcp.yaml and returns the full config.
 func (m *Manager) LoadGCPConfig() (*GCPConfig, error) {
-	dir := m.getProviderDir("gcp")
-	entries, err := os.ReadDir(dir)
+	data, err := os.ReadFile(m.getConfigPath("gcp"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &GCPConfig{Projects: []GCPProject{}}, nil
 		}
-		return nil, fmt.Errorf("failed to read GCP config directory: %w", err)
+		return nil, fmt.Errorf("failed to read GCP config: %w", err)
 	}
-
 	config := &GCPConfig{Projects: []GCPProject{}}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read %s: %w", e.Name(), err)
-		}
-		var proj GCPProject
-		if err := yaml.Unmarshal(data, &proj); err != nil {
-			return nil, fmt.Errorf("failed to parse %s: %w", e.Name(), err)
-		}
-		config.Projects = append(config.Projects, proj)
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse GCP config: %w", err)
 	}
 	return config, nil
+}
+
+// SaveGCPConfig writes the full GCP config to provider-configs/gcp.yaml.
+func (m *Manager) SaveGCPConfig(config *GCPConfig) error {
+	if err := m.ensureConfigDir(); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal GCP config: %w", err)
+	}
+	if err := os.WriteFile(m.getConfigPath("gcp"), data, 0644); err != nil {
+		return fmt.Errorf("failed to write GCP config: %w", err)
+	}
+	return nil
+}
+
+// LoadGCPProject reads the config for a single named GCP project.
+// Returns (nil, nil) when no project with that name exists.
+func (m *Manager) LoadGCPProject(name string) (*GCPProject, error) {
+	config, err := m.LoadGCPConfig()
+	if err != nil {
+		return nil, err
+	}
+	for i := range config.Projects {
+		if config.Projects[i].Name == name {
+			return &config.Projects[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SaveGCPProject upserts a project entry in provider-configs/gcp.yaml.
+func (m *Manager) SaveGCPProject(proj *GCPProject) error {
+	config, err := m.LoadGCPConfig()
+	if err != nil {
+		return err
+	}
+	for i := range config.Projects {
+		if config.Projects[i].Name == proj.Name {
+			config.Projects[i] = *proj
+			return m.SaveGCPConfig(config)
+		}
+	}
+	config.Projects = append(config.Projects, *proj)
+	return m.SaveGCPConfig(config)
 }
 
 // AddGCPProject adds or updates a named GCP project.
@@ -98,19 +94,29 @@ func (m *Manager) AddGCPProject(name, projectID string) error {
 	return m.SaveGCPProject(proj)
 }
 
-// RemoveGCPProject removes a project by deleting its config file.
+// RemoveGCPProject removes a project by name.
 func (m *Manager) RemoveGCPProject(name string) error {
-	path := m.getAccountConfigPath("gcp", name)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	config, err := m.LoadGCPConfig()
+	if err != nil {
+		return err
+	}
+	filtered := []GCPProject{}
+	found := false
+	for _, p := range config.Projects {
+		if p.Name != name {
+			filtered = append(filtered, p)
+		} else {
+			found = true
+		}
+	}
+	if !found {
 		return fmt.Errorf("project '%s' not found", name)
 	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("failed to remove GCP project config: %w", err)
-	}
-	return nil
+	config.Projects = filtered
+	return m.SaveGCPConfig(config)
 }
 
-// GetGCPProjectID returns the project ID for a given name/alias
+// GetGCPProjectID returns the project ID for a given name.
 func (m *Manager) GetGCPProjectID(name string) (string, error) {
 	proj, err := m.LoadGCPProject(name)
 	if err != nil {
@@ -122,7 +128,7 @@ func (m *Manager) GetGCPProjectID(name string) (string, error) {
 	return proj.ProjectID, nil
 }
 
-// ListGCPProjects returns all configured GCP projects
+// ListGCPProjects returns all configured GCP projects.
 func (m *Manager) ListGCPProjects() ([]GCPProject, error) {
 	config, err := m.LoadGCPConfig()
 	if err != nil {
@@ -131,7 +137,7 @@ func (m *Manager) ListGCPProjects() ([]GCPProject, error) {
 	return config.Projects, nil
 }
 
-// HasGCPProject checks if a project with the given name exists
+// HasGCPProject checks if a project with the given name exists.
 func (m *Manager) HasGCPProject(name string) (bool, error) {
 	proj, err := m.LoadGCPProject(name)
 	if err != nil {

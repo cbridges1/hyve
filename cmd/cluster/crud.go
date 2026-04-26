@@ -16,7 +16,7 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
-func createClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName string, beforeCreate, onCreated, onDestroy, afterDelete []string, pause bool, expiresAt string) {
+func createClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup string, beforeCreate, onCreated, onDestroy, afterDelete []string, pause bool, expiresAt string) {
 	ctx := gocontext.Background()
 	stateMgr, stateDir := shared.CreateStateManager(ctx)
 
@@ -44,7 +44,6 @@ func createClusterFromCLI(clusterName, region, providerName string, nodes []stri
 	}
 
 	var awsAccountID string
-	var awsVPCID string
 	if providerName == "aws" {
 		if accountName != "" {
 			awsAccountID, err = pcMgr.GetAWSAccountID(accountName)
@@ -54,18 +53,9 @@ func createClusterFromCLI(clusterName, region, providerName string, nodes []stri
 			}
 			log.Printf("Using AWS account '%s' (ID: %s)", accountName, awsAccountID)
 		}
-
-		// VPC name is resolved to ID via provider config alias if provided.
-		if vpcName != "" {
-			awsVPCID, err = pcMgr.GetAWSVPCID(accountName, vpcName)
-			if err != nil {
-				log.Printf("Warning: AWS VPC alias '%s' not found in account '%s' — storing name only.", vpcName, accountName)
-			} else {
-				log.Printf("Using AWS VPC '%s' (ID: %s)", vpcName, awsVPCID)
-			}
+		if vpcID != "" {
+			log.Printf("Using AWS VPC ID: %s", vpcID)
 		}
-
-		// EKS role and node role are stored as direct names; ARNs are resolved at reconcile time.
 		if eksRoleName != "" {
 			log.Printf("EKS role name: %s (ARN resolved at reconcile time)", eksRoleName)
 		}
@@ -86,22 +76,22 @@ func createClusterFromCLI(clusterName, region, providerName string, nodes []stri
 			Region: region,
 		},
 		Spec: types.ClusterSpec{
-			Provider:          providerName,
-			Nodes:             nodes,
-			NodeGroups:        nodeGroups,
-			ClusterType:       clusterType,
-			GCPProject:        projectName,
-			GCPProjectID:      gcpProjectID,
-			AWSAccount:        accountName,
-			AWSAccountID:      awsAccountID,
-			AWSVPCName:        vpcName,
-			AWSVPCID:          awsVPCID,
-			AWSEKSRoleName:    eksRoleName,
-			AWSNodeRoleName:   nodeRoleName,
-			AzureSubscription: subscriptionName,
-			CivoOrganization:  orgName,
-			Pause:             pause,
-			ExpiresAt:         expiresAt,
+			Provider:           providerName,
+			Nodes:              nodes,
+			NodeGroups:         nodeGroups,
+			ClusterType:        clusterType,
+			GCPProject:         projectName,
+			GCPProjectID:       gcpProjectID,
+			AWSAccount:         accountName,
+			AWSAccountID:       awsAccountID,
+			AWSVPCID:           vpcID,
+			AWSEKSRoleName:     eksRoleName,
+			AWSNodeRoleName:    nodeRoleName,
+			AzureSubscription:  subscriptionName,
+			AzureResourceGroup: resourceGroup,
+			CivoOrganization:   orgName,
+			Pause:              pause,
+			ExpiresAt:          expiresAt,
 			Workflows: types.WorkflowsSpec{
 				BeforeCreate: beforeCreate,
 				OnCreated:    onCreated,
@@ -133,8 +123,8 @@ func createClusterFromCLI(clusterName, region, providerName string, nodes []stri
 	if projectName != "" {
 		log.Printf("  GCP Project: %s (ID: %s)", projectName, gcpProjectID)
 	}
-	if awsVPCID != "" {
-		log.Printf("  AWS VPC: %s (ID: %s)", vpcName, awsVPCID)
+	if vpcID != "" {
+		log.Printf("  AWS VPC ID: %s", vpcID)
 	}
 	if eksRoleName != "" {
 		log.Printf("  AWS EKS Role: %s", eksRoleName)

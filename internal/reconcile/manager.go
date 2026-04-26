@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+
 	"github.com/cbridges1/hyve/internal/cluster"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 	"github.com/cbridges1/hyve/internal/provider"
@@ -55,19 +58,6 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		log.Printf("═══════════════════════════════════════════")
 		log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
 		log.Printf("═══════════════════════════════════════════")
-	}
-
-	// Passive provider config sync: query cloud accounts and reconcile YAML fields.
-	log.Printf("Provider config sync: scanning cloud accounts...")
-	added, removed := SyncProviderConfigFields(ctx, r.stateMgr)
-	if added+removed > 0 {
-		log.Printf("Provider config sync: %d resource(s) added, %d resource(s) removed", added, removed)
-		msg := fmt.Sprintf("chore: provider config sync (%d added, %d removed)", added, removed)
-		if commitErr := r.stateMgr.CommitAndPush(ctx, msg); commitErr != nil {
-			log.Printf("Warning: failed to commit provider config sync changes: %v", commitErr)
-		}
-	} else {
-		log.Printf("Provider config sync: no changes")
 	}
 
 	// Convergence loop: process one cluster at a time, syncing repo state between each
@@ -310,59 +300,6 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.M
 	}
 }
 
-// resolveAWSAliases fills in runtime ARN/ID fields on the cluster definition.
-// For roles: checks provider-config alias (awsEksRole) first, then falls back to
-// constructing the ARN from the direct name field (awsEksRoleName) + account ID.
-// For VPCs: resolves awsVpcName alias to awsVpcId from provider-config.
-// All resolved values are stored in runtime-only fields (yaml:"-") so they are
-// never written back to the cluster YAML.
-func (r *Reconciler) resolveAWSAliases(clusterDef *types.ClusterDefinition) {
-	if strings.ToLower(clusterDef.Spec.Provider) != "aws" {
-		return
-	}
-	accountName := clusterDef.Spec.AWSAccount
-	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
-
-	// Resolve EKS role ARN: provider-config alias takes precedence over direct name.
-	if clusterDef.Spec.AWSEKSRoleARN == "" {
-		if accountName != "" && clusterDef.Spec.AWSEKSRole != "" {
-			if arn, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole); err == nil {
-				clusterDef.Spec.AWSEKSRoleARN = arn
-				log.Printf("[%s] Resolved EKS role alias '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, arn)
-			} else {
-				log.Printf("[%s] Warning: could not resolve EKS role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, err)
-			}
-		} else if clusterDef.Spec.AWSEKSRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
-			clusterDef.Spec.AWSEKSRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSEKSRoleName)
-			log.Printf("[%s] Constructed EKS role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRoleName)
-		}
-	}
-
-	// Resolve node role ARN: provider-config alias takes precedence over direct name.
-	if clusterDef.Spec.AWSNodeRoleARN == "" {
-		if accountName != "" && clusterDef.Spec.AWSNodeRole != "" {
-			if arn, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole); err == nil {
-				clusterDef.Spec.AWSNodeRoleARN = arn
-				log.Printf("[%s] Resolved node role alias '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, arn)
-			} else {
-				log.Printf("[%s] Warning: could not resolve node role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, err)
-			}
-		} else if clusterDef.Spec.AWSNodeRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
-			clusterDef.Spec.AWSNodeRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSNodeRoleName)
-			log.Printf("[%s] Constructed node role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRoleName)
-		}
-	}
-
-	if clusterDef.Spec.AWSVPCID == "" && accountName != "" && clusterDef.Spec.AWSVPCName != "" {
-		if vpcID, err := pcMgr.GetAWSVPCID(accountName, clusterDef.Spec.AWSVPCName); err == nil {
-			clusterDef.Spec.AWSVPCID = vpcID
-			log.Printf("[%s] Resolved VPC '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, vpcID)
-		} else {
-			log.Printf("[%s] Warning: could not resolve VPC alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, err)
-		}
-	}
-}
-
 // createCluster creates a new cluster
 func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
 	existingCluster, err := clusterMgr.FindByName(ctx, clusterDef.Metadata.Name)
@@ -386,8 +323,15 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 		}
 	}
 
-	// Resolve AWS alias names (role names, VPC names) to their runtime ARNs/IDs.
-	r.resolveAWSAliases(&clusterDef)
+	// Construct AWS role ARNs from direct role names + account ID.
+	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+		clusterDef.Spec.AWSEKSRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSEKSRoleName)
+		log.Printf("[%s] Constructed EKS role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRoleName)
+	}
+	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+		clusterDef.Spec.AWSNodeRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSNodeRoleName)
+		log.Printf("[%s] Constructed node role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRoleName)
+	}
 
 	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
 	createdCluster, err := clusterMgr.Create(ctx, clusterDef)
@@ -562,36 +506,68 @@ func (r *Reconciler) strictDeleteSweep(ctx context.Context) {
 	}
 
 	// --- Azure subscriptions ---
-	// Each resource group is a separate provider scope; its Location is used as the region.
+	// Query resource groups dynamically via the Azure API instead of reading from config.
 	azureSubs, err := pcMgr.ListAzureSubscriptions()
 	if err != nil {
 		log.Printf("strict-delete: failed to list Azure subscriptions: %v", err)
 	}
 	for _, sub := range azureSubs {
-		if len(sub.ResourceGroups) == 0 {
-			log.Printf("strict-delete: Azure subscription=%q has no resource groups configured, skipping", sub.Name)
+		subID := sub.SubscriptionID
+		if subID == "" {
+			log.Printf("strict-delete: Azure subscription=%q has no subscription ID, skipping", sub.Name)
 			continue
 		}
-		for _, rg := range sub.ResourceGroups {
-			location := rg.Location
-			if location == "" {
-				location = "eastus"
-			}
-			prov, err := r.createProviderForCluster(types.ClusterDefinition{
-				Metadata: types.ClusterMetadata{Region: location},
-				Spec: types.ClusterSpec{
-					Provider:           "azure",
-					AzureSubscription:  sub.Name,
-					AzureResourceGroup: rg.Name,
-				},
-			})
-			if err != nil {
-				log.Printf("strict-delete: Azure sub=%q rg=%q: failed to create provider: %v", sub.Name, rg.Name, err)
+		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(sub.Name)
+		var rgClient *armresources.ResourceGroupsClient
+		var rgClientErr error
+		if tenantID != "" && clientID != "" && clientSecret != "" {
+			cred, credErr := azidentity.NewClientSecretCredential(tenantID, clientID, clientSecret, nil)
+			if credErr != nil {
+				log.Printf("strict-delete: Azure sub=%q: failed to create credentials: %v", sub.Name, credErr)
 				continue
 			}
-			log.Printf("strict-delete: sweeping Azure subscription=%q resource-group=%q", sub.Name, rg.Name)
-			if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
-				log.Printf("strict-delete: Azure sub=%q rg=%q: %v", sub.Name, rg.Name, err)
+			rgClient, rgClientErr = armresources.NewResourceGroupsClient(subID, cred, nil)
+		} else {
+			defCred, credErr := azidentity.NewDefaultAzureCredential(nil)
+			if credErr != nil {
+				log.Printf("strict-delete: Azure sub=%q: failed to create default credentials: %v", sub.Name, credErr)
+				continue
+			}
+			rgClient, rgClientErr = armresources.NewResourceGroupsClient(subID, defCred, nil)
+		}
+		if rgClientErr != nil {
+			log.Printf("strict-delete: Azure sub=%q: failed to create resource groups client: %v", sub.Name, rgClientErr)
+			continue
+		}
+		pager := rgClient.NewListPager(nil)
+		for pager.More() {
+			page, pageErr := pager.NextPage(ctx)
+			if pageErr != nil {
+				log.Printf("strict-delete: Azure sub=%q: failed to list resource groups: %v", sub.Name, pageErr)
+				break
+			}
+			for _, rg := range page.Value {
+				if rg.Name == nil || rg.Location == nil {
+					continue
+				}
+				rgName := *rg.Name
+				location := *rg.Location
+				prov, err := r.createProviderForCluster(types.ClusterDefinition{
+					Metadata: types.ClusterMetadata{Region: location},
+					Spec: types.ClusterSpec{
+						Provider:           "azure",
+						AzureSubscription:  sub.Name,
+						AzureResourceGroup: rgName,
+					},
+				})
+				if err != nil {
+					log.Printf("strict-delete: Azure sub=%q rg=%q: failed to create provider: %v", sub.Name, rgName, err)
+					continue
+				}
+				log.Printf("strict-delete: sweeping Azure subscription=%q resource-group=%q", sub.Name, rgName)
+				if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
+					log.Printf("strict-delete: Azure sub=%q rg=%q: %v", sub.Name, rgName, err)
+				}
 			}
 		}
 	}

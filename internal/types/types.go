@@ -92,12 +92,9 @@ type ClusterSpec struct {
 	// AWS-specific configuration
 	AWSAccount      string `yaml:"awsAccount,omitempty"`      // AWS account name alias
 	AWSAccountID    string `yaml:"awsAccountId,omitempty"`    // AWS account ID (resolved from alias)
-	AWSVPCName      string `yaml:"awsVpcName,omitempty"`      // AWS VPC name alias
-	AWSVPCID        string `yaml:"awsVpcId,omitempty"`        // AWS VPC ID (resolved from alias)
-	AWSEKSRole      string `yaml:"awsEksRole,omitempty"`      // AWS EKS role name alias (provider-config reference)
-	AWSNodeRole     string `yaml:"awsNodeRole,omitempty"`     // AWS EKS node role name alias (provider-config reference)
-	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // Direct IAM role name for EKS control plane
-	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // Direct IAM role name for EKS node groups
+	AWSVPCID        string `yaml:"awsVpcId,omitempty"`        // AWS VPC ID
+	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // IAM role name for EKS control plane
+	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // IAM role name for EKS node groups
 
 	// AWSEKSRoleARN and AWSNodeRoleARN are runtime-only fields populated during
 	// reconciliation via alias or name lookup. They are never serialized to YAML.

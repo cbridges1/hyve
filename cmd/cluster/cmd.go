@@ -50,9 +50,10 @@ Use --account-name, --project-name, --subscription-name, or --org-name to specif
 		subscriptionName, _ := cmd.Flags().GetString("subscription-name")
 		orgName, _ := cmd.Flags().GetString("org-name")
 
-		vpcName, _ := cmd.Flags().GetString("vpc-name")
+		vpcID, _ := cmd.Flags().GetString("vpc-id")
 		eksRoleName, _ := cmd.Flags().GetString("eks-role-name")
 		nodeRoleName, _ := cmd.Flags().GetString("node-role-name")
+		resourceGroup, _ := cmd.Flags().GetString("resource-group")
 
 		if !shared.IsValidProvider(providerName) {
 			log.Fatalf("Invalid provider '%s'. Valid providers are: %s", providerName, shared.ValidProvidersString())
@@ -97,7 +98,7 @@ Use --account-name, --project-name, --subscription-name, or --org-name to specif
 		pause, _ := cmd.Flags().GetBool("pause")
 		expiresAt, _ := cmd.Flags().GetString("expires-at")
 
-		createClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcName, eksRoleName, nodeRoleName, beforeCreate, onCreated, onDestroy, afterDelete, pause, expiresAt)
+		createClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreated, onDestroy, afterDelete, pause, expiresAt)
 	},
 }
 
@@ -213,9 +214,10 @@ func init() {
 	createCmd.Flags().StringP("subscription-name", "s", "", "Azure subscription name (required for Azure provider)")
 	createCmd.Flags().StringP("org-name", "o", "", "Civo organization name (required for Civo provider)")
 
-	createCmd.Flags().StringP("vpc-name", "v", "", "AWS VPC name alias")
+	createCmd.Flags().StringP("vpc-id", "v", "", "AWS VPC ID")
 	createCmd.Flags().StringP("eks-role-name", "e", "", "IAM role name for the EKS control plane")
 	createCmd.Flags().String("node-role-name", "", "IAM role name for EKS node groups")
+	createCmd.Flags().StringP("resource-group", "G", "", "Azure resource group name (required for Azure provider)")
 
 	createCmd.Flags().StringArrayP("node-group", "g", nil, `Node group spec (repeatable): name=workers,type=t3.medium,count=3[,min=1,max=5,disk=50,spot=true,mode=System]`)
 
@@ -252,4 +254,5 @@ func init() {
 	Cmd.AddCommand(modifyCmd)
 	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(forceDeleteCmd)
+	Cmd.AddCommand(syncCmd)
 }

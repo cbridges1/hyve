@@ -1,4 +1,4 @@
-package sync
+package cluster
 
 import (
 	"context"
@@ -7,12 +7,87 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 )
+
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Discover and import unmanaged cloud clusters",
+	Long: `Scan all configured cloud accounts for running clusters and compare against
+repo definitions. Unmanaged clusters (present in the cloud, absent from the repo)
+are listed and the user selects which to import.
+
+Replaces the top-level 'hyve sync' command.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		providerFilter, _ := cmd.Flags().GetString("provider")
+		accountFilter, _ := cmd.Flags().GetString("account")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		return runClusterSync(providerFilter, accountFilter, dryRun)
+	},
+}
+
+func init() {
+	syncCmd.Flags().StringP("provider", "p", "", "Limit to a specific provider (civo, aws, gcp, azure)")
+	syncCmd.Flags().StringP("account", "a", "", "Limit to a specific account/subscription/project alias")
+	syncCmd.Flags().Bool("dry-run", false, "Print what would be imported without writing anything")
+}
+
+func runClusterSync(providerFilter, accountFilter string, dryRun bool) error {
+	ctx := context.Background()
+
+	stateMgr, stateDir := shared.CreateStateManager(ctx)
+	if stateMgr == nil {
+		log.Fatal("No Git repository configured. Use 'hyve git add' to configure a repository.")
+	}
+
+	existing, err := stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		log.Fatalf("Failed to load cluster definitions: %v", err)
+	}
+
+	existingNames := make(map[string]bool, len(existing))
+	for _, d := range existing {
+		existingNames[d.Metadata.Name] = true
+	}
+
+	discoveries, err := discoverClusters(ctx, providerFilter, accountFilter)
+	if err != nil {
+		return err
+	}
+
+	var unmanaged []discoveredCluster
+	for _, d := range discoveries {
+		if !existingNames[d.name] {
+			unmanaged = append(unmanaged, d)
+		}
+	}
+
+	if len(unmanaged) == 0 {
+		log.Println("✅ No unmanaged clusters found.")
+	} else {
+		log.Printf("Unmanaged clusters found (%d):\n", len(unmanaged))
+		for _, d := range unmanaged {
+			log.Printf("  [%s / %s]  %s", d.provider, d.region, d.name)
+		}
+
+		if !dryRun {
+			if err := importSelected(ctx, stateMgr, stateDir, unmanaged, existingNames); err != nil {
+				return err
+			}
+		}
+	}
+
+	if dryRun {
+		log.Println("\n(dry-run — nothing written)")
+	}
+
+	return nil
+}
 
 type discoveredCluster struct {
 	name     string
@@ -21,7 +96,6 @@ type discoveredCluster struct {
 	region   string
 }
 
-// discoverClusters queries all configured cloud accounts for running clusters.
 func discoverClusters(ctx context.Context, providerFilter, accountFilter string) ([]discoveredCluster, error) {
 	var results []discoveredCluster
 
@@ -65,7 +139,6 @@ func accountsForProvider(providerName string) []string {
 	return nil
 }
 
-// importSelected writes ClusterDefinition YAMLs for the selected clusters.
 func importSelected(ctx context.Context, stateMgr *state.Manager, stateDir string, clusters []discoveredCluster, existing map[string]bool) error {
 	if stateDir == "" {
 		return fmt.Errorf("could not determine state directory")
@@ -81,7 +154,7 @@ func importSelected(ctx context.Context, stateMgr *state.Manager, stateDir strin
 			continue
 		}
 
-		def := buildClusterDefinition(c)
+		def := buildSyncClusterDefinition(c)
 		data, err := yaml.Marshal(&def)
 		if err != nil {
 			log.Printf("Warning: failed to marshal definition for '%s': %v", c.name, err)
@@ -104,11 +177,11 @@ func importSelected(ctx context.Context, stateMgr *state.Manager, stateDir strin
 		return nil
 	}
 
-	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("hyve sync: import %d cluster(s)", imported))
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("hyve cluster sync: import %d cluster(s)", imported))
 	return nil
 }
 
-func buildClusterDefinition(c discoveredCluster) types.ClusterDefinition {
+func buildSyncClusterDefinition(c discoveredCluster) types.ClusterDefinition {
 	spec := types.ClusterSpec{
 		Provider: c.provider,
 	}
@@ -124,14 +197,12 @@ func buildClusterDefinition(c discoveredCluster) types.ClusterDefinition {
 		spec.AzureSubscription = c.account
 	}
 
-	region := c.region
-
 	return types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
 		Metadata: types.ClusterMetadata{
 			Name:   c.name,
-			Region: region,
+			Region: c.region,
 		},
 		Spec: spec,
 	}
