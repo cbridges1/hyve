@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cbridges1/hyve/internal/credentials"
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/state"
@@ -67,22 +66,7 @@ func CreateStateManager(ctx gocontext.Context) (*state.Manager, string) {
 	}
 	log.Printf("Using Git repository: %s", currentRepo.RepoURL)
 
-	credsMgr, err := credentials.NewManager()
-	var authToken string
-	var authUsername string
-	if err == nil {
-		defer credsMgr.Close()
-		if creds, _ := credsMgr.GetCredentials(); creds != nil {
-			if password, err := creds.GetPassword(); err == nil && password != "" {
-				authToken = password
-				authUsername = creds.Username
-			}
-		}
-	}
-	if authToken == "" {
-		authToken = os.Getenv("HYVE_GIT_TOKEN")
-	}
-
+	authUsername, authToken := GetAuthCredentials(currentRepo)
 	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
 	if err != nil {
 		log.Fatalf("Failed to create state manager: %v", err)
@@ -175,24 +159,10 @@ func ParseNodeGroup(s string) (types.NodeGroup, error) {
 	return ng, nil
 }
 
-// GetAuthCredentials retrieves authentication credentials for git operations
-func GetAuthCredentials(currentRepo *repository.Repository) (username, token string) {
-	credsMgr, err := credentials.NewManager()
-	if err == nil {
-		defer credsMgr.Close()
-		if creds, _ := credsMgr.GetCredentials(); creds != nil {
-			if password, err := creds.GetPassword(); err == nil && password != "" {
-				token = password
-				username = creds.Username
-			}
-		}
-	}
-
-	if token == "" {
-		token = os.Getenv("HYVE_GIT_TOKEN")
-	}
-
-	return username, token
+// GetAuthCredentials returns the git auth token from the HYVE_GIT_TOKEN env var.
+// Username is always empty — the system git credential helper handles auth.
+func GetAuthCredentials(_ *repository.Repository) (username, token string) {
+	return "", os.Getenv("HYVE_GIT_TOKEN")
 }
 
 // GetRepoPath returns the local path of the current repository (no sync).
@@ -323,24 +293,7 @@ func CreateStateManagerFromRepository(ctx gocontext.Context) (*state.Manager, st
 	}
 	log.Printf("Using Git repository: %s", currentRepo.RepoURL)
 
-	credsMgr, err := credentials.NewManager()
-	var authToken string
-	var authUsername string
-
-	if err == nil {
-		defer credsMgr.Close()
-		if creds, _ := credsMgr.GetCredentials(); creds != nil {
-			if password, err := creds.GetPassword(); err == nil && password != "" {
-				authToken = password
-				authUsername = creds.Username
-			}
-		}
-	}
-
-	if authToken == "" {
-		authToken = os.Getenv("HYVE_GIT_TOKEN")
-	}
-
+	authUsername, authToken := GetAuthCredentials(currentRepo)
 	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
 	if err != nil {
 		log.Fatalf("Failed to create state manager: %v", err)

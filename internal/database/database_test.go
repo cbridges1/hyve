@@ -64,7 +64,7 @@ func TestTablesCreated(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	tables := []string{"credentials", "secrets", "repositories", "kubeconfigs"}
+	tables := []string{"repositories", "kubeconfigs"}
 	for _, table := range tables {
 		t.Run(table, func(t *testing.T) {
 			var name string

@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/cbridges1/hyve/internal/credentials"
 	internalgit "github.com/cbridges1/hyve/internal/git"
 	"github.com/cbridges1/hyve/internal/repository"
 )
@@ -265,29 +264,10 @@ func addGitRepository(name, repoURL string, setCurrent bool) {
 
 	log.Println("Testing Git repository connection...")
 
-	credsMgr, err := credentials.NewManager()
-	if err == nil {
-		defer credsMgr.Close()
-	}
-
-	var authToken string
-	var authUsername string
-
-	if credsMgr != nil {
-		if creds, err := credsMgr.GetCredentials(); err == nil && creds != nil {
-			if password, err := creds.GetPassword(); err == nil && password != "" {
-				authToken = password
-				authUsername = creds.Username
-			}
-		}
-	}
-
-	if authToken == "" {
-		authToken = os.Getenv("HYVE_GIT_TOKEN")
-	}
+	authToken := os.Getenv("HYVE_GIT_TOKEN")
 
 	ctx := context.Background()
-	gitMgr, err := internalgit.NewBackend(repoURL, localPath, authUsername, authToken)
+	gitMgr, err := internalgit.NewBackend(repoURL, localPath, "", authToken)
 	if err != nil {
 		log.Fatalf("Failed to create git backend: %v", err)
 	}
@@ -302,11 +282,6 @@ func addGitRepository(name, repoURL string, setCurrent bool) {
 	log.Printf("Repository '%s' added successfully!", name)
 	log.Printf("Repository URL: %s", repoURL)
 	log.Printf("Local path: %s", localPath)
-	if credsMgr != nil {
-		if creds, _ := credsMgr.GetCredentials(); creds != nil {
-			log.Printf("Authentication: ✅ Global credentials configured")
-		}
-	}
 	if repo.IsCurrent {
 		log.Println("✅ This repository is now current")
 	}
@@ -352,21 +327,10 @@ func listGitRepositories() {
 		log.Println()
 	}
 
-	credsMgr, err := credentials.NewManager()
-	if err == nil {
-		defer credsMgr.Close()
-		if creds, _ := credsMgr.GetCredentials(); creds != nil {
-			log.Printf("🔑 Authentication: ✅ Global credentials configured (%s)", creds.Username)
-		} else {
-			log.Println("🔑 Authentication: ⚠️  No global credentials stored")
-		}
-	}
-
-	hasToken := os.Getenv("HYVE_GIT_TOKEN") != ""
-	if hasToken {
-		log.Println("🔑 Environment Fallback: ✅ HYVE_GIT_TOKEN configured")
+	if os.Getenv("HYVE_GIT_TOKEN") != "" {
+		log.Println("🔑 Authentication: ✅ HYVE_GIT_TOKEN configured")
 	} else {
-		log.Println("🔑 Environment Fallback: ⚠️  HYVE_GIT_TOKEN not set")
+		log.Println("🔑 Authentication: system git credential helper (set HYVE_GIT_TOKEN for token auth)")
 	}
 }
 
@@ -412,39 +376,16 @@ func showGitStatus() {
 	log.Printf("Repository URL: %s", currentRepo.RepoURL)
 	log.Printf("Local path: %s", currentRepo.LocalPath)
 
-	credsMgr, err := credentials.NewManager()
-	var globalCreds *credentials.Credentials
-	if err == nil {
-		defer credsMgr.Close()
-		globalCreds, _ = credsMgr.GetCredentials()
-	}
-
 	envToken := os.Getenv("HYVE_GIT_TOKEN")
-
-	if globalCreds != nil {
-		log.Printf("Authentication: ✅ Global credentials configured (%s)", globalCreds.Username)
-	} else if envToken != "" {
-		log.Println("Authentication: ✅ Environment token configured")
+	if envToken != "" {
+		log.Println("Authentication: ✅ HYVE_GIT_TOKEN configured")
 	} else {
-		log.Println("Authentication: ⚠️  No authentication configured")
+		log.Println("Authentication: system git credential helper (set HYVE_GIT_TOKEN for token auth)")
 	}
 
 	log.Println("\nTesting connection...")
-	var authToken string
-	var authUsername string
-
-	if globalCreds != nil {
-		if password, err := globalCreds.GetPassword(); err == nil && password != "" {
-			authToken = password
-			authUsername = globalCreds.Username
-		}
-	}
-
-	if authToken == "" {
-		authToken = envToken
-	}
 	ctx := context.Background()
-	gitMgr, err := internalgit.NewBackend(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
+	gitMgr, err := internalgit.NewBackend(currentRepo.RepoURL, currentRepo.LocalPath, "", envToken)
 	if err != nil {
 		log.Fatalf("Failed to create git backend: %v", err)
 	}
@@ -714,23 +655,8 @@ func switchGitBranch(branchName string, pull bool) {
 	log.Println("💡 Changes made will be tracked on this branch")
 }
 
-func getGitAuth(repo *repository.Repository) (token, username string) {
-	credsMgr, err := credentials.NewManager()
-	if err == nil {
-		defer credsMgr.Close()
-		if creds, err := credsMgr.GetCredentials(); err == nil && creds != nil {
-			if password, err := creds.GetPassword(); err == nil && password != "" {
-				token = password
-				username = creds.Username
-			}
-		}
-	}
-
-	if token == "" {
-		token = os.Getenv("HYVE_GIT_TOKEN")
-	}
-
-	return token, username
+func getGitAuth(_ *repository.Repository) (token, username string) {
+	return os.Getenv("HYVE_GIT_TOKEN"), ""
 }
 
 func pullGitChanges() {
