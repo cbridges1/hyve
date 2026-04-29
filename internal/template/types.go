@@ -10,10 +10,10 @@ type TemplateMetadata struct {
 
 // TemplateWorkflowsSpec defines workflows to run on cluster lifecycle events
 type TemplateWorkflowsSpec struct {
-	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation
-	OnCreated    []string `yaml:"onCreated,omitempty"`    // Workflows to run after cluster creation
+	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
+	OnCreate     []string `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
 	OnDestroy    []string `yaml:"onDestroy,omitempty"`    // Workflows to run before cluster destruction
-	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion
+	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
 }
 
 // TemplateSpec represents the template specification.

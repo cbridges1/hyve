@@ -55,7 +55,7 @@ and workflows to execute upon cluster creation or destruction.`,
 		resourceGroup, _ := cmd.Flags().GetString("resource-group")
 		project, _ := cmd.Flags().GetString("project")
 		beforeCreate, _ := cmd.Flags().GetString("before-create")
-		onCreated, _ := cmd.Flags().GetString("on-created")
+		onCreate, _ := cmd.Flags().GetString("on-create")
 		onDestroy, _ := cmd.Flags().GetString("on-destroy")
 		afterDelete, _ := cmd.Flags().GetString("after-delete")
 		schedule, _ := cmd.Flags().GetString("schedule")
@@ -73,7 +73,7 @@ and workflows to execute upon cluster creation or destruction.`,
 
 		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups,
 			orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project,
-			beforeCreate, onCreated, onDestroy, afterDelete, schedule)
+			beforeCreate, onCreate, onDestroy, afterDelete, schedule)
 	},
 }
 
@@ -170,7 +170,7 @@ func init() {
 	templateCreateCmd.Flags().StringP("resource-group", "G", "", "Azure resource group (embedded in template; optional)")
 	templateCreateCmd.Flags().StringP("project", "P", "", "GCP project alias (embedded in template; optional)")
 	templateCreateCmd.Flags().String("before-create", "", "Workflows to run before cluster creation (comma-separated)")
-	templateCreateCmd.Flags().StringP("on-created", "c", "", "Workflows to run after cluster creation (comma-separated)")
+	templateCreateCmd.Flags().StringP("on-create", "c", "", "Workflows to run after cluster creation (comma-separated)")
 	templateCreateCmd.Flags().String("on-destroy", "", "Workflows to run before cluster destruction (comma-separated)")
 	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5' — every Friday at 8pm); evaluated at execute time")
@@ -196,7 +196,7 @@ func createTemplate(
 	name, description, provider, region, nodesSizes, clusterType string,
 	nodeGroups []types.NodeGroup,
 	orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string,
-	beforeCreateStr, onCreatedStr, onDestroyStr, afterDeleteStr string,
+	beforeCreateStr, onCreateStr, onDestroyStr, afterDeleteStr string,
 	schedule string,
 ) {
 	// cluster-type is only meaningful for Civo
@@ -270,7 +270,7 @@ func createTemplate(
 			GCPProject:         project,
 			Workflows: template.TemplateWorkflowsSpec{
 				BeforeCreate: parseWorkflows(beforeCreateStr),
-				OnCreated:    parseWorkflows(onCreatedStr),
+				OnCreate:     parseWorkflows(onCreateStr),
 				OnDestroy:    parseWorkflows(onDestroyStr),
 				AfterDelete:  parseWorkflows(afterDeleteStr),
 			},
@@ -303,8 +303,8 @@ func createTemplate(
 	if wf := tmpl.Spec.Workflows.BeforeCreate; len(wf) > 0 {
 		log.Printf("  BeforeCreate Workflows: %s", strings.Join(wf, ", "))
 	}
-	if wf := tmpl.Spec.Workflows.OnCreated; len(wf) > 0 {
-		log.Printf("  OnCreated Workflows: %s", strings.Join(wf, ", "))
+	if wf := tmpl.Spec.Workflows.OnCreate; len(wf) > 0 {
+		log.Printf("  OnCreate Workflows: %s", strings.Join(wf, ", "))
 	}
 	if wf := tmpl.Spec.Workflows.OnDestroy; len(wf) > 0 {
 		log.Printf("  OnDestroy Workflows: %s", strings.Join(wf, ", "))
@@ -361,8 +361,8 @@ func listTemplates() {
 			tmpl.Spec.Region,
 			strings.Join(tmpl.Spec.Nodes, ", "),
 			tmpl.Spec.ClusterType)
-		if len(tmpl.Spec.Workflows.OnCreated) > 0 {
-			log.Printf("    OnCreated Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreated, ", "))
+		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
+			log.Printf("    OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
 		}
 		if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
 			log.Printf("    OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
@@ -540,8 +540,8 @@ func executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName
 	log.Printf("  Region: %s", tmpl.Spec.Region)
 	log.Printf("  Nodes: %s", strings.Join(tmpl.Spec.Nodes, ", "))
 	log.Printf("  Cluster Type: %s", tmpl.Spec.ClusterType)
-	if len(tmpl.Spec.Workflows.OnCreated) > 0 {
-		log.Printf("  OnCreated Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreated, ", "))
+	if len(tmpl.Spec.Workflows.OnCreate) > 0 {
+		log.Printf("  OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
 	}
 	if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
 		log.Printf("  OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
@@ -740,7 +740,7 @@ func validateTemplate(name string) {
 	}
 
 	// Validate workflows exist
-	allWorkflows := append(tmpl.Spec.Workflows.OnCreated, tmpl.Spec.Workflows.OnDestroy...)
+	allWorkflows := append(tmpl.Spec.Workflows.OnCreate, tmpl.Spec.Workflows.OnDestroy...)
 	if len(allWorkflows) > 0 {
 		workflowMgr, err := workflow.NewManager(shared.GetLocalPath())
 		if err == nil {
@@ -751,9 +751,9 @@ func validateTemplate(name string) {
 					workflowMap[wf.Metadata.Name] = true
 				}
 
-				for _, wfName := range tmpl.Spec.Workflows.OnCreated {
+				for _, wfName := range tmpl.Spec.Workflows.OnCreate {
 					if !workflowMap[wfName] {
-						warnings = append(warnings, fmt.Sprintf("OnCreated workflow '%s' not found in repository", wfName))
+						warnings = append(warnings, fmt.Sprintf("OnCreate workflow '%s' not found in repository", wfName))
 					}
 				}
 				for _, wfName := range tmpl.Spec.Workflows.OnDestroy {
@@ -788,10 +788,10 @@ func validateTemplate(name string) {
 		log.Printf("📋 Nodes: %d (%s)", len(tmpl.Spec.Nodes), strings.Join(tmpl.Spec.Nodes, ", "))
 		log.Printf("📋 Cluster Type: %s", tmpl.Spec.ClusterType)
 		log.Printf("📋 Ingress: %v", tmpl.Spec.Ingress.Enabled)
-		if len(tmpl.Spec.Workflows.OnCreated) > 0 {
-			log.Printf("📋 OnCreated Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnCreated), strings.Join(tmpl.Spec.Workflows.OnCreated, ", "))
+		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
+			log.Printf("📋 OnCreate Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnCreate), strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
 		} else {
-			log.Printf("📋 OnCreated Workflows: none")
+			log.Printf("📋 OnCreate Workflows: none")
 		}
 		if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
 			log.Printf("📋 OnDestroy Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnDestroy), strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))

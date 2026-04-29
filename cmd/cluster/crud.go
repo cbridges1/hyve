@@ -16,7 +16,7 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
-func createClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup string, beforeCreate, onCreated, onDestroy, afterDelete []string, pause bool, expiresAt string) {
+func createClusterFromCLI(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup string, beforeCreate, onCreate, onDestroy, afterDelete []string, pause bool, expiresAt string) {
 	ctx := gocontext.Background()
 	stateMgr, stateDir := shared.CreateStateManager(ctx)
 
@@ -94,7 +94,7 @@ func createClusterFromCLI(clusterName, region, providerName string, nodes []stri
 			ExpiresAt:          expiresAt,
 			Workflows: types.WorkflowsSpec{
 				BeforeCreate: beforeCreate,
-				OnCreated:    onCreated,
+				OnCreate:     onCreate,
 				OnDestroy:    onDestroy,
 				AfterDelete:  afterDelete,
 			},
@@ -310,8 +310,8 @@ func showCluster(clusterName string) {
 	if len(clusterDef.Spec.Workflows.BeforeCreate) > 0 {
 		fmt.Printf("  BeforeCreate: %v\n", clusterDef.Spec.Workflows.BeforeCreate)
 	}
-	if len(clusterDef.Spec.Workflows.OnCreated) > 0 {
-		fmt.Printf("  OnCreated: %v\n", clusterDef.Spec.Workflows.OnCreated)
+	if len(clusterDef.Spec.Workflows.OnCreate) > 0 {
+		fmt.Printf("  OnCreate: %v\n", clusterDef.Spec.Workflows.OnCreate)
 	}
 	if len(clusterDef.Spec.Workflows.OnDestroy) > 0 {
 		fmt.Printf("  OnDestroy: %v\n", clusterDef.Spec.Workflows.OnDestroy)

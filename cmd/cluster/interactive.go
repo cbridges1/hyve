@@ -93,7 +93,7 @@ func interactiveClusterCreate() error {
 		nodeRoleName     string
 		resourceGroup    string
 		beforeCreate     []string
-		onCreatedNames   []string
+		onCreateNames    []string
 		onDestroyNames   []string
 		afterDelete      []string
 		pause            bool
@@ -205,7 +205,7 @@ func interactiveClusterCreate() error {
 	if err := shared.SelectWorkflowHook("Before-create workflows (optional)", wfNames, &beforeCreate); err != nil {
 		return err
 	}
-	if err := shared.SelectWorkflowHook("On-created workflows (optional)", wfNames, &onCreatedNames); err != nil {
+	if err := shared.SelectWorkflowHook("On-create workflows (optional)", wfNames, &onCreateNames); err != nil {
 		return err
 	}
 	if err := shared.SelectWorkflowHook("On-destroy workflows (optional)", wfNames, &onDestroyNames); err != nil {
@@ -270,7 +270,7 @@ func interactiveClusterCreate() error {
 		return nil
 	}
 
-	createClusterFromCLI(clusterName, region, providerName, nodes, []types.NodeGroup{}, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreatedNames, onDestroyNames, afterDelete, pause, expiresAt)
+	createClusterFromCLI(clusterName, region, providerName, nodes, []types.NodeGroup{}, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreateNames, onDestroyNames, afterDelete, pause, expiresAt)
 	return nil
 }
 

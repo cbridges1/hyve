@@ -18,7 +18,7 @@ func TestWorkflowsSpec_BeforeCreateAfterDelete_RoundTrip(t *testing.T) {
 			Provider: "civo",
 			Workflows: WorkflowsSpec{
 				BeforeCreate: []string{"provision-vpc", "provision-roles"},
-				OnCreated:    []string{"notify-slack"},
+				OnCreate:     []string{"notify-slack"},
 				OnDestroy:    []string{"drain-nodes"},
 				AfterDelete:  []string{"cleanup-vpc", "cleanup-roles"},
 			},
@@ -36,7 +36,7 @@ func TestWorkflowsSpec_BeforeCreateAfterDelete_RoundTrip(t *testing.T) {
 	}
 
 	assertStringSlice(t, "BeforeCreate", got.Spec.Workflows.BeforeCreate, "provision-vpc", "provision-roles")
-	assertStringSlice(t, "OnCreated", got.Spec.Workflows.OnCreated, "notify-slack")
+	assertStringSlice(t, "OnCreate", got.Spec.Workflows.OnCreate, "notify-slack")
 	assertStringSlice(t, "OnDestroy", got.Spec.Workflows.OnDestroy, "drain-nodes")
 	assertStringSlice(t, "AfterDelete", got.Spec.Workflows.AfterDelete, "cleanup-vpc", "cleanup-roles")
 }
@@ -45,7 +45,7 @@ func TestWorkflowsSpec_EmptyFieldsOmitted(t *testing.T) {
 	def := ClusterDefinition{
 		Spec: ClusterSpec{
 			Provider:  "civo",
-			Workflows: WorkflowsSpec{OnCreated: []string{"wf-a"}},
+			Workflows: WorkflowsSpec{OnCreate: []string{"wf-a"}},
 		},
 	}
 	data, err := yaml.Marshal(&def)
@@ -59,8 +59,8 @@ func TestWorkflowsSpec_EmptyFieldsOmitted(t *testing.T) {
 	if strings.Contains(s, "afterDelete") {
 		t.Error("afterDelete should be omitted when empty")
 	}
-	if !strings.Contains(s, "onCreated") {
-		t.Error("onCreated should be present")
+	if !strings.Contains(s, "onCreate") {
+		t.Error("onCreate should be present")
 	}
 }
 

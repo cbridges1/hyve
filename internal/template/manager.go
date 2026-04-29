@@ -194,7 +194,7 @@ func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName str
 			},
 			Workflows: types.WorkflowsSpec{
 				BeforeCreate: template.Spec.Workflows.BeforeCreate,
-				OnCreated:    template.Spec.Workflows.OnCreated,
+				OnCreate:     template.Spec.Workflows.OnCreate,
 				OnDestroy:    template.Spec.Workflows.OnDestroy,
 				AfterDelete:  template.Spec.Workflows.AfterDelete,
 			},

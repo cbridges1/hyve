@@ -12,11 +12,11 @@ import (
 
 // buildClusterDef is the core logic extracted from addClusterFromCLI so we can
 // unit-test it without a git repository or cloud provider.
-func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreated, onDestroy []string) types.ClusterDefinition {
-	return buildClusterDefFull(clusterName, region, providerName, nodes, nodeGroups, clusterType, onCreated, onDestroy, false, "")
+func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDestroy []string) types.ClusterDefinition {
+	return buildClusterDefFull(clusterName, region, providerName, nodes, nodeGroups, clusterType, onCreate, onDestroy, false, "")
 }
 
-func buildClusterDefFull(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreated, onDestroy []string, pause bool, expiresAt string) types.ClusterDefinition {
+func buildClusterDefFull(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDestroy []string, pause bool, expiresAt string) types.ClusterDefinition {
 	return types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
@@ -30,7 +30,7 @@ func buildClusterDefFull(clusterName, region, providerName string, nodes []strin
 			NodeGroups:  nodeGroups,
 			ClusterType: clusterType,
 			Workflows: types.WorkflowsSpec{
-				OnCreated: onCreated,
+				OnCreate:  onCreate,
 				OnDestroy: onDestroy,
 			},
 			Ingress: types.IngressSpec{
@@ -43,20 +43,20 @@ func buildClusterDefFull(clusterName, region, providerName string, nodes []strin
 	}
 }
 
-func TestBuildClusterDef_OnCreatedAndOnDestroy(t *testing.T) {
-	onCreated := []string{"setup-monitoring", "notify-slack"}
+func TestBuildClusterDef_OnCreateAndOnDestroy(t *testing.T) {
+	onCreate := []string{"setup-monitoring", "notify-slack"}
 	onDestroy := []string{"cleanup-dns"}
 
-	def := buildClusterDef("my-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", onCreated, onDestroy)
+	def := buildClusterDef("my-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", onCreate, onDestroy)
 
-	if len(def.Spec.Workflows.OnCreated) != 2 {
-		t.Fatalf("expected 2 on-created workflows, got %d", len(def.Spec.Workflows.OnCreated))
+	if len(def.Spec.Workflows.OnCreate) != 2 {
+		t.Fatalf("expected 2 on-create workflows, got %d", len(def.Spec.Workflows.OnCreate))
 	}
-	if def.Spec.Workflows.OnCreated[0] != "setup-monitoring" {
-		t.Errorf("expected first on-created to be 'setup-monitoring', got %q", def.Spec.Workflows.OnCreated[0])
+	if def.Spec.Workflows.OnCreate[0] != "setup-monitoring" {
+		t.Errorf("expected first on-create to be 'setup-monitoring', got %q", def.Spec.Workflows.OnCreate[0])
 	}
-	if def.Spec.Workflows.OnCreated[1] != "notify-slack" {
-		t.Errorf("expected second on-created to be 'notify-slack', got %q", def.Spec.Workflows.OnCreated[1])
+	if def.Spec.Workflows.OnCreate[1] != "notify-slack" {
+		t.Errorf("expected second on-create to be 'notify-slack', got %q", def.Spec.Workflows.OnCreate[1])
 	}
 
 	if len(def.Spec.Workflows.OnDestroy) != 1 {
@@ -70,8 +70,8 @@ func TestBuildClusterDef_OnCreatedAndOnDestroy(t *testing.T) {
 func TestBuildClusterDef_EmptyWorkflows(t *testing.T) {
 	def := buildClusterDef("my-cluster", "us-east-1", "aws", nil, nil, "", nil, nil)
 
-	if len(def.Spec.Workflows.OnCreated) != 0 {
-		t.Errorf("expected 0 on-created workflows, got %d", len(def.Spec.Workflows.OnCreated))
+	if len(def.Spec.Workflows.OnCreate) != 0 {
+		t.Errorf("expected 0 on-create workflows, got %d", len(def.Spec.Workflows.OnCreate))
 	}
 	if len(def.Spec.Workflows.OnDestroy) != 0 {
 		t.Errorf("expected 0 on-destroy workflows, got %d", len(def.Spec.Workflows.OnDestroy))
@@ -91,8 +91,8 @@ func TestBuildClusterDef_WorkflowsSerializeToYAML(t *testing.T) {
 		t.Fatalf("yaml.Unmarshal failed: %v", err)
 	}
 
-	if len(roundtrip.Spec.Workflows.OnCreated) != 1 || roundtrip.Spec.Workflows.OnCreated[0] != "wf-a" {
-		t.Errorf("on-created did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnCreated)
+	if len(roundtrip.Spec.Workflows.OnCreate) != 1 || roundtrip.Spec.Workflows.OnCreate[0] != "wf-a" {
+		t.Errorf("on-create did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnCreate)
 	}
 	if len(roundtrip.Spec.Workflows.OnDestroy) != 1 || roundtrip.Spec.Workflows.OnDestroy[0] != "wf-b" {
 		t.Errorf("on-destroy did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnDestroy)
@@ -109,19 +109,19 @@ func TestBuildClusterDef_EmptyWorkflowsOmittedFromYAML(t *testing.T) {
 
 	// workflows field should be omitted when empty (omitempty)
 	yamlStr := string(data)
-	if contains(yamlStr, "onCreated") || contains(yamlStr, "onDestroy") {
+	if contains(yamlStr, "onCreate") || contains(yamlStr, "onDestroy") {
 		t.Errorf("expected empty workflows to be omitted from YAML, but found them in:\n%s", yamlStr)
 	}
 }
 
-func TestAddCmdFlags_OnCreatedAndOnDestroy(t *testing.T) {
+func TestAddCmdFlags_OnCreateAndOnDestroy(t *testing.T) {
 	// Verify the flags are registered on createCmd
-	onCreatedFlag := createCmd.Flags().Lookup("on-created")
-	if onCreatedFlag == nil {
-		t.Fatal("--on-created flag not registered on createCmd")
+	onCreateFlag := createCmd.Flags().Lookup("on-create")
+	if onCreateFlag == nil {
+		t.Fatal("--on-create flag not registered on createCmd")
 	}
-	if onCreatedFlag.Value.Type() != "stringArray" {
-		t.Errorf("expected --on-created to be stringArray, got %s", onCreatedFlag.Value.Type())
+	if onCreateFlag.Value.Type() != "stringArray" {
+		t.Errorf("expected --on-create to be stringArray, got %s", onCreateFlag.Value.Type())
 	}
 
 	onDestroyFlag := createCmd.Flags().Lookup("on-destroy")
@@ -133,17 +133,17 @@ func TestAddCmdFlags_OnCreatedAndOnDestroy(t *testing.T) {
 	}
 }
 
-func TestAddCmdFlags_OnCreatedAndOnDestroy_Repeatable(t *testing.T) {
+func TestAddCmdFlags_OnCreateAndOnDestroy_Repeatable(t *testing.T) {
 	// Reset createCmd flags to avoid state from other tests
-	createCmd.Flags().Set("on-created", "wf-one")
-	createCmd.Flags().Set("on-created", "wf-two")
+	createCmd.Flags().Set("on-create", "wf-one")
+	createCmd.Flags().Set("on-create", "wf-two")
 
-	vals, err := createCmd.Flags().GetStringArray("on-created")
+	vals, err := createCmd.Flags().GetStringArray("on-create")
 	if err != nil {
 		t.Fatalf("GetStringArray failed: %v", err)
 	}
 	if len(vals) < 2 {
-		t.Errorf("expected at least 2 on-created values after two Set calls, got %d: %v", len(vals), vals)
+		t.Errorf("expected at least 2 on-create values after two Set calls, got %d: %v", len(vals), vals)
 	}
 }
 
@@ -173,8 +173,8 @@ func TestWorkflowsWrittenToFile(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if len(loaded.Spec.Workflows.OnCreated) != 1 || loaded.Spec.Workflows.OnCreated[0] != "on-create-wf" {
-		t.Errorf("on-created not persisted: %v", loaded.Spec.Workflows.OnCreated)
+	if len(loaded.Spec.Workflows.OnCreate) != 1 || loaded.Spec.Workflows.OnCreate[0] != "on-create-wf" {
+		t.Errorf("on-create not persisted: %v", loaded.Spec.Workflows.OnCreate)
 	}
 	if len(loaded.Spec.Workflows.OnDestroy) != 1 || loaded.Spec.Workflows.OnDestroy[0] != "on-destroy-wf" {
 		t.Errorf("on-destroy not persisted: %v", loaded.Spec.Workflows.OnDestroy)

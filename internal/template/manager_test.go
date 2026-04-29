@@ -249,7 +249,7 @@ func TestExecuteTemplate(t *testing.T) {
 			Nodes:       []string{"g4s.kube.medium"},
 			ClusterType: "k3s",
 			Workflows: TemplateWorkflowsSpec{
-				OnCreated: []string{"setup-monitoring", "deploy-app"},
+				OnCreate: []string{"setup-monitoring", "deploy-app"},
 			},
 		},
 	}
@@ -264,7 +264,7 @@ func TestExecuteTemplate(t *testing.T) {
 
 	assert.Equal(t, template.Metadata.Name, retrievedTemplate.Metadata.Name)
 	assert.Equal(t, "test-cluster", clusterDef.Metadata.Name)
-	assert.Len(t, retrievedTemplate.Spec.Workflows.OnCreated, 2)
+	assert.Len(t, retrievedTemplate.Spec.Workflows.OnCreate, 2)
 }
 
 func TestExecuteTemplate_NotFound(t *testing.T) {
@@ -288,7 +288,7 @@ func TestTemplateWithWorkflows(t *testing.T) {
 			Nodes:       []string{"g4s.kube.large"},
 			ClusterType: "k3s",
 			Workflows: TemplateWorkflowsSpec{
-				OnCreated: []string{"setup", "deploy"},
+				OnCreate:  []string{"setup", "deploy"},
 				OnDestroy: []string{"cleanup"},
 			},
 		},
@@ -300,7 +300,7 @@ func TestTemplateWithWorkflows(t *testing.T) {
 	retrieved, err := manager.GetTemplate("workflow-template")
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"setup", "deploy"}, retrieved.Spec.Workflows.OnCreated)
+	assert.Equal(t, []string{"setup", "deploy"}, retrieved.Spec.Workflows.OnCreate)
 	assert.Equal(t, []string{"cleanup"}, retrieved.Spec.Workflows.OnDestroy)
 }
 
@@ -316,7 +316,7 @@ func TestTemplateWithAllFourHooks_YAMLRoundtrip(t *testing.T) {
 			ClusterType: "k3s",
 			Workflows: TemplateWorkflowsSpec{
 				BeforeCreate: []string{"provision-vpc", "provision-roles"},
-				OnCreated:    []string{"notify-slack"},
+				OnCreate:     []string{"notify-slack"},
 				OnDestroy:    []string{"drain-nodes"},
 				AfterDelete:  []string{"cleanup-vpc", "cleanup-roles"},
 			},
@@ -330,7 +330,7 @@ func TestTemplateWithAllFourHooks_YAMLRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"provision-vpc", "provision-roles"}, retrieved.Spec.Workflows.BeforeCreate)
-	assert.Equal(t, []string{"notify-slack"}, retrieved.Spec.Workflows.OnCreated)
+	assert.Equal(t, []string{"notify-slack"}, retrieved.Spec.Workflows.OnCreate)
 	assert.Equal(t, []string{"drain-nodes"}, retrieved.Spec.Workflows.OnDestroy)
 	assert.Equal(t, []string{"cleanup-vpc", "cleanup-roles"}, retrieved.Spec.Workflows.AfterDelete)
 }
@@ -345,7 +345,7 @@ func TestTemplateHooks_EmptyFieldsOmitted(t *testing.T) {
 			Region:   "PHX1",
 			Nodes:    []string{"g4s.kube.small"},
 			Workflows: TemplateWorkflowsSpec{
-				OnCreated: []string{"wf-a"},
+				OnCreate: []string{"wf-a"},
 			},
 		},
 	}
@@ -359,7 +359,7 @@ func TestTemplateHooks_EmptyFieldsOmitted(t *testing.T) {
 	assert.Nil(t, retrieved.Spec.Workflows.BeforeCreate, "BeforeCreate should be nil when not set")
 	assert.Nil(t, retrieved.Spec.Workflows.OnDestroy, "OnDestroy should be nil when not set")
 	assert.Nil(t, retrieved.Spec.Workflows.AfterDelete, "AfterDelete should be nil when not set")
-	assert.Equal(t, []string{"wf-a"}, retrieved.Spec.Workflows.OnCreated)
+	assert.Equal(t, []string{"wf-a"}, retrieved.Spec.Workflows.OnCreate)
 }
 
 func TestConvertToClusterDefinition_AllFourHooksCopied(t *testing.T) {
@@ -373,7 +373,7 @@ func TestConvertToClusterDefinition_AllFourHooksCopied(t *testing.T) {
 			Nodes:    []string{"g4s.kube.small"},
 			Workflows: TemplateWorkflowsSpec{
 				BeforeCreate: []string{"before-a"},
-				OnCreated:    []string{"created-a"},
+				OnCreate:     []string{"created-a"},
 				OnDestroy:    []string{"destroy-a"},
 				AfterDelete:  []string{"after-a"},
 			},
@@ -383,7 +383,7 @@ func TestConvertToClusterDefinition_AllFourHooksCopied(t *testing.T) {
 	clusterDef := manager.ConvertToClusterDefinition(tmpl, "my-cluster")
 	require.NotNil(t, clusterDef)
 	assert.Equal(t, []string{"before-a"}, clusterDef.Spec.Workflows.BeforeCreate)
-	assert.Equal(t, []string{"created-a"}, clusterDef.Spec.Workflows.OnCreated)
+	assert.Equal(t, []string{"created-a"}, clusterDef.Spec.Workflows.OnCreate)
 	assert.Equal(t, []string{"destroy-a"}, clusterDef.Spec.Workflows.OnDestroy)
 	assert.Equal(t, []string{"after-a"}, clusterDef.Spec.Workflows.AfterDelete)
 }

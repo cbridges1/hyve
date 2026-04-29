@@ -86,7 +86,7 @@ func interactiveTemplateCreate() error {
 		resourceGroup    string
 		projectName      string
 		beforeCreate     []string
-		onCreatedNames   []string
+		onCreateNames    []string
 		onDestroyNames   []string
 		afterDelete      []string
 		schedule         string
@@ -240,7 +240,7 @@ func interactiveTemplateCreate() error {
 	if err := shared.SelectWorkflowHook("Before-create workflows (optional)", wfNames, &beforeCreate); err != nil {
 		return err
 	}
-	if err := shared.SelectWorkflowHook("On-created workflows (optional)", wfNames, &onCreatedNames); err != nil {
+	if err := shared.SelectWorkflowHook("On-create workflows (optional)", wfNames, &onCreateNames); err != nil {
 		return err
 	}
 	if err := shared.SelectWorkflowHook("On-destroy workflows (optional)", wfNames, &onDestroyNames); err != nil {
@@ -276,7 +276,7 @@ func interactiveTemplateCreate() error {
 		name, description, provider, region, nodesSizes, clusterType, nodeGroups,
 		orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscriptionName, resourceGroup, projectName,
 		strings.Join(beforeCreate, ","),
-		strings.Join(onCreatedNames, ","),
+		strings.Join(onCreateNames, ","),
 		strings.Join(onDestroyNames, ","),
 		strings.Join(afterDelete, ","),
 		schedule,

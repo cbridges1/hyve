@@ -91,14 +91,14 @@ Use --account-name, --project-name, --subscription-name, or --org-name to specif
 		}
 
 		beforeCreate, _ := cmd.Flags().GetStringArray("before-create")
-		onCreated, _ := cmd.Flags().GetStringArray("on-created")
+		onCreate, _ := cmd.Flags().GetStringArray("on-create")
 		onDestroy, _ := cmd.Flags().GetStringArray("on-destroy")
 		afterDelete, _ := cmd.Flags().GetStringArray("after-delete")
 
 		pause, _ := cmd.Flags().GetBool("pause")
 		expiresAt, _ := cmd.Flags().GetString("expires-at")
 
-		createClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreated, onDestroy, afterDelete, pause, expiresAt)
+		createClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreate, onDestroy, afterDelete, pause, expiresAt)
 	},
 }
 
@@ -222,7 +222,7 @@ func init() {
 	createCmd.Flags().StringArrayP("node-group", "g", nil, `Node group spec (repeatable): name=workers,type=t3.medium,count=3[,min=1,max=5,disk=50,spot=true,mode=System]`)
 
 	createCmd.Flags().StringArray("before-create", nil, "Workflow name(s) to run before cluster creation (repeatable)")
-	createCmd.Flags().StringArray("on-created", nil, "Workflow name(s) to run after cluster creation (repeatable)")
+	createCmd.Flags().StringArray("on-create", nil, "Workflow name(s) to run after cluster creation (repeatable)")
 	createCmd.Flags().StringArray("on-destroy", nil, "Workflow name(s) to run before cluster destruction (repeatable)")
 	createCmd.Flags().StringArray("after-delete", nil, "Workflow name(s) to run after cluster deletion (repeatable)")
 	createCmd.Flags().Bool("pause", false, "Create the cluster in a paused state (reconciliation will be skipped)")

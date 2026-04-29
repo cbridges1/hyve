@@ -62,6 +62,13 @@ func NewExecutor(manager *Manager, cluster string) (*Executor, error) {
 	}, nil
 }
 
+// RunWorkflowNoCluster executes a workflow without kubeconfig injection.
+// Use this for lifecycle hooks that run before the cluster is created (beforeCreate)
+// or after it is deleted (afterDelete), when no kubeconfig is available.
+func (e *Executor) RunWorkflowNoCluster(ctx context.Context, workflowName string) (*WorkflowExecution, error) {
+	return e.RunWorkflow(ctx, workflowName, "")
+}
+
 // RunWorkflow executes a workflow
 func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster string) (*WorkflowExecution, error) {
 	workflow, err := e.manager.GetWorkflow(workflowName)
