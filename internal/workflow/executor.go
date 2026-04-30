@@ -331,6 +331,13 @@ func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.Cluste
 	setEnv("HYVE_CLUSTER_PROVIDER", clusterDef.Spec.Provider)
 	setEnv("HYVE_CLUSTER_TYPE", clusterDef.Spec.ClusterType)
 
+	// Provider-specific account identifiers — only the field relevant to the
+	// cluster's provider will be non-empty and therefore exported.
+	setEnv("HYVE_AWS_ACCOUNT", clusterDef.Spec.AWSAccount)
+	setEnv("HYVE_GCP_PROJECT", clusterDef.Spec.GCPProject)
+	setEnv("HYVE_AZURE_SUBSCRIPTION", clusterDef.Spec.AzureSubscription)
+	setEnv("HYVE_CIVO_ORG", clusterDef.Spec.CivoOrganization)
+
 	// Export provider credentials so hooks can authenticate with the cloud API
 	// to provision or clean up supporting infrastructure.
 	e.exportProviderCredentials(clusterDef)
