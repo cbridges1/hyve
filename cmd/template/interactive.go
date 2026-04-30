@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	internaltemplate "github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -320,22 +321,29 @@ func interactiveTemplateExecute() error {
 					return err
 				}
 			}
-			vpcID = tmpl.Spec.AWSVPCID
-			eksRoleName = tmpl.Spec.AWSEKSRoleName
-			nodeRoleName = tmpl.Spec.AWSNodeRoleName
-			if vpcID == "" {
-				if err := shared.SelectAWSVPC(context.Background(), account, tmpl.Spec.Region, &vpcID); err != nil && err != shared.ErrBack {
-					return err
+			// Fields in dynamicFields will be provided by a beforeCreate workflow — skip prompts.
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAWSVPCID) {
+				vpcID = tmpl.Spec.AWSVPCID
+				if vpcID == "" {
+					if err := shared.SelectAWSVPC(context.Background(), account, tmpl.Spec.Region, &vpcID); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
-			if eksRoleName == "" {
-				if err := shared.SelectAWSRole(context.Background(), account, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
-					return err
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAWSEKSRoleName) {
+				eksRoleName = tmpl.Spec.AWSEKSRoleName
+				if eksRoleName == "" {
+					if err := shared.SelectAWSRole(context.Background(), account, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
-			if nodeRoleName == "" {
-				if err := shared.SelectAWSRole(context.Background(), account, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
-					return err
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAWSNodeRoleName) {
+				nodeRoleName = tmpl.Spec.AWSNodeRoleName
+				if nodeRoleName == "" {
+					if err := shared.SelectAWSRole(context.Background(), account, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
 
@@ -354,10 +362,12 @@ func interactiveTemplateExecute() error {
 					return err
 				}
 			}
-			resourceGroup = tmpl.Spec.AzureResourceGroup
-			if resourceGroup == "" {
-				if err := shared.SelectAzureRG(context.Background(), subscription, &resourceGroup); err != nil && err != shared.ErrBack {
-					return err
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAzureResourceGroup) {
+				resourceGroup = tmpl.Spec.AzureResourceGroup
+				if resourceGroup == "" {
+					if err := shared.SelectAzureRG(context.Background(), subscription, &resourceGroup); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
 		}

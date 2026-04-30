@@ -503,17 +503,17 @@ func executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName
 			"account", "Use 'hyve config aws account list' to see available accounts.")
 		if vpcID != "" {
 			clusterDef.Spec.AWSVPCID = vpcID
-		} else if clusterDef.Spec.AWSVPCID == "" && tmpl.Spec.AWSVPCID != "" {
+		} else if clusterDef.Spec.AWSVPCID == "" && tmpl.Spec.AWSVPCID != "" && !tmpl.Spec.IsDynamicField(template.FieldAWSVPCID) {
 			clusterDef.Spec.AWSVPCID = tmpl.Spec.AWSVPCID
 		}
 		if eksRoleName != "" {
 			clusterDef.Spec.AWSEKSRoleName = eksRoleName
-		} else if clusterDef.Spec.AWSEKSRoleName == "" && tmpl.Spec.AWSEKSRoleName != "" {
+		} else if clusterDef.Spec.AWSEKSRoleName == "" && tmpl.Spec.AWSEKSRoleName != "" && !tmpl.Spec.IsDynamicField(template.FieldAWSEKSRoleName) {
 			clusterDef.Spec.AWSEKSRoleName = tmpl.Spec.AWSEKSRoleName
 		}
 		if nodeRoleName != "" {
 			clusterDef.Spec.AWSNodeRoleName = nodeRoleName
-		} else if clusterDef.Spec.AWSNodeRoleName == "" && tmpl.Spec.AWSNodeRoleName != "" {
+		} else if clusterDef.Spec.AWSNodeRoleName == "" && tmpl.Spec.AWSNodeRoleName != "" && !tmpl.Spec.IsDynamicField(template.FieldAWSNodeRoleName) {
 			clusterDef.Spec.AWSNodeRoleName = tmpl.Spec.AWSNodeRoleName
 		}
 	case "azure":

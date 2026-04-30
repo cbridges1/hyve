@@ -175,6 +175,15 @@ func (m *Manager) DeleteTemplate(name string) error {
 // The caller may override any of these by assigning to the returned ClusterDefinition
 // before use (e.g. from CLI flags passed to `template execute`).
 func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName string) *types.ClusterDefinition {
+	// skipIfDynamic returns an empty string for fields declared in DynamicFields
+	// so that resolveHookEnvVars can populate them after the beforeCreate workflow runs.
+	skipIfDynamic := func(fieldName, value string) string {
+		if template.Spec.IsDynamicField(fieldName) {
+			return ""
+		}
+		return value
+	}
+
 	return &types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
@@ -198,14 +207,14 @@ func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName str
 				OnDestroy:    template.Spec.Workflows.OnDestroy,
 				AfterDelete:  template.Spec.Workflows.AfterDelete,
 			},
-			// AWS-specific fields
+			// AWS-specific fields — dynamic fields left empty for hook population
 			AWSAccount:      template.Spec.AWSAccount,
-			AWSVPCID:        template.Spec.AWSVPCID,
-			AWSEKSRoleName:  template.Spec.AWSEKSRoleName,
-			AWSNodeRoleName: template.Spec.AWSNodeRoleName,
+			AWSVPCID:        skipIfDynamic(FieldAWSVPCID, template.Spec.AWSVPCID),
+			AWSEKSRoleName:  skipIfDynamic(FieldAWSEKSRoleName, template.Spec.AWSEKSRoleName),
+			AWSNodeRoleName: skipIfDynamic(FieldAWSNodeRoleName, template.Spec.AWSNodeRoleName),
 			// Azure-specific fields
 			AzureSubscription:  template.Spec.AzureSubscription,
-			AzureResourceGroup: template.Spec.AzureResourceGroup,
+			AzureResourceGroup: skipIfDynamic(FieldAzureResourceGroup, template.Spec.AzureResourceGroup),
 			// GCP-specific fields
 			GCPProject: template.Spec.GCPProject,
 			// Civo-specific fields
