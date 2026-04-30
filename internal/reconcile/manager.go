@@ -323,6 +323,14 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 		if err := resolveHookEnvVars(ctx, r.stateMgr, &clusterDef); err != nil {
 			log.Printf("[%s] Warning: failed to resolve hook env vars: %v", clusterDef.Metadata.Name, err)
 		}
+		// Write the resolved values (VPC ID, role names, etc.) back to the cluster
+		// YAML so that a future reconciliation can recreate the cluster without
+		// re-running the beforeCreate workflow from scratch.
+		if err := r.stateMgr.SaveClusterDefinition(&clusterDef); err != nil {
+			log.Printf("[%s] Warning: failed to persist resolved cluster values: %v", clusterDef.Metadata.Name, err)
+		} else {
+			log.Printf("[%s] 💾 Persisted resolved cluster values to YAML", clusterDef.Metadata.Name)
+		}
 	}
 
 	// Construct AWS role ARNs from direct role names + account ID.
