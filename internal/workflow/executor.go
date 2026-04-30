@@ -27,6 +27,7 @@ type Executor struct {
 	execution         *WorkflowExecution
 	currentCluster    string
 	variables         map[string]string
+	injectedVars      map[string]string // extra vars provided by caller (--set flags or definition injection)
 	workingDir        string
 	repoName          string
 }
@@ -57,15 +58,32 @@ func NewExecutor(manager *Manager, cluster string) (*Executor, error) {
 		kubeconfigManager: kubeconfigMgr,
 		currentCluster:    cluster,
 		variables:         make(map[string]string),
+		injectedVars:      make(map[string]string),
 		workingDir:        manager.localPath,
 		repoName:          repoName,
 	}, nil
 }
 
+// InjectVars pre-loads key/value pairs into the executor's variable set.
+// These are applied with highest priority — after all automatically derived
+// variables — so they can override anything. Use this to supply ad-hoc
+// --set KEY=VALUE values or pre-computed definition variables.
+func (e *Executor) InjectVars(vars map[string]string) {
+	for k, v := range vars {
+		e.injectedVars[k] = v
+	}
+}
+
 // RunWorkflowNoCluster executes a workflow without kubeconfig injection.
 // Use this for lifecycle hooks that run before the cluster is created (beforeCreate)
 // or after it is deleted (afterDelete), when no kubeconfig is available.
-func (e *Executor) RunWorkflowNoCluster(ctx context.Context, workflowName string) (*WorkflowExecution, error) {
+// If clusterDef is non-nil, known cluster fields (name, region, provider, credentials)
+// are injected as HYVE_* environment variables so hooks can provision or clean up
+// cloud infrastructure for the right cluster and account.
+func (e *Executor) RunWorkflowNoCluster(ctx context.Context, workflowName string, clusterDef *types.ClusterDefinition) (*WorkflowExecution, error) {
+	if clusterDef != nil {
+		e.exportDefinitionEnvironmentVariables(clusterDef)
+	}
 	return e.RunWorkflow(ctx, workflowName, "")
 }
 
@@ -143,6 +161,13 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", fmt.Sprintf("Failed to setup environment variables: %v", err))
 		return execution, fmt.Errorf("failed to setup environment variables: %w", err)
+	}
+
+	// Validate that all declared inputs are satisfied
+	if err := e.validateInputs(workflow); err != nil {
+		e.execution.Status = StatusFailed
+		e.addLog("ERROR", "", "", err.Error())
+		return execution, err
 	}
 
 	// Execute jobs
@@ -279,7 +304,63 @@ func (e *Executor) setupEnvironmentVariables(ctx context.Context, workflow *Work
 		}
 	}
 
+	// Apply caller-injected variables last — highest priority, override everything above
+	for k, v := range e.injectedVars {
+		e.variables[k] = v
+		os.Setenv(k, v)
+	}
+
 	return nil
+}
+
+// exportDefinitionEnvironmentVariables injects HYVE_* variables derived from a cluster
+// definition into the executor's variable set. Used by beforeCreate and afterDelete hooks
+// where the cluster does not exist yet (or no longer exists) but the definition fields
+// (name, region, provider, account) are still known and useful to the hook script.
+func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.ClusterDefinition) {
+	setEnv := func(key, value string) {
+		if value == "" {
+			return
+		}
+		e.variables[key] = value
+		os.Setenv(key, value)
+	}
+
+	setEnv("HYVE_CLUSTER_NAME", clusterDef.Metadata.Name)
+	setEnv("HYVE_CLUSTER_REGION", clusterDef.Metadata.Region)
+	setEnv("HYVE_CLUSTER_PROVIDER", clusterDef.Spec.Provider)
+	setEnv("HYVE_CLUSTER_TYPE", clusterDef.Spec.ClusterType)
+
+	// Export provider credentials so hooks can authenticate with the cloud API
+	// to provision or clean up supporting infrastructure.
+	e.exportProviderCredentials(clusterDef)
+}
+
+// validateInputs checks that every input declared in the workflow's spec.inputs section
+// has a value — either in the executor's variable set or already in the process environment.
+// Returns a descriptive error listing all missing inputs.
+func (e *Executor) validateInputs(wf *Workflow) error {
+	if len(wf.Spec.Inputs) == 0 {
+		return nil
+	}
+
+	var missing []string
+	for _, input := range wf.Spec.Inputs {
+		if e.variables[input.Name] == "" && os.Getenv(input.Name) == "" {
+			label := input.Name
+			if input.Description != "" {
+				label += " (" + input.Description + ")"
+			}
+			missing = append(missing, label)
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("workflow requires the following inputs that are not set:\n  - %s\nUse --set KEY=VALUE to provide them, or run interactively for a prompt",
+		strings.Join(missing, "\n  - "))
 }
 
 // exportClusterEnvironmentVariables exports cluster-specific environment variables

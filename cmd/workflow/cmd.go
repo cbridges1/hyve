@@ -74,14 +74,24 @@ var workflowRunCmd = &cobra.Command{
 	Use:   "run [workflow-name]",
 	Short: "Run a workflow",
 	Long: `Execute a workflow on a cluster.
-If no cluster is specified, the workflow will run without cluster context (local commands only).`,
+If no cluster is specified, the workflow will run without cluster context (local commands only).
+
+Required workflow inputs that are not already in the environment must be supplied with --set:
+
+  hyve workflow run provision-network --set HYVE_CLUSTER_NAME=my-cluster --set HYVE_CLUSTER_REGION=eastus`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		cluster, _ := cmd.Flags().GetString("cluster")
 		showLogs, _ := cmd.Flags().GetBool("logs")
 		showOutput, _ := cmd.Flags().GetBool("output")
+		setStrs, _ := cmd.Flags().GetStringArray("set")
 
-		runWorkflow(args[0], cluster, showLogs, showOutput)
+		setVars, err := parseSetVars(setStrs)
+		if err != nil {
+			log.Fatalf("Invalid --set flag: %v", err)
+		}
+
+		runWorkflow(args[0], cluster, showLogs, showOutput, setVars)
 	},
 }
 
@@ -114,6 +124,7 @@ func init() {
 	workflowRunCmd.Flags().StringP("cluster", "c", "", "Cluster to run workflow on")
 	workflowRunCmd.Flags().BoolP("logs", "l", true, "Show execution logs")
 	workflowRunCmd.Flags().BoolP("output", "o", false, "Show step outputs")
+	workflowRunCmd.Flags().StringArray("set", nil, "Set a workflow input variable: KEY=VALUE (repeatable)")
 
 	workflowDeleteCmd.Flags().BoolP("force", "f", false, "Delete without confirmation")
 
@@ -247,6 +258,21 @@ func showWorkflow(name string) {
 		}
 	}
 
+	if len(wf.Spec.Inputs) > 0 {
+		log.Printf("📥 Required Inputs:")
+		for _, input := range wf.Spec.Inputs {
+			if input.Description != "" {
+				log.Printf("   %s — %s", input.Name, input.Description)
+			} else {
+				log.Printf("   %s", input.Name)
+			}
+			if input.Default != "" {
+				log.Printf("      (default: %s)", input.Default)
+			}
+		}
+		log.Printf("   💡 Supply with: hyve workflow run %s --set KEY=VALUE", wf.Metadata.Name)
+	}
+
 	if len(wf.Spec.Env) > 0 {
 		log.Printf("🌍 Environment Variables:")
 		for key, value := range wf.Spec.Env {
@@ -288,7 +314,7 @@ func showWorkflow(name string) {
 	log.Printf("\n💡 Run with: hyve workflow run %s", name)
 }
 
-func runWorkflow(name, cluster string, showLogs, showOutput bool) {
+func runWorkflow(name, cluster string, showLogs, showOutput bool, setVars map[string]string) {
 	manager, err := workflow.NewManager(getWorkflowLocalPath())
 	if err != nil {
 		log.Fatalf("Failed to create workflow manager: %v", err)
@@ -299,6 +325,10 @@ func runWorkflow(name, cluster string, showLogs, showOutput bool) {
 		log.Fatalf("Failed to create workflow executor: %v", err)
 	}
 	defer executor.Close()
+
+	if len(setVars) > 0 {
+		executor.InjectVars(setVars)
+	}
 
 	ctx := context.Background()
 
@@ -327,6 +357,19 @@ func runWorkflow(name, cluster string, showLogs, showOutput bool) {
 	}
 
 	printExecutionSummary(execution)
+}
+
+// parseSetVars converts ["KEY=VALUE", ...] into a map.
+func parseSetVars(strs []string) (map[string]string, error) {
+	out := make(map[string]string, len(strs))
+	for _, s := range strs {
+		idx := strings.Index(s, "=")
+		if idx < 1 {
+			return nil, fmt.Errorf("%q is not in KEY=VALUE format", s)
+		}
+		out[s[:idx]] = s[idx+1:]
+	}
+	return out, nil
 }
 
 func deleteWorkflow(name string, force bool) {

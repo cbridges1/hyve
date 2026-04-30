@@ -315,10 +315,11 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 
 	// Run beforeCreate workflows. After they complete, read any HYVE_* env vars
 	// they exported and write the resolved values back to the provider config YAML.
-	// No cluster exists yet, so kubeconfig injection is skipped.
+	// No cluster exists yet, so kubeconfig injection is skipped; known definition
+	// fields are injected as HYVE_* vars so hooks can provision supporting infrastructure.
 	if len(clusterDef.Spec.Workflows.BeforeCreate) > 0 {
 		log.Printf("[%s] 🔄 Running beforeCreate workflows...", clusterDef.Metadata.Name)
-		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.BeforeCreate, clusterDef.Metadata.Name)
+		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.BeforeCreate, clusterDef)
 		if err := resolveHookEnvVars(ctx, r.stateMgr, &clusterDef); err != nil {
 			log.Printf("[%s] Warning: failed to resolve hook env vars: %v", clusterDef.Metadata.Name, err)
 		}
@@ -389,10 +390,11 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 	log.Printf("[%s] ✅ Cluster deleted successfully", clusterDef.Metadata.Name)
 
 	// Run afterDelete workflows now that the cloud cluster is gone.
-	// No cluster exists at this point, so kubeconfig injection is skipped.
+	// No cluster exists at this point, so kubeconfig injection is skipped; definition
+	// fields are injected as HYVE_* vars so hooks can clean up supporting infrastructure.
 	if len(clusterDef.Spec.Workflows.AfterDelete) > 0 {
 		log.Printf("[%s] 🔄 Running afterDelete workflows...", clusterDef.Metadata.Name)
-		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.AfterDelete, clusterDef.Metadata.Name)
+		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.AfterDelete, clusterDef)
 	}
 
 	return nil
@@ -675,10 +677,15 @@ func (r *Reconciler) syncKubeconfigs(ctx context.Context, clusterDefs []types.Cl
 // runWorkflowsNoCluster executes a list of workflows without kubeconfig injection.
 // Use this for hooks that run before the cluster is created (beforeCreate) or after
 // it is deleted (afterDelete), when no kubeconfig is available.
-func (r *Reconciler) runWorkflowsNoCluster(ctx context.Context, workflowNames []string, clusterName string) {
+// Known cluster fields (name, region, provider, credentials) are injected as HYVE_*
+// environment variables from the cluster definition so hooks can provision or clean up
+// supporting infrastructure for the right cluster and account.
+func (r *Reconciler) runWorkflowsNoCluster(ctx context.Context, workflowNames []string, clusterDef types.ClusterDefinition) {
 	if len(workflowNames) == 0 {
 		return
 	}
+
+	clusterName := clusterDef.Metadata.Name
 
 	workflowMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
 	if err != nil {
@@ -696,7 +703,7 @@ func (r *Reconciler) runWorkflowsNoCluster(ctx context.Context, workflowNames []
 	for _, workflowName := range workflowNames {
 		log.Printf("[%s] ▶  Workflow '%s' starting (no cluster)...", clusterName, workflowName)
 
-		execution, err := executor.RunWorkflowNoCluster(ctx, workflowName)
+		execution, err := executor.RunWorkflowNoCluster(ctx, workflowName, &clusterDef)
 		if err != nil {
 			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", clusterName, workflowName, err)
 			continue
