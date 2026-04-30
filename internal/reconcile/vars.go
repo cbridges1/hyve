@@ -30,6 +30,16 @@ func resolveHookEnvVars(_ context.Context, _ *state.Manager, clusterDef *types.C
 			clusterDef.Spec.AWSNodeRoleName = v
 			log.Printf("[%s] Read HYVE_NODE_ROLE_NAME=%s from hook", name, v)
 		}
+		// Full ARNs take priority over names so the reconciler never needs to construct
+		// them from a role name + account ID (which would require the account ID to be known).
+		if v := os.Getenv("HYVE_EKS_ROLE_ARN"); v != "" && clusterDef.Spec.AWSEKSRoleARN == "" {
+			clusterDef.Spec.AWSEKSRoleARN = v
+			log.Printf("[%s] Read HYVE_EKS_ROLE_ARN=%s from hook", name, v)
+		}
+		if v := os.Getenv("HYVE_NODE_ROLE_ARN"); v != "" && clusterDef.Spec.AWSNodeRoleARN == "" {
+			clusterDef.Spec.AWSNodeRoleARN = v
+			log.Printf("[%s] Read HYVE_NODE_ROLE_ARN=%s from hook", name, v)
+		}
 
 	case "azure":
 		if v := os.Getenv("HYVE_RESOURCE_GROUP_NAME"); v != "" && clusterDef.Spec.AzureResourceGroup == "" {

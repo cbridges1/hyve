@@ -98,6 +98,54 @@ func TestResolveHookEnvVars_AWS_NodeRoleNameNotOverwritten(t *testing.T) {
 	assert.Equal(t, "existing-node-role", def.Spec.AWSNodeRoleName)
 }
 
+func TestResolveHookEnvVars_AWS_EKSRoleARNSet(t *testing.T) {
+	mgr, _ := makeStateManager(t)
+	t.Setenv("HYVE_EKS_ROLE_ARN", "arn:aws:iam::123456789012:role/my-eks-role")
+
+	def := &types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Provider: "aws"},
+	}
+	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
+	assert.Equal(t, "arn:aws:iam::123456789012:role/my-eks-role", def.Spec.AWSEKSRoleARN)
+}
+
+func TestResolveHookEnvVars_AWS_EKSRoleARNNotOverwritten(t *testing.T) {
+	mgr, _ := makeStateManager(t)
+	t.Setenv("HYVE_EKS_ROLE_ARN", "arn:aws:iam::123456789012:role/hook-role")
+
+	def := &types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Provider: "aws", AWSEKSRoleARN: "arn:aws:iam::123456789012:role/existing-role"},
+	}
+	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
+	assert.Equal(t, "arn:aws:iam::123456789012:role/existing-role", def.Spec.AWSEKSRoleARN)
+}
+
+func TestResolveHookEnvVars_AWS_NodeRoleARNSet(t *testing.T) {
+	mgr, _ := makeStateManager(t)
+	t.Setenv("HYVE_NODE_ROLE_ARN", "arn:aws:iam::123456789012:role/my-node-role")
+
+	def := &types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Provider: "aws"},
+	}
+	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
+	assert.Equal(t, "arn:aws:iam::123456789012:role/my-node-role", def.Spec.AWSNodeRoleARN)
+}
+
+func TestResolveHookEnvVars_AWS_NodeRoleARNNotOverwritten(t *testing.T) {
+	mgr, _ := makeStateManager(t)
+	t.Setenv("HYVE_NODE_ROLE_ARN", "arn:aws:iam::123456789012:role/hook-node-role")
+
+	def := &types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Provider: "aws", AWSNodeRoleARN: "arn:aws:iam::123456789012:role/existing-node-role"},
+	}
+	require.NoError(t, resolveHookEnvVars(context.Background(), mgr, def))
+	assert.Equal(t, "arn:aws:iam::123456789012:role/existing-node-role", def.Spec.AWSNodeRoleARN)
+}
+
 func TestResolveHookEnvVars_AWS_AllVarsEmpty(t *testing.T) {
 	mgr, _ := makeStateManager(t)
 
@@ -109,6 +157,8 @@ func TestResolveHookEnvVars_AWS_AllVarsEmpty(t *testing.T) {
 	assert.Empty(t, def.Spec.AWSVPCID)
 	assert.Empty(t, def.Spec.AWSEKSRoleName)
 	assert.Empty(t, def.Spec.AWSNodeRoleName)
+	assert.Empty(t, def.Spec.AWSEKSRoleARN)
+	assert.Empty(t, def.Spec.AWSNodeRoleARN)
 }
 
 // ── Azure env var resolution ──────────────────────────────────────────────────

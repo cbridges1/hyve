@@ -213,6 +213,10 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 	result.EndTime = &endTime
 	result.Duration = endTime.Sub(result.StartTime)
 
+	// Capture any HYVE_VAR=value lines printed by the step so lifecycle-hook
+	// handlers (e.g. resolveHookEnvVars) can read them after the workflow ends.
+	captureHookOutputVars(string(output))
+
 	// Print command output to user
 	if len(output) > 0 {
 		fmt.Print(string(output))
@@ -330,4 +334,24 @@ func getShellCommand() (string, string) {
 	}
 	// On Unix-like systems (Linux, macOS, etc.), use sh
 	return "sh", "-c"
+}
+
+// captureHookOutputVars scans step output for lines of the form HYVE_VAR=value
+// and exports them to the process environment. This lets beforeCreate workflow
+// steps communicate resource IDs (VPC ID, role names, etc.) to the reconciler's
+// resolveHookEnvVars call that runs after all beforeCreate workflows complete.
+func captureHookOutputVars(output string) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "HYVE_") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			continue
+		}
+		key := line[:idx]
+		value := strings.TrimSpace(line[idx+1:])
+		os.Setenv(key, value)
+	}
 }
