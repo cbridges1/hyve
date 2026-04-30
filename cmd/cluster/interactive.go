@@ -363,7 +363,7 @@ func interactiveClusterDelete() error {
 		return err
 	}
 
-	var forceCloud bool
+	var force bool
 	err := shared.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -371,7 +371,7 @@ func interactiveClusterDelete() error {
 				Description("No = remove from state only (GitOps reconcile handles cloud deletion)").
 				Affirmative("Yes — delete from cloud now").
 				Negative("No — GitOps").
-				Value(&forceCloud),
+				Value(&force),
 		),
 	).Run()
 	if err != nil {
@@ -379,7 +379,7 @@ func interactiveClusterDelete() error {
 	}
 
 	action := "remove from Git state (GitOps)"
-	if forceCloud {
+	if force {
 		action = "DELETE from cloud immediately"
 	}
 	var confirm bool
@@ -399,7 +399,7 @@ func interactiveClusterDelete() error {
 		return nil
 	}
 
-	deleteClusterFromCLI(clusterName, false, forceCloud)
+	deleteClusterFromCLI(clusterName, force, force)
 	return nil
 }
 

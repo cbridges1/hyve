@@ -28,10 +28,10 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		if deleteFromCloud && allowNoConfig {
-			log.Printf("⚠️ Configuration file not found, but --force --force-cloud specified")
+			log.Printf("⚠️ Configuration file not found, but --force specified")
 			clusterDef.Metadata.Name = clusterName
 		} else {
-			log.Fatalf("Cluster %s configuration does not exist. Use --force --force-cloud to delete from cloud provider anyway.", clusterName)
+			log.Fatalf("Cluster %s configuration does not exist. Use --force to delete from cloud provider anyway.", clusterName)
 		}
 	} else {
 		configExists = true
@@ -68,7 +68,7 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 		// Normal path: mark the cluster for deletion so the reconciler runs onDestroy
 		// workflows before removing the cloud cluster and the YAML file.
 		if !configExists {
-			log.Fatalf("Cluster %s configuration does not exist. Use --force --force-cloud to delete from cloud provider anyway.", clusterName)
+			log.Fatalf("Cluster %s configuration does not exist. Use --force to delete from cloud provider anyway.", clusterName)
 		}
 
 		clusterDef.Spec.Delete = true

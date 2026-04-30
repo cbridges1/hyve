@@ -143,22 +143,17 @@ var deleteCmd = &cobra.Command{
 	Long: `Delete a cluster by removing its YAML definition and reconciling.
 
 Default behaviour:
-  1. Remove the cluster configuration YAML file
-  2. Commit and push the removal to the state repository
-  3. Run reconciliation
+  1. Mark the cluster for deletion in Git
+  2. Commit and push the change to the state repository
+  3. Run reconciliation (which runs onDestroy workflows, deletes from cloud, removes YAML)
 
-Use --force to delete the cluster from the cloud provider immediately before
-removing the configuration file. This is useful when you want to bypass CI/CD
-and destroy the cluster right now.
-
-Use --force-cloud together with --force to delete from cloud even if no
-configuration file exists.`,
+Use --force to delete the cluster from the cloud provider immediately, bypassing
+CI/CD. This also works when no configuration file exists (e.g. orphaned clusters).`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterName := args[0]
-		forceCloud, _ := cmd.Flags().GetBool("force-cloud")
 		force, _ := cmd.Flags().GetBool("force")
-		deleteClusterFromCLI(clusterName, forceCloud, force)
+		deleteClusterFromCLI(clusterName, force, force)
 	},
 }
 
@@ -241,8 +236,7 @@ func init() {
 	modifyCmd.Flags().String("eks-role-name", "", "IAM role name for the EKS control plane")
 	modifyCmd.Flags().String("node-role-name", "", "IAM role name for EKS node groups")
 
-	deleteCmd.Flags().Bool("force-cloud", false, "With --force: delete from cloud even if no configuration file exists")
-	deleteCmd.Flags().Bool("force", false, "Delete cluster from cloud immediately before removing configuration (bypasses CI/CD)")
+	deleteCmd.Flags().Bool("force", false, "Delete cluster from cloud immediately, bypassing CI/CD. Also works when no configuration file exists.")
 
 	forceDeleteCmd.Flags().StringP("region", "r", "", "Specific region to search (optional, will search common regions if not provided)")
 	forceDeleteCmd.Flags().StringP("provider", "p", "civo", "Cloud provider (civo, aws, gcp, azure)")
