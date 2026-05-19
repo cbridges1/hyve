@@ -204,7 +204,7 @@ func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName str
 			Workflows: types.WorkflowsSpec{
 				BeforeCreate: template.Spec.Workflows.BeforeCreate,
 				OnCreate:     template.Spec.Workflows.OnCreate,
-				OnDestroy:    template.Spec.Workflows.OnDestroy,
+				OnDelete:     template.Spec.Workflows.OnDelete,
 				AfterDelete:  template.Spec.Workflows.AfterDelete,
 			},
 			// AWS-specific fields — dynamic fields left empty for hook population

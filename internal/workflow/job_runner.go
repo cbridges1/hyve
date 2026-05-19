@@ -1,8 +1,10 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,8 +207,14 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
 	}
 
-	// Execute command
-	output, err := cmd.CombinedOutput()
+	// Stream output live so interactive steps (e.g. OAuth Device Authorization)
+	// can print prompts before waiting for user input. A MultiWriter tees the
+	// stream into buf so captureHookOutputVars still works on the full output.
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	output := buf.Bytes()
 	result.Output = string(output)
 
 	endTime := time.Now()
@@ -216,14 +224,6 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 	// Capture any HYVE_VAR=value lines printed by the step so lifecycle-hook
 	// handlers (e.g. resolveHookEnvVars) can read them after the workflow ends.
 	captureHookOutputVars(string(output))
-
-	// Print command output to user
-	if len(output) > 0 {
-		fmt.Print(string(output))
-		if !strings.HasSuffix(string(output), "\n") {
-			fmt.Println()
-		}
-	}
 
 	if err != nil {
 		result.Status = JobStatusFailed

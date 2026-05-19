@@ -88,7 +88,7 @@ func interactiveTemplateCreate() error {
 		projectName      string
 		beforeCreate     []string
 		onCreateNames    []string
-		onDestroyNames   []string
+		onDeleteNames    []string
 		afterDelete      []string
 		schedule         string
 	)
@@ -244,7 +244,7 @@ func interactiveTemplateCreate() error {
 	if err := shared.SelectWorkflowHook("On-create workflows (optional)", wfNames, &onCreateNames); err != nil {
 		return err
 	}
-	if err := shared.SelectWorkflowHook("On-destroy workflows (optional)", wfNames, &onDestroyNames); err != nil {
+	if err := shared.SelectWorkflowHook("On-delete workflows (optional)", wfNames, &onDeleteNames); err != nil {
 		return err
 	}
 	if err := shared.SelectWorkflowHook("After-delete workflows (optional)", wfNames, &afterDelete); err != nil {
@@ -278,7 +278,7 @@ func interactiveTemplateCreate() error {
 		orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscriptionName, resourceGroup, projectName,
 		strings.Join(beforeCreate, ","),
 		strings.Join(onCreateNames, ","),
-		strings.Join(onDestroyNames, ","),
+		strings.Join(onDeleteNames, ","),
 		strings.Join(afterDelete, ","),
 		schedule,
 	)

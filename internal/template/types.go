@@ -22,8 +22,31 @@ type TemplateMetadata struct {
 type TemplateWorkflowsSpec struct {
 	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
 	OnCreate     []string `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
-	OnDestroy    []string `yaml:"onDestroy,omitempty"`    // Workflows to run before cluster destruction
+	OnDelete     []string `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
 	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
+}
+
+// UnmarshalYAML migrates the deprecated onDestroy key to onDelete transparently.
+func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type raw struct {
+		BeforeCreate []string `yaml:"beforeCreate,omitempty"`
+		OnCreate     []string `yaml:"onCreate,omitempty"`
+		OnDelete     []string `yaml:"onDelete,omitempty"`
+		OnDestroy    []string `yaml:"onDestroy,omitempty"` // deprecated: rename to onDelete in YAML
+		AfterDelete  []string `yaml:"afterDelete,omitempty"`
+	}
+	var r raw
+	if err := unmarshal(&r); err != nil {
+		return err
+	}
+	ws.BeforeCreate = r.BeforeCreate
+	ws.OnCreate = r.OnCreate
+	ws.OnDelete = r.OnDelete
+	ws.AfterDelete = r.AfterDelete
+	if len(ws.OnDelete) == 0 && len(r.OnDestroy) > 0 {
+		ws.OnDelete = r.OnDestroy
+	}
+	return nil
 }
 
 // TemplateSpec represents the template specification.

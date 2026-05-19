@@ -14,7 +14,7 @@ import (
 // ── Flag registration ─────────────────────────────────────────────────────────
 
 func TestTemplateCmdFlags_AllLifecycleHooks(t *testing.T) {
-	flags := []string{"before-create", "on-create", "on-destroy", "after-delete"}
+	flags := []string{"before-create", "on-create", "on-delete", "after-delete"}
 	for _, name := range flags {
 		f := templateCreateCmd.Flags().Lookup(name)
 		if f == nil {
@@ -79,7 +79,7 @@ func TestBuildTemplate_AllFourHooks(t *testing.T) {
 	tmpl := buildTemplate("my-template", "civo", template.TemplateWorkflowsSpec{
 		BeforeCreate: []string{"provision-vpc"},
 		OnCreate:     []string{"notify-slack"},
-		OnDestroy:    []string{"drain-nodes"},
+		OnDelete:     []string{"drain-nodes"},
 		AfterDelete:  []string{"cleanup-vpc"},
 	})
 
@@ -89,8 +89,8 @@ func TestBuildTemplate_AllFourHooks(t *testing.T) {
 	if len(tmpl.Spec.Workflows.OnCreate) != 1 || tmpl.Spec.Workflows.OnCreate[0] != "notify-slack" {
 		t.Errorf("OnCreate: got %v", tmpl.Spec.Workflows.OnCreate)
 	}
-	if len(tmpl.Spec.Workflows.OnDestroy) != 1 || tmpl.Spec.Workflows.OnDestroy[0] != "drain-nodes" {
-		t.Errorf("OnDestroy: got %v", tmpl.Spec.Workflows.OnDestroy)
+	if len(tmpl.Spec.Workflows.OnDelete) != 1 || tmpl.Spec.Workflows.OnDelete[0] != "drain-nodes" {
+		t.Errorf("OnDelete: got %v", tmpl.Spec.Workflows.OnDelete)
 	}
 	if len(tmpl.Spec.Workflows.AfterDelete) != 1 || tmpl.Spec.Workflows.AfterDelete[0] != "cleanup-vpc" {
 		t.Errorf("AfterDelete: got %v", tmpl.Spec.Workflows.AfterDelete)
@@ -111,7 +111,7 @@ func TestBuildTemplate_AllHooks_YAMLRoundtrip(t *testing.T) {
 	tmpl := buildTemplate("rt-template", "aws", template.TemplateWorkflowsSpec{
 		BeforeCreate: []string{"pre-a", "pre-b"},
 		OnCreate:     []string{"post-a"},
-		OnDestroy:    []string{"teardown"},
+		OnDelete:     []string{"teardown"},
 		AfterDelete:  []string{"cleanup-a", "cleanup-b"},
 	})
 
@@ -127,7 +127,7 @@ func TestBuildTemplate_AllHooks_YAMLRoundtrip(t *testing.T) {
 
 	assertStrings(t, "BeforeCreate", got.Spec.Workflows.BeforeCreate, "pre-a", "pre-b")
 	assertStrings(t, "OnCreate", got.Spec.Workflows.OnCreate, "post-a")
-	assertStrings(t, "OnDestroy", got.Spec.Workflows.OnDestroy, "teardown")
+	assertStrings(t, "OnDelete", got.Spec.Workflows.OnDelete, "teardown")
 	assertStrings(t, "AfterDelete", got.Spec.Workflows.AfterDelete, "cleanup-a", "cleanup-b")
 }
 
@@ -194,7 +194,7 @@ func TestHooksWrittenToFile(t *testing.T) {
 	tmpl := buildTemplate(tmplName, "civo", template.TemplateWorkflowsSpec{
 		BeforeCreate: []string{"before-wf"},
 		OnCreate:     []string{"on-create-wf"},
-		OnDestroy:    []string{"on-destroy-wf"},
+		OnDelete:     []string{"on-destroy-wf"},
 		AfterDelete:  []string{"after-wf"},
 	})
 
@@ -218,7 +218,7 @@ func TestHooksWrittenToFile(t *testing.T) {
 
 	assertStrings(t, "BeforeCreate", loaded.Spec.Workflows.BeforeCreate, "before-wf")
 	assertStrings(t, "OnCreate", loaded.Spec.Workflows.OnCreate, "on-create-wf")
-	assertStrings(t, "OnDestroy", loaded.Spec.Workflows.OnDestroy, "on-destroy-wf")
+	assertStrings(t, "OnDelete", loaded.Spec.Workflows.OnDelete, "on-destroy-wf")
 	assertStrings(t, "AfterDelete", loaded.Spec.Workflows.AfterDelete, "after-wf")
 }
 

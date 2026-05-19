@@ -12,11 +12,11 @@ import (
 
 // buildClusterDef is the core logic extracted from addClusterFromCLI so we can
 // unit-test it without a git repository or cloud provider.
-func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDestroy []string) types.ClusterDefinition {
-	return buildClusterDefFull(clusterName, region, providerName, nodes, nodeGroups, clusterType, onCreate, onDestroy, false, "")
+func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDelete []string) types.ClusterDefinition {
+	return buildClusterDefFull(clusterName, region, providerName, nodes, nodeGroups, clusterType, onCreate, onDelete, false, "")
 }
 
-func buildClusterDefFull(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDestroy []string, pause bool, expiresAt string) types.ClusterDefinition {
+func buildClusterDefFull(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDelete []string, pause bool, expiresAt string) types.ClusterDefinition {
 	return types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
@@ -30,8 +30,8 @@ func buildClusterDefFull(clusterName, region, providerName string, nodes []strin
 			NodeGroups:  nodeGroups,
 			ClusterType: clusterType,
 			Workflows: types.WorkflowsSpec{
-				OnCreate:  onCreate,
-				OnDestroy: onDestroy,
+				OnCreate: onCreate,
+				OnDelete: onDelete,
 			},
 			Ingress: types.IngressSpec{
 				Enabled:      true,
@@ -43,11 +43,11 @@ func buildClusterDefFull(clusterName, region, providerName string, nodes []strin
 	}
 }
 
-func TestBuildClusterDef_OnCreateAndOnDestroy(t *testing.T) {
+func TestBuildClusterDef_OnCreateAndOnDelete(t *testing.T) {
 	onCreate := []string{"setup-monitoring", "notify-slack"}
-	onDestroy := []string{"cleanup-dns"}
+	onDelete := []string{"cleanup-dns"}
 
-	def := buildClusterDef("my-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", onCreate, onDestroy)
+	def := buildClusterDef("my-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", onCreate, onDelete)
 
 	if len(def.Spec.Workflows.OnCreate) != 2 {
 		t.Fatalf("expected 2 on-create workflows, got %d", len(def.Spec.Workflows.OnCreate))
@@ -59,11 +59,11 @@ func TestBuildClusterDef_OnCreateAndOnDestroy(t *testing.T) {
 		t.Errorf("expected second on-create to be 'notify-slack', got %q", def.Spec.Workflows.OnCreate[1])
 	}
 
-	if len(def.Spec.Workflows.OnDestroy) != 1 {
-		t.Fatalf("expected 1 on-destroy workflow, got %d", len(def.Spec.Workflows.OnDestroy))
+	if len(def.Spec.Workflows.OnDelete) != 1 {
+		t.Fatalf("expected 1 on-delete workflow, got %d", len(def.Spec.Workflows.OnDelete))
 	}
-	if def.Spec.Workflows.OnDestroy[0] != "cleanup-dns" {
-		t.Errorf("expected on-destroy to be 'cleanup-dns', got %q", def.Spec.Workflows.OnDestroy[0])
+	if def.Spec.Workflows.OnDelete[0] != "cleanup-dns" {
+		t.Errorf("expected on-delete to be 'cleanup-dns', got %q", def.Spec.Workflows.OnDelete[0])
 	}
 }
 
@@ -73,8 +73,8 @@ func TestBuildClusterDef_EmptyWorkflows(t *testing.T) {
 	if len(def.Spec.Workflows.OnCreate) != 0 {
 		t.Errorf("expected 0 on-create workflows, got %d", len(def.Spec.Workflows.OnCreate))
 	}
-	if len(def.Spec.Workflows.OnDestroy) != 0 {
-		t.Errorf("expected 0 on-destroy workflows, got %d", len(def.Spec.Workflows.OnDestroy))
+	if len(def.Spec.Workflows.OnDelete) != 0 {
+		t.Errorf("expected 0 on-delete workflows, got %d", len(def.Spec.Workflows.OnDelete))
 	}
 }
 
@@ -94,8 +94,8 @@ func TestBuildClusterDef_WorkflowsSerializeToYAML(t *testing.T) {
 	if len(roundtrip.Spec.Workflows.OnCreate) != 1 || roundtrip.Spec.Workflows.OnCreate[0] != "wf-a" {
 		t.Errorf("on-create did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnCreate)
 	}
-	if len(roundtrip.Spec.Workflows.OnDestroy) != 1 || roundtrip.Spec.Workflows.OnDestroy[0] != "wf-b" {
-		t.Errorf("on-destroy did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnDestroy)
+	if len(roundtrip.Spec.Workflows.OnDelete) != 1 || roundtrip.Spec.Workflows.OnDelete[0] != "wf-b" {
+		t.Errorf("on-delete did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnDelete)
 	}
 }
 
@@ -109,12 +109,12 @@ func TestBuildClusterDef_EmptyWorkflowsOmittedFromYAML(t *testing.T) {
 
 	// workflows field should be omitted when empty (omitempty)
 	yamlStr := string(data)
-	if contains(yamlStr, "onCreate") || contains(yamlStr, "onDestroy") {
+	if contains(yamlStr, "onCreate") || contains(yamlStr, "onDelete") {
 		t.Errorf("expected empty workflows to be omitted from YAML, but found them in:\n%s", yamlStr)
 	}
 }
 
-func TestAddCmdFlags_OnCreateAndOnDestroy(t *testing.T) {
+func TestAddCmdFlags_OnCreateAndOnDelete(t *testing.T) {
 	// Verify the flags are registered on createCmd
 	onCreateFlag := createCmd.Flags().Lookup("on-create")
 	if onCreateFlag == nil {
@@ -124,16 +124,16 @@ func TestAddCmdFlags_OnCreateAndOnDestroy(t *testing.T) {
 		t.Errorf("expected --on-create to be stringArray, got %s", onCreateFlag.Value.Type())
 	}
 
-	onDestroyFlag := createCmd.Flags().Lookup("on-destroy")
-	if onDestroyFlag == nil {
-		t.Fatal("--on-destroy flag not registered on createCmd")
+	onDeleteFlag := createCmd.Flags().Lookup("on-delete")
+	if onDeleteFlag == nil {
+		t.Fatal("--on-delete flag not registered on createCmd")
 	}
-	if onDestroyFlag.Value.Type() != "stringArray" {
-		t.Errorf("expected --on-destroy to be stringArray, got %s", onDestroyFlag.Value.Type())
+	if onDeleteFlag.Value.Type() != "stringArray" {
+		t.Errorf("expected --on-delete to be stringArray, got %s", onDeleteFlag.Value.Type())
 	}
 }
 
-func TestAddCmdFlags_OnCreateAndOnDestroy_Repeatable(t *testing.T) {
+func TestAddCmdFlags_OnCreateAndOnDelete_Repeatable(t *testing.T) {
 	// Reset createCmd flags to avoid state from other tests
 	createCmd.Flags().Set("on-create", "wf-one")
 	createCmd.Flags().Set("on-create", "wf-two")
@@ -176,8 +176,8 @@ func TestWorkflowsWrittenToFile(t *testing.T) {
 	if len(loaded.Spec.Workflows.OnCreate) != 1 || loaded.Spec.Workflows.OnCreate[0] != "on-create-wf" {
 		t.Errorf("on-create not persisted: %v", loaded.Spec.Workflows.OnCreate)
 	}
-	if len(loaded.Spec.Workflows.OnDestroy) != 1 || loaded.Spec.Workflows.OnDestroy[0] != "on-destroy-wf" {
-		t.Errorf("on-destroy not persisted: %v", loaded.Spec.Workflows.OnDestroy)
+	if len(loaded.Spec.Workflows.OnDelete) != 1 || loaded.Spec.Workflows.OnDelete[0] != "on-destroy-wf" {
+		t.Errorf("on-delete not persisted: %v", loaded.Spec.Workflows.OnDelete)
 	}
 }
 

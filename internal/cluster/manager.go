@@ -81,10 +81,14 @@ func (m *Manager) Create(ctx context.Context, clusterDef types.ClusterDefinition
 		Nodes:       clusterDef.Spec.Nodes,
 		NodeGroups:  clusterDef.Spec.NodeGroups,
 		ClusterType: clusterDef.Spec.ClusterType,
+		Version:     clusterDef.Spec.KubernetesVersion,
 		// AWS-specific configuration
 		AWSRoleARN:     eksRoleARN,
 		AWSNodeRoleARN: nodeRoleARN,
 		AWSVPCID:       clusterDef.Spec.AWSVPCID,
+		AWSKmsKeyAlias: clusterDef.Spec.AWSKmsKeyAlias,
+		AWSClusterSGID: clusterDef.Spec.AWSClusterSGID,
+		AWSWorkerSGID:  clusterDef.Spec.AWSWorkerSGID,
 	}
 
 	return m.provider.CreateCluster(ctx, config)

@@ -92,13 +92,13 @@ Use --account-name, --project-name, --subscription-name, or --org-name to specif
 
 		beforeCreate, _ := cmd.Flags().GetStringArray("before-create")
 		onCreate, _ := cmd.Flags().GetStringArray("on-create")
-		onDestroy, _ := cmd.Flags().GetStringArray("on-destroy")
+		onDelete, _ := cmd.Flags().GetStringArray("on-delete")
 		afterDelete, _ := cmd.Flags().GetStringArray("after-delete")
 
 		pause, _ := cmd.Flags().GetBool("pause")
 		expiresAt, _ := cmd.Flags().GetString("expires-at")
 
-		createClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreate, onDestroy, afterDelete, pause, expiresAt)
+		createClusterFromCLI(clusterName, region, providerName, nodes, nodeGroups, clusterType, accountName, projectName, subscriptionName, orgName, vpcID, eksRoleName, nodeRoleName, resourceGroup, beforeCreate, onCreate, onDelete, afterDelete, pause, expiresAt)
 	},
 }
 
@@ -145,7 +145,7 @@ var deleteCmd = &cobra.Command{
 Default behaviour:
   1. Mark the cluster for deletion in Git
   2. Commit and push the change to the state repository
-  3. Run reconciliation (which runs onDestroy workflows, deletes from cloud, removes YAML)
+  3. Run reconciliation (which runs onDelete workflows, deletes from cloud, removes YAML)
 
 Use --force to delete the cluster from the cloud provider immediately, bypassing
 CI/CD. This also works when no configuration file exists (e.g. orphaned clusters).`,
@@ -218,7 +218,7 @@ func init() {
 
 	createCmd.Flags().StringArray("before-create", nil, "Workflow name(s) to run before cluster creation (repeatable)")
 	createCmd.Flags().StringArray("on-create", nil, "Workflow name(s) to run after cluster creation (repeatable)")
-	createCmd.Flags().StringArray("on-destroy", nil, "Workflow name(s) to run before cluster destruction (repeatable)")
+	createCmd.Flags().StringArray("on-delete", nil, "Workflow name(s) to run before cluster destruction (repeatable)")
 	createCmd.Flags().StringArray("after-delete", nil, "Workflow name(s) to run after cluster deletion (repeatable)")
 	createCmd.Flags().Bool("pause", false, "Create the cluster in a paused state (reconciliation will be skipped)")
 	createCmd.Flags().String("expires-at", "", "RFC 3339 timestamp after which the cluster is auto-deleted (e.g. 2026-05-01T00:00:00Z)")

@@ -65,7 +65,7 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 		cleanupClusterKubeconfig(clusterName)
 		shared.RunReconciliation("")
 	} else {
-		// Normal path: mark the cluster for deletion so the reconciler runs onDestroy
+		// Normal path: mark the cluster for deletion so the reconciler runs onDelete
 		// workflows before removing the cloud cluster and the YAML file.
 		if !configExists {
 			log.Fatalf("Cluster %s configuration does not exist. Use --force to delete from cloud provider anyway.", clusterName)
@@ -82,7 +82,7 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 
 		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Mark cluster %s for deletion", clusterName))
 		log.Printf("📝 Cluster '%s' marked for deletion", clusterName)
-		log.Printf("   The reconciler will run onDestroy workflows, delete the cloud cluster, and remove this file.")
+		log.Printf("   The reconciler will run onDelete workflows, delete the cloud cluster, and remove this file.")
 
 		shared.RunReconciliation("")
 	}

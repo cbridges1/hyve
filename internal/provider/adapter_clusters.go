@@ -147,11 +147,15 @@ func (a *ProviderAdapter) CreateCluster(ctx context.Context, config *ClusterConf
 			ClusterType:  config.ClusterType,
 			FirewallID:   config.FirewallID,
 			Applications: config.Applications,
+			Version:      config.Version,
 			// EKS-specific configuration
 			RoleARN:     config.AWSRoleARN,
 			NodeRoleARN: config.AWSNodeRoleARN,
 			VPCID:       config.AWSVPCID,
 			SubnetIDs:   config.AWSSubnetIDs,
+			KMSKeyAlias: config.AWSKmsKeyAlias,
+			ClusterSGID: config.AWSClusterSGID,
+			WorkerSGID:  config.AWSWorkerSGID,
 		}
 		log.Printf("Creating AWS cluster with configuration: %+v", awsConfig)
 		awsCluster, err := a.aws.CreateCluster(ctx, awsConfig)
@@ -302,21 +306,21 @@ func (a *ProviderAdapter) GetClusterInfo(ctx context.Context, name string) (*Clu
 		if err != nil {
 			return nil, err
 		}
-		return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, info.NodeGroups), nil
+		return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, info.OIDCIssuerURL, info.NodeGroups), nil
 	}
 	if a.azure != nil {
 		info, err := a.azure.GetClusterInfo(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, info.NodeGroups), nil
+		return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, "", info.NodeGroups), nil
 	}
 	if a.gcp != nil {
 		info, err := a.gcp.GetClusterInfo(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, info.NodeGroups), nil
+		return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, "", info.NodeGroups), nil
 	}
 
 	info, err := a.civo.GetClusterInfo(ctx, name)
@@ -324,5 +328,5 @@ func (a *ProviderAdapter) GetClusterInfo(ctx context.Context, name string) (*Clu
 		return nil, err
 	}
 
-	return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, info.NodeGroups), nil
+	return clusterInfoFrom(info.Name, info.IPAddress, info.AccessPort, info.Kubeconfig, info.Status, info.ID, "", info.NodeGroups), nil
 }

@@ -56,7 +56,7 @@ and workflows to execute upon cluster creation or destruction.`,
 		project, _ := cmd.Flags().GetString("project")
 		beforeCreate, _ := cmd.Flags().GetString("before-create")
 		onCreate, _ := cmd.Flags().GetString("on-create")
-		onDestroy, _ := cmd.Flags().GetString("on-destroy")
+		onDelete, _ := cmd.Flags().GetString("on-delete")
 		afterDelete, _ := cmd.Flags().GetString("after-delete")
 		schedule, _ := cmd.Flags().GetString("schedule")
 
@@ -73,7 +73,7 @@ and workflows to execute upon cluster creation or destruction.`,
 
 		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups,
 			orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project,
-			beforeCreate, onCreate, onDestroy, afterDelete, schedule)
+			beforeCreate, onCreate, onDelete, afterDelete, schedule)
 	},
 }
 
@@ -171,7 +171,7 @@ func init() {
 	templateCreateCmd.Flags().StringP("project", "P", "", "GCP project alias (embedded in template; optional)")
 	templateCreateCmd.Flags().String("before-create", "", "Workflows to run before cluster creation (comma-separated)")
 	templateCreateCmd.Flags().StringP("on-create", "c", "", "Workflows to run after cluster creation (comma-separated)")
-	templateCreateCmd.Flags().String("on-destroy", "", "Workflows to run before cluster destruction (comma-separated)")
+	templateCreateCmd.Flags().String("on-delete", "", "Workflows to run before cluster destruction (comma-separated)")
 	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5' — every Friday at 8pm); evaluated at execute time")
 
@@ -196,7 +196,7 @@ func createTemplate(
 	name, description, provider, region, nodesSizes, clusterType string,
 	nodeGroups []types.NodeGroup,
 	orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string,
-	beforeCreateStr, onCreateStr, onDestroyStr, afterDeleteStr string,
+	beforeCreateStr, onCreateStr, onDeleteStr, afterDeleteStr string,
 	schedule string,
 ) {
 	// cluster-type is only meaningful for Civo
@@ -271,7 +271,7 @@ func createTemplate(
 			Workflows: template.TemplateWorkflowsSpec{
 				BeforeCreate: parseWorkflows(beforeCreateStr),
 				OnCreate:     parseWorkflows(onCreateStr),
-				OnDestroy:    parseWorkflows(onDestroyStr),
+				OnDelete:     parseWorkflows(onDeleteStr),
 				AfterDelete:  parseWorkflows(afterDeleteStr),
 			},
 			Schedule: schedule,
@@ -306,8 +306,8 @@ func createTemplate(
 	if wf := tmpl.Spec.Workflows.OnCreate; len(wf) > 0 {
 		log.Printf("  OnCreate Workflows: %s", strings.Join(wf, ", "))
 	}
-	if wf := tmpl.Spec.Workflows.OnDestroy; len(wf) > 0 {
-		log.Printf("  OnDestroy Workflows: %s", strings.Join(wf, ", "))
+	if wf := tmpl.Spec.Workflows.OnDelete; len(wf) > 0 {
+		log.Printf("  OnDelete Workflows: %s", strings.Join(wf, ", "))
 	}
 	if wf := tmpl.Spec.Workflows.AfterDelete; len(wf) > 0 {
 		log.Printf("  AfterDelete Workflows: %s", strings.Join(wf, ", "))
@@ -364,8 +364,8 @@ func listTemplates() {
 		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
 			log.Printf("    OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
 		}
-		if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
-			log.Printf("    OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
+		if len(tmpl.Spec.Workflows.OnDelete) > 0 {
+			log.Printf("    OnDelete Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
 		}
 		if tmpl.Spec.Schedule != "" {
 			log.Printf("    Expiry Schedule: %s", tmpl.Spec.Schedule)
@@ -543,8 +543,8 @@ func executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName
 	if len(tmpl.Spec.Workflows.OnCreate) > 0 {
 		log.Printf("  OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
 	}
-	if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
-		log.Printf("  OnDestroy Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
+	if len(tmpl.Spec.Workflows.OnDelete) > 0 {
+		log.Printf("  OnDelete Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
 	}
 	if tmpl.Spec.Schedule != "" {
 		log.Printf("  Expiry Schedule: %s → %s", tmpl.Spec.Schedule, clusterDef.Spec.ExpiresAt)
@@ -740,7 +740,7 @@ func validateTemplate(name string) {
 	}
 
 	// Validate workflows exist
-	allWorkflows := append(tmpl.Spec.Workflows.OnCreate, tmpl.Spec.Workflows.OnDestroy...)
+	allWorkflows := append(tmpl.Spec.Workflows.OnCreate, tmpl.Spec.Workflows.OnDelete...)
 	if len(allWorkflows) > 0 {
 		workflowMgr, err := workflow.NewManager(shared.GetLocalPath())
 		if err == nil {
@@ -756,9 +756,9 @@ func validateTemplate(name string) {
 						warnings = append(warnings, fmt.Sprintf("OnCreate workflow '%s' not found in repository", wfName))
 					}
 				}
-				for _, wfName := range tmpl.Spec.Workflows.OnDestroy {
+				for _, wfName := range tmpl.Spec.Workflows.OnDelete {
 					if !workflowMap[wfName] {
-						warnings = append(warnings, fmt.Sprintf("OnDestroy workflow '%s' not found in repository", wfName))
+						warnings = append(warnings, fmt.Sprintf("OnDelete workflow '%s' not found in repository", wfName))
 					}
 				}
 			}
@@ -793,10 +793,10 @@ func validateTemplate(name string) {
 		} else {
 			log.Printf("📋 OnCreate Workflows: none")
 		}
-		if len(tmpl.Spec.Workflows.OnDestroy) > 0 {
-			log.Printf("📋 OnDestroy Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnDestroy), strings.Join(tmpl.Spec.Workflows.OnDestroy, ", "))
+		if len(tmpl.Spec.Workflows.OnDelete) > 0 {
+			log.Printf("📋 OnDelete Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnDelete), strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
 		} else {
-			log.Printf("📋 OnDestroy Workflows: none")
+			log.Printf("📋 OnDelete Workflows: none")
 		}
 
 		if len(warnings) == 0 {

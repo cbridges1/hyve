@@ -144,16 +144,29 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 		e.addLog("INFO", "", "", "✅ All requirements validated successfully")
 	}
 
-	// Set up kubeconfig if cluster specified
+	// Set up kubeconfig unless the workflow opts out of the cluster pre-flight.
+	// When preFlight.cluster == "skip", inject definition-derived env vars from
+	// the on-disk cluster YAML (same as beforeCreate hooks) but skip the EKS
+	// DescribeCluster call and kubeconfig sync entirely — necessary for workflows
+	// whose purpose is to obtain credentials in the first place.
 	var kubeconfigPath string
 	if targetCluster != "" {
-		kubeconfigPath, err = e.setupKubeconfig(ctx, targetCluster)
-		if err != nil {
-			e.execution.Status = StatusFailed
-			e.addLog("ERROR", "", "", fmt.Sprintf("Failed to setup kubeconfig: %v", err))
-			return execution, fmt.Errorf("failed to setup kubeconfig: %w", err)
+		if workflow.Spec.PreFlight.Cluster == "skip" {
+			e.addLog("INFO", "", "", fmt.Sprintf("Pre-flight skipped for cluster '%s' (preFlight.cluster: skip)", targetCluster))
+			if clusterDef, defErr := e.loadClusterDefinition(targetCluster); defErr == nil {
+				e.exportDefinitionEnvironmentVariables(clusterDef)
+			} else {
+				e.addLog("WARN", "", "", fmt.Sprintf("Could not load cluster definition for env injection: %v", defErr))
+			}
+		} else {
+			kubeconfigPath, err = e.setupKubeconfig(ctx, targetCluster)
+			if err != nil {
+				e.execution.Status = StatusFailed
+				e.addLog("ERROR", "", "", fmt.Sprintf("Failed to setup kubeconfig: %v", err))
+				return execution, fmt.Errorf("failed to setup kubeconfig: %w", err)
+			}
+			defer e.cleanupKubeconfig(kubeconfigPath)
 		}
-		defer e.cleanupKubeconfig(kubeconfigPath)
 	}
 
 	// Set up environment variables
@@ -330,6 +343,7 @@ func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.Cluste
 	setEnv("HYVE_CLUSTER_REGION", clusterDef.Metadata.Region)
 	setEnv("HYVE_CLUSTER_PROVIDER", clusterDef.Spec.Provider)
 	setEnv("HYVE_CLUSTER_TYPE", clusterDef.Spec.ClusterType)
+	setEnv("HYVE_CLUSTER_K8S_VERSION", clusterDef.Spec.KubernetesVersion)
 
 	// Provider-specific account identifiers — only the field relevant to the
 	// cluster's provider will be non-empty and therefore exported.
@@ -337,6 +351,10 @@ func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.Cluste
 	setEnv("HYVE_GCP_PROJECT", clusterDef.Spec.GCPProject)
 	setEnv("HYVE_AZURE_SUBSCRIPTION", clusterDef.Spec.AzureSubscription)
 	setEnv("HYVE_CIVO_ORG", clusterDef.Spec.CivoOrganization)
+
+	// Resolved IDs and spec fields useful to terraform variable substitution.
+	setEnv("HYVE_CLUSTER_ACCOUNT_ID", clusterDef.Spec.AWSAccountID)
+	setEnv("HYVE_CLUSTER_VPC_ID", clusterDef.Spec.AWSVPCID)
 
 	// Export provider credentials so hooks can authenticate with the cloud API
 	// to provision or clean up supporting infrastructure.
@@ -409,6 +427,7 @@ func (e *Executor) exportClusterEnvironmentVariables(ctx context.Context, cluste
 	e.variables["HYVE_CLUSTER_ID"] = clusterInfo.ID
 	e.variables["HYVE_CLUSTER_STATUS"] = clusterInfo.Status
 	e.variables["HYVE_CLUSTER_KUBECONFIG"] = clusterInfo.Kubeconfig
+	e.variables["HYVE_CLUSTER_OIDC_URL"] = clusterInfo.OIDCIssuerURL
 
 	// Also export to process environment so they're available in scripts
 	os.Setenv("HYVE_CLUSTER_NAME", clusterInfo.Name)
@@ -417,6 +436,9 @@ func (e *Executor) exportClusterEnvironmentVariables(ctx context.Context, cluste
 	os.Setenv("HYVE_CLUSTER_ID", clusterInfo.ID)
 	os.Setenv("HYVE_CLUSTER_STATUS", clusterInfo.Status)
 	os.Setenv("HYVE_CLUSTER_KUBECONFIG", clusterInfo.Kubeconfig)
+	if clusterInfo.OIDCIssuerURL != "" {
+		os.Setenv("HYVE_CLUSTER_OIDC_URL", clusterInfo.OIDCIssuerURL)
+	}
 
 	log.Printf("✅ Exported cluster information to environment:")
 	log.Printf("  HYVE_CLUSTER_NAME=%s", clusterInfo.Name)
@@ -556,6 +578,7 @@ func (e *Executor) createProviderFromClusterDef(clusterDef *types.ClusterDefinit
 		}
 	case "aws":
 		opts.AccountName = clusterDef.Spec.AWSAccount
+		opts.AWSProfile = clusterDef.Spec.AWSProfile
 		if opts.AccountName != "" {
 			keyID, secret, session, _ := pcMgr.GetAWSCredentials(opts.AccountName)
 			opts.AccessKeyID = keyID

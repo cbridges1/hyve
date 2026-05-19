@@ -40,6 +40,14 @@ func resolveHookEnvVars(_ context.Context, _ *state.Manager, clusterDef *types.C
 			clusterDef.Spec.AWSNodeRoleARN = v
 			log.Printf("[%s] Read HYVE_NODE_ROLE_ARN=%s from hook", name, v)
 		}
+		if v := os.Getenv("HYVE_CLUSTER_SG_ID"); v != "" && clusterDef.Spec.AWSClusterSGID == "" {
+			clusterDef.Spec.AWSClusterSGID = v
+			log.Printf("[%s] Read HYVE_CLUSTER_SG_ID=%s from hook", name, v)
+		}
+		if v := os.Getenv("HYVE_WORKER_SG_ID"); v != "" && clusterDef.Spec.AWSWorkerSGID == "" {
+			clusterDef.Spec.AWSWorkerSGID = v
+			log.Printf("[%s] Read HYVE_WORKER_SG_ID=%s from hook", name, v)
+		}
 
 	case "azure":
 		if v := os.Getenv("HYVE_RESOURCE_GROUP_NAME"); v != "" && clusterDef.Spec.AzureResourceGroup == "" {

@@ -19,7 +19,7 @@ func TestWorkflowsSpec_BeforeCreateAfterDelete_RoundTrip(t *testing.T) {
 			Workflows: WorkflowsSpec{
 				BeforeCreate: []string{"provision-vpc", "provision-roles"},
 				OnCreate:     []string{"notify-slack"},
-				OnDestroy:    []string{"drain-nodes"},
+				OnDelete:     []string{"drain-nodes"},
 				AfterDelete:  []string{"cleanup-vpc", "cleanup-roles"},
 			},
 		},
@@ -37,7 +37,7 @@ func TestWorkflowsSpec_BeforeCreateAfterDelete_RoundTrip(t *testing.T) {
 
 	assertStringSlice(t, "BeforeCreate", got.Spec.Workflows.BeforeCreate, "provision-vpc", "provision-roles")
 	assertStringSlice(t, "OnCreate", got.Spec.Workflows.OnCreate, "notify-slack")
-	assertStringSlice(t, "OnDestroy", got.Spec.Workflows.OnDestroy, "drain-nodes")
+	assertStringSlice(t, "OnDelete", got.Spec.Workflows.OnDelete, "drain-nodes")
 	assertStringSlice(t, "AfterDelete", got.Spec.Workflows.AfterDelete, "cleanup-vpc", "cleanup-roles")
 }
 

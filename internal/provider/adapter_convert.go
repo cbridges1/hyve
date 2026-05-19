@@ -241,6 +241,6 @@ func convertFirewallConfigToAzure(config *FirewallConfig) *azure.FirewallConfig 
 }
 
 // clusterInfoFrom constructs a ClusterInfo from its individual fields.
-func clusterInfoFrom(name, ip, port, kc, status, id string, ng []types.NodeGroup) *ClusterInfo {
-	return &ClusterInfo{Name: name, IPAddress: ip, AccessPort: port, Kubeconfig: kc, Status: status, ID: id, NodeGroups: ng}
+func clusterInfoFrom(name, ip, port, kc, status, id, oidcIssuer string, ng []types.NodeGroup) *ClusterInfo {
+	return &ClusterInfo{Name: name, IPAddress: ip, AccessPort: port, Kubeconfig: kc, Status: status, ID: id, NodeGroups: ng, OIDCIssuerURL: oidcIssuer}
 }

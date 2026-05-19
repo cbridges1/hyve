@@ -126,7 +126,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 			log.Printf("[%s] Paused — skipping reconciliation", clusterName)
 		} else {
 			// Check whether the cluster has passed its expiry time. Treat it
-			// identically to delete: true so that onDestroy workflows run and the
+			// identically to delete: true so that onDelete workflows run and the
 			// YAML file is cleaned up automatically.
 			if next.Spec.ExpiresAt != "" {
 				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
@@ -149,7 +149,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 				if reconcileErr != nil {
 					log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
 				} else if next.Spec.Delete {
-					// onDestroy workflows ran and the cloud cluster was deleted — now
+					// onDelete workflows ran and the cloud cluster was deleted — now
 					// remove the YAML marker and push so the repo reflects the final state.
 					if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
 						log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
@@ -230,6 +230,7 @@ func (r *Reconciler) createProviderForCluster(clusterDef types.ClusterDefinition
 
 	case "aws":
 		opts.AccountName = clusterDef.Spec.AWSAccount
+		opts.AWSProfile = clusterDef.Spec.AWSProfile
 		if opts.AccountName != "" {
 			keyID, secret, session, _ := pcMgr.GetAWSCredentials(opts.AccountName)
 			opts.AccessKeyID = keyID
@@ -282,6 +283,13 @@ func (r *Reconciler) createProviderForCluster(clusterDef types.ClusterDefinition
 
 // reconcileCluster handles the reconciliation of a single cluster
 func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
+	// Run preReconcile workflows before any AWS calls so credential-refresh
+	// workflows can populate env vars that the provider SDK reads.
+	if len(clusterDef.Spec.Workflows.PreReconcile) > 0 {
+		log.Printf("[%s] 🔑 Running preReconcile workflows...", clusterDef.Metadata.Name)
+		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.PreReconcile, clusterDef)
+	}
+
 	action := clusterMgr.DetermineAction(ctx, clusterDef)
 
 	switch action {
@@ -330,6 +338,32 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 			log.Printf("[%s] Warning: failed to persist resolved cluster values: %v", clusterDef.Metadata.Name, err)
 		} else {
 			log.Printf("[%s] 💾 Persisted resolved cluster values to YAML", clusterDef.Metadata.Name)
+		}
+	}
+
+	// Resolve awsAccount alias → awsAccountId when only the alias was provided.
+	// Mirrors the interactive flow in cmd/cluster/crud.go so hand-written cluster
+	// YAMLs that omit awsAccountId still produce correct IAM role ARNs.
+	if clusterDef.Spec.AWSAccountID == "" && clusterDef.Spec.AWSAccount != "" {
+		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
+		if id, err := pcMgr.GetAWSAccountID(clusterDef.Spec.AWSAccount); err == nil {
+			clusterDef.Spec.AWSAccountID = id
+			log.Printf("[%s] Resolved awsAccount '%s' → awsAccountId '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSAccount, id)
+		} else {
+			log.Printf("[%s] Warning: could not resolve awsAccount '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSAccount, err)
+		}
+	}
+	// Same for Azure and GCP.
+	if clusterDef.Spec.AzureSubscriptionID == "" && clusterDef.Spec.AzureSubscription != "" {
+		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
+		if id, err := pcMgr.GetAzureSubscriptionID(clusterDef.Spec.AzureSubscription); err == nil {
+			clusterDef.Spec.AzureSubscriptionID = id
+		}
+	}
+	if clusterDef.Spec.GCPProjectID == "" && clusterDef.Spec.GCPProject != "" {
+		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
+		if id, err := pcMgr.GetGCPProjectID(clusterDef.Spec.GCPProject); err == nil {
+			clusterDef.Spec.GCPProjectID = id
 		}
 	}
 
@@ -382,10 +416,10 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 		return nil
 	}
 
-	// Run onDestroy workflows before deletion if defined
-	if len(clusterDef.Spec.Workflows.OnDestroy) > 0 {
-		log.Printf("[%s] 🔄 Running onDestroy workflows...", clusterDef.Metadata.Name)
-		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDestroy, clusterDef.Metadata.Name)
+	// Run onDelete workflows before deletion if defined
+	if len(clusterDef.Spec.Workflows.OnDelete) > 0 {
+		log.Printf("[%s] 🔄 Running onDelete workflows...", clusterDef.Metadata.Name)
+		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDelete, clusterDef.Metadata.Name)
 	}
 
 	log.Printf("[%s] Deleting cluster (ID: %s)...", clusterDef.Metadata.Name, existingCluster.ID)
