@@ -33,6 +33,10 @@ Use --account-name, --project-name, --subscription-name, or --org-name to specif
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterName := args[0]
 
+		if err := shared.ValidateClusterName(clusterName); err != nil {
+			log.Fatalf("Invalid cluster name %q: %v", clusterName, err)
+		}
+
 		region, _ := cmd.Flags().GetString("region")
 		providerName, _ := cmd.Flags().GetString("provider")
 		nodes, _ := cmd.Flags().GetStringSlice("nodes")

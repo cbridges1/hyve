@@ -101,6 +101,49 @@ func TestCronNextOccurrence_InvalidRange(t *testing.T) {
 	require.Error(t, err)
 }
 
+// ── ValidateClusterName ───────────────────────────────────────────────────────
+
+func TestValidateClusterName_Valid(t *testing.T) {
+	for _, name := range []string{
+		"my-cluster",
+		"cluster1",
+		"a",
+		"abc",
+		"my.cluster",
+		"prod-eks-01",
+	} {
+		assert.NoError(t, ValidateClusterName(name), "expected %q to be valid", name)
+	}
+}
+
+func TestValidateClusterName_TrailingSpace(t *testing.T) {
+	assert.Error(t, ValidateClusterName("my-cluster "))
+}
+
+func TestValidateClusterName_LeadingSpace(t *testing.T) {
+	assert.Error(t, ValidateClusterName(" my-cluster"))
+}
+
+func TestValidateClusterName_EmbeddedSpace(t *testing.T) {
+	assert.Error(t, ValidateClusterName("my cluster"))
+}
+
+func TestValidateClusterName_Empty(t *testing.T) {
+	assert.Error(t, ValidateClusterName(""))
+}
+
+func TestValidateClusterName_UpperCase(t *testing.T) {
+	assert.Error(t, ValidateClusterName("My-Cluster"))
+}
+
+func TestValidateClusterName_StartsWithHyphen(t *testing.T) {
+	assert.Error(t, ValidateClusterName("-my-cluster"))
+}
+
+func TestValidateClusterName_EndsWithHyphen(t *testing.T) {
+	assert.Error(t, ValidateClusterName("my-cluster-"))
+}
+
 // ── validateCronExpr ─────────────────────────────────────────────────────────
 
 func TestValidateCronExpr_Valid(t *testing.T) {

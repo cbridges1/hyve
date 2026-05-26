@@ -105,7 +105,7 @@ func interactiveClusterCreate() error {
 			huh.NewInput().
 				Title("Cluster name").
 				Placeholder("my-cluster").
-				Validate(shared.RequireNotEmpty).
+				Validate(shared.ValidateClusterName).
 				Value(&clusterName),
 			huh.NewSelect[string]().
 				Title("Cloud provider").

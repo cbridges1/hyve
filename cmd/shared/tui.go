@@ -3,6 +3,7 @@ package shared
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
+
+var validClusterName = regexp.MustCompile(`^[a-z0-9][a-z0-9\-\.]*[a-z0-9]$|^[a-z0-9]$`)
 
 // ErrBack is the sentinel returned when the user selects "← Back" in any menu.
 var ErrBack = errors.New("back")
@@ -78,6 +81,25 @@ func HyveTheme() *huh.Theme {
 func RequireNotEmpty(s string) error {
 	if strings.TrimSpace(s) == "" {
 		return errors.New("this field is required")
+	}
+	return nil
+}
+
+// ValidateClusterName rejects cluster names that are empty, contain whitespace,
+// or use characters outside of lowercase letters, digits, hyphens, and dots.
+// Use with huh.NewInput().Validate(shared.ValidateClusterName).
+func ValidateClusterName(s string) error {
+	if s == "" {
+		return errors.New("cluster name is required")
+	}
+	if s != strings.TrimSpace(s) {
+		return errors.New("cluster name must not have leading or trailing spaces")
+	}
+	if strings.ContainsAny(s, " \t\n\r") {
+		return errors.New("cluster name must not contain spaces")
+	}
+	if !validClusterName.MatchString(s) {
+		return errors.New("cluster name must start and end with a lowercase letter or digit, and contain only lowercase letters, digits, hyphens, or dots")
 	}
 	return nil
 }
