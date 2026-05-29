@@ -21,6 +21,8 @@ Supports **Civo, AWS (EKS), GCP (GKE), and Azure (AKS)** with multi-account cred
 
 ## Why Hyve?
 
+**You probably need less infrastructure code than you think.**
+
 General-purpose IaC tools (Terraform, Pulumi, Crossplane) are built to manage any cloud resource. That generality is a good fit for VPCs, IAM roles, and databases — resources that are provisioned once and live for years. It becomes friction when the resource is a Kubernetes cluster that a team actively creates, destroys, and recreates on a regular cadence.
 
 **Git is the state backend.** No S3 bucket, no cloud account, no extra credentials — the full history of every cluster change is already in the repository.
