@@ -1,25 +1,50 @@
 package providerconfig
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
 
-// CivoNetwork represents a named Civo network
-type CivoNetwork struct {
-	Name      string `yaml:"name"`
-	NetworkID string `yaml:"network_id"`
+type civoCLIConfig struct {
+	APIKeys map[string]string `json:"apikeys"`
+	Meta    struct {
+		CurrentAPIKey string `json:"current_apikey"`
+	} `json:"meta"`
+}
+
+// ReadCivoCLIToken reads the active Civo API token from ~/.civo.json,
+// the credential file written by the Civo CLI.
+// Returns an empty string if the file is absent or malformed.
+func ReadCivoCLIToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".civo.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg civoCLIConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	key := cfg.Meta.CurrentAPIKey
+	if key == "" {
+		return ""
+	}
+	return cfg.APIKeys[key]
 }
 
 // CivoOrganization represents a named Civo organization/account
 type CivoOrganization struct {
-	Name     string        `yaml:"name"`
-	OrgID    string        `yaml:"org_id"`
-	Token    string        `yaml:"token,omitempty"`
-	Regions  []string      `yaml:"regions,omitempty"`
-	Networks []CivoNetwork `yaml:"networks,omitempty"`
+	Name    string   `yaml:"name"`
+	OrgID   string   `yaml:"org_id"`
+	Token   string   `yaml:"token,omitempty"`
+	Regions []string `yaml:"regions,omitempty"`
 }
 
 // CivoConfig represents Civo-specific configuration
@@ -27,74 +52,87 @@ type CivoConfig struct {
 	Organizations []CivoOrganization `yaml:"organizations,omitempty"`
 }
 
-// LoadCivoConfig loads the Civo configuration from the repository
+// LoadCivoConfig reads provider-configs/civo.yaml and returns the full config.
 func (m *Manager) LoadCivoConfig() (*CivoConfig, error) {
-	configPath := m.getConfigPath("civo")
-
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(m.getConfigPath("civo"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &CivoConfig{}, nil
 		}
 		return nil, fmt.Errorf("failed to read Civo config: %w", err)
 	}
-
 	var config CivoConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse Civo config: %w", err)
 	}
-
 	return &config, nil
 }
 
-// SaveCivoConfig saves the Civo configuration to the repository
+// SaveCivoConfig writes the full Civo config to provider-configs/civo.yaml.
 func (m *Manager) SaveCivoConfig(config *CivoConfig) error {
 	if err := m.ensureConfigDir(); err != nil {
 		return err
 	}
-
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal Civo config: %w", err)
 	}
-
-	configPath := m.getConfigPath("civo")
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(m.getConfigPath("civo"), data, 0644); err != nil {
 		return fmt.Errorf("failed to write Civo config: %w", err)
 	}
-
 	return nil
 }
 
-// AddCivoOrganization adds a named organization to the Civo configuration
-func (m *Manager) AddCivoOrganization(name, orgID string) error {
+// LoadCivoOrganization reads the config for a single named Civo organization.
+// Returns (nil, nil) when no organization with that name exists.
+func (m *Manager) LoadCivoOrganization(name string) (*CivoOrganization, error) {
+	config, err := m.LoadCivoConfig()
+	if err != nil {
+		return nil, err
+	}
+	for i := range config.Organizations {
+		if config.Organizations[i].Name == name {
+			return &config.Organizations[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SaveCivoOrganization upserts an organization entry in provider-configs/civo.yaml.
+func (m *Manager) SaveCivoOrganization(org *CivoOrganization) error {
 	config, err := m.LoadCivoConfig()
 	if err != nil {
 		return err
 	}
-
-	for i, o := range config.Organizations {
-		if o.Name == name {
-			config.Organizations[i].OrgID = orgID
+	for i := range config.Organizations {
+		if config.Organizations[i].Name == org.Name {
+			config.Organizations[i] = *org
 			return m.SaveCivoConfig(config)
 		}
 	}
-
-	config.Organizations = append(config.Organizations, CivoOrganization{
-		Name:  name,
-		OrgID: orgID,
-	})
-
+	config.Organizations = append(config.Organizations, *org)
 	return m.SaveCivoConfig(config)
 }
 
-// RemoveCivoOrganization removes an organization by name
+// AddCivoOrganization adds or updates a named Civo organization.
+func (m *Manager) AddCivoOrganization(name, orgID string) error {
+	org, err := m.LoadCivoOrganization(name)
+	if err != nil {
+		return err
+	}
+	if org == nil {
+		org = &CivoOrganization{Name: name}
+	}
+	org.OrgID = orgID
+	return m.SaveCivoOrganization(org)
+}
+
+// RemoveCivoOrganization removes an organization by name.
 func (m *Manager) RemoveCivoOrganization(name string) error {
 	config, err := m.LoadCivoConfig()
 	if err != nil {
 		return err
 	}
-
 	filtered := []CivoOrganization{}
 	found := false
 	for _, o := range config.Organizations {
@@ -104,161 +142,64 @@ func (m *Manager) RemoveCivoOrganization(name string) error {
 			found = true
 		}
 	}
-
 	if !found {
 		return fmt.Errorf("organization '%s' not found", name)
 	}
-
 	config.Organizations = filtered
 	return m.SaveCivoConfig(config)
 }
 
-// GetCivoOrgID returns the org ID for a given name
+// GetCivoOrgID returns the org ID for a given name.
 func (m *Manager) GetCivoOrgID(name string) (string, error) {
-	config, err := m.LoadCivoConfig()
+	org, err := m.LoadCivoOrganization(name)
 	if err != nil {
 		return "", err
 	}
-
-	for _, o := range config.Organizations {
-		if o.Name == name {
-			return o.OrgID, nil
-		}
+	if org == nil {
+		return "", fmt.Errorf("Civo organization '%s' not found", name)
 	}
-
-	return "", fmt.Errorf("Civo organization '%s' not found", name)
+	return org.OrgID, nil
 }
 
-// GetCivoOrganization returns the full organization config for a given name
+// GetCivoOrganization returns the full organization config for a given name.
 func (m *Manager) GetCivoOrganization(name string) (*CivoOrganization, error) {
-	config, err := m.LoadCivoConfig()
+	org, err := m.LoadCivoOrganization(name)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, o := range config.Organizations {
-		if o.Name == name {
-			return &o, nil
-		}
+	if org == nil {
+		return nil, fmt.Errorf("Civo organization '%s' not found", name)
 	}
-
-	return nil, fmt.Errorf("Civo organization '%s' not found", name)
+	return org, nil
 }
 
-// ListCivoOrganizations returns all configured organizations
+// ListCivoOrganizations returns all configured Civo organizations.
 func (m *Manager) ListCivoOrganizations() ([]CivoOrganization, error) {
 	config, err := m.LoadCivoConfig()
 	if err != nil {
 		return nil, err
 	}
-
 	return config.Organizations, nil
 }
 
-// HasCivoOrganization checks if an organization with the given name exists
+// HasCivoOrganization checks if an organization with the given name exists.
 func (m *Manager) HasCivoOrganization(name string) (bool, error) {
-	config, err := m.LoadCivoConfig()
+	org, err := m.LoadCivoOrganization(name)
 	if err != nil {
 		return false, err
 	}
-
-	for _, o := range config.Organizations {
-		if o.Name == name {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return org != nil, nil
 }
 
-// AddCivoNetwork adds a named network to an organization
-func (m *Manager) AddCivoNetwork(orgName, networkName, networkID string) error {
-	config, err := m.LoadCivoConfig()
-	if err != nil {
-		return err
-	}
-
-	for i, o := range config.Organizations {
-		if o.Name == orgName {
-			for j, n := range o.Networks {
-				if n.Name == networkName {
-					config.Organizations[i].Networks[j].NetworkID = networkID
-					return m.SaveCivoConfig(config)
-				}
-			}
-			config.Organizations[i].Networks = append(config.Organizations[i].Networks, CivoNetwork{
-				Name:      networkName,
-				NetworkID: networkID,
-			})
-			return m.SaveCivoConfig(config)
-		}
-	}
-
-	return fmt.Errorf("Civo organization '%s' not found", orgName)
-}
-
-// RemoveCivoNetwork removes a network by name from an organization
-func (m *Manager) RemoveCivoNetwork(orgName, networkName string) error {
-	config, err := m.LoadCivoConfig()
-	if err != nil {
-		return err
-	}
-
-	for i, o := range config.Organizations {
-		if o.Name == orgName {
-			filtered := []CivoNetwork{}
-			found := false
-			for _, n := range o.Networks {
-				if n.Name != networkName {
-					filtered = append(filtered, n)
-				} else {
-					found = true
-				}
-			}
-			if !found {
-				return fmt.Errorf("network '%s' not found in organization '%s'", networkName, orgName)
-			}
-			config.Organizations[i].Networks = filtered
-			return m.SaveCivoConfig(config)
-		}
-	}
-
-	return fmt.Errorf("Civo organization '%s' not found", orgName)
-}
-
-// GetCivoNetworkID returns the network ID for a given network name in an organization
-func (m *Manager) GetCivoNetworkID(orgName, networkName string) (string, error) {
-	config, err := m.LoadCivoConfig()
+// GetCivoToken returns the API token for a Civo organization.
+// The token field may be a literal value or an env var reference (${VAR_NAME}).
+func (m *Manager) GetCivoToken(orgName string) (string, error) {
+	org, err := m.LoadCivoOrganization(orgName)
 	if err != nil {
 		return "", err
 	}
-
-	for _, o := range config.Organizations {
-		if o.Name == orgName {
-			for _, n := range o.Networks {
-				if n.Name == networkName {
-					return n.NetworkID, nil
-				}
-			}
-			return "", fmt.Errorf("network '%s' not found in organization '%s'", networkName, orgName)
-		}
+	if org == nil {
+		return "", fmt.Errorf("Civo organization '%s' not found", orgName)
 	}
-
-	return "", fmt.Errorf("Civo organization '%s' not found", orgName)
-}
-
-// ListCivoNetworks returns all configured networks for an organization
-func (m *Manager) ListCivoNetworks(orgName string) ([]CivoNetwork, error) {
-	config, err := m.LoadCivoConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, o := range config.Organizations {
-		if o.Name == orgName {
-			return o.Networks, nil
-		}
-	}
-
-	return nil, fmt.Errorf("Civo organization '%s' not found", orgName)
+	return resolveCredential(org.Token), nil
 }

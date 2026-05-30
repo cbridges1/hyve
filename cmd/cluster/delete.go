@@ -12,7 +12,6 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	internalcluster "github.com/cbridges1/hyve/internal/cluster"
-	"github.com/cbridges1/hyve/internal/config"
 	"github.com/cbridges1/hyve/internal/provider"
 	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/repository"
@@ -29,10 +28,10 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		if deleteFromCloud && allowNoConfig {
-			log.Printf("⚠️ Configuration file not found, but --force --force-cloud specified")
+			log.Printf("⚠️ Configuration file not found, but --force specified")
 			clusterDef.Metadata.Name = clusterName
 		} else {
-			log.Fatalf("Cluster %s configuration does not exist. Use --force --force-cloud to delete from cloud provider anyway.", clusterName)
+			log.Fatalf("Cluster %s configuration does not exist. Use --force to delete from cloud provider anyway.", clusterName)
 		}
 	} else {
 		configExists = true
@@ -66,10 +65,10 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 		cleanupClusterKubeconfig(clusterName)
 		shared.RunReconciliation("")
 	} else {
-		// Normal path: mark the cluster for deletion so the reconciler runs onDestroy
+		// Normal path: mark the cluster for deletion so the reconciler runs onDelete
 		// workflows before removing the cloud cluster and the YAML file.
 		if !configExists {
-			log.Fatalf("Cluster %s configuration does not exist. Use --force --force-cloud to delete from cloud provider anyway.", clusterName)
+			log.Fatalf("Cluster %s configuration does not exist. Use --force to delete from cloud provider anyway.", clusterName)
 		}
 
 		clusterDef.Spec.Delete = true
@@ -83,7 +82,7 @@ func deleteClusterFromCLI(clusterName string, allowNoConfig bool, deleteFromClou
 
 		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Mark cluster %s for deletion", clusterName))
 		log.Printf("📝 Cluster '%s' marked for deletion", clusterName)
-		log.Printf("   The reconciler will run onDestroy workflows, delete the cloud cluster, and remove this file.")
+		log.Printf("   The reconciler will run onDelete workflows, delete the cloud cluster, and remove this file.")
 
 		shared.RunReconciliation("")
 	}
@@ -172,13 +171,12 @@ func createProviderForClusterDef(clusterDef types.ClusterDefinition) (provider.P
 	}
 
 	if providerName == "civo" {
-		configMgr := config.NewManager()
-		apiKey := configMgr.GetCivoToken(clusterDef.Spec.CivoOrganization)
+		apiKey := providerconfig.ReadCivoCLIToken()
 		if apiKey == "" {
 			apiKey = os.Getenv("CIVO_TOKEN")
 		}
 		if apiKey == "" {
-			return nil, fmt.Errorf("Civo API token not found. Please run 'hyve config civo token set --org %s' or set CIVO_TOKEN environment variable", clusterDef.Spec.CivoOrganization)
+			return nil, fmt.Errorf("Civo API token not found. Log in with the Civo CLI ('civo apikey') or set the CIVO_TOKEN environment variable")
 		}
 		opts.APIKey = apiKey
 	}
@@ -255,13 +253,12 @@ func forceDeleteClusterFromCloud(clusterName, region, providerName, projectName 
 	opts := provider.ProviderOptions{}
 
 	if providerName == "civo" {
-		configMgr := config.NewManager()
-		apiKey := configMgr.GetCivoToken(projectName)
+		apiKey := providerconfig.ReadCivoCLIToken()
 		if apiKey == "" {
 			apiKey = os.Getenv("CIVO_TOKEN")
 		}
 		if apiKey == "" {
-			log.Fatalf("Civo API token not found. Please run 'hyve config civo token set --org %s' or set CIVO_TOKEN environment variable", projectName)
+			log.Fatalf("Civo API token not found. Log in with the Civo CLI ('civo apikey') or set the CIVO_TOKEN environment variable")
 		}
 		opts.APIKey = apiKey
 	}

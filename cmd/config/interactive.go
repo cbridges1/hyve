@@ -65,12 +65,12 @@ func interactiveConfigCivo() error {
 		err := shared.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
-					Title("Civo token — action").
+					Title("Civo — action").
 					Options(
 						huh.NewOption("List orgs", "list"),
-						huh.NewOption("Set token", "set"),
-						huh.NewOption("Get token", "get"),
-						huh.NewOption("Clear token", "clear"),
+						huh.NewOption("Add org", "add"),
+						huh.NewOption("Get org", "get"),
+						huh.NewOption("Remove org", "remove"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&action),
@@ -85,41 +85,43 @@ func interactiveConfigCivo() error {
 			return shared.ErrBack
 		case "list":
 			configCivoOrgListCmd.Run(configCivoOrgListCmd, nil)
-		case "set":
-			var org, token string
-			if err := shared.SelectFromList("Organization", shared.FetchCivoOrgNames(), &org); err != nil {
-				return err
-			}
+		case "add":
+			var name, orgID string
 			err = shared.NewForm(
 				huh.NewGroup(
-					huh.NewInput().Title("Token (leave blank to be prompted)").Value(&token),
+					huh.NewInput().
+						Title("Organization alias").
+						Placeholder("prod").
+						Validate(shared.RequireNotEmpty).
+						Value(&name),
+					huh.NewInput().
+						Title("Civo organization ID (optional)").
+						Placeholder("org-abc123").
+						Value(&orgID),
 				),
 			).Run()
 			if err != nil {
 				return err
 			}
-			configCivoSetTokenCmd.Flags().Set("org", org)
-			if token != "" {
-				configCivoSetTokenCmd.Flags().Set("token", token)
-			}
-			configCivoSetTokenCmd.Run(configCivoSetTokenCmd, nil)
+			configCivoOrgAddCmd.Flags().Set("name", name)
+			configCivoOrgAddCmd.Flags().Set("id", orgID)
+			configCivoOrgAddCmd.Run(configCivoOrgAddCmd, nil)
 		case "get":
-			org := ""
-			if err := shared.SelectFromList("Organization", shared.FetchCivoOrgNames(), &org); err != nil {
+			alias := ""
+			if err := shared.SelectFromList("Organization alias", shared.FetchCivoOrgNames(), &alias); err != nil {
 				return err
 			}
-			configCivoGetTokenCmd.Flags().Set("org", org)
-			configCivoGetTokenCmd.Run(configCivoGetTokenCmd, nil)
-		case "clear":
-			org := ""
-			if err := shared.SelectFromList("Organization to clear token for", shared.FetchCivoOrgNames(), &org); err != nil {
+			configCivoOrgGetCmd.Run(configCivoOrgGetCmd, []string{alias})
+		case "remove":
+			alias := ""
+			if err := shared.SelectFromList("Organization to remove", shared.FetchCivoOrgNames(), &alias); err != nil {
 				return err
 			}
 			var confirm bool
 			err = shared.NewForm(
 				huh.NewGroup(
 					huh.NewConfirm().
-						Title(fmt.Sprintf("Clear Civo token for org '%s'?", org)).
+						Title(fmt.Sprintf("Remove Civo organization '%s'?", alias)).
 						Value(&confirm),
 				),
 			).Run()
@@ -129,8 +131,7 @@ func interactiveConfigCivo() error {
 			if !confirm {
 				continue
 			}
-			configCivoClearTokenCmd.Flags().Set("org", org)
-			configCivoClearTokenCmd.Run(configCivoClearTokenCmd, nil)
+			configCivoOrgRemoveCmd.Run(configCivoOrgRemoveCmd, []string{alias})
 		}
 	}
 }
@@ -218,8 +219,6 @@ func interactiveConfigAWS() error {
 					Title("AWS — what to configure?").
 					Options(
 						huh.NewOption("Account aliases", "account"),
-						huh.NewOption("EKS role aliases", "eks-role"),
-						huh.NewOption("VPC aliases", "vpc"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&resource),
@@ -234,14 +233,6 @@ func interactiveConfigAWS() error {
 			return shared.ErrBack
 		case "account":
 			if err := interactiveConfigAWSAccount(); err != nil && err != shared.ErrBack {
-				return err
-			}
-		case "eks-role":
-			if err := interactiveConfigAWSEKSRole(); err != nil && err != shared.ErrBack {
-				return err
-			}
-		case "vpc":
-			if err := interactiveConfigAWSVPC(); err != nil && err != shared.ErrBack {
 				return err
 			}
 		}
@@ -318,240 +309,6 @@ func interactiveConfigAWSAccount() error {
 	}
 }
 
-func interactiveConfigAWSEKSRole() error {
-	for {
-		var action string
-		err := shared.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("EKS role — action").
-					Options(
-						huh.NewOption("List", "list"),
-						huh.NewOption("Add (register existing)", "add"),
-						huh.NewOption("Create in AWS", "create"),
-						huh.NewOption("Get", "get"),
-						huh.NewOption("Remove alias", "remove"),
-						huh.NewOption("← Back", "back"),
-					).
-					Value(&action),
-			),
-		).Run()
-		if err != nil {
-			return err
-		}
-
-		switch action {
-		case "back":
-			return shared.ErrBack
-		case "list":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			configAWSEKSRoleListCmd.Flags().Set("account", account)
-			configAWSEKSRoleListCmd.Run(configAWSEKSRoleListCmd, nil)
-		case "add":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			var name, roleARN string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Role alias").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("IAM role ARN").Placeholder("arn:aws:iam::123456789012:role/...").Validate(shared.RequireNotEmpty).Value(&roleARN),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAWSEKSRoleAddCmd.Flags().Set("account", account)
-			configAWSEKSRoleAddCmd.Flags().Set("name", name)
-			configAWSEKSRoleAddCmd.Flags().Set("role-arn", roleARN)
-			configAWSEKSRoleAddCmd.Run(configAWSEKSRoleAddCmd, nil)
-		case "create":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			var name, roleName, region string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Role alias").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("IAM role name in AWS").Placeholder("hyve-eks-role").Validate(shared.RequireNotEmpty).Value(&roleName),
-					huh.NewInput().Title("Region").Placeholder("us-east-1").Validate(shared.RequireNotEmpty).Value(&region),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAWSEKSRoleCreateCmd.Flags().Set("account", account)
-			configAWSEKSRoleCreateCmd.Flags().Set("name", name)
-			configAWSEKSRoleCreateCmd.Flags().Set("role-name", roleName)
-			configAWSEKSRoleCreateCmd.Flags().Set("region", region)
-			configAWSEKSRoleCreateCmd.Run(configAWSEKSRoleCreateCmd, nil)
-		case "get":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			name := ""
-			if err := shared.SelectFromList("Role alias", shared.FetchAWSEKSRoleNames(account), &name); err != nil {
-				return err
-			}
-			configAWSEKSRoleGetCmd.Flags().Set("account", account)
-			configAWSEKSRoleGetCmd.Flags().Set("name", name)
-			configAWSEKSRoleGetCmd.Run(configAWSEKSRoleGetCmd, nil)
-		case "remove":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			name := ""
-			if err := shared.SelectFromList("Role alias to remove", shared.FetchAWSEKSRoleNames(account), &name); err != nil {
-				return err
-			}
-			var confirm bool
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("Remove EKS role alias '%s' from account '%s'?", name, account)).
-						Value(&confirm),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			if !confirm {
-				continue
-			}
-			configAWSEKSRoleRemoveCmd.Flags().Set("account", account)
-			configAWSEKSRoleRemoveCmd.Flags().Set("name", name)
-			configAWSEKSRoleRemoveCmd.Run(configAWSEKSRoleRemoveCmd, nil)
-		}
-	}
-}
-
-func interactiveConfigAWSVPC() error {
-	for {
-		var action string
-		err := shared.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("VPC — action").
-					Options(
-						huh.NewOption("List", "list"),
-						huh.NewOption("Add (register existing)", "add"),
-						huh.NewOption("Create in AWS", "create"),
-						huh.NewOption("Get", "get"),
-						huh.NewOption("Remove alias", "remove"),
-						huh.NewOption("← Back", "back"),
-					).
-					Value(&action),
-			),
-		).Run()
-		if err != nil {
-			return err
-		}
-
-		switch action {
-		case "back":
-			return shared.ErrBack
-		case "list":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			configAWSVPCListCmd.Flags().Set("account", account)
-			configAWSVPCListCmd.Run(configAWSVPCListCmd, nil)
-		case "add":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			var name, id string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("VPC alias").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("VPC ID").Placeholder("vpc-0123456789abcdef0").Validate(shared.RequireNotEmpty).Value(&id),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAWSVPCAddCmd.Flags().Set("account", account)
-			configAWSVPCAddCmd.Flags().Set("name", name)
-			configAWSVPCAddCmd.Flags().Set("id", id)
-			configAWSVPCAddCmd.Run(configAWSVPCAddCmd, nil)
-		case "create":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			var name, region, cidr, subnets string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("VPC alias").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("Region").Placeholder("us-east-1").Validate(shared.RequireNotEmpty).Value(&region),
-					huh.NewInput().Title("CIDR block (optional)").Placeholder("10.0.0.0/16").Value(&cidr),
-					huh.NewInput().Title("Subnet CIDRs, comma-separated (optional)").Placeholder("10.0.1.0/24,10.0.2.0/24").Value(&subnets),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAWSVPCCreateCmd.Flags().Set("account", account)
-			configAWSVPCCreateCmd.Flags().Set("name", name)
-			configAWSVPCCreateCmd.Flags().Set("region", region)
-			if cidr != "" {
-				configAWSVPCCreateCmd.Flags().Set("cidr", cidr)
-			}
-			if subnets != "" {
-				configAWSVPCCreateCmd.Flags().Set("subnets", subnets)
-			}
-			configAWSVPCCreateCmd.Run(configAWSVPCCreateCmd, nil)
-		case "get":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			name := ""
-			if err := shared.SelectFromList("VPC alias", shared.FetchAWSVPCNames(account), &name); err != nil {
-				return err
-			}
-			configAWSVPCGetCmd.Flags().Set("account", account)
-			configAWSVPCGetCmd.Flags().Set("name", name)
-			configAWSVPCGetCmd.Run(configAWSVPCGetCmd, nil)
-		case "remove":
-			account := ""
-			if err := shared.SelectFromList("Account alias", shared.FetchAWSAccountNames(), &account); err != nil {
-				return err
-			}
-			name := ""
-			if err := shared.SelectFromList("VPC alias to remove", shared.FetchAWSVPCNames(account), &name); err != nil {
-				return err
-			}
-			var confirm bool
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("Remove VPC alias '%s' from account '%s'?", name, account)).
-						Value(&confirm),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			if !confirm {
-				continue
-			}
-			configAWSVPCRemoveCmd.Flags().Set("account", account)
-			configAWSVPCRemoveCmd.Flags().Set("name", name)
-			configAWSVPCRemoveCmd.Run(configAWSVPCRemoveCmd, nil)
-		}
-	}
-}
-
 // ── Azure ─────────────────────────────────────────────────────────────────────
 
 func interactiveConfigAzure() error {
@@ -563,7 +320,6 @@ func interactiveConfigAzure() error {
 					Title("Azure — what to configure?").
 					Options(
 						huh.NewOption("Subscription aliases", "subscription"),
-						huh.NewOption("Resource groups", "resource-group"),
 						huh.NewOption("← Back", "back"),
 					).
 					Value(&resource),
@@ -578,10 +334,6 @@ func interactiveConfigAzure() error {
 			return shared.ErrBack
 		case "subscription":
 			if err := interactiveConfigAzureSubscription(); err != nil && err != shared.ErrBack {
-				return err
-			}
-		case "resource-group":
-			if err := interactiveConfigAzureResourceGroup(); err != nil && err != shared.ErrBack {
 				return err
 			}
 		}
@@ -647,85 +399,6 @@ func interactiveConfigAzureSubscription() error {
 				continue
 			}
 			configAzureRemoveSubscriptionIDsCmd.Run(configAzureRemoveSubscriptionIDsCmd, []string{name})
-		}
-	}
-}
-
-func interactiveConfigAzureResourceGroup() error {
-	for {
-		var action string
-		err := shared.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("Resource group — action").
-					Options(
-						huh.NewOption("List", "list"),
-						huh.NewOption("Add (create in Azure)", "add"),
-						huh.NewOption("Delete", "delete"),
-						huh.NewOption("← Back", "back"),
-					).
-					Value(&action),
-			),
-		).Run()
-		if err != nil {
-			return err
-		}
-
-		switch action {
-		case "back":
-			return shared.ErrBack
-		case "list":
-			sub := ""
-			if err := shared.SelectFromList("Subscription alias", shared.FetchAzureSubscriptionNames(), &sub); err != nil {
-				return err
-			}
-			configAzureListResourceGroupsCmd.Flags().Set("subscription", sub)
-			configAzureListResourceGroupsCmd.Run(configAzureListResourceGroupsCmd, nil)
-		case "add":
-			sub := ""
-			if err := shared.SelectFromList("Subscription alias", shared.FetchAzureSubscriptionNames(), &sub); err != nil {
-				return err
-			}
-			var name, location string
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewInput().Title("Resource group name").Placeholder("hyve-rg").Validate(shared.RequireNotEmpty).Value(&name),
-					huh.NewInput().Title("Location/region").Placeholder("eastus").Validate(shared.RequireNotEmpty).Value(&location),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			configAzureAddResourceGroupCmd.Flags().Set("subscription", sub)
-			configAzureAddResourceGroupCmd.Flags().Set("name", name)
-			configAzureAddResourceGroupCmd.Flags().Set("location", location)
-			configAzureAddResourceGroupCmd.Run(configAzureAddResourceGroupCmd, nil)
-		case "delete":
-			sub := ""
-			if err := shared.SelectFromList("Subscription alias", shared.FetchAzureSubscriptionNames(), &sub); err != nil {
-				return err
-			}
-			name := ""
-			if err := shared.SelectFromList("Resource group to delete", shared.FetchAzureResourceGroupNames(sub), &name); err != nil {
-				return err
-			}
-			var confirm bool
-			err = shared.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("Delete resource group '%s' from subscription '%s'? This cannot be undone.", name, sub)).
-						Value(&confirm),
-				),
-			).Run()
-			if err != nil {
-				return err
-			}
-			if !confirm {
-				continue
-			}
-			configAzureDeleteResourceGroupCmd.Flags().Set("subscription", sub)
-			configAzureDeleteResourceGroupCmd.Flags().Set("name", name)
-			configAzureDeleteResourceGroupCmd.Run(configAzureDeleteResourceGroupCmd, nil)
 		}
 	}
 }

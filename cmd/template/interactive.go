@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	internaltemplate "github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -71,14 +72,25 @@ func runInteractiveTemplate() error {
 
 func interactiveTemplateCreate() error {
 	var (
-		name           string
-		description    string
-		provider       string
-		region         string
-		nodesSizes     string
-		clusterType    string
-		onCreatedNames []string
-		onDestroyNames []string
+		name             string
+		description      string
+		provider         string
+		region           string
+		nodesSizes       string
+		clusterType      string
+		orgName          string
+		accountName      string
+		vpcID            string
+		eksRoleName      string
+		nodeRoleName     string
+		subscriptionName string
+		resourceGroup    string
+		projectName      string
+		beforeCreate     []string
+		onCreateNames    []string
+		onDeleteNames    []string
+		afterDelete      []string
+		schedule         string
 	)
 
 	err := shared.NewForm(
@@ -104,16 +116,46 @@ func interactiveTemplateCreate() error {
 		return shared.ErrBack
 	}
 
+	// Account / org / project / subscription first — so region/node API calls can authenticate.
 	ctx := context.Background()
-	if err := shared.SelectFromGroups("Region", shared.FetchRegionGroups(ctx, provider, ""), "us-east-1", &region); err != nil {
+	accountAlias := ""
+	switch provider {
+	case "civo":
+		if err := shared.SelectFromList("Civo organization", shared.FetchCivoOrgNames(), &orgName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = orgName
+	case "aws":
+		if err := shared.SelectFromList("AWS account alias", shared.FetchAWSAccountNames(), &accountName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = accountName
+	case "gcp":
+		if err := shared.SelectFromList("GCP project alias", shared.FetchGCPProjectNames(), &projectName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = projectName
+	case "azure":
+		if err := shared.SelectFromList("Azure subscription alias", shared.FetchAzureSubscriptionNames(), &subscriptionName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		accountAlias = subscriptionName
+	}
+
+	regionGroups := shared.FetchRegionGroups(ctx, provider, accountAlias)
+	if len(regionGroups) == 0 {
+		if err := shared.ShowNoCloudDataWarning(provider); err != nil {
+			return err
+		}
+	}
+	if err := shared.SelectFromGroups("Region", regionGroups, "us-east-1", &region); err != nil {
 		return err
 	}
-	if err := shared.SelectFromGroups("Node size", shared.FetchNodeGroups(ctx, provider, region, ""), "g4s.kube.medium", &nodesSizes); err != nil {
+	if err := shared.SelectFromGroups("Node size", shared.FetchNodeGroups(ctx, provider, region, accountAlias), "g4s.kube.medium", &nodesSizes); err != nil {
 		return err
 	}
 
 	// For non-Civo providers collect node group details (count, name, scaling).
-	// Civo uses the flat node size list; AWS/GCP/Azure need node groups with counts.
 	var nodeGroups []types.NodeGroup
 	if provider != "civo" {
 		var ngName, ngCountStr, ngMinStr, ngMaxStr string
@@ -148,18 +190,17 @@ func interactiveTemplateCreate() error {
 		}
 		min, _ := strconv.Atoi(ngMinStr)
 		max, _ := strconv.Atoi(ngMaxStr)
-		ng := types.NodeGroup{
+		nodeGroups = append(nodeGroups, types.NodeGroup{
 			Name:         ngName,
 			InstanceType: nodesSizes,
 			Count:        count,
 			MinCount:     min,
 			MaxCount:     max,
-		}
-		nodeGroups = append(nodeGroups, ng)
-		nodesSizes = "" // NodeGroups takes precedence; clear the flat nodes field
+		})
+		nodesSizes = ""
 	}
 
-	// Cluster type is only applicable to Civo
+	// Cluster type only applies to Civo
 	if provider == "civo" {
 		err = shared.NewForm(
 			huh.NewGroup(
@@ -177,35 +218,70 @@ func interactiveTemplateCreate() error {
 		}
 	}
 
-	// Workflow attachment — optional last step
-	if wfNames := shared.FetchWorkflowNames(); len(wfNames) > 0 {
-		makeOpts := func() []huh.Option[string] {
-			opts := make([]huh.Option[string], len(wfNames))
-			for i, wf := range wfNames {
-				opts[i] = huh.NewOption(wf, wf)
-			}
-			return opts
+	// Provider-specific cloud resource selection
+	switch provider {
+	case "aws":
+		if err := shared.SelectAWSVPC(ctx, accountName, region, &vpcID); err != nil && err != shared.ErrBack {
+			return err
 		}
-		err = shared.NewForm(
-			huh.NewGroup(
-				huh.NewMultiSelect[string]().
-					Title("On-created workflows (optional — space to select, enter to confirm)").
-					Options(makeOpts()...).
-					Value(&onCreatedNames),
-				huh.NewMultiSelect[string]().
-					Title("On-destroy workflows (optional — space to select, enter to confirm)").
-					Options(makeOpts()...).
-					Value(&onDestroyNames),
-			),
-		).Run()
-		if err != nil {
+		if err := shared.SelectAWSRole(ctx, accountName, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
+			return err
+		}
+		if err := shared.SelectAWSRole(ctx, accountName, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
+			return err
+		}
+	case "azure":
+		if err := shared.SelectAzureRG(ctx, subscriptionName, &resourceGroup); err != nil && err != shared.ErrBack {
 			return err
 		}
 	}
 
-	onCreatedStr := strings.Join(onCreatedNames, ",")
-	onDestroyStr := strings.Join(onDestroyNames, ",")
-	createTemplate(name, description, provider, region, nodesSizes, clusterType, nodeGroups, onCreatedStr, onDestroyStr)
+	// Lifecycle hooks — one screen per hook
+	wfNames := shared.FetchWorkflowNames()
+	if err := shared.SelectWorkflowHook("Before-create workflows (optional)", wfNames, &beforeCreate); err != nil {
+		return err
+	}
+	if err := shared.SelectWorkflowHook("On-create workflows (optional)", wfNames, &onCreateNames); err != nil {
+		return err
+	}
+	if err := shared.SelectWorkflowHook("On-delete workflows (optional)", wfNames, &onDeleteNames); err != nil {
+		return err
+	}
+	if err := shared.SelectWorkflowHook("After-delete workflows (optional)", wfNames, &afterDelete); err != nil {
+		return err
+	}
+
+	// Optional expiry schedule
+	var setSchedule bool
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Set an expiry schedule for this template?").
+				Description("Clusters created from this template will be automatically deleted on the given schedule.").
+				Affirmative("Yes — set schedule").
+				Negative("No — no expiry").
+				Value(&setSchedule),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	if setSchedule {
+		var schedErr error
+		schedule, schedErr = shared.PromptSchedule("")
+		if schedErr != nil {
+			return schedErr
+		}
+	}
+
+	createTemplate(
+		name, description, provider, region, nodesSizes, clusterType, nodeGroups,
+		orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscriptionName, resourceGroup, projectName,
+		strings.Join(beforeCreate, ","),
+		strings.Join(onCreateNames, ","),
+		strings.Join(onDeleteNames, ","),
+		strings.Join(afterDelete, ","),
+		schedule,
+	)
 	return nil
 }
 
@@ -226,7 +302,7 @@ func interactiveTemplateExecute() error {
 
 	// Load the template to determine which account fields are already set.
 	// For any missing required fields, prompt the user.
-	var org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project string
+	var org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string
 
 	if tmpl := shared.FetchTemplate(templateName); tmpl != nil {
 		switch strings.ToLower(tmpl.Spec.Provider) {
@@ -245,22 +321,29 @@ func interactiveTemplateExecute() error {
 					return err
 				}
 			}
-			vpcName = tmpl.Spec.AWSVPCName
-			if vpcName == "" {
-				if err := shared.SelectFromList("VPC alias", shared.FetchAWSVPCNames(account), &vpcName); err != nil && err != shared.ErrBack {
-					return err
+			// Fields in dynamicFields will be provided by a beforeCreate workflow — skip prompts.
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAWSVPCID) {
+				vpcID = tmpl.Spec.AWSVPCID
+				if vpcID == "" {
+					if err := shared.SelectAWSVPC(context.Background(), account, tmpl.Spec.Region, &vpcID); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
-			eksRole = tmpl.Spec.AWSEKSRole
-			if eksRole == "" {
-				if err := shared.SelectFromList("EKS role alias", shared.FetchAWSEKSRoleNames(account), &eksRole); err != nil && err != shared.ErrBack {
-					return err
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAWSEKSRoleName) {
+				eksRoleName = tmpl.Spec.AWSEKSRoleName
+				if eksRoleName == "" {
+					if err := shared.SelectAWSRole(context.Background(), account, "EKS control plane role (optional)", &eksRoleName); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
-			nodeRole = tmpl.Spec.AWSNodeRole
-			if nodeRole == "" {
-				if err := shared.SelectFromList("Node role alias", shared.FetchAWSNodeRoleNames(account), &nodeRole); err != nil && err != shared.ErrBack {
-					return err
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAWSNodeRoleName) {
+				nodeRoleName = tmpl.Spec.AWSNodeRoleName
+				if nodeRoleName == "" {
+					if err := shared.SelectAWSRole(context.Background(), account, "EKS node group role (optional)", &nodeRoleName); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
 
@@ -279,16 +362,18 @@ func interactiveTemplateExecute() error {
 					return err
 				}
 			}
-			resourceGroup = tmpl.Spec.AzureResourceGroup
-			if resourceGroup == "" {
-				if err := shared.SelectFromList("Azure resource group", shared.FetchAzureResourceGroupNames(subscription), &resourceGroup); err != nil && err != shared.ErrBack {
-					return err
+			if !tmpl.Spec.IsDynamicField(internaltemplate.FieldAzureResourceGroup) {
+				resourceGroup = tmpl.Spec.AzureResourceGroup
+				if resourceGroup == "" {
+					if err := shared.SelectAzureRG(context.Background(), subscription, &resourceGroup); err != nil && err != shared.ErrBack {
+						return err
+					}
 				}
 			}
 		}
 	}
 
-	executeTemplate(templateName, clusterName, org, account, vpcName, eksRole, nodeRole, subscription, resourceGroup, project)
+	executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project)
 	return nil
 }
 

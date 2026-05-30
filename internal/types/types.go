@@ -30,8 +30,48 @@ type IngressSpec struct {
 
 // WorkflowsSpec defines workflows to run on cluster lifecycle events
 type WorkflowsSpec struct {
-	OnCreated []string `yaml:"onCreated,omitempty"` // Workflows to run after cluster creation
-	OnDestroy []string `yaml:"onDestroy,omitempty"` // Workflows to run before cluster destruction
+	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
+	OnCreate     []string `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
+	OnDelete     []string `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
+	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
+	PreReconcile []string `yaml:"preReconcile,omitempty"` // Workflows to run before reconcile pre-flight (no kubeconfig)
+}
+
+// UnmarshalYAML migrates the deprecated onDelete key to onDelete transparently.
+func (ws *WorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type raw struct {
+		BeforeCreate []string `yaml:"beforeCreate,omitempty"`
+		OnCreate     []string `yaml:"onCreate,omitempty"`
+		OnDelete     []string `yaml:"onDelete,omitempty"`
+		OnDestroy    []string `yaml:"onDestroy,omitempty"` // deprecated: use onDelete
+		AfterDelete  []string `yaml:"afterDelete,omitempty"`
+		PreReconcile []string `yaml:"preReconcile,omitempty"`
+	}
+	var r raw
+	if err := unmarshal(&r); err != nil {
+		return err
+	}
+	ws.BeforeCreate = r.BeforeCreate
+	ws.OnCreate = r.OnCreate
+	ws.OnDelete = r.OnDelete
+	ws.AfterDelete = r.AfterDelete
+	ws.PreReconcile = r.PreReconcile
+	if len(ws.OnDelete) == 0 && len(r.OnDestroy) > 0 {
+		ws.OnDelete = r.OnDestroy
+	}
+	return nil
+}
+
+// PendingWorkflow represents a one-off workflow queued for execution
+type PendingWorkflow struct {
+	Workflow string `yaml:"workflow"`
+	RunAt    string `yaml:"runAt,omitempty"` // RFC 3339; absent = run immediately
+}
+
+// WorkflowSchedule maps a workflow name to a cron expression for recurring execution
+type WorkflowSchedule struct {
+	Workflow string `yaml:"workflow"`
+	Schedule string `yaml:"schedule"` // 5-field cron expression
 }
 
 // ClusterSpec represents the desired cluster configuration
@@ -43,25 +83,57 @@ type ClusterSpec struct {
 	ClusterType string        `yaml:"clusterType"`
 	Ingress     IngressSpec   `yaml:"ingress"`
 	Workflows   WorkflowsSpec `yaml:"workflows,omitempty"`
+
+	// PendingWorkflows is a Git-audited queue of one-off workflow runs. Entries without
+	// a runAt execute immediately on the next reconcile; entries with a runAt execute
+	// when the current time is at or past that timestamp. The reconciler removes entries
+	// after executing them and commits the cleared YAML.
+	PendingWorkflows []PendingWorkflow `yaml:"pendingWorkflows,omitempty"`
+
+	// WorkflowSchedules maps workflow names to cron expressions. On every reconcile the
+	// reconciler evaluates each schedule and appends due entries to PendingWorkflows.
+	WorkflowSchedules []WorkflowSchedule `yaml:"workflowSchedules,omitempty"`
+
 	// Delete marks this cluster for deletion. When true, the reconciler runs any
-	// onDestroy workflows, deletes the cluster from the cloud provider, and removes
+	// onDelete workflows, deletes the cluster from the cloud provider, and removes
 	// this YAML file from the repository. Do not delete the file directly if you
-	// need onDestroy workflows to run — set this flag instead.
+	// need onDelete workflows to run — set this flag instead.
 	Delete bool `yaml:"delete,omitempty"`
+
+	// Pause skips reconciliation for this cluster while keeping its definition in
+	// the repository. The cluster continues to run in the cloud; Hyve simply does
+	// not compare or modify it until pause is removed.
+	Pause bool `yaml:"pause,omitempty"`
+
+	// ExpiresAt is an optional RFC 3339 timestamp (e.g. "2026-05-01T00:00:00Z").
+	// When the current time is past this value the reconciler treats the cluster as
+	// if delete: true is set — running onDelete workflows, deleting from the cloud
+	// provider, and removing the YAML file.
+	ExpiresAt string `yaml:"expiresAt,omitempty"`
 
 	// GCP-specific configuration
 	GCPProject   string `yaml:"gcpProject,omitempty"`   // GCP project name alias
 	GCPProjectID string `yaml:"gcpProjectId,omitempty"` // GCP project ID (resolved from alias)
 
+	// KubernetesVersion pins the control-plane k8s version (e.g. "1.30").
+	// Empty means the provider uses its current default, which changes over time.
+	KubernetesVersion string `yaml:"kubernetesVersion,omitempty"`
+
 	// AWS-specific configuration
-	AWSAccount     string `yaml:"awsAccount,omitempty"`     // AWS account name alias
-	AWSAccountID   string `yaml:"awsAccountId,omitempty"`   // AWS account ID (resolved from alias)
-	AWSVPCName     string `yaml:"awsVpcName,omitempty"`     // AWS VPC name alias
-	AWSVPCID       string `yaml:"awsVpcId,omitempty"`       // AWS VPC ID (resolved from alias)
-	AWSEKSRole     string `yaml:"awsEksRole,omitempty"`     // AWS EKS role name alias
-	AWSEKSRoleARN  string `yaml:"awsEksRoleArn,omitempty"`  // AWS EKS role ARN (resolved from alias)
-	AWSNodeRole    string `yaml:"awsNodeRole,omitempty"`    // AWS EKS node role name alias
-	AWSNodeRoleARN string `yaml:"awsNodeRoleArn,omitempty"` // AWS EKS node role ARN (resolved from alias)
+	AWSAccount      string `yaml:"awsAccount,omitempty"`      // AWS account name alias
+	AWSAccountID    string `yaml:"awsAccountId,omitempty"`    // AWS account ID (resolved from alias)
+	AWSProfile      string `yaml:"awsProfile,omitempty"`      // Named AWS CLI profile (~/.aws/config)
+	AWSKmsKeyAlias  string `yaml:"awsKmsKeyAlias,omitempty"`  // KMS key alias for EKS secrets encryption (e.g. "alias/my-key")
+	AWSClusterSGID  string `yaml:"awsClusterSgId,omitempty"`  // Pre-existing security group ID for the EKS cluster control plane
+	AWSWorkerSGID   string `yaml:"awsWorkerSgId,omitempty"`   // Pre-existing security group ID for the EKS worker nodes
+	AWSVPCID        string `yaml:"awsVpcId,omitempty"`        // AWS VPC ID
+	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // IAM role name for EKS control plane
+	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // IAM role name for EKS node groups
+
+	// AWSEKSRoleARN and AWSNodeRoleARN are runtime-only fields populated during
+	// reconciliation via alias or name lookup. They are never serialized to YAML.
+	AWSEKSRoleARN  string `yaml:"-"`
+	AWSNodeRoleARN string `yaml:"-"`
 
 	// Azure-specific configuration
 	AzureSubscription   string `yaml:"azureSubscription,omitempty"`   // Azure subscription name alias

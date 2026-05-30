@@ -2,10 +2,12 @@ package workflow
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // RunInteractive runs the interactive workflow menu.
@@ -164,6 +166,12 @@ func interactiveWorkflowRun() error {
 		cluster = selection
 	}
 
+	// Prompt for any required inputs that are not already in the environment
+	setVars, err := promptMissingInputs(name)
+	if err != nil {
+		return err
+	}
+
 	showLogs := true
 	var showOutput bool
 	err = shared.NewForm(
@@ -184,8 +192,67 @@ func interactiveWorkflowRun() error {
 		return err
 	}
 
-	runWorkflow(name, cluster, showLogs, showOutput)
+	runWorkflow(name, cluster, showLogs, showOutput, setVars)
 	return nil
+}
+
+// promptMissingInputs loads the named workflow and prompts for any declared inputs
+// that are not already satisfied by the process environment. Returns a map of
+// KEY → VALUE that can be passed to executor.InjectVars.
+func promptMissingInputs(workflowName string) (map[string]string, error) {
+	localPath := getWorkflowLocalPath()
+	mgr, err := workflow.NewManager(localPath)
+	if err != nil {
+		return nil, err
+	}
+
+	wf, err := mgr.GetWorkflow(workflowName)
+	if err != nil {
+		// If we can't load the workflow (shouldn't normally happen at this point),
+		// skip the input prompt — the executor will validate later.
+		return nil, nil
+	}
+
+	if len(wf.Spec.Inputs) == 0 {
+		return nil, nil
+	}
+
+	collected := make(map[string]string)
+
+	for _, input := range wf.Spec.Inputs {
+		// Skip inputs already satisfied by the process environment
+		if os.Getenv(input.Name) != "" {
+			continue
+		}
+
+		label := input.Name
+		if input.Description != "" {
+			label = input.Description
+		}
+
+		var value string
+		formErr := shared.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title(fmt.Sprintf("Input: %s", label)).
+					Description(fmt.Sprintf("Required by workflow '%s'", workflowName)).
+					Placeholder(input.Default).
+					Value(&value),
+			),
+		).Run()
+		if formErr != nil {
+			return nil, formErr
+		}
+
+		if value == "" && input.Default != "" {
+			value = input.Default
+		}
+		if value != "" {
+			collected[input.Name] = value
+		}
+	}
+
+	return collected, nil
 }
 
 func interactiveWorkflowShow() error {

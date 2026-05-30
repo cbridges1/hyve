@@ -1,7 +1,9 @@
 package config
 
 import (
-	"github.com/cbridges1/hyve/internal/credentials"
+	"os"
+
+	"github.com/cbridges1/hyve/internal/providerconfig"
 )
 
 // Manager handles configuration
@@ -12,18 +14,12 @@ func NewManager() *Manager {
 	return &Manager{}
 }
 
-// GetCivoToken loads the Civo API token from the local database for the given org.
-// Returns an empty string when no token is stored.
-func (m *Manager) GetCivoToken(orgName string) string {
-	credsMgr, err := credentials.NewManager()
-	if err != nil {
-		return ""
+// GetCivoToken returns the active Civo API token. For local use it reads
+// ~/.civo.json (the Civo CLI credential file); the CIVO_TOKEN environment
+// variable is used as a fallback (for CI/CD pipelines).
+func (m *Manager) GetCivoToken(_ string) string {
+	if token := providerconfig.ReadCivoCLIToken(); token != "" {
+		return token
 	}
-	defer credsMgr.Close()
-
-	token, err := credsMgr.GetCivoToken(orgName)
-	if err != nil {
-		return ""
-	}
-	return token
+	return os.Getenv("CIVO_TOKEN")
 }

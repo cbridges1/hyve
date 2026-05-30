@@ -157,20 +157,11 @@ func syncKubeconfigs() {
 }
 
 func getKubeconfig(cmd *cobra.Command, clusterName string) {
-	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
+	kubeconfigMgr, kc, err := resolveKubeconfig(clusterName)
 	if err != nil {
-		log.Fatalf("Failed to create kubeconfig manager: %v", err)
+		log.Fatalf("%v", err)
 	}
 	defer kubeconfigMgr.Close()
-
-	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
-	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
-	}
-
-	if kc == nil {
-		log.Fatalf("Kubeconfig not found for cluster %s. Run 'hyve kubeconfig sync' first.", clusterName)
-	}
 
 	cfg, err := kc.GetConfig()
 	if err != nil {
@@ -219,61 +210,55 @@ func getKubeconfig(cmd *cobra.Command, clusterName string) {
 func UseKubeconfig(clusterName string) {
 	ctx := context.Background()
 
-	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
-	if err != nil {
-		log.Fatalf("Failed to create kubeconfig manager: %v", err)
-	}
-	defer kubeconfigMgr.Close()
+	// Attempt a fresh sync to ensure credentials are current.
+	if syncMgr, _, err := shared.CreateKubeconfigManager(); err == nil {
+		defer syncMgr.Close()
 
-	// Attempt a fresh sync so the stored kubeconfig is up-to-date (e.g. renewed
-	// tokens for GCP). If this fails for any reason we fall through and use
-	// whatever is already in the database.
-	stateMgr, _ := shared.CreateStateManager(ctx)
-	if stateMgr != nil {
-		clusterDefs, err := stateMgr.LoadClusterDefinitions()
-		if err == nil {
-			providerFactory := provider.NewFactory()
-			for _, cd := range clusterDefs {
-				if cd.Metadata.Name != clusterName {
-					continue
-				}
-				prov, err := shared.CreateProviderForCluster(providerFactory, cd)
-				if err != nil {
-					log.Printf("⚠️  Could not create provider for sync: %v", err)
-					break
-				}
+		stateMgr, _ := shared.CreateStateManager(ctx)
+		if stateMgr != nil {
+			clusterDefs, err := stateMgr.LoadClusterDefinitions()
+			if err == nil {
+				providerFactory := provider.NewFactory()
+				for _, cd := range clusterDefs {
+					if cd.Metadata.Name != clusterName {
+						continue
+					}
+					prov, err := shared.CreateProviderForCluster(providerFactory, cd)
+					if err != nil {
+						log.Printf("⚠️  Could not create provider for sync: %v", err)
+						break
+					}
 
-				// For AWS clusters: grant the local IAM identity access to the cluster's
-				// Kubernetes API via EKS access entries so that the kubeconfig generated
-				// with local credentials works without needing to be the cluster creator.
-				if granter, ok := prov.(provider.AccessEntryGranter); ok {
-					if localARN := localAWSCallerARN(); localARN != "" {
-						log.Printf("🔑 Granting local identity %s access to cluster %s...", localARN, clusterName)
-						if err := granter.EnsureAccessEntry(ctx, clusterName, localARN); err != nil {
-							log.Printf("⚠️  Could not grant EKS access entry (cluster may use aws-auth ConfigMap instead): %v", err)
-						} else {
-							log.Printf("✅ Local identity granted cluster admin access")
+					// For AWS clusters: grant the local IAM identity access to the cluster's
+					// Kubernetes API via EKS access entries so that the kubeconfig generated
+					// with local credentials works without needing to be the cluster creator.
+					if granter, ok := prov.(provider.AccessEntryGranter); ok {
+						if localARN := localAWSCallerARN(); localARN != "" {
+							log.Printf("🔑 Granting local identity %s access to cluster %s...", localARN, clusterName)
+							if err := granter.EnsureAccessEntry(ctx, clusterName, localARN); err != nil {
+								log.Printf("⚠️  Could not grant EKS access entry (cluster may use aws-auth ConfigMap instead): %v", err)
+							} else {
+								log.Printf("✅ Local identity granted cluster admin access")
+							}
 						}
 					}
-				}
 
-				syncer := kubeconfig.NewSyncer(kubeconfigMgr, prov)
-				if err := syncer.SyncSingleKubeconfig(ctx, clusterName); err != nil {
-					log.Printf("⚠️  Kubeconfig sync failed, using cached credentials: %v", err)
+					syncer := kubeconfig.NewSyncer(syncMgr, prov)
+					if err := syncer.SyncSingleKubeconfig(ctx, clusterName); err != nil {
+						log.Printf("⚠️  Kubeconfig sync failed, using cached credentials: %v", err)
+					}
+					break
 				}
-				break
 			}
 		}
 	}
 
-	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
+	// Resolve from repo store or local external store.
+	kubeconfigMgr, kc, err := resolveKubeconfig(clusterName)
 	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
+		log.Fatalf("%v", err)
 	}
-
-	if kc == nil {
-		log.Fatalf("Kubeconfig not found for cluster %s. Run 'hyve kubeconfig sync' first.", clusterName)
-	}
+	defer kubeconfigMgr.Close()
 
 	cfg, err := kc.GetConfig()
 	if err != nil {
@@ -338,20 +323,11 @@ func UseKubeconfig(clusterName string) {
 }
 
 func mergeKubeconfig(clusterName string) {
-	kubeconfigMgr, _, err := shared.CreateKubeconfigManager()
+	kubeconfigMgr, kc, err := resolveKubeconfig(clusterName)
 	if err != nil {
-		log.Fatalf("Failed to create kubeconfig manager: %v", err)
+		log.Fatalf("%v", err)
 	}
 	defer kubeconfigMgr.Close()
-
-	kc, err := kubeconfigMgr.GetKubeconfig(clusterName)
-	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
-	}
-
-	if kc == nil {
-		log.Fatalf("Kubeconfig not found for cluster %s. Run 'hyve kubeconfig sync' first.", clusterName)
-	}
 
 	cfg, err := kc.GetConfig()
 	if err != nil {
@@ -404,6 +380,21 @@ func mergeKubeconfig(clusterName string) {
 	log.Println("💡 Next steps:")
 	log.Printf("   kubectl config use-context %s", clusterName)
 	log.Println("   kubectl get nodes")
+}
+
+// resolveKubeconfig looks up a stored kubeconfig for clusterName from the
+// current repository's store. The returned manager must be closed by the caller.
+func resolveKubeconfig(clusterName string) (*kubeconfig.Manager, *kubeconfig.Kubeconfig, error) {
+	mgr, _, err := shared.CreateKubeconfigManager()
+	if err != nil {
+		return nil, nil, fmt.Errorf("kubeconfig not found for cluster '%s': run 'hyve kubeconfig sync' first", clusterName)
+	}
+	kc, err := mgr.GetKubeconfig(clusterName)
+	if err != nil || kc == nil {
+		mgr.Close()
+		return nil, nil, fmt.Errorf("kubeconfig not found for cluster '%s': run 'hyve kubeconfig sync' first", clusterName)
+	}
+	return mgr, kc, nil
 }
 
 func migrateKubeconfigEncryption(oldHostname string) error {

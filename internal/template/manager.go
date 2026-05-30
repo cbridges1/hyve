@@ -175,6 +175,15 @@ func (m *Manager) DeleteTemplate(name string) error {
 // The caller may override any of these by assigning to the returned ClusterDefinition
 // before use (e.g. from CLI flags passed to `template execute`).
 func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName string) *types.ClusterDefinition {
+	// skipIfDynamic returns an empty string for fields declared in DynamicFields
+	// so that resolveHookEnvVars can populate them after the beforeCreate workflow runs.
+	skipIfDynamic := func(fieldName, value string) string {
+		if template.Spec.IsDynamicField(fieldName) {
+			return ""
+		}
+		return value
+	}
+
 	return &types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
@@ -193,20 +202,22 @@ func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName str
 				ChartVersion: template.Spec.Ingress.ChartVersion,
 			},
 			Workflows: types.WorkflowsSpec{
-				OnCreated: template.Spec.Workflows.OnCreated,
-				OnDestroy: template.Spec.Workflows.OnDestroy,
+				BeforeCreate: template.Spec.Workflows.BeforeCreate,
+				OnCreate:     template.Spec.Workflows.OnCreate,
+				OnDelete:     template.Spec.Workflows.OnDelete,
+				AfterDelete:  template.Spec.Workflows.AfterDelete,
 			},
-			// AWS-specific alias names (resolved to IDs during template execution)
-			AWSAccount:  template.Spec.AWSAccount,
-			AWSVPCName:  template.Spec.AWSVPCName,
-			AWSEKSRole:  template.Spec.AWSEKSRole,
-			AWSNodeRole: template.Spec.AWSNodeRole,
-			// Azure-specific alias names
+			// AWS-specific fields — dynamic fields left empty for hook population
+			AWSAccount:      template.Spec.AWSAccount,
+			AWSVPCID:        skipIfDynamic(FieldAWSVPCID, template.Spec.AWSVPCID),
+			AWSEKSRoleName:  skipIfDynamic(FieldAWSEKSRoleName, template.Spec.AWSEKSRoleName),
+			AWSNodeRoleName: skipIfDynamic(FieldAWSNodeRoleName, template.Spec.AWSNodeRoleName),
+			// Azure-specific fields
 			AzureSubscription:  template.Spec.AzureSubscription,
-			AzureResourceGroup: template.Spec.AzureResourceGroup,
-			// GCP-specific alias names
+			AzureResourceGroup: skipIfDynamic(FieldAzureResourceGroup, template.Spec.AzureResourceGroup),
+			// GCP-specific fields
 			GCPProject: template.Spec.GCPProject,
-			// Civo-specific alias names
+			// Civo-specific fields
 			CivoOrganization: template.Spec.CivoOrganization,
 		},
 	}

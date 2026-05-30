@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cbridges1/hyve/internal/config"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 	"github.com/cbridges1/hyve/internal/provider"
 	"github.com/cbridges1/hyve/internal/providerconfig"
@@ -61,13 +60,12 @@ func CreateProviderForCluster(factory *provider.Factory, clusterDef types.Cluste
 
 	// Handle Civo-specific configuration
 	if providerName == "civo" {
-		configMgr := config.NewManager()
-		apiKey := configMgr.GetCivoToken(clusterDef.Spec.CivoOrganization)
+		apiKey := providerconfig.ReadCivoCLIToken()
 		if apiKey == "" {
 			apiKey = os.Getenv("CIVO_TOKEN")
 		}
 		if apiKey == "" {
-			return nil, fmt.Errorf("Civo API token not found. Please run 'hyve config civo token set --org %s' or set CIVO_TOKEN environment variable", clusterDef.Spec.CivoOrganization)
+			return nil, fmt.Errorf("Civo API token not found. Log in with the Civo CLI ('civo apikey') or set the CIVO_TOKEN environment variable")
 		}
 		opts.APIKey = apiKey
 	}

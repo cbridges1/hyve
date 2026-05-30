@@ -12,7 +12,11 @@ import (
 
 // buildClusterDef is the core logic extracted from addClusterFromCLI so we can
 // unit-test it without a git repository or cloud provider.
-func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreated, onDestroy []string) types.ClusterDefinition {
+func buildClusterDef(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDelete []string) types.ClusterDefinition {
+	return buildClusterDefFull(clusterName, region, providerName, nodes, nodeGroups, clusterType, onCreate, onDelete, false, "")
+}
+
+func buildClusterDefFull(clusterName, region, providerName string, nodes []string, nodeGroups []types.NodeGroup, clusterType string, onCreate, onDelete []string, pause bool, expiresAt string) types.ClusterDefinition {
 	return types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
@@ -26,49 +30,51 @@ func buildClusterDef(clusterName, region, providerName string, nodes []string, n
 			NodeGroups:  nodeGroups,
 			ClusterType: clusterType,
 			Workflows: types.WorkflowsSpec{
-				OnCreated: onCreated,
-				OnDestroy: onDestroy,
+				OnCreate: onCreate,
+				OnDelete: onDelete,
 			},
 			Ingress: types.IngressSpec{
 				Enabled:      true,
 				LoadBalancer: true,
 			},
+			Pause:     pause,
+			ExpiresAt: expiresAt,
 		},
 	}
 }
 
-func TestBuildClusterDef_OnCreatedAndOnDestroy(t *testing.T) {
-	onCreated := []string{"setup-monitoring", "notify-slack"}
-	onDestroy := []string{"cleanup-dns"}
+func TestBuildClusterDef_OnCreateAndOnDelete(t *testing.T) {
+	onCreate := []string{"setup-monitoring", "notify-slack"}
+	onDelete := []string{"cleanup-dns"}
 
-	def := buildClusterDef("my-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", onCreated, onDestroy)
+	def := buildClusterDef("my-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", onCreate, onDelete)
 
-	if len(def.Spec.Workflows.OnCreated) != 2 {
-		t.Fatalf("expected 2 on-created workflows, got %d", len(def.Spec.Workflows.OnCreated))
+	if len(def.Spec.Workflows.OnCreate) != 2 {
+		t.Fatalf("expected 2 on-create workflows, got %d", len(def.Spec.Workflows.OnCreate))
 	}
-	if def.Spec.Workflows.OnCreated[0] != "setup-monitoring" {
-		t.Errorf("expected first on-created to be 'setup-monitoring', got %q", def.Spec.Workflows.OnCreated[0])
+	if def.Spec.Workflows.OnCreate[0] != "setup-monitoring" {
+		t.Errorf("expected first on-create to be 'setup-monitoring', got %q", def.Spec.Workflows.OnCreate[0])
 	}
-	if def.Spec.Workflows.OnCreated[1] != "notify-slack" {
-		t.Errorf("expected second on-created to be 'notify-slack', got %q", def.Spec.Workflows.OnCreated[1])
+	if def.Spec.Workflows.OnCreate[1] != "notify-slack" {
+		t.Errorf("expected second on-create to be 'notify-slack', got %q", def.Spec.Workflows.OnCreate[1])
 	}
 
-	if len(def.Spec.Workflows.OnDestroy) != 1 {
-		t.Fatalf("expected 1 on-destroy workflow, got %d", len(def.Spec.Workflows.OnDestroy))
+	if len(def.Spec.Workflows.OnDelete) != 1 {
+		t.Fatalf("expected 1 on-delete workflow, got %d", len(def.Spec.Workflows.OnDelete))
 	}
-	if def.Spec.Workflows.OnDestroy[0] != "cleanup-dns" {
-		t.Errorf("expected on-destroy to be 'cleanup-dns', got %q", def.Spec.Workflows.OnDestroy[0])
+	if def.Spec.Workflows.OnDelete[0] != "cleanup-dns" {
+		t.Errorf("expected on-delete to be 'cleanup-dns', got %q", def.Spec.Workflows.OnDelete[0])
 	}
 }
 
 func TestBuildClusterDef_EmptyWorkflows(t *testing.T) {
 	def := buildClusterDef("my-cluster", "us-east-1", "aws", nil, nil, "", nil, nil)
 
-	if len(def.Spec.Workflows.OnCreated) != 0 {
-		t.Errorf("expected 0 on-created workflows, got %d", len(def.Spec.Workflows.OnCreated))
+	if len(def.Spec.Workflows.OnCreate) != 0 {
+		t.Errorf("expected 0 on-create workflows, got %d", len(def.Spec.Workflows.OnCreate))
 	}
-	if len(def.Spec.Workflows.OnDestroy) != 0 {
-		t.Errorf("expected 0 on-destroy workflows, got %d", len(def.Spec.Workflows.OnDestroy))
+	if len(def.Spec.Workflows.OnDelete) != 0 {
+		t.Errorf("expected 0 on-delete workflows, got %d", len(def.Spec.Workflows.OnDelete))
 	}
 }
 
@@ -85,11 +91,11 @@ func TestBuildClusterDef_WorkflowsSerializeToYAML(t *testing.T) {
 		t.Fatalf("yaml.Unmarshal failed: %v", err)
 	}
 
-	if len(roundtrip.Spec.Workflows.OnCreated) != 1 || roundtrip.Spec.Workflows.OnCreated[0] != "wf-a" {
-		t.Errorf("on-created did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnCreated)
+	if len(roundtrip.Spec.Workflows.OnCreate) != 1 || roundtrip.Spec.Workflows.OnCreate[0] != "wf-a" {
+		t.Errorf("on-create did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnCreate)
 	}
-	if len(roundtrip.Spec.Workflows.OnDestroy) != 1 || roundtrip.Spec.Workflows.OnDestroy[0] != "wf-b" {
-		t.Errorf("on-destroy did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnDestroy)
+	if len(roundtrip.Spec.Workflows.OnDelete) != 1 || roundtrip.Spec.Workflows.OnDelete[0] != "wf-b" {
+		t.Errorf("on-delete did not survive YAML round-trip: %v", roundtrip.Spec.Workflows.OnDelete)
 	}
 }
 
@@ -103,41 +109,41 @@ func TestBuildClusterDef_EmptyWorkflowsOmittedFromYAML(t *testing.T) {
 
 	// workflows field should be omitted when empty (omitempty)
 	yamlStr := string(data)
-	if contains(yamlStr, "onCreated") || contains(yamlStr, "onDestroy") {
+	if contains(yamlStr, "onCreate") || contains(yamlStr, "onDelete") {
 		t.Errorf("expected empty workflows to be omitted from YAML, but found them in:\n%s", yamlStr)
 	}
 }
 
-func TestAddCmdFlags_OnCreatedAndOnDestroy(t *testing.T) {
-	// Verify the flags are registered on addCmd
-	onCreatedFlag := addCmd.Flags().Lookup("on-created")
-	if onCreatedFlag == nil {
-		t.Fatal("--on-created flag not registered on addCmd")
+func TestAddCmdFlags_OnCreateAndOnDelete(t *testing.T) {
+	// Verify the flags are registered on createCmd
+	onCreateFlag := createCmd.Flags().Lookup("on-create")
+	if onCreateFlag == nil {
+		t.Fatal("--on-create flag not registered on createCmd")
 	}
-	if onCreatedFlag.Value.Type() != "stringArray" {
-		t.Errorf("expected --on-created to be stringArray, got %s", onCreatedFlag.Value.Type())
+	if onCreateFlag.Value.Type() != "stringArray" {
+		t.Errorf("expected --on-create to be stringArray, got %s", onCreateFlag.Value.Type())
 	}
 
-	onDestroyFlag := addCmd.Flags().Lookup("on-destroy")
-	if onDestroyFlag == nil {
-		t.Fatal("--on-destroy flag not registered on addCmd")
+	onDeleteFlag := createCmd.Flags().Lookup("on-delete")
+	if onDeleteFlag == nil {
+		t.Fatal("--on-delete flag not registered on createCmd")
 	}
-	if onDestroyFlag.Value.Type() != "stringArray" {
-		t.Errorf("expected --on-destroy to be stringArray, got %s", onDestroyFlag.Value.Type())
+	if onDeleteFlag.Value.Type() != "stringArray" {
+		t.Errorf("expected --on-delete to be stringArray, got %s", onDeleteFlag.Value.Type())
 	}
 }
 
-func TestAddCmdFlags_OnCreatedAndOnDestroy_Repeatable(t *testing.T) {
-	// Reset addCmd flags to avoid state from other tests
-	addCmd.Flags().Set("on-created", "wf-one")
-	addCmd.Flags().Set("on-created", "wf-two")
+func TestAddCmdFlags_OnCreateAndOnDelete_Repeatable(t *testing.T) {
+	// Reset createCmd flags to avoid state from other tests
+	createCmd.Flags().Set("on-create", "wf-one")
+	createCmd.Flags().Set("on-create", "wf-two")
 
-	vals, err := addCmd.Flags().GetStringArray("on-created")
+	vals, err := createCmd.Flags().GetStringArray("on-create")
 	if err != nil {
 		t.Fatalf("GetStringArray failed: %v", err)
 	}
 	if len(vals) < 2 {
-		t.Errorf("expected at least 2 on-created values after two Set calls, got %d: %v", len(vals), vals)
+		t.Errorf("expected at least 2 on-create values after two Set calls, got %d: %v", len(vals), vals)
 	}
 }
 
@@ -167,11 +173,132 @@ func TestWorkflowsWrittenToFile(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if len(loaded.Spec.Workflows.OnCreated) != 1 || loaded.Spec.Workflows.OnCreated[0] != "on-create-wf" {
-		t.Errorf("on-created not persisted: %v", loaded.Spec.Workflows.OnCreated)
+	if len(loaded.Spec.Workflows.OnCreate) != 1 || loaded.Spec.Workflows.OnCreate[0] != "on-create-wf" {
+		t.Errorf("on-create not persisted: %v", loaded.Spec.Workflows.OnCreate)
 	}
-	if len(loaded.Spec.Workflows.OnDestroy) != 1 || loaded.Spec.Workflows.OnDestroy[0] != "on-destroy-wf" {
-		t.Errorf("on-destroy not persisted: %v", loaded.Spec.Workflows.OnDestroy)
+	if len(loaded.Spec.Workflows.OnDelete) != 1 || loaded.Spec.Workflows.OnDelete[0] != "on-destroy-wf" {
+		t.Errorf("on-delete not persisted: %v", loaded.Spec.Workflows.OnDelete)
+	}
+}
+
+func TestBuildClusterDef_PauseTrue(t *testing.T) {
+	def := buildClusterDefFull("paused-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, true, "")
+	if !def.Spec.Pause {
+		t.Error("expected Pause to be true")
+	}
+}
+
+func TestBuildClusterDef_PauseFalse_Default(t *testing.T) {
+	def := buildClusterDef("normal-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil)
+	if def.Spec.Pause {
+		t.Error("expected Pause to be false by default")
+	}
+}
+
+func TestBuildClusterDef_ExpiresAt(t *testing.T) {
+	expiry := "2026-12-31T23:59:00Z"
+	def := buildClusterDefFull("expiry-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, false, expiry)
+	if def.Spec.ExpiresAt != expiry {
+		t.Errorf("expected ExpiresAt %q, got %q", expiry, def.Spec.ExpiresAt)
+	}
+}
+
+func TestBuildClusterDef_PauseSerializesToYAML(t *testing.T) {
+	def := buildClusterDefFull("paused-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, true, "")
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	yamlStr := string(data)
+	if !contains(yamlStr, "pause: true") {
+		t.Errorf("expected 'pause: true' in YAML output:\n%s", yamlStr)
+	}
+}
+
+func TestBuildClusterDef_PauseFalseOmittedFromYAML(t *testing.T) {
+	def := buildClusterDef("normal-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil)
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	yamlStr := string(data)
+	if contains(yamlStr, "pause:") {
+		t.Errorf("expected 'pause' to be omitted when false:\n%s", yamlStr)
+	}
+}
+
+func TestBuildClusterDef_ExpiresAtSerializesToYAML(t *testing.T) {
+	expiry := "2026-12-31T23:59:00Z"
+	def := buildClusterDefFull("expiry-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil, false, expiry)
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	var roundtrip types.ClusterDefinition
+	if err := yaml.Unmarshal(data, &roundtrip); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
+
+	if roundtrip.Spec.ExpiresAt != expiry {
+		t.Errorf("ExpiresAt did not survive YAML round-trip: got %q", roundtrip.Spec.ExpiresAt)
+	}
+}
+
+func TestBuildClusterDef_ExpiresAtEmptyOmittedFromYAML(t *testing.T) {
+	def := buildClusterDef("no-expiry-cluster", "PHX1", "civo", []string{"g4s.kube.small"}, nil, "", nil, nil)
+
+	data, err := yaml.Marshal(&def)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	yamlStr := string(data)
+	if contains(yamlStr, "expiresAt:") {
+		t.Errorf("expected 'expiresAt' to be omitted when empty:\n%s", yamlStr)
+	}
+}
+
+func TestAddCmdFlags_PauseAndExpiresAt(t *testing.T) {
+	pauseFlag := createCmd.Flags().Lookup("pause")
+	if pauseFlag == nil {
+		t.Fatal("--pause flag not registered on createCmd")
+	}
+	if pauseFlag.Value.Type() != "bool" {
+		t.Errorf("expected --pause to be bool, got %s", pauseFlag.Value.Type())
+	}
+
+	expiresAtFlag := createCmd.Flags().Lookup("expires-at")
+	if expiresAtFlag == nil {
+		t.Fatal("--expires-at flag not registered on createCmd")
+	}
+	if expiresAtFlag.Value.Type() != "string" {
+		t.Errorf("expected --expires-at to be string, got %s", expiresAtFlag.Value.Type())
+	}
+}
+
+func TestModifyCmdFlags_PauseUnpauseExpiresAt(t *testing.T) {
+	pauseFlag := modifyCmd.Flags().Lookup("pause")
+	if pauseFlag == nil {
+		t.Fatal("--pause flag not registered on modifyCmd")
+	}
+
+	unpauseFlag := modifyCmd.Flags().Lookup("unpause")
+	if unpauseFlag == nil {
+		t.Fatal("--unpause flag not registered on modifyCmd")
+	}
+
+	expiresAtFlag := modifyCmd.Flags().Lookup("expires-at")
+	if expiresAtFlag == nil {
+		t.Fatal("--expires-at flag not registered on modifyCmd")
+	}
+	if expiresAtFlag.Value.Type() != "string" {
+		t.Errorf("expected --expires-at to be string, got %s", expiresAtFlag.Value.Type())
 	}
 }
 

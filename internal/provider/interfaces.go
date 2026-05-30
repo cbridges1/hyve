@@ -44,11 +44,18 @@ type ClusterConfig struct {
 	FirewallID   string
 	Applications []string
 
+	// Version is the Kubernetes control-plane version to create (e.g. "1.30").
+	// Empty means the provider uses its current default.
+	Version string
+
 	// AWS-specific configuration
 	AWSRoleARN     string   // IAM role ARN for EKS cluster
 	AWSNodeRoleARN string   // IAM role ARN for EKS node group
 	AWSVPCID       string   // VPC ID for EKS cluster
 	AWSSubnetIDs   []string // Subnet IDs for EKS cluster (optional, discovered from VPC if not provided)
+	AWSKmsKeyAlias string   // KMS key alias for EKS secrets envelope encryption (e.g. "alias/my-key")
+	AWSClusterSGID string   // Pre-existing security group ID for the EKS cluster (skips auto-create)
+	AWSWorkerSGID  string   // Pre-existing security group ID for EKS worker nodes (applied via launch template)
 }
 
 // ClusterUpdateConfig represents cluster update configuration
@@ -66,13 +73,14 @@ type FirewallConfig struct {
 
 // ClusterInfo represents exported cluster information
 type ClusterInfo struct {
-	Name       string
-	IPAddress  string
-	AccessPort string
-	Kubeconfig string
-	Status     string
-	ID         string
-	NodeGroups []types.NodeGroup
+	Name          string
+	IPAddress     string
+	AccessPort    string
+	Kubeconfig    string
+	Status        string
+	ID            string
+	NodeGroups    []types.NodeGroup
+	OIDCIssuerURL string // EKS OIDC provider URL (empty until cluster is active)
 }
 
 // ClusterProvider interface defines the operations a cloud provider must implement

@@ -1,8 +1,10 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,21 +207,23 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
 	}
 
-	// Execute command
-	output, err := cmd.CombinedOutput()
+	// Stream output live so interactive steps (e.g. OAuth Device Authorization)
+	// can print prompts before waiting for user input. A MultiWriter tees the
+	// stream into buf so captureHookOutputVars still works on the full output.
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	output := buf.Bytes()
 	result.Output = string(output)
 
 	endTime := time.Now()
 	result.EndTime = &endTime
 	result.Duration = endTime.Sub(result.StartTime)
 
-	// Print command output to user
-	if len(output) > 0 {
-		fmt.Print(string(output))
-		if !strings.HasSuffix(string(output), "\n") {
-			fmt.Println()
-		}
-	}
+	// Capture any HYVE_VAR=value lines printed by the step so lifecycle-hook
+	// handlers (e.g. resolveHookEnvVars) can read them after the workflow ends.
+	captureHookOutputVars(string(output))
 
 	if err != nil {
 		result.Status = JobStatusFailed
@@ -330,4 +334,24 @@ func getShellCommand() (string, string) {
 	}
 	// On Unix-like systems (Linux, macOS, etc.), use sh
 	return "sh", "-c"
+}
+
+// captureHookOutputVars scans step output for lines of the form HYVE_VAR=value
+// and exports them to the process environment. This lets beforeCreate workflow
+// steps communicate resource IDs (VPC ID, role names, etc.) to the reconciler's
+// resolveHookEnvVars call that runs after all beforeCreate workflows complete.
+func captureHookOutputVars(output string) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "HYVE_") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			continue
+		}
+		key := line[:idx]
+		value := strings.TrimSpace(line[idx+1:])
+		os.Setenv(key, value)
+	}
 }

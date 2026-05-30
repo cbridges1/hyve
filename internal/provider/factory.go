@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cbridges1/hyve/internal/credentials"
 	"github.com/cbridges1/hyve/internal/provider/aws"
 	"github.com/cbridges1/hyve/internal/provider/azure"
 	"github.com/cbridges1/hyve/internal/provider/civo"
 	"github.com/cbridges1/hyve/internal/provider/gcp"
+	"github.com/cbridges1/hyve/internal/providerconfig"
 )
 
 // Factory creates provider instances
@@ -43,7 +43,7 @@ func (f *Factory) CreateProvider(providerName, apiKey, region string) (Provider,
 		// AWS uses native CLI authentication via AWS SDK's default credential chain
 		// This automatically checks: environment variables, ~/.aws/credentials, IAM roles, etc.
 		// No credentials need to be stored in Hyve - use 'aws configure' to set up
-		awsProvider, err := aws.NewProvider("", "", "", region)
+		awsProvider, err := aws.NewProvider("", "", "", region, "")
 		if err != nil {
 			return nil, fmt.Errorf("AWS authentication failed. Please run 'aws configure' or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables: %w", err)
 		}
@@ -96,17 +96,17 @@ func (f *Factory) CreateProvider(providerName, apiKey, region string) (Provider,
 func (f *Factory) CreateProviderWithOptions(providerName string, opts ProviderOptions) (Provider, error) {
 	switch strings.ToLower(providerName) {
 	case "civo":
-		// Token is pre-resolved from provider-configs/civo.yaml (or local DB for local mode).
+		// Token is pre-resolved from provider-configs/civo.yaml (CI/CD) or
+		// read from ~/.civo.json (local mode). CIVO_TOKEN env var is a fallback.
 		token := opts.APIKey
-		if token == "" && opts.AccountName != "" {
-			credsMgr, err := credentials.NewManager()
-			if err == nil {
-				defer credsMgr.Close()
-				token, _ = credsMgr.GetCivoToken(opts.AccountName)
-			}
+		if token == "" {
+			token = providerconfig.ReadCivoCLIToken()
 		}
 		if token == "" {
-			return nil, fmt.Errorf("Civo API token not found. Set token in provider-configs/civo.yaml or run 'hyve config civo token set --org %s'", opts.AccountName)
+			token = os.Getenv("CIVO_TOKEN")
+		}
+		if token == "" {
+			return nil, fmt.Errorf("Civo API token not found. Log in with the Civo CLI ('civo apikey') or set the CIVO_TOKEN environment variable")
 		}
 		civoProvider, err := civo.NewProvider(token, opts.Region)
 		if err != nil {
@@ -135,7 +135,7 @@ func (f *Factory) CreateProviderWithOptions(providerName string, opts ProviderOp
 	case "aws":
 		// Credentials are pre-resolved from provider-configs/aws.yaml.
 		// Falls back to AWS SDK default credential chain when fields are empty.
-		awsProvider, err := aws.NewProvider(opts.AccessKeyID, opts.SecretAccessKey, opts.SessionToken, opts.Region)
+		awsProvider, err := aws.NewProvider(opts.AccessKeyID, opts.SecretAccessKey, opts.SessionToken, opts.Region, opts.AWSProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -183,6 +183,7 @@ type ProviderOptions struct {
 	AccessKeyID     string // Resolved from aws.yaml; falls back to SDK default chain if empty
 	SecretAccessKey string
 	SessionToken    string
+	AWSProfile      string // Named AWS CLI profile; applied when no static creds are set
 
 	// Azure
 	AzureSubscriptionID string // Resolved from azure.yaml or AZURE_SUBSCRIPTION_ID env

@@ -6,32 +6,39 @@
 
 A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commit the change, and Hyve reconciles the desired state against your cloud provider — locally or through a CI/CD pipeline.
 
-Supports **Civo, AWS (EKS), GCP (GKE), and Azure (AKS)** with multi-account credential routing, strict delete enforcement, automated post-deploy workflows, and encrypted kubeconfig storage.
+Supports **Civo, AWS (EKS), GCP (GKE), and Azure (AKS)** with multi-account credential routing, lifecycle hook workflows, automated kubeconfig management, and strict-delete enforcement.
 
 [![Documentation](https://img.shields.io/badge/docs-hyve.mintlify.app-green)](https://hyve.mintlify.app)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Features
 
-- **GitOps Native** - All cluster state managed through Git repositories
-- **Multi-Repository** - Separate repos for dev/staging/prod environments
-- **Automated Workflows** - Define deployment pipelines with requirements validation
-- **Cluster Templates** - Reusable cluster patterns with automated workflows
-- **Variable Substitution** - Full shell support with workflow and environment variables
+- **GitOps Native** — All cluster state managed through Git repositories
+- **Multi-Cloud** — Civo, AWS EKS, GCP GKE, and Azure AKS behind a single YAML schema
+- **Lifecycle Hooks** — Run workflows before/after cluster creation and deletion
+- **Cluster Templates** — Reusable cluster patterns with embedded workflow hooks and expiry schedules
+- **Kubeconfig Management** — Encrypted storage, auto-refresh, and `kubectl` context merging
 
 ## Why Hyve?
 
+**You probably need less infrastructure code than you think.**
+
 General-purpose IaC tools (Terraform, Pulumi, Crossplane) are built to manage any cloud resource. That generality is a good fit for VPCs, IAM roles, and databases — resources that are provisioned once and live for years. It becomes friction when the resource is a Kubernetes cluster that a team actively creates, destroys, and recreates on a regular cadence.
 
-**Git is the state backend.** Most IaC tools require a separate remote state backend with locking, versioning, and access control. Hyve's state is the Git repository itself. No S3 bucket, no cloud account, no extra credentials — and the full history of every cluster change is already there.
+**Git is the state backend.** No S3 bucket, no cloud account, no extra credentials — the full history of every cluster change is already in the repository.
 
-**Continuous reconciliation, not plan-and-apply.** Traditional IaC models changes as a plan that must be reviewed and applied. For ephemeral environments this ceremony adds friction to every iteration. Hyve reconciles continuously: commit to create, delete the file to destroy, update a field to change. The same `hyve reconcile` command handles all three cases.
+**Continuous reconciliation, not plan-and-apply.** Commit to create, delete the file to destroy, update a field to change. The same `hyve reconcile` command handles all three cases.
 
-**Post-provision automation is built in.** After a cluster becomes active you typically need to install controllers, apply manifests, or run smoke tests. Most IaC tools require a separate orchestration layer for this. Hyve's `onCreated` and `onDestroy` workflow hooks run automatically as part of the same reconcile cycle.
+**Lifecycle hooks are built in.** Four hook points cover the full cluster lifecycle. The `beforeCreate` and `afterDelete` hooks run without a live cluster; `onCreate` and `onDestroy` receive an injected kubeconfig automatically.
 
-**Consistent multi-cloud interface.** IaC providers are written independently, versioned separately, and expose provider-specific schemas. Hyve has first-party support for Civo, AWS EKS, GCP GKE, and Azure AKS behind a single YAML schema — the same structure and the same CLI commands across all four.
+| Hook | Cluster Exists? | Kubeconfig? | When It Runs |
+|------|-----------------|-------------|--------------|
+| `beforeCreate` | No | No | Before the cluster is provisioned — provision VPC, IAM roles, etc. |
+| `onCreate` | Yes | Yes | After the cluster is ready — deploy apps, configure monitoring |
+| `onDestroy` | Yes | Yes | Before deletion — drain workloads, export backups |
+| `afterDelete` | No | No | After deletion — destroy VPC, release IP ranges, clean up roles |
 
-**Kubeconfig management is solved.** Most IaC tools output a kubeconfig as a sensitive value you then have to route somewhere useful. Hyve automatically retrieves, encrypts, and stores kubeconfigs on every reconcile and lets you merge any cluster into `~/.kube/config` with one command. Contexts are removed automatically when clusters are deleted.
+**Consistent multi-cloud interface.** The same YAML schema and CLI commands work across all four supported providers.
 
 ## Documentation
 
@@ -39,7 +46,7 @@ Full documentation at **[hyve.mintlify.app](https://hyve.mintlify.app)** — CLI
 
 ## Installation
 
-Requires Go 1.21+ and Git in `PATH`.
+Requires Go 1.21+ and the system `git` binary in `PATH`.
 
 **Using `go install`:**
 
@@ -56,21 +63,68 @@ go build -o hyve .
 sudo mv hyve /usr/local/bin/
 ```
 
-## Quick Start
+## Quick Start (Azure AKS)
 
 ```bash
-# 1. Store Civo token (or use CIVO_TOKEN env var)
-hyve config set-token civo
-
-# 2. Add a state repository
+# 1. Point Hyve at a Git repository for state management
 hyve git add production --repo-url https://github.com/company/hyve-state.git
 
-# 3. Create a cluster
-hyve cluster add my-cluster --provider civo --region PHX1 --nodes g4s.kube.medium
+# 2. Register an Azure subscription (reads credentials from azure.yaml in your state repo)
+hyve config azure subscription add my-subscription
 
-# 4. Run a workflow
-./hyve workflow run deploy-app --cluster my-cluster
+# 3. Create a cluster interactively — picks region and node size from the Azure API
+hyve cluster create
+
+# Or create directly via flags
+hyve cluster create my-aks-cluster \
+  --provider azure \
+  --subscription my-subscription \
+  --resource-group my-resource-group \
+  --region eastus \
+  --nodes Standard_D4s_v3
+
+# 4. Reconcile — provisions the cluster and runs any lifecycle hooks
+hyve reconcile
 ```
+
+The resulting cluster YAML (committed to your state repo) looks like:
+
+```yaml
+apiVersion: v1
+kind: Cluster
+metadata:
+  name: my-aks-cluster
+  region: eastus
+spec:
+  provider: azure
+  azureSubscription: my-subscription
+  azureResourceGroup: my-resource-group
+  nodes:
+    - Standard_D4s_v3
+  workflows:
+    beforeCreate:
+      - provision-network
+    onCreate:
+      - deploy-monitoring
+      - configure-ingress
+    onDestroy:
+      - drain-workloads
+    afterDelete:
+      - cleanup-network
+```
+
+Provider credentials are stored in `provider-configs/azure.yaml` in your state repository. Values can be literal strings or `${ENV_VAR}` references expanded at reconcile time:
+
+```yaml
+subscriptions:
+  - name: my-subscription
+    subscriptionId: ${AZURE_SUBSCRIPTION_ID}
+    tenantId: ${AZURE_TENANT_ID}
+    clientId: ${AZURE_CLIENT_ID}
+    clientSecret: ${AZURE_CLIENT_SECRET}
+```
+
+Git authentication uses the `HYVE_GIT_TOKEN` environment variable. The system `git` binary handles all repository operations.
 
 ## Development
 

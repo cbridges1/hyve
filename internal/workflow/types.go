@@ -21,9 +21,32 @@ type WorkflowMetadata struct {
 	Updated     time.Time         `yaml:"updated,omitempty"`
 }
 
+// WorkflowInput declares a variable that must be present before the workflow runs.
+// When used as a lifecycle hook the value is injected automatically by the reconciler.
+// When run ad-hoc via `hyve workflow run`, missing inputs are prompted in the TUI or
+// must be supplied with --set KEY=VALUE on the CLI.
+type WorkflowInput struct {
+	Name        string `yaml:"name"`                  // Environment variable name (e.g. HYVE_CLUSTER_NAME)
+	Description string `yaml:"description,omitempty"` // Shown as the prompt label in the TUI
+	Default     string `yaml:"default,omitempty"`     // Used when not provided; empty means no default
+}
+
+// WorkflowPreFlight controls the cluster pre-flight check run before the workflow.
+type WorkflowPreFlight struct {
+	// Cluster controls whether hyve calls EKS DescribeCluster and syncs kubeconfig
+	// before the first step. Accepted values:
+	//   "full" (default) — run EKS describe + kubeconfig sync (current behaviour)
+	//   "skip"           — inject HYVE_CLUSTER_NAME etc. from the on-disk YAML
+	//                      but skip all AWS calls; use for auth-bootstrap workflows
+	//                      whose purpose is to obtain credentials in the first place.
+	Cluster string `yaml:"cluster,omitempty"`
+}
+
 // WorkflowSpec defines the workflow specification
 type WorkflowSpec struct {
+	Inputs       []WorkflowInput       `yaml:"inputs,omitempty"` // Variables required at runtime
 	Requirements *WorkflowRequirements `yaml:"requirements,omitempty"`
+	PreFlight    WorkflowPreFlight     `yaml:"preFlight,omitempty"`
 	Triggers     []WorkflowTrigger     `yaml:"triggers,omitempty"`
 	Jobs         []WorkflowJob         `yaml:"jobs"`
 	Env          map[string]string     `yaml:"env,omitempty"`

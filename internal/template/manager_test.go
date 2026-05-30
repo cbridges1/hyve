@@ -249,7 +249,7 @@ func TestExecuteTemplate(t *testing.T) {
 			Nodes:       []string{"g4s.kube.medium"},
 			ClusterType: "k3s",
 			Workflows: TemplateWorkflowsSpec{
-				OnCreated: []string{"setup-monitoring", "deploy-app"},
+				OnCreate: []string{"setup-monitoring", "deploy-app"},
 			},
 		},
 	}
@@ -264,7 +264,7 @@ func TestExecuteTemplate(t *testing.T) {
 
 	assert.Equal(t, template.Metadata.Name, retrievedTemplate.Metadata.Name)
 	assert.Equal(t, "test-cluster", clusterDef.Metadata.Name)
-	assert.Len(t, retrievedTemplate.Spec.Workflows.OnCreated, 2)
+	assert.Len(t, retrievedTemplate.Spec.Workflows.OnCreate, 2)
 }
 
 func TestExecuteTemplate_NotFound(t *testing.T) {
@@ -288,8 +288,8 @@ func TestTemplateWithWorkflows(t *testing.T) {
 			Nodes:       []string{"g4s.kube.large"},
 			ClusterType: "k3s",
 			Workflows: TemplateWorkflowsSpec{
-				OnCreated: []string{"setup", "deploy"},
-				OnDestroy: []string{"cleanup"},
+				OnCreate: []string{"setup", "deploy"},
+				OnDelete: []string{"cleanup"},
 			},
 		},
 	}
@@ -300,8 +300,92 @@ func TestTemplateWithWorkflows(t *testing.T) {
 	retrieved, err := manager.GetTemplate("workflow-template")
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"setup", "deploy"}, retrieved.Spec.Workflows.OnCreated)
-	assert.Equal(t, []string{"cleanup"}, retrieved.Spec.Workflows.OnDestroy)
+	assert.Equal(t, []string{"setup", "deploy"}, retrieved.Spec.Workflows.OnCreate)
+	assert.Equal(t, []string{"cleanup"}, retrieved.Spec.Workflows.OnDelete)
+}
+
+func TestTemplateWithAllFourHooks_YAMLRoundtrip(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	tmpl := &Template{
+		Metadata: TemplateMetadata{Name: "all-hooks-template"},
+		Spec: TemplateSpec{
+			Provider:    "civo",
+			Region:      "PHX1",
+			Nodes:       []string{"g4s.kube.small"},
+			ClusterType: "k3s",
+			Workflows: TemplateWorkflowsSpec{
+				BeforeCreate: []string{"provision-vpc", "provision-roles"},
+				OnCreate:     []string{"notify-slack"},
+				OnDelete:     []string{"drain-nodes"},
+				AfterDelete:  []string{"cleanup-vpc", "cleanup-roles"},
+			},
+		},
+	}
+
+	err := manager.CreateTemplate(tmpl)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("all-hooks-template")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"provision-vpc", "provision-roles"}, retrieved.Spec.Workflows.BeforeCreate)
+	assert.Equal(t, []string{"notify-slack"}, retrieved.Spec.Workflows.OnCreate)
+	assert.Equal(t, []string{"drain-nodes"}, retrieved.Spec.Workflows.OnDelete)
+	assert.Equal(t, []string{"cleanup-vpc", "cleanup-roles"}, retrieved.Spec.Workflows.AfterDelete)
+}
+
+func TestTemplateHooks_EmptyFieldsOmitted(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	tmpl := &Template{
+		Metadata: TemplateMetadata{Name: "partial-hooks-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "PHX1",
+			Nodes:    []string{"g4s.kube.small"},
+			Workflows: TemplateWorkflowsSpec{
+				OnCreate: []string{"wf-a"},
+			},
+		},
+	}
+
+	err := manager.CreateTemplate(tmpl)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("partial-hooks-template")
+	require.NoError(t, err)
+
+	assert.Nil(t, retrieved.Spec.Workflows.BeforeCreate, "BeforeCreate should be nil when not set")
+	assert.Nil(t, retrieved.Spec.Workflows.OnDelete, "OnDelete should be nil when not set")
+	assert.Nil(t, retrieved.Spec.Workflows.AfterDelete, "AfterDelete should be nil when not set")
+	assert.Equal(t, []string{"wf-a"}, retrieved.Spec.Workflows.OnCreate)
+}
+
+func TestConvertToClusterDefinition_AllFourHooksCopied(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	tmpl := &Template{
+		Metadata: TemplateMetadata{Name: "hooks-convert-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "PHX1",
+			Nodes:    []string{"g4s.kube.small"},
+			Workflows: TemplateWorkflowsSpec{
+				BeforeCreate: []string{"before-a"},
+				OnCreate:     []string{"created-a"},
+				OnDelete:     []string{"destroy-a"},
+				AfterDelete:  []string{"after-a"},
+			},
+		},
+	}
+
+	clusterDef := manager.ConvertToClusterDefinition(tmpl, "my-cluster")
+	require.NotNil(t, clusterDef)
+	assert.Equal(t, []string{"before-a"}, clusterDef.Spec.Workflows.BeforeCreate)
+	assert.Equal(t, []string{"created-a"}, clusterDef.Spec.Workflows.OnCreate)
+	assert.Equal(t, []string{"destroy-a"}, clusterDef.Spec.Workflows.OnDelete)
+	assert.Equal(t, []string{"after-a"}, clusterDef.Spec.Workflows.AfterDelete)
 }
 
 // Provider-specific account fields are optional in templates.
@@ -371,22 +455,22 @@ func TestConvertToClusterDefinition_AWSFields(t *testing.T) {
 	template := &Template{
 		Metadata: TemplateMetadata{Name: "aws-template"},
 		Spec: TemplateSpec{
-			Provider:    "aws",
-			Region:      "us-east-1",
-			ClusterType: "eks",
-			AWSAccount:  "prod",
-			AWSVPCName:  "prod-vpc",
-			AWSEKSRole:  "eks-role",
-			AWSNodeRole: "node-role",
+			Provider:        "aws",
+			Region:          "us-east-1",
+			ClusterType:     "eks",
+			AWSAccount:      "prod",
+			AWSVPCID:        "vpc-abc123",
+			AWSEKSRoleName:  "eks-role",
+			AWSNodeRoleName: "node-role",
 		},
 	}
 
 	clusterDef := manager.ConvertToClusterDefinition(template, "my-cluster")
 	require.NotNil(t, clusterDef)
 	assert.Equal(t, "prod", clusterDef.Spec.AWSAccount)
-	assert.Equal(t, "prod-vpc", clusterDef.Spec.AWSVPCName)
-	assert.Equal(t, "eks-role", clusterDef.Spec.AWSEKSRole)
-	assert.Equal(t, "node-role", clusterDef.Spec.AWSNodeRole)
+	assert.Equal(t, "vpc-abc123", clusterDef.Spec.AWSVPCID)
+	assert.Equal(t, "eks-role", clusterDef.Spec.AWSEKSRoleName)
+	assert.Equal(t, "node-role", clusterDef.Spec.AWSNodeRoleName)
 }
 
 func TestConvertToClusterDefinition_FlagOverridesTemplateValue(t *testing.T) {
@@ -474,6 +558,104 @@ func TestTemplateWithGCPConfig_YAMLRoundtrip(t *testing.T) {
 	retrieved, err := manager.GetTemplate("gcp-yaml-template")
 	require.NoError(t, err)
 	assert.Equal(t, "my-gcp-project", retrieved.Spec.GCPProject)
+}
+
+// ── Schedule field ────────────────────────────────────────────────────────────
+
+func TestTemplateWithSchedule_YAMLRoundtrip(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	template := &Template{
+		Metadata: TemplateMetadata{Name: "schedule-template"},
+		Spec: TemplateSpec{
+			Provider:    "civo",
+			Region:      "NYC1",
+			Nodes:       []string{"g4s.kube.small"},
+			ClusterType: "k3s",
+			Schedule:    "0 20 * * 5",
+		},
+	}
+
+	err := manager.CreateTemplate(template)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("schedule-template")
+	require.NoError(t, err)
+	assert.Equal(t, "0 20 * * 5", retrieved.Spec.Schedule)
+}
+
+func TestTemplateWithoutSchedule_FieldOmitted(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	template := &Template{
+		Metadata: TemplateMetadata{Name: "no-schedule-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "NYC1",
+			Nodes:    []string{"g4s.kube.small"},
+		},
+	}
+
+	err := manager.CreateTemplate(template)
+	require.NoError(t, err)
+
+	retrieved, err := manager.GetTemplate("no-schedule-template")
+	require.NoError(t, err)
+	assert.Empty(t, retrieved.Spec.Schedule)
+}
+
+func TestConvertToClusterDefinition_ScheduleDoesNotSetExpiresAt(t *testing.T) {
+	// Schedule-to-expiresAt conversion is a cmd-layer concern, not manager.
+	// ConvertToClusterDefinition must NOT evaluate the cron expression.
+	manager, _ := setupTemplateTest(t)
+
+	template := &Template{
+		Metadata: TemplateMetadata{Name: "cron-convert-template"},
+		Spec: TemplateSpec{
+			Provider: "civo",
+			Region:   "NYC1",
+			Nodes:    []string{"g4s.kube.small"},
+			Schedule: "0 0 * * *",
+		},
+	}
+
+	clusterDef := manager.ConvertToClusterDefinition(template, "my-cluster")
+	require.NotNil(t, clusterDef)
+	assert.Empty(t, clusterDef.Spec.ExpiresAt, "ConvertToClusterDefinition should not evaluate the cron schedule")
+}
+
+func TestTemplateWithSchedule_AllCronExpressions(t *testing.T) {
+	manager, _ := setupTemplateTest(t)
+
+	cases := []struct {
+		name     string
+		schedule string
+	}{
+		{"wildcard", "* * * * *"},
+		{"daily-midnight", "0 0 * * *"},
+		{"weekday-evening", "0 20 * * 5"},
+		{"first-of-month", "0 0 1 * *"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmpl := &Template{
+				Metadata: TemplateMetadata{Name: "sched-" + c.name},
+				Spec: TemplateSpec{
+					Provider: "civo",
+					Region:   "NYC1",
+					Nodes:    []string{"g4s.kube.small"},
+					Schedule: c.schedule,
+				},
+			}
+			err := manager.CreateTemplate(tmpl)
+			require.NoError(t, err)
+
+			retrieved, err := manager.GetTemplate("sched-" + c.name)
+			require.NoError(t, err)
+			assert.Equal(t, c.schedule, retrieved.Spec.Schedule)
+		})
+	}
 }
 
 func TestTemplateWithIngress(t *testing.T) {

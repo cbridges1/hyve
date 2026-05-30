@@ -24,7 +24,8 @@ import (
 )
 
 // FetchRegionGroups queries the provider API for available regions and groups
-// them geographically.
+// them geographically. Returns nil when credentials are unavailable or the
+// call fails — callers should surface a sign-in warning in that case.
 func FetchRegionGroups(ctx context.Context, providerName, accountAlias string) []OptionGroup {
 	switch providerName {
 	case "civo":
@@ -40,6 +41,7 @@ func FetchRegionGroups(ctx context.Context, providerName, accountAlias string) [
 }
 
 // FetchNodeGroups queries the provider API for available node/instance types.
+// Returns nil when credentials are unavailable or the call fails.
 func FetchNodeGroups(ctx context.Context, providerName, region, accountAlias string) []OptionGroup {
 	switch providerName {
 	case "civo":
@@ -173,6 +175,11 @@ func getCivoClient(orgName string) (*civogo.Client, error) {
 					}
 				}
 			}
+		}
+	}
+	if token := providerconfig.ReadCivoCLIToken(); token != "" {
+		if client, err := civogo.NewClient(token, ""); err == nil {
+			return client, nil
 		}
 	}
 	token := os.Getenv("CIVO_TOKEN")

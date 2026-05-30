@@ -99,45 +99,6 @@ func (d *DB) initialize() error {
 	}
 	defer tx.Rollback()
 
-	// Credentials table (Git credentials)
-	_, err = tx.Exec(`
-		CREATE TABLE IF NOT EXISTS credentials (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			username TEXT NOT NULL,
-			encrypted_password TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create credentials table: %w", err)
-	}
-
-	// Secrets table (generic named secret storage)
-	_, err = tx.Exec(`
-		CREATE TABLE IF NOT EXISTS secrets (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			type TEXT NOT NULL DEFAULT '',
-			encrypted_value TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create secrets table: %w", err)
-	}
-
-	// Add type column if upgrading from a version without it (ignore error if already exists)
-	tx.Exec(`ALTER TABLE secrets ADD COLUMN type TEXT NOT NULL DEFAULT ''`)
-
-	// Migrate from old api_tokens table if it exists
-	_, err = tx.Exec(`
-		INSERT OR IGNORE INTO secrets (name, type, encrypted_value, created_at, updated_at)
-		SELECT provider, provider, encrypted_token, created_at, updated_at FROM api_tokens
-	`)
-	// Ignore error - old table might not exist
-
 	// Repositories table
 	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS repositories (

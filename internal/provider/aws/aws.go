@@ -17,6 +17,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 
 	"github.com/cbridges1/hyve/internal/types"
 )
@@ -65,11 +66,15 @@ type ClusterConfig struct {
 	ClusterType  string
 	FirewallID   string
 	Applications []string
+	Version      string // Kubernetes control-plane version (e.g. "1.30"); empty = provider default
 	// EKS-specific configuration
 	RoleARN     string   // IAM role ARN for the EKS cluster
 	NodeRoleARN string   // IAM role ARN for the EKS node group
 	VPCID       string   // VPC ID where the cluster will be created
 	SubnetIDs   []string // Subnet IDs for the cluster (if empty, will be discovered from VPC)
+	KMSKeyAlias string   // KMS key alias for secrets envelope encryption (e.g. "alias/my-key")
+	ClusterSGID string   // Pre-existing security group ID for the EKS cluster control plane
+	WorkerSGID  string   // Pre-existing security group ID for the EKS worker nodes
 }
 
 // ClusterUpdateConfig represents cluster update configuration
@@ -87,20 +92,23 @@ type FirewallConfig struct {
 
 // ClusterInfo represents exported cluster information
 type ClusterInfo struct {
-	Name       string
-	IPAddress  string
-	AccessPort string
-	Kubeconfig string
-	Status     string
-	ID         string
-	NodeGroups []types.NodeGroup
+	Name          string
+	IPAddress     string
+	AccessPort    string
+	Kubeconfig    string
+	Status        string
+	ID            string
+	NodeGroups    []types.NodeGroup
+	OIDCIssuerURL string // OIDC provider issuer URL (empty until cluster is active)
 }
 
 // Provider implements the provider interfaces for AWS
 type Provider struct {
 	eksClient       *eks.Client
 	ec2Client       *ec2.Client
+	kmsClient       *kms.Client
 	region          string
+	profile         string
 	accessKeyID     string
 	secretAccessKey string
 	sessionToken    string
@@ -139,8 +147,9 @@ var validAWSRegions = map[string]bool{
 
 // NewProvider creates a new AWS provider.
 // When accessKeyID and secretAccessKey are non-empty, static credentials are used (sessionToken
-// is optional and may be empty). Otherwise the AWS SDK default credential chain is used.
-func NewProvider(accessKeyID, secretAccessKey, sessionToken, region string) (*Provider, error) {
+// is optional and may be empty). When profile is non-empty and no static creds are provided,
+// the named ~/.aws/config profile is selected. Otherwise the SDK default credential chain is used.
+func NewProvider(accessKeyID, secretAccessKey, sessionToken, region, profile string) (*Provider, error) {
 	ctx := context.Background()
 
 	// Validate and normalize region
@@ -164,6 +173,8 @@ func NewProvider(accessKeyID, secretAccessKey, sessionToken, region string) (*Pr
 
 	if accessKeyID != "" && secretAccessKey != "" {
 		opts = append(opts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)))
+	} else if profile != "" {
+		opts = append(opts, config.WithSharedConfigProfile(profile))
 	}
 
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
@@ -173,11 +184,14 @@ func NewProvider(accessKeyID, secretAccessKey, sessionToken, region string) (*Pr
 
 	eksClient := eks.NewFromConfig(cfg)
 	ec2Client := ec2.NewFromConfig(cfg)
+	kmsClient := kms.NewFromConfig(cfg)
 
 	return &Provider{
 		eksClient:       eksClient,
 		ec2Client:       ec2Client,
+		kmsClient:       kmsClient,
 		region:          region,
+		profile:         profile,
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
 		sessionToken:    sessionToken,
@@ -261,6 +275,7 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 	// Track resources created for cleanup on failure
 	var createdSubnetIDs []string
 	var securityGroupID string
+	var createdSG bool // true only when we auto-created the SG (don't delete pre-existing ones)
 
 	// Cleanup function for failure cases
 	cleanup := func() {
@@ -268,7 +283,7 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 			log.Printf("Cleaning up subnet %s", subnetID)
 			_ = p.deleteSubnet(ctx, subnetID)
 		}
-		if securityGroupID != "" {
+		if createdSG && securityGroupID != "" {
 			log.Printf("Cleaning up security group %s", securityGroupID)
 			_ = p.deleteSecurityGroup(ctx, securityGroupID)
 		}
@@ -314,14 +329,20 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 		log.Printf("Created %d subnets for cluster %s", len(createdSubnetIDs), clusterConfig.Name)
 	}
 
-	// Create a security group for the cluster
+	// Use an explicitly-provided cluster SG when set; otherwise create one.
 	var err error
-	securityGroupID, err = p.createClusterSecurityGroup(ctx, clusterConfig.VPCID, clusterConfig.Name)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("failed to create security group: %w", err)
+	if clusterConfig.ClusterSGID != "" {
+		securityGroupID = clusterConfig.ClusterSGID
+		log.Printf("Using pre-existing cluster security group %s for cluster %s", securityGroupID, clusterConfig.Name)
+	} else {
+		securityGroupID, err = p.createClusterSecurityGroup(ctx, clusterConfig.VPCID, clusterConfig.Name)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("failed to create security group: %w", err)
+		}
+		createdSG = true
+		log.Printf("Created security group %s for cluster %s", securityGroupID, clusterConfig.Name)
 	}
-	log.Printf("Created security group %s for cluster %s", securityGroupID, clusterConfig.Name)
 
 	// Create the EKS cluster
 	createInput := &eks.CreateClusterInput{
@@ -339,6 +360,23 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 		Tags: map[string]string{
 			"CreatedBy": "hyve",
 		},
+	}
+	if clusterConfig.Version != "" {
+		createInput.Version = aws.String(clusterConfig.Version)
+	}
+	if clusterConfig.KMSKeyAlias != "" {
+		keyARN, err := p.resolveKMSKeyARN(ctx, clusterConfig.KMSKeyAlias)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("failed to resolve KMS key alias '%s': %w", clusterConfig.KMSKeyAlias, err)
+		}
+		createInput.EncryptionConfig = []ekstypes.EncryptionConfig{
+			{
+				Provider:  &ekstypes.Provider{KeyArn: aws.String(keyARN)},
+				Resources: []string{"secrets"},
+			},
+		}
+		log.Printf("KMS envelope encryption enabled for cluster %s (key: %s)", clusterConfig.Name, keyARN)
 	}
 
 	resp, err := p.eksClient.CreateCluster(ctx, createInput)
@@ -360,7 +398,7 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 	log.Printf("Creating node group(s) for cluster %s...", clusterConfig.Name)
 	if len(clusterConfig.NodeGroups) > 0 {
 		for _, ng := range clusterConfig.NodeGroups {
-			if err := p.createNodeGroupFromSpec(ctx, clusterConfig.Name, clusterConfig.NodeRoleARN, subnetIDs, ng); err != nil {
+			if err := p.createNodeGroupFromSpec(ctx, clusterConfig.Name, clusterConfig.NodeRoleARN, clusterConfig.WorkerSGID, subnetIDs, ng); err != nil {
 				return nil, fmt.Errorf("failed to create node group '%s': %w", ng.Name, err)
 			}
 			log.Printf("Waiting for node group '%s' to become ready...", ng.Name)
@@ -371,7 +409,7 @@ func (p *Provider) CreateCluster(ctx context.Context, clusterConfig *ClusterConf
 		}
 	} else {
 		nodeGroupName := fmt.Sprintf("%s-nodes", clusterConfig.Name)
-		if err := p.createNodeGroup(ctx, clusterConfig.Name, clusterConfig.NodeRoleARN, subnetIDs, clusterConfig.Nodes); err != nil {
+		if err := p.createNodeGroup(ctx, clusterConfig.Name, clusterConfig.NodeRoleARN, clusterConfig.WorkerSGID, subnetIDs, clusterConfig.Nodes); err != nil {
 			return nil, fmt.Errorf("failed to create node group: %w", err)
 		}
 		log.Printf("Waiting for node group '%s' to become ready...", nodeGroupName)
@@ -774,7 +812,7 @@ func (p *Provider) findSecurityGroupByName(ctx context.Context, vpcID, sgName st
 }
 
 // createNodeGroup creates a managed node group for an EKS cluster
-func (p *Provider) createNodeGroup(ctx context.Context, clusterName, nodeRoleARN string, subnetIDs, nodes []string) error {
+func (p *Provider) createNodeGroup(ctx context.Context, clusterName, nodeRoleARN, workerSGID string, subnetIDs, nodes []string) error {
 	nodeGroupName := fmt.Sprintf("%s-nodes", clusterName)
 
 	// Determine instance type and count from nodes config
@@ -810,6 +848,18 @@ func (p *Provider) createNodeGroup(ctx context.Context, clusterName, nodeRoleARN
 		},
 	}
 
+	if workerSGID != "" {
+		ltID, ltVersion, err := p.ensureWorkerLaunchTemplate(ctx, clusterName, workerSGID)
+		if err != nil {
+			return fmt.Errorf("failed to create worker launch template: %w", err)
+		}
+		createInput.LaunchTemplate = &ekstypes.LaunchTemplateSpecification{
+			Id:      aws.String(ltID),
+			Version: aws.String(ltVersion),
+		}
+		createInput.InstanceTypes = nil // instance type must be set in the launch template, not here
+	}
+
 	_, err := p.eksClient.CreateNodegroup(ctx, createInput)
 	if err != nil {
 		return fmt.Errorf("failed to create node group: %w", err)
@@ -819,7 +869,7 @@ func (p *Provider) createNodeGroup(ctx context.Context, clusterName, nodeRoleARN
 }
 
 // createNodeGroupFromSpec creates a managed node group from a NodeGroup spec
-func (p *Provider) createNodeGroupFromSpec(ctx context.Context, clusterName, nodeRoleARN string, subnetIDs []string, ng types.NodeGroup) error {
+func (p *Provider) createNodeGroupFromSpec(ctx context.Context, clusterName, nodeRoleARN, workerSGID string, subnetIDs []string, ng types.NodeGroup) error {
 	name := ng.Name
 	if name == "" {
 		name = fmt.Sprintf("%s-nodes", clusterName)
@@ -889,6 +939,18 @@ func (p *Provider) createNodeGroupFromSpec(ctx context.Context, clusterName, nod
 				Effect: effect,
 			})
 		}
+	}
+
+	if workerSGID != "" {
+		ltID, ltVersion, err := p.ensureWorkerLaunchTemplate(ctx, clusterName, workerSGID)
+		if err != nil {
+			return fmt.Errorf("failed to create worker launch template: %w", err)
+		}
+		input.LaunchTemplate = &ekstypes.LaunchTemplateSpecification{
+			Id:      aws.String(ltID),
+			Version: aws.String(ltVersion),
+		}
+		input.InstanceTypes = nil // instance type must be set in the launch template, not here
 	}
 
 	_, err := p.eksClient.CreateNodegroup(ctx, input)
@@ -1044,6 +1106,9 @@ func (p *Provider) DeleteCluster(ctx context.Context, clusterID string) error {
 		log.Printf("Warning: Failed to delete node groups: %v", err)
 		// Continue anyway - cluster deletion may still work
 	}
+
+	// Clean up the hyve-managed worker launch template, if any.
+	p.deleteWorkerLaunchTemplate(ctx, clusterID)
 
 	// Delete the EKS cluster
 	_, err = p.eksClient.DeleteCluster(ctx, &eks.DeleteClusterInput{Name: &clusterID})
@@ -1378,14 +1443,20 @@ func (p *Provider) GetClusterInfo(ctx context.Context, name string) (*ClusterInf
 		}
 	}
 
+	oidcIssuer := ""
+	if cluster.Identity != nil && cluster.Identity.Oidc != nil && cluster.Identity.Oidc.Issuer != nil {
+		oidcIssuer = *cluster.Identity.Oidc.Issuer
+	}
+
 	return &ClusterInfo{
-		Name:       *cluster.Name,
-		IPAddress:  endpoint,
-		AccessPort: "443",
-		Kubeconfig: kubeconfig,
-		Status:     string(cluster.Status),
-		ID:         *cluster.Name,
-		NodeGroups: nodeGroups,
+		Name:          *cluster.Name,
+		IPAddress:     endpoint,
+		AccessPort:    "443",
+		Kubeconfig:    kubeconfig,
+		Status:        string(cluster.Status),
+		ID:            *cluster.Name,
+		OIDCIssuerURL: oidcIssuer,
+		NodeGroups:    nodeGroups,
 	}, nil
 }
 
@@ -1407,12 +1478,16 @@ func (p *Provider) kubeconfigFromCLI(clusterName string) (string, error) {
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	cmd := exec.Command("aws", "eks", "update-kubeconfig",
+	args := []string{"eks", "update-kubeconfig",
 		"--name", clusterName,
 		"--region", p.region,
 		"--kubeconfig", tmpPath,
 		"--alias", clusterName,
-	)
+	}
+	if p.profile != "" {
+		args = append(args, "--profile", p.profile)
+	}
+	cmd := exec.Command("aws", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("aws eks update-kubeconfig: %w — %s", err, strings.TrimSpace(string(out)))
 	}
@@ -1444,6 +1519,13 @@ func (p *Provider) generateEKSKubeconfig(clusterName, endpoint, caData string) s
 		}
 	}
 
+	profileSection := ""
+	if p.profile != "" && p.accessKeyID == "" {
+		profileSection = fmt.Sprintf(`        - --profile
+        - %s
+`, p.profile)
+	}
+
 	kubeconfig := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
@@ -1470,7 +1552,7 @@ users:
         - %s
         - --region
         - %s
-%s`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, p.region, envSection)
+%s%s`, endpoint, caData, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, clusterName, p.region, profileSection, envSection)
 
 	return kubeconfig
 }
@@ -1624,4 +1706,82 @@ func (p *Provider) convertCluster(eksCluster *ekstypes.Cluster) *Cluster {
 		MasterIP:  endpoint,
 		CreatedAt: createdAt,
 	}
+}
+
+// ensureWorkerLaunchTemplate creates (or re-uses) an EC2 launch template that sets the
+// worker-node security group. The template is named "{clusterName}-hyve-worker-lt" so it
+// can be discovered and deleted when the cluster is torn down.
+// Returns the template ID and the default version string ("$Default").
+func (p *Provider) ensureWorkerLaunchTemplate(ctx context.Context, clusterName, workerSGID string) (string, string, error) {
+	ltName := fmt.Sprintf("%s-hyve-worker-lt", clusterName)
+
+	// Check if a template with this name already exists (idempotent re-runs).
+	descOut, err := p.ec2Client.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("launch-template-name"), Values: []string{ltName}},
+		},
+	})
+	if err == nil && len(descOut.LaunchTemplates) > 0 {
+		id := *descOut.LaunchTemplates[0].LaunchTemplateId
+		log.Printf("Reusing existing worker launch template %s (%s)", ltName, id)
+		return id, "$Default", nil
+	}
+
+	out, err := p.ec2Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+		LaunchTemplateName: aws.String(ltName),
+		LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+			SecurityGroupIds: []string{workerSGID},
+		},
+		TagSpecifications: []ec2types.TagSpecification{
+			{
+				ResourceType: ec2types.ResourceTypeLaunchTemplate,
+				Tags: []ec2types.Tag{
+					{Key: aws.String("CreatedBy"), Value: aws.String("hyve")},
+					{Key: aws.String("EKSCluster"), Value: aws.String(clusterName)},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("CreateLaunchTemplate: %w", err)
+	}
+	id := *out.LaunchTemplate.LaunchTemplateId
+	log.Printf("Created worker launch template %s (%s) with SG %s", ltName, id, workerSGID)
+	return id, "$Default", nil
+}
+
+// deleteWorkerLaunchTemplate deletes the hyve-managed worker launch template for a cluster, if present.
+func (p *Provider) deleteWorkerLaunchTemplate(ctx context.Context, clusterName string) {
+	ltName := fmt.Sprintf("%s-hyve-worker-lt", clusterName)
+	descOut, err := p.ec2Client.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("launch-template-name"), Values: []string{ltName}},
+		},
+	})
+	if err != nil || len(descOut.LaunchTemplates) == 0 {
+		return
+	}
+	id := *descOut.LaunchTemplates[0].LaunchTemplateId
+	if _, err := p.ec2Client.DeleteLaunchTemplate(ctx, &ec2.DeleteLaunchTemplateInput{
+		LaunchTemplateId: aws.String(id),
+	}); err != nil {
+		log.Printf("Warning: failed to delete worker launch template %s (%s): %v", ltName, id, err)
+	} else {
+		log.Printf("Deleted worker launch template %s (%s)", ltName, id)
+	}
+}
+
+// resolveKMSKeyARN resolves a KMS key alias or ARN to its full key ARN.
+// Accepts either an alias (e.g. "alias/my-key") or an existing ARN (returned as-is).
+func (p *Provider) resolveKMSKeyARN(ctx context.Context, aliasOrARN string) (string, error) {
+	if strings.HasPrefix(aliasOrARN, "arn:") {
+		return aliasOrARN, nil
+	}
+	out, err := p.kmsClient.DescribeKey(ctx, &kms.DescribeKeyInput{
+		KeyId: aws.String(aliasOrARN),
+	})
+	if err != nil {
+		return "", fmt.Errorf("KMS DescribeKey: %w", err)
+	}
+	return *out.KeyMetadata.Arn, nil
 }

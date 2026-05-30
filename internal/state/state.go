@@ -41,6 +41,13 @@ type Manager struct {
 	gitManager *git.SystemBackend
 }
 
+// NewManagerFromPath creates a Manager backed by an existing local directory
+// (no git remote required). stateDir must be the clusters/ subdirectory path;
+// GetStateRoot() will return its parent.
+func NewManagerFromPath(stateDir string) *Manager {
+	return &Manager{stateDir: stateDir}
+}
+
 // NewManager creates a new state manager with Git repository support
 func NewManager(gitRepoURL, localPath, username, token string) (*Manager, error) {
 	gitMgr, err := git.NewBackend(gitRepoURL, localPath, username, token)
@@ -111,6 +118,22 @@ func (m *Manager) LoadRepoConfig() (*RepoConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// SaveClusterDefinition writes a cluster definition back to its YAML file in the
+// state directory. Only serializable fields are written (runtime-only yaml:"-"
+// fields such as AWSEKSRoleARN are not persisted). The caller is responsible for
+// committing the change if it should be pushed to the remote.
+func (m *Manager) SaveClusterDefinition(def *types.ClusterDefinition) error {
+	data, err := yaml.Marshal(def)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cluster definition: %w", err)
+	}
+	path := filepath.Join(m.stateDir, def.Metadata.Name+".yaml")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write cluster definition: %w", err)
+	}
+	return nil
 }
 
 // RemoveClusterFile finds and removes the YAML file containing the given cluster

@@ -12,13 +12,18 @@ func TestNewManager(t *testing.T) {
 	require.NotNil(t, manager)
 }
 
-func TestGetCivoToken_UnknownOrg_ReturnsEmpty(t *testing.T) {
+func TestGetCivoToken_EnvVar(t *testing.T) {
+	t.Setenv("CIVO_TOKEN", "test-token-from-env")
 	manager := NewManager()
-	token := manager.GetCivoToken("nonexistent-org-xyz123-test")
-	assert.Equal(t, "", token)
+	token := manager.GetCivoToken("any-org")
+	// Token may come from ~/.civo.json (if it exists) or from the env var.
+	assert.NotEmpty(t, token)
 }
 
-func TestGetCivoToken_EmptyOrg_ReturnsEmpty(t *testing.T) {
+func TestGetCivoToken_NoCredentials_ReturnsEmpty(t *testing.T) {
+	// Unset env var and point HOME to a temp dir with no .civo.json.
+	t.Setenv("CIVO_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
 	manager := NewManager()
 	token := manager.GetCivoToken("")
 	assert.Equal(t, "", token)

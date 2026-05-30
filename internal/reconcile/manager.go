@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 
 	"github.com/cbridges1/hyve/internal/cluster"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
@@ -118,25 +122,44 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		log.Printf("  [%s]  provider=%s  region=%s", clusterName, providerName, next.Metadata.Region)
 		log.Printf("───────────────────────────────────────────")
 
-		prov, err := r.createProviderForCluster(*next)
-		if err != nil {
-			log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
+		if next.Spec.Pause {
+			log.Printf("[%s] Paused — skipping reconciliation", clusterName)
 		} else {
-			clusterMgr := cluster.NewManager(prov)
-			reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
-			if reconcileErr != nil {
-				log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
-			} else if next.Spec.Delete {
-				// onDestroy workflows ran and the cloud cluster was deleted — now
-				// remove the YAML marker and push so the repo reflects the final state.
-				if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
-					log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
+			// Check whether the cluster has passed its expiry time. Treat it
+			// identically to delete: true so that onDelete workflows run and the
+			// YAML file is cleaned up automatically.
+			if next.Spec.ExpiresAt != "" {
+				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
+					if time.Now().After(t) {
+						log.Printf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion",
+							clusterName, next.Spec.ExpiresAt)
+						next.Spec.Delete = true
+					}
 				} else {
-					commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
-					if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
-						log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
+					log.Printf("[%s] Warning: invalid expiresAt value '%s': %v", clusterName, next.Spec.ExpiresAt, err)
+				}
+			}
+
+			prov, err := r.createProviderForCluster(*next)
+			if err != nil {
+				log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
+			} else {
+				clusterMgr := cluster.NewManager(prov)
+				reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
+				if reconcileErr != nil {
+					log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
+				} else if next.Spec.Delete {
+					// onDelete workflows ran and the cloud cluster was deleted — now
+					// remove the YAML marker and push so the repo reflects the final state.
+					if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
+						log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
 					} else {
-						log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
+						commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
+						if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
+							log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
+						} else {
+							log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
+						}
 					}
 				}
 			}
@@ -207,6 +230,7 @@ func (r *Reconciler) createProviderForCluster(clusterDef types.ClusterDefinition
 
 	case "aws":
 		opts.AccountName = clusterDef.Spec.AWSAccount
+		opts.AWSProfile = clusterDef.Spec.AWSProfile
 		if opts.AccountName != "" {
 			keyID, secret, session, _ := pcMgr.GetAWSCredentials(opts.AccountName)
 			opts.AccessKeyID = keyID
@@ -259,6 +283,13 @@ func (r *Reconciler) createProviderForCluster(clusterDef types.ClusterDefinition
 
 // reconcileCluster handles the reconciliation of a single cluster
 func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
+	// Run preReconcile workflows before any AWS calls so credential-refresh
+	// workflows can populate env vars that the provider SDK reads.
+	if len(clusterDef.Spec.Workflows.PreReconcile) > 0 {
+		log.Printf("[%s] 🔑 Running preReconcile workflows...", clusterDef.Metadata.Name)
+		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.PreReconcile, clusterDef)
+	}
+
 	action := clusterMgr.DetermineAction(ctx, clusterDef)
 
 	switch action {
@@ -277,49 +308,6 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.M
 	}
 }
 
-// resolveAWSAliases fills in resolved ARN/ID fields on the cluster definition
-// from the alias names stored in the provider-config YAML, when the resolved
-// fields are not already present. This allows cluster YAMLs to use short alias
-// names (e.g. awsEksRole: my-role) without requiring the template command to
-// first resolve and write back the full ARNs.
-func (r *Reconciler) resolveAWSAliases(clusterDef *types.ClusterDefinition) {
-	if strings.ToLower(clusterDef.Spec.Provider) != "aws" {
-		return
-	}
-	accountName := clusterDef.Spec.AWSAccount
-	if accountName == "" {
-		return
-	}
-	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
-
-	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRole != "" {
-		if arn, err := pcMgr.GetAWSEKSRoleARN(accountName, clusterDef.Spec.AWSEKSRole); err == nil {
-			clusterDef.Spec.AWSEKSRoleARN = arn
-			log.Printf("[%s] Resolved EKS role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, arn)
-		} else {
-			log.Printf("[%s] Warning: could not resolve EKS role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRole, err)
-		}
-	}
-
-	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRole != "" {
-		if arn, err := pcMgr.GetAWSNodeRoleARN(accountName, clusterDef.Spec.AWSNodeRole); err == nil {
-			clusterDef.Spec.AWSNodeRoleARN = arn
-			log.Printf("[%s] Resolved node role '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, arn)
-		} else {
-			log.Printf("[%s] Warning: could not resolve node role alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRole, err)
-		}
-	}
-
-	if clusterDef.Spec.AWSVPCID == "" && clusterDef.Spec.AWSVPCName != "" {
-		if vpcID, err := pcMgr.GetAWSVPCID(accountName, clusterDef.Spec.AWSVPCName); err == nil {
-			clusterDef.Spec.AWSVPCID = vpcID
-			log.Printf("[%s] Resolved VPC '%s' → %s", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, vpcID)
-		} else {
-			log.Printf("[%s] Warning: could not resolve VPC alias '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSVPCName, err)
-		}
-	}
-}
-
 // createCluster creates a new cluster
 func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
 	existingCluster, err := clusterMgr.FindByName(ctx, clusterDef.Metadata.Name)
@@ -333,10 +321,61 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 		return nil
 	}
 
-	// Resolve AWS alias names (role names, VPC names) to their ARNs/IDs from
-	// provider-configs before passing to the provider, so that cluster YAMLs
-	// do not need to have the full ARNs written into them by the template command.
-	r.resolveAWSAliases(&clusterDef)
+	// Run beforeCreate workflows. After they complete, read any HYVE_* env vars
+	// they exported and write the resolved values back to the provider config YAML.
+	// No cluster exists yet, so kubeconfig injection is skipped; known definition
+	// fields are injected as HYVE_* vars so hooks can provision supporting infrastructure.
+	if len(clusterDef.Spec.Workflows.BeforeCreate) > 0 {
+		log.Printf("[%s] 🔄 Running beforeCreate workflows...", clusterDef.Metadata.Name)
+		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.BeforeCreate, clusterDef)
+		if err := resolveHookEnvVars(ctx, r.stateMgr, &clusterDef); err != nil {
+			log.Printf("[%s] Warning: failed to resolve hook env vars: %v", clusterDef.Metadata.Name, err)
+		}
+		// Write the resolved values (VPC ID, role names, etc.) back to the cluster
+		// YAML so that a future reconciliation can recreate the cluster without
+		// re-running the beforeCreate workflow from scratch.
+		if err := r.stateMgr.SaveClusterDefinition(&clusterDef); err != nil {
+			log.Printf("[%s] Warning: failed to persist resolved cluster values: %v", clusterDef.Metadata.Name, err)
+		} else {
+			log.Printf("[%s] 💾 Persisted resolved cluster values to YAML", clusterDef.Metadata.Name)
+		}
+	}
+
+	// Resolve awsAccount alias → awsAccountId when only the alias was provided.
+	// Mirrors the interactive flow in cmd/cluster/crud.go so hand-written cluster
+	// YAMLs that omit awsAccountId still produce correct IAM role ARNs.
+	if clusterDef.Spec.AWSAccountID == "" && clusterDef.Spec.AWSAccount != "" {
+		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
+		if id, err := pcMgr.GetAWSAccountID(clusterDef.Spec.AWSAccount); err == nil {
+			clusterDef.Spec.AWSAccountID = id
+			log.Printf("[%s] Resolved awsAccount '%s' → awsAccountId '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSAccount, id)
+		} else {
+			log.Printf("[%s] Warning: could not resolve awsAccount '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSAccount, err)
+		}
+	}
+	// Same for Azure and GCP.
+	if clusterDef.Spec.AzureSubscriptionID == "" && clusterDef.Spec.AzureSubscription != "" {
+		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
+		if id, err := pcMgr.GetAzureSubscriptionID(clusterDef.Spec.AzureSubscription); err == nil {
+			clusterDef.Spec.AzureSubscriptionID = id
+		}
+	}
+	if clusterDef.Spec.GCPProjectID == "" && clusterDef.Spec.GCPProject != "" {
+		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
+		if id, err := pcMgr.GetGCPProjectID(clusterDef.Spec.GCPProject); err == nil {
+			clusterDef.Spec.GCPProjectID = id
+		}
+	}
+
+	// Construct AWS role ARNs from direct role names + account ID.
+	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+		clusterDef.Spec.AWSEKSRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSEKSRoleName)
+		log.Printf("[%s] Constructed EKS role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRoleName)
+	}
+	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
+		clusterDef.Spec.AWSNodeRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSNodeRoleName)
+		log.Printf("[%s] Constructed node role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRoleName)
+	}
 
 	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
 	createdCluster, err := clusterMgr.Create(ctx, clusterDef)
@@ -351,10 +390,10 @@ func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Mana
 
 	log.Printf("[%s] ✅ Cluster created successfully", clusterDef.Metadata.Name)
 
-	// Run onCreated workflows if defined
-	if len(clusterDef.Spec.Workflows.OnCreated) > 0 {
-		log.Printf("[%s] 🔄 Running onCreated workflows...", clusterDef.Metadata.Name)
-		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnCreated, clusterDef.Metadata.Name)
+	// Run onCreate workflows if defined
+	if len(clusterDef.Spec.Workflows.OnCreate) > 0 {
+		log.Printf("[%s] 🔄 Running onCreate workflows...", clusterDef.Metadata.Name)
+		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnCreate, clusterDef.Metadata.Name)
 	}
 
 	return nil
@@ -377,10 +416,10 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 		return nil
 	}
 
-	// Run onDestroy workflows before deletion if defined
-	if len(clusterDef.Spec.Workflows.OnDestroy) > 0 {
-		log.Printf("[%s] 🔄 Running onDestroy workflows...", clusterDef.Metadata.Name)
-		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDestroy, clusterDef.Metadata.Name)
+	// Run onDelete workflows before deletion if defined
+	if len(clusterDef.Spec.Workflows.OnDelete) > 0 {
+		log.Printf("[%s] 🔄 Running onDelete workflows...", clusterDef.Metadata.Name)
+		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDelete, clusterDef.Metadata.Name)
 	}
 
 	log.Printf("[%s] Deleting cluster (ID: %s)...", clusterDef.Metadata.Name, existingCluster.ID)
@@ -391,6 +430,15 @@ func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Mana
 	}
 
 	log.Printf("[%s] ✅ Cluster deleted successfully", clusterDef.Metadata.Name)
+
+	// Run afterDelete workflows now that the cloud cluster is gone.
+	// No cluster exists at this point, so kubeconfig injection is skipped; definition
+	// fields are injected as HYVE_* vars so hooks can clean up supporting infrastructure.
+	if len(clusterDef.Spec.Workflows.AfterDelete) > 0 {
+		log.Printf("[%s] 🔄 Running afterDelete workflows...", clusterDef.Metadata.Name)
+		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.AfterDelete, clusterDef)
+	}
+
 	return nil
 }
 
@@ -504,36 +552,68 @@ func (r *Reconciler) strictDeleteSweep(ctx context.Context) {
 	}
 
 	// --- Azure subscriptions ---
-	// Each resource group is a separate provider scope; its Location is used as the region.
+	// Query resource groups dynamically via the Azure API instead of reading from config.
 	azureSubs, err := pcMgr.ListAzureSubscriptions()
 	if err != nil {
 		log.Printf("strict-delete: failed to list Azure subscriptions: %v", err)
 	}
 	for _, sub := range azureSubs {
-		if len(sub.ResourceGroups) == 0 {
-			log.Printf("strict-delete: Azure subscription=%q has no resource groups configured, skipping", sub.Name)
+		subID := sub.SubscriptionID
+		if subID == "" {
+			log.Printf("strict-delete: Azure subscription=%q has no subscription ID, skipping", sub.Name)
 			continue
 		}
-		for _, rg := range sub.ResourceGroups {
-			location := rg.Location
-			if location == "" {
-				location = "eastus"
-			}
-			prov, err := r.createProviderForCluster(types.ClusterDefinition{
-				Metadata: types.ClusterMetadata{Region: location},
-				Spec: types.ClusterSpec{
-					Provider:           "azure",
-					AzureSubscription:  sub.Name,
-					AzureResourceGroup: rg.Name,
-				},
-			})
-			if err != nil {
-				log.Printf("strict-delete: Azure sub=%q rg=%q: failed to create provider: %v", sub.Name, rg.Name, err)
+		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(sub.Name)
+		var rgClient *armresources.ResourceGroupsClient
+		var rgClientErr error
+		if tenantID != "" && clientID != "" && clientSecret != "" {
+			cred, credErr := azidentity.NewClientSecretCredential(tenantID, clientID, clientSecret, nil)
+			if credErr != nil {
+				log.Printf("strict-delete: Azure sub=%q: failed to create credentials: %v", sub.Name, credErr)
 				continue
 			}
-			log.Printf("strict-delete: sweeping Azure subscription=%q resource-group=%q", sub.Name, rg.Name)
-			if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
-				log.Printf("strict-delete: Azure sub=%q rg=%q: %v", sub.Name, rg.Name, err)
+			rgClient, rgClientErr = armresources.NewResourceGroupsClient(subID, cred, nil)
+		} else {
+			defCred, credErr := azidentity.NewDefaultAzureCredential(nil)
+			if credErr != nil {
+				log.Printf("strict-delete: Azure sub=%q: failed to create default credentials: %v", sub.Name, credErr)
+				continue
+			}
+			rgClient, rgClientErr = armresources.NewResourceGroupsClient(subID, defCred, nil)
+		}
+		if rgClientErr != nil {
+			log.Printf("strict-delete: Azure sub=%q: failed to create resource groups client: %v", sub.Name, rgClientErr)
+			continue
+		}
+		pager := rgClient.NewListPager(nil)
+		for pager.More() {
+			page, pageErr := pager.NextPage(ctx)
+			if pageErr != nil {
+				log.Printf("strict-delete: Azure sub=%q: failed to list resource groups: %v", sub.Name, pageErr)
+				break
+			}
+			for _, rg := range page.Value {
+				if rg.Name == nil || rg.Location == nil {
+					continue
+				}
+				rgName := *rg.Name
+				location := *rg.Location
+				prov, err := r.createProviderForCluster(types.ClusterDefinition{
+					Metadata: types.ClusterMetadata{Region: location},
+					Spec: types.ClusterSpec{
+						Provider:           "azure",
+						AzureSubscription:  sub.Name,
+						AzureResourceGroup: rgName,
+					},
+				})
+				if err != nil {
+					log.Printf("strict-delete: Azure sub=%q rg=%q: failed to create provider: %v", sub.Name, rgName, err)
+					continue
+				}
+				log.Printf("strict-delete: sweeping Azure subscription=%q resource-group=%q", sub.Name, rgName)
+				if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
+					log.Printf("strict-delete: Azure sub=%q rg=%q: %v", sub.Name, rgName, err)
+				}
 			}
 		}
 	}
@@ -634,6 +714,49 @@ func (r *Reconciler) syncKubeconfigs(ctx context.Context, clusterDefs []types.Cl
 	}
 
 	return nil
+}
+
+// runWorkflowsNoCluster executes a list of workflows without kubeconfig injection.
+// Use this for hooks that run before the cluster is created (beforeCreate) or after
+// it is deleted (afterDelete), when no kubeconfig is available.
+// Known cluster fields (name, region, provider, credentials) are injected as HYVE_*
+// environment variables from the cluster definition so hooks can provision or clean up
+// supporting infrastructure for the right cluster and account.
+func (r *Reconciler) runWorkflowsNoCluster(ctx context.Context, workflowNames []string, clusterDef types.ClusterDefinition) {
+	if len(workflowNames) == 0 {
+		return
+	}
+
+	clusterName := clusterDef.Metadata.Name
+
+	workflowMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
+	if err != nil {
+		log.Printf("⚠️  Failed to create workflow manager: %v", err)
+		return
+	}
+
+	executor, err := workflow.NewExecutor(workflowMgr, "")
+	if err != nil {
+		log.Printf("⚠️  Failed to create workflow executor: %v", err)
+		return
+	}
+	defer executor.Close()
+
+	for _, workflowName := range workflowNames {
+		log.Printf("[%s] ▶  Workflow '%s' starting (no cluster)...", clusterName, workflowName)
+
+		execution, err := executor.RunWorkflowNoCluster(ctx, workflowName, &clusterDef)
+		if err != nil {
+			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", clusterName, workflowName, err)
+			continue
+		}
+
+		if execution.Status == workflow.StatusCompleted {
+			log.Printf("[%s] ✅ Workflow '%s' completed", clusterName, workflowName)
+		} else {
+			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", clusterName, workflowName, execution.Status)
+		}
+	}
 }
 
 // runWorkflows executes a list of workflows for a cluster
