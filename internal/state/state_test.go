@@ -122,9 +122,11 @@ metadata:
   name: my-cluster
   region: PHX1
 spec:
-  provider: civo
-  nodes:
-    - g4s.kube.medium
+  driver:
+    source: github.com/example/civo-k3s
+    version: 1.0.0
+  params:
+    nodes: g4s.kube.medium
 `
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "my-cluster.yaml"), []byte(yaml), 0644))
 
@@ -134,7 +136,7 @@ spec:
 	require.Len(t, clusters, 1)
 	assert.Equal(t, "my-cluster", clusters[0].Metadata.Name)
 	assert.Equal(t, "PHX1", clusters[0].Metadata.Region)
-	assert.Equal(t, "civo", clusters[0].Spec.Provider)
+	assert.Equal(t, "github.com/example/civo-k3s", clusters[0].Spec.Driver.Source)
 }
 
 func TestLoadClusterDefinitions_MultipleClusters(t *testing.T) {

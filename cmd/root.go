@@ -7,9 +7,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/cluster"
-	"github.com/cbridges1/hyve/cmd/config"
 	gitpkg "github.com/cbridges1/hyve/cmd/git"
 	"github.com/cbridges1/hyve/cmd/kubeconfig"
+	modcmd "github.com/cbridges1/hyve/cmd/module"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 	"github.com/cbridges1/hyve/internal/database"
@@ -70,10 +70,10 @@ func init() {
 	rootCmd.AddCommand(cluster.Cmd)
 	rootCmd.AddCommand(gitpkg.Cmd)
 	rootCmd.AddCommand(kubeconfig.Cmd)
-	rootCmd.AddCommand(config.Cmd)
 	rootCmd.AddCommand(useCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
+	rootCmd.AddCommand(modcmd.Cmd)
 	rootCmd.AddCommand(interactiveCmd)
 }
