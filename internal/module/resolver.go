@@ -23,6 +23,7 @@ type ResolvedModule struct {
 	SHA256   string
 	Resolved string
 	Runner   LockedRunner
+	Version  string // canonical resolved version (e.g. "v1.2.3"); empty for local paths
 }
 
 // Resolve fetches and caches a module, returning its local directory.
@@ -69,7 +70,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 		}, nil
 	}
 
-	// Resolve version to a ref
+	// Resolve version to a concrete ref (tag or HEAD)
 	ref, err := resolveRef(host, org, repo, version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
@@ -114,6 +115,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 		SHA256:   digest,
 		Resolved: downloadURL,
 		Runner:   runner,
+		Version:  ref,
 	}, nil
 }
 
@@ -136,10 +138,19 @@ func parseGitSource(source string) (host, org, repo, subdir string, err error) {
 	return host, org, repo, subdir, nil
 }
 
-// resolveRef resolves a version constraint or exact ref.
+// resolveRef resolves a version string to a git ref.
+// - "" or "latest": picks the highest semver tag; falls back to "HEAD" if no tags exist.
+// - semver constraint (e.g. "~> 1.2", ">= 1.0"): picks the highest matching tag.
+// - anything else: treated as an exact tag or commit ref.
 func resolveRef(host, org, repo, version string) (string, error) {
+	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
+
 	if version == "" || version == "latest" {
-		return "HEAD", nil
+		tags, err := listRemoteTags(repoURL)
+		if err != nil || len(tags) == 0 {
+			return "HEAD", nil
+		}
+		return latestSemverTag(tags, ""), nil
 	}
 
 	// Try to parse as semver constraint
@@ -149,13 +160,35 @@ func resolveRef(host, org, repo, version string) (string, error) {
 		return version, nil
 	}
 
-	// List tags via git ls-remote
-	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
 	tags, err := listRemoteTags(repoURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to list tags for %s: %w", repoURL, err)
 	}
 
+	best := latestSemverTag(tags, version)
+	if best == "" {
+		return "", fmt.Errorf("no tag satisfies constraint %q", version)
+	}
+	// Verify the chosen tag satisfies the constraint (latestSemverTag with a
+	// constraint arg already filters, but double-check for the error case).
+	v, err := semver.NewVersion(best)
+	if err != nil || !constraint.Check(v) {
+		return "", fmt.Errorf("no tag satisfies constraint %q", version)
+	}
+	return best, nil
+}
+
+// latestSemverTag returns the highest semver tag from the list. When constraint
+// is non-empty it is applied as a filter. Returns "" if no matching tag is found.
+func latestSemverTag(tags []string, constraintStr string) string {
+	var c *semver.Constraints
+	if constraintStr != "" {
+		var err error
+		c, err = semver.NewConstraint(constraintStr)
+		if err != nil {
+			c = nil
+		}
+	}
 	var best *semver.Version
 	var bestTag string
 	for _, tag := range tags {
@@ -163,17 +196,15 @@ func resolveRef(host, org, repo, version string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if constraint.Check(v) {
-			if best == nil || v.GreaterThan(best) {
-				best = v
-				bestTag = tag
-			}
+		if c != nil && !c.Check(v) {
+			continue
+		}
+		if best == nil || v.GreaterThan(best) {
+			best = v
+			bestTag = tag
 		}
 	}
-	if bestTag == "" {
-		return "", fmt.Errorf("no tag satisfies constraint %q", version)
-	}
-	return bestTag, nil
+	return bestTag
 }
 
 func listRemoteTags(repoURL string) ([]string, error) {
