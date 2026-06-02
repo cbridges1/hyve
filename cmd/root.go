@@ -70,7 +70,6 @@ func init() {
 	rootCmd.AddCommand(cluster.Cmd)
 	rootCmd.AddCommand(gitpkg.Cmd)
 	rootCmd.AddCommand(kubeconfig.Cmd)
-	rootCmd.AddCommand(useCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
