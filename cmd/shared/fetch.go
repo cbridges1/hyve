@@ -4,6 +4,7 @@ import (
 	gocontext "context"
 
 	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/workflow"
 )
 
@@ -36,6 +37,20 @@ func FetchWorkflowNames() []string {
 	names := make([]string, 0, len(list))
 	for _, w := range list {
 		names = append(names, w.Metadata.Name)
+	}
+	return names
+}
+
+// FetchTemplateNames returns a slice of template names from the current repository.
+func FetchTemplateNames() []string {
+	mgr := template.NewManager(GetLocalPath())
+	list, err := mgr.ListTemplates()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(list))
+	for _, t := range list {
+		names = append(names, t.Metadata.Name)
 	}
 	return names
 }

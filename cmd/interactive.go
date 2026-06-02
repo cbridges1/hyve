@@ -4,9 +4,11 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
+	"github.com/cbridges1/hyve/cmd/cluster"
 	gitpkg "github.com/cbridges1/hyve/cmd/git"
 	"github.com/cbridges1/hyve/cmd/kubeconfig"
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 )
 
@@ -22,6 +24,8 @@ var interactiveCmd = &cobra.Command{
 					huh.NewSelect[string]().
 						Title("Hyve — what would you like to do?").
 						Options(
+							huh.NewOption("cluster    — list, inspect, delete, auth", "cluster"),
+							huh.NewOption("template   — create, execute, manage templates", "template"),
 							huh.NewOption("git        — manage Git repositories", "git"),
 							huh.NewOption("workflow   — automated pipelines", "workflow"),
 							huh.NewOption("kubeconfig — cluster access", "kubeconfig"),
@@ -43,6 +47,10 @@ var interactiveCmd = &cobra.Command{
 
 			var runErr error
 			switch section {
+			case "cluster":
+				runErr = cluster.RunInteractive()
+			case "template":
+				runErr = template.RunInteractive()
 			case "git":
 				runErr = gitpkg.RunInteractive()
 			case "workflow":
