@@ -348,3 +348,42 @@ func readRunnerFromManifest(dir string) (LockedRunner, error) {
 	}
 	return LockedRunner{Image: m.Spec.Runner.Image}, nil
 }
+
+// LoadManifestForSource resolves a module's directory and reads its module.yaml.
+// For local paths the directory is read directly; for Git sources the cached
+// directory (looked up via lf) is used. Returns nil without error when the
+// module cannot be found locally (not yet installed).
+func LoadManifestForSource(source, version, repoRoot string, lf *LockFile) (*ModuleManifest, error) {
+	var dir string
+
+	if strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/") {
+		resolved, err := resolveLocal(source, repoRoot)
+		if err != nil {
+			return nil, nil // not available locally
+		}
+		dir = resolved.Dir
+	} else {
+		if lf == nil {
+			return nil, nil
+		}
+		locked := lf.GetLocked(source, version)
+		if locked == nil || locked.SHA256 == "" || !IsCached(locked.SHA256) {
+			return nil, nil
+		}
+		cacheDir, err := CachePath(locked.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		dir = cacheDir
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "module.yaml"))
+	if err != nil {
+		return nil, nil
+	}
+	var m ModuleManifest
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parse module.yaml for %s: %w", source, err)
+	}
+	return &m, nil
+}

@@ -30,10 +30,11 @@ type RunnerConfig struct {
 }
 
 type ParamSpec struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Default     string `yaml:"default,omitempty"`
-	Required    bool   `yaml:"required,omitempty"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description,omitempty"`
+	Default     string   `yaml:"default,omitempty"`
+	Required    bool     `yaml:"required,omitempty"`
+	Choices     []string `yaml:"choices,omitempty"`
 }
 
 type ModuleRequirements struct {

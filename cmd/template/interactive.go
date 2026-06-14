@@ -6,6 +6,8 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/module"
+	"github.com/cbridges1/hyve/internal/template"
 )
 
 // RunInteractive runs the interactive template menu.
@@ -85,7 +87,7 @@ func interactiveTemplateExecute() error {
 		return err
 	}
 
-	var clusterName, region, paramsRaw string
+	var clusterName, region string
 	err := shared.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
@@ -96,24 +98,31 @@ func interactiveTemplateExecute() error {
 			huh.NewInput().
 				Title("Region override (leave blank to use template default)").
 				Value(&region),
-			huh.NewInput().
-				Title("Param overrides (optional)").
-				Description("KEY=VALUE pairs, comma-separated. e.g. node_size=g4s.kube.large,node_count=5").
-				Value(&paramsRaw),
 		),
 	).Run()
 	if err != nil {
 		return err
 	}
 
-	overrides := parseParamOverrides(paramsRaw)
+	// Load the template's driver info so we can show per-param inputs.
+	var driverSource, driverVersion string
+	if tmpl, err := template.NewManager(shared.GetRepoPath()).GetTemplate(templateName); err == nil {
+		driverSource = tmpl.Spec.Driver.Source
+		driverVersion = tmpl.Spec.Driver.Version
+	}
+
+	manifest := loadManifest(driverSource, driverVersion)
+	overrides, err := collectParamValues(manifest, nil, "Param overrides (optional)")
+	if err != nil {
+		return err
+	}
+
 	executeTemplate(templateName, clusterName, region, overrides)
 	return nil
 }
 
 func interactiveTemplateCreate() error {
-	var name, description, driverSource, driverVersion, region, paramsRaw string
-	var beforeCreate, onCreate, onDelete, afterDelete string
+	var name, description, driverSource, driverVersion, region string
 
 	err := shared.NewForm(
 		huh.NewGroup(
@@ -145,30 +154,6 @@ func interactiveTemplateCreate() error {
 			huh.NewInput().
 				Title("Default region (optional)").
 				Value(&region),
-			huh.NewInput().
-				Title("Default params (optional)").
-				Description("KEY=VALUE pairs, comma-separated. e.g. node_size=g4s.kube.medium,node_count=3").
-				Value(&paramsRaw),
-		),
-	).Run()
-	if err != nil {
-		return err
-	}
-
-	err = shared.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("beforeCreate workflows (optional, comma-separated)").
-				Value(&beforeCreate),
-			huh.NewInput().
-				Title("onCreate workflows (optional, comma-separated)").
-				Value(&onCreate),
-			huh.NewInput().
-				Title("onDelete workflows (optional, comma-separated)").
-				Value(&onDelete),
-			huh.NewInput().
-				Title("afterDelete workflows (optional, comma-separated)").
-				Value(&afterDelete),
 		),
 	).Run()
 	if err != nil {
@@ -179,10 +164,87 @@ func interactiveTemplateCreate() error {
 		driverVersion = "latest"
 	}
 
-	params := parseParamOverrides(paramsRaw)
+	manifest := loadManifest(driverSource, driverVersion)
+	params, err := collectParamValues(manifest, nil, "Default params (optional)")
+	if err != nil {
+		return err
+	}
+
+	var schedule string
+	var setSchedule bool
+	if err = shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Set an expiry schedule for this template?").
+				Description("Clusters created from this template will be automatically deleted on the given schedule.").
+				Affirmative("Yes — set schedule").
+				Negative("No — no expiry").
+				Value(&setSchedule),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	if setSchedule {
+		var schedErr error
+		schedule, schedErr = shared.PromptSchedule("")
+		if schedErr != nil {
+			return schedErr
+		}
+	}
+
+	var beforeCreate, onCreate, onDelete, afterDelete []string
+	if err := interactiveSelectWorkflows(&beforeCreate, &onCreate, &onDelete, &afterDelete); err != nil {
+		return err
+	}
+
 	createTemplate(name, description, driverSource, driverVersion, region, params,
-		beforeCreate, onCreate, onDelete, afterDelete, "")
+		strings.Join(beforeCreate, ","), strings.Join(onCreate, ","),
+		strings.Join(onDelete, ","), strings.Join(afterDelete, ","), schedule)
 	return nil
+}
+
+// interactiveSelectWorkflows shows a multi-select dropdown for each lifecycle
+// hook. When no workflows are defined in the repository the step is skipped.
+func interactiveSelectWorkflows(beforeCreate, onCreate, onDelete, afterDelete *[]string) error {
+	names := shared.FetchWorkflowNames()
+	if len(names) == 0 {
+		return nil
+	}
+
+	// Each multi-select must have its own option slice; sharing option instances
+	// causes huh to mirror selections across all widgets.
+	makeOpts := func() []huh.Option[string] {
+		opts := make([]huh.Option[string], len(names))
+		for i, n := range names {
+			opts[i] = huh.NewOption(n, n)
+		}
+		return opts
+	}
+
+	return shared.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("beforeCreate workflows").
+				Description("Run before the cluster is provisioned (no kubeconfig available).").
+				Options(makeOpts()...).
+				Value(beforeCreate),
+			huh.NewMultiSelect[string]().
+				Title("onCreate workflows").
+				Description("Run after the cluster is active.").
+				Options(makeOpts()...).
+				Value(onCreate),
+			huh.NewMultiSelect[string]().
+				Title("onDelete workflows").
+				Description("Run before the cluster is deleted.").
+				Options(makeOpts()...).
+				Value(onDelete),
+			huh.NewMultiSelect[string]().
+				Title("afterDelete workflows").
+				Description("Run after the cluster is deleted (no kubeconfig available).").
+				Options(makeOpts()...).
+				Value(afterDelete),
+		),
+	).Run()
 }
 
 func interactiveTemplateDelete() error {
@@ -210,6 +272,82 @@ func interactiveTemplateDelete() error {
 
 	deleteTemplate(name)
 	return nil
+}
+
+// loadManifest loads the module.yaml for the given driver source/version.
+// Returns nil if the manifest is not available locally.
+func loadManifest(source, version string) *module.ModuleManifest {
+	repoRoot := shared.GetRepoPath()
+	lf, _ := module.LoadLockFile(repoRoot)
+	m, _ := module.LoadManifestForSource(source, version, repoRoot, lf)
+	return m
+}
+
+// collectParamValues runs a per-param form when a manifest is available.
+// Choice params use a dropdown; free-text params use an input field.
+// Falls back to a raw KEY=VALUE input when manifest is nil or has no params.
+// existing is used to pre-populate values (e.g. when editing overrides).
+func collectParamValues(manifest *module.ModuleManifest, existing map[string]string, fallbackTitle string) (map[string]string, error) {
+	if manifest == nil || len(manifest.Spec.Params) == 0 {
+		var paramsRaw string
+		err := shared.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title(fallbackTitle).
+					Description("KEY=VALUE pairs, comma-separated. e.g. node_size=g4s.kube.medium,node_count=3").
+					Value(&paramsRaw),
+			),
+		).Run()
+		if err != nil {
+			return nil, err
+		}
+		return parseParamOverrides(paramsRaw), nil
+	}
+
+	params := manifest.Spec.Params
+	values := make([]string, len(params))
+	for i, p := range params {
+		values[i] = p.Default
+		if existing != nil {
+			if v, ok := existing[p.Name]; ok {
+				values[i] = v
+			}
+		}
+	}
+
+	fields := make([]huh.Field, 0, len(params))
+	for i, p := range params {
+		title := p.Name
+		if p.Description != "" {
+			title = p.Name + " — " + p.Description
+		}
+		if len(p.Choices) > 0 {
+			opts := make([]huh.Option[string], len(p.Choices))
+			for j, c := range p.Choices {
+				opts[j] = huh.NewOption(c, c)
+			}
+			fields = append(fields, huh.NewSelect[string]().
+				Title(title).
+				Options(opts...).
+				Value(&values[i]))
+		} else {
+			fields = append(fields, huh.NewInput().
+				Title(title).
+				Value(&values[i]))
+		}
+	}
+
+	if err := shared.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(params))
+	for i, p := range params {
+		if values[i] != "" {
+			result[p.Name] = values[i]
+		}
+	}
+	return result, nil
 }
 
 // parseParamOverrides splits a "key=value,key2=value2" string into a map.
