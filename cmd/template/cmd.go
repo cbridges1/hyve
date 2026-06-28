@@ -44,6 +44,7 @@ var templateCreateCmd = &cobra.Command{
 		onDelete, _ := cmd.Flags().GetString("on-delete")
 		afterDelete, _ := cmd.Flags().GetString("after-delete")
 		schedule, _ := cmd.Flags().GetString("schedule")
+		lockParams, _ := cmd.Flags().GetBool("lock-params")
 
 		if driverSource == "" {
 			log.Fatal("--driver is required")
@@ -59,7 +60,7 @@ var templateCreateCmd = &cobra.Command{
 		}
 
 		createTemplate(templateName, description, driverSource, driverVersion, region, params,
-			beforeCreate, onCreate, onDelete, afterDelete, schedule)
+			beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
 	},
 }
 
@@ -132,6 +133,7 @@ func init() {
 	templateCreateCmd.Flags().String("on-delete", "", "Workflows to run before cluster destruction (comma-separated)")
 	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5')")
+	templateCreateCmd.Flags().Bool("lock-params", false, "Prevent users from overriding default params at execute time")
 
 	templateExecuteCmd.Flags().StringP("region", "r", "", "Override the template's default region")
 	templateExecuteCmd.Flags().StringArray("set", nil, "Override driver params (repeatable): KEY=VALUE")
@@ -149,6 +151,7 @@ func createTemplate(
 	params map[string]string,
 	beforeCreateStr, onCreateStr, onDeleteStr, afterDeleteStr string,
 	schedule string,
+	lockParams bool,
 ) {
 	ctx := context.Background()
 	shared.SyncRepoState(ctx)
@@ -198,7 +201,8 @@ func createTemplate(
 				OnDelete:     parseWorkflows(onDeleteStr),
 				AfterDelete:  parseWorkflows(afterDeleteStr),
 			},
-			Schedule: schedule,
+			Schedule:   schedule,
+			LockParams: lockParams,
 		},
 	}
 

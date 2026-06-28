@@ -11,6 +11,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// defaultKubeconfigPath returns the path kubectl uses when KUBECONFIG is unset.
+func defaultKubeconfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".kube", "config")
+}
+
 // Executor runs module operations in host mode.
 type Executor struct {
 	ModuleDir  string
@@ -169,6 +175,20 @@ func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec, method
 
 	if err := e.runShellScript(ctx, method.Auth.Script); err != nil {
 		return nil, fmt.Errorf("auth method %q failed: %w", method.Name, err)
+	}
+
+	// Handle exports: set env vars in the current process so that workflow
+	// subprocesses spawned after auth inherit them.
+	switch method.Exports {
+	case "KUBECONFIG", "KEEPER_KUBECONFIG":
+		// civo (and similar tools) write to ~/.kube/config via --save.
+		// Explicitly set KUBECONFIG in the process env so kubectl in any
+		// subsequent subprocess definitely picks up the right file, even
+		// if KUBECONFIG was previously unset or pointed elsewhere.
+		kc := defaultKubeconfigPath()
+		if _, err := os.Stat(kc); err == nil {
+			os.Setenv("KUBECONFIG", kc)
+		}
 	}
 
 	// Legacy verify step — only applies when using the legacy single-method shape.

@@ -87,6 +87,9 @@ func interactiveTemplateExecute() error {
 		return err
 	}
 
+	// Load template early — needed for LockParams check and driver info.
+	tmpl, _ := template.NewManager(shared.GetRepoPath()).GetTemplate(templateName)
+
 	var clusterName, region string
 	err := shared.NewForm(
 		huh.NewGroup(
@@ -104,17 +107,45 @@ func interactiveTemplateExecute() error {
 		return err
 	}
 
-	// Load the template's driver info so we can show per-param inputs.
-	var driverSource, driverVersion string
-	if tmpl, err := template.NewManager(shared.GetRepoPath()).GetTemplate(templateName); err == nil {
-		driverSource = tmpl.Spec.Driver.Source
-		driverVersion = tmpl.Spec.Driver.Version
+	overrides := map[string]string{}
+
+	// Skip param overrides entirely when the template admin has locked them.
+	if tmpl != nil && tmpl.Spec.LockParams {
+		executeTemplate(templateName, clusterName, region, overrides)
+		return nil
 	}
 
-	manifest := loadManifest(driverSource, driverVersion)
-	overrides, err := collectParamValues(manifest, nil, "Param overrides (optional)")
-	if err != nil {
+	// Ask whether the user wants to override any default params.
+	var wantOverrides bool
+	if err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Override default params?").
+				Description("The template provides defaults for all params. Select Yes to customise them.").
+				Affirmative("Yes — customise params").
+				Negative("No — use defaults").
+				Value(&wantOverrides),
+		),
+	).Run(); err != nil {
 		return err
+	}
+
+	if wantOverrides {
+		var driverSource, driverVersion string
+		if tmpl != nil {
+			driverSource = tmpl.Spec.Driver.Source
+			driverVersion = tmpl.Spec.Driver.Version
+		}
+		manifest := loadManifest(driverSource, driverVersion)
+		// Pre-populate with template defaults so users see current values.
+		var existing map[string]string
+		if tmpl != nil {
+			existing = tmpl.Spec.Params
+		}
+		overrides, err = collectParamValues(manifest, existing, "Param overrides")
+		if err != nil {
+			return err
+		}
 	}
 
 	executeTemplate(templateName, clusterName, region, overrides)
@@ -192,6 +223,20 @@ func interactiveTemplateCreate() error {
 		}
 	}
 
+	var lockParams bool
+	if err = shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Lock params?").
+				Description("When locked, users cannot override default param values at execute time.").
+				Affirmative("Yes — lock params").
+				Negative("No — allow overrides").
+				Value(&lockParams),
+		),
+	).Run(); err != nil {
+		return err
+	}
+
 	var beforeCreate, onCreate, onDelete, afterDelete []string
 	if err := interactiveSelectWorkflows(&beforeCreate, &onCreate, &onDelete, &afterDelete); err != nil {
 		return err
@@ -199,7 +244,7 @@ func interactiveTemplateCreate() error {
 
 	createTemplate(name, description, driverSource, driverVersion, region, params,
 		strings.Join(beforeCreate, ","), strings.Join(onCreate, ","),
-		strings.Join(onDelete, ","), strings.Join(afterDelete, ","), schedule)
+		strings.Join(onDelete, ","), strings.Join(afterDelete, ","), schedule, lockParams)
 	return nil
 }
 
