@@ -13,9 +13,10 @@ import (
 
 // Executor runs module operations in host mode.
 type Executor struct {
-	ModuleDir string
-	Env       []string // HYVE_* vars as "KEY=VALUE" strings
-	WorkDir   string   // repo root
+	ModuleDir  string
+	Env        []string // HYVE_* vars as "KEY=VALUE" strings
+	WorkDir    string   // repo root
+	AuthMethod string   // optional: name of auth method to use; empty means first
 }
 
 // Execute runs a named operation and returns captured outputs.
@@ -65,7 +66,7 @@ func (e *Executor) executeYAML(ctx context.Context, path string) (*OperationResu
 		if err := yaml.Unmarshal(data, &ca); err != nil {
 			return nil, fmt.Errorf("parse ClusterAuth %s: %w", path, err)
 		}
-		return e.executeAuth(ctx, ca.Spec)
+		return e.executeAuth(ctx, ca.Spec, e.AuthMethod)
 
 	case "Workflow":
 		return e.executeWorkflow(ctx, data)
@@ -151,16 +152,43 @@ func pickScript(run, script, command string) string {
 	return ""
 }
 
-func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec) (*OperationResult, error) {
-	if err := e.runShellScript(ctx, spec.Bootstrap.Script); err != nil {
-		return nil, fmt.Errorf("auth bootstrap failed: %w", err)
+func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec, methodName string) (*OperationResult, error) {
+	methods := spec.Methods
+	if len(methods) == 0 {
+		// Wrap legacy single-method spec so the rest of the logic is uniform.
+		methods = []AuthMethod{{Name: "default", Auth: spec.Bootstrap}}
 	}
-	if spec.Verify != nil && spec.Verify.Command != "" {
+
+	method := &methods[0] // default: first in list
+	if methodName != "" {
+		method = findMethod(methods, methodName)
+		if method == nil {
+			return nil, fmt.Errorf("auth method %q not found", methodName)
+		}
+	}
+
+	if err := e.runShellScript(ctx, method.Auth.Script); err != nil {
+		return nil, fmt.Errorf("auth method %q failed: %w", method.Name, err)
+	}
+
+	// Legacy verify step — only applies when using the legacy single-method shape.
+	if len(spec.Methods) == 0 && spec.Verify != nil && spec.Verify.Command != "" {
 		if err := e.runShellScript(ctx, spec.Verify.Command); err != nil {
 			return nil, fmt.Errorf("auth verify failed: %w", err)
 		}
 	}
+
 	return &OperationResult{Outputs: map[string]string{}, ExitCode: 0}, nil
+}
+
+// findMethod returns the first method with the given name, or nil if not found.
+func findMethod(methods []AuthMethod, name string) *AuthMethod {
+	for i := range methods {
+		if methods[i].Name == name {
+			return &methods[i]
+		}
+	}
+	return nil
 }
 
 func (e *Executor) executeScript(ctx context.Context, scriptPath string) (*OperationResult, error) {

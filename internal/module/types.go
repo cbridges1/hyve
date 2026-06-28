@@ -85,8 +85,11 @@ type ClusterAuthMeta struct {
 }
 
 type ClusterAuthSpec struct {
+	// Legacy single-method fields (kept for backward compat)
 	Bootstrap BootstrapSpec `yaml:"bootstrap"`
 	Verify    *VerifySpec   `yaml:"verify,omitempty"`
+	// Multi-method list — takes precedence over Bootstrap/Verify when present
+	Methods []AuthMethod `yaml:"methods,omitempty"`
 }
 
 type BootstrapSpec struct {
@@ -95,6 +98,15 @@ type BootstrapSpec struct {
 
 type VerifySpec struct {
 	Command string `yaml:"command"`
+}
+
+// AuthMethod is a single named auth path within a ClusterAuth manifest.
+type AuthMethod struct {
+	Name        string        `yaml:"name"`
+	Description string        `yaml:"description,omitempty"`
+	Deps        []string      `yaml:"deps,omitempty"`
+	Auth        BootstrapSpec `yaml:"auth"`
+	Exports     string        `yaml:"exports,omitempty"`
 }
 
 // OperationType identifies which module operation to run.

@@ -73,6 +73,33 @@ var validateCmd = &cobra.Command{
 			errors = append(errors, "no operation files found (expected create.yaml/create.sh, etc.)")
 		}
 
+		// Validate auth.yaml if present
+		authPath := filepath.Join(resolved.Dir, "auth.yaml")
+		if authData, err := os.ReadFile(authPath); err == nil {
+			var ca mod.ClusterAuth
+			if err := yaml.Unmarshal(authData, &ca); err != nil {
+				errors = append(errors, fmt.Sprintf("auth.yaml: invalid YAML: %v", err))
+			} else if len(ca.Spec.Methods) > 0 {
+				validExports := map[string]bool{"": true, "KUBECONFIG": true, "KEEPER_KUBECONFIG": true}
+				seen := map[string]bool{}
+				for i, m := range ca.Spec.Methods {
+					if m.Name == "" {
+						errors = append(errors, fmt.Sprintf("auth.yaml: methods[%d]: name is required", i))
+					} else if seen[m.Name] {
+						errors = append(errors, fmt.Sprintf("auth.yaml: duplicate method name %q", m.Name))
+					} else {
+						seen[m.Name] = true
+					}
+					if m.Auth.Script == "" {
+						errors = append(errors, fmt.Sprintf("auth.yaml: method %q: auth.script is required", m.Name))
+					}
+					if !validExports[m.Exports] {
+						errors = append(errors, fmt.Sprintf("auth.yaml: method %q: exports must be KUBECONFIG, KEEPER_KUBECONFIG, or empty", m.Name))
+					}
+				}
+			}
+		}
+
 		if len(errors) > 0 {
 			fmt.Printf("❌ Validation failed for %s@%s:\n", source, version)
 			for _, e := range errors {
