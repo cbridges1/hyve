@@ -63,7 +63,7 @@ func interactiveClusterAuth() error {
 	if err := shared.SelectFromList("Cluster to configure", shared.FetchClusterNames(), &name); err != nil {
 		return err
 	}
-	runClusterAuth(name)
+	runClusterAuth(name, "")
 	return nil
 }
 
