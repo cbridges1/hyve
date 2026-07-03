@@ -56,8 +56,9 @@ type ToolRequirement struct {
 
 // LockFile represents hyve.lock.
 type LockFile struct {
-	Version int                      `yaml:"version"`
-	Modules map[string]*LockedModule `yaml:"modules"`
+	Version   int                        `yaml:"version"`
+	Modules   map[string]*LockedModule   `yaml:"modules"`
+	Workflows map[string]*LockedWorkflow `yaml:"workflows,omitempty"`
 }
 
 type LockedModule struct {
@@ -65,6 +66,17 @@ type LockedModule struct {
 	Resolved string       `yaml:"resolved"`
 	SHA256   string       `yaml:"sha256"`
 	Runner   LockedRunner `yaml:"runner,omitempty"`
+}
+
+// LockedWorkflow is one resolved, content-hashed remote workflow file. Unlike
+// LockedModule, it carries a Name — `hyve workflow run <name>` must be able
+// to find a locked entry by bare name, which modules never need since a
+// cluster's driver is always referenced by an explicit source+version.
+type LockedWorkflow struct {
+	Name     string `yaml:"name"`
+	Source   string `yaml:"source"`   // canonical "host/org/repo//path/file.yaml" — never a directory
+	Resolved string `yaml:"resolved"` // full download URL for this exact file at the pinned ref
+	SHA256   string `yaml:"sha256"`   // sha256 of this file's raw bytes only
 }
 
 type LockedRunner struct {

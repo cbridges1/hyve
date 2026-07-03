@@ -85,13 +85,14 @@ Required workflow inputs that are not already in the environment must be supplie
 		showLogs, _ := cmd.Flags().GetBool("logs")
 		showOutput, _ := cmd.Flags().GetBool("output")
 		setStrs, _ := cmd.Flags().GetStringArray("set")
+		pathFlag, _ := cmd.Flags().GetString("path")
 
 		setVars, err := parseSetVars(setStrs)
 		if err != nil {
 			log.Fatalf("Invalid --set flag: %v", err)
 		}
 
-		runWorkflow(args[0], cluster, showLogs, showOutput, setVars)
+		runWorkflowByRef(args[0], pathFlag, cluster, showLogs, showOutput, setVars)
 	},
 }
 
@@ -125,6 +126,7 @@ func init() {
 	workflowRunCmd.Flags().BoolP("logs", "l", true, "Show execution logs")
 	workflowRunCmd.Flags().BoolP("output", "o", false, "Show step outputs")
 	workflowRunCmd.Flags().StringArray("set", nil, "Set a workflow input variable: KEY=VALUE (repeatable)")
+	workflowRunCmd.Flags().String("path", "", "Override/supply the source's path component (remote sources only)")
 
 	workflowDeleteCmd.Flags().BoolP("force", "f", false, "Delete without confirmation")
 

@@ -10,10 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/workflowref"
 )
 
 // Reconciler orchestrates cluster lifecycle by delegating all cloud operations
@@ -41,6 +44,9 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		if lf.GetLocked(c.Spec.Driver.Source, c.Spec.Driver.Version) == nil {
 			return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install`",
 				c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version)
+		}
+		if err := validateWorkflowRefsLocked(c, lf); err != nil {
+			return err
 		}
 	}
 
@@ -134,7 +140,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
-		return r.deleteCluster(ctx, cluster, exec, env)
+		return r.deleteCluster(ctx, cluster, exec, env, lf)
 
 	case cluster.Spec.Delete && status == "NOT_FOUND":
 		log.Printf("[%s] Already gone — removing YAML", name)
@@ -149,7 +155,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
 				log.Printf("[%s] Warning: auth failed before scale: %v", name, authErr)
 			}
-			r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env)
+			r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
 			if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
 				log.Printf("[%s] Warning: scale failed: %v", name, scaleErr)
 			}
@@ -171,7 +177,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	name := cluster.Metadata.Name
 	log.Printf("[%s] Creating cluster...", name)
 
-	r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
 
 	result, err := exec.Execute(ctx, module.OperationCreate)
 	if err != nil {
@@ -204,11 +210,11 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 		log.Printf("[%s] Warning: auth failed: %v", name, authErr)
 	}
 
-	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
 	return nil
 }
 
-func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string) error {
+func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
 	name := cluster.Metadata.Name
 	log.Printf("[%s] Deleting cluster...", name)
 
@@ -216,7 +222,7 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 		log.Printf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
 	}
 
-	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
 
 	if _, err := exec.Execute(ctx, module.OperationDelete); err != nil {
 		return fmt.Errorf("delete operation failed: %w", err)
@@ -224,7 +230,7 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 
 	log.Printf("[%s] ✅ Cluster deleted", name)
 
-	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env, lf)
 
 	return r.removeClusterFile(ctx, cluster)
 }
@@ -240,8 +246,8 @@ func (r *Reconciler) removeClusterFile(ctx context.Context, cluster types.Cluste
 	return nil
 }
 
-func (r *Reconciler) runWorkflows(ctx context.Context, workflowNames []string, cluster types.ClusterDefinition, env []string) {
-	if len(workflowNames) == 0 {
+func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef, cluster types.ClusterDefinition, env []string, lf *module.LockFile) {
+	if len(refs) == 0 {
 		return
 	}
 	name := cluster.Metadata.Name
@@ -267,19 +273,91 @@ func (r *Reconciler) runWorkflows(ctx context.Context, workflowNames []string, c
 	defer executor.Close()
 	executor.InjectVars(injected)
 
-	for _, wfName := range workflowNames {
-		log.Printf("[%s] ▶  Workflow '%s' starting...", name, wfName)
-		execution, err := executor.RunWorkflow(ctx, wfName, "")
-		if err != nil {
-			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", name, wfName, err)
+	for _, ref := range refs {
+		label := ref.String()
+		log.Printf("[%s] ▶  Workflow '%s' starting...", name, label)
+
+		var execution *workflow.WorkflowExecution
+		var runErr error
+		if !ref.IsRemote() {
+			execution, runErr = executor.RunWorkflow(ctx, ref.Name, "")
+		} else {
+			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf)
+		}
+		if runErr != nil {
+			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", name, label, runErr)
 			continue
 		}
 		if execution.Status == workflow.StatusCompleted {
-			log.Printf("[%s] ✅ Workflow '%s' completed", name, wfName)
+			log.Printf("[%s] ✅ Workflow '%s' completed", name, label)
 		} else {
-			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, wfName, execution.Status)
+			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, label, execution.Status)
 		}
 	}
+}
+
+// runRemoteWorkflowHook resolves a remote WorkflowRef using hyve.lock as a
+// cache hint (a matching locked+cached entry means no network call — the
+// pre-flight check in ReconcileAll already guarantees a locked entry
+// exists) and executes it. A lifecycle hook ref must resolve to a single
+// file: directory-kind sources are rejected here — a hook names exactly one
+// workflow to run, not a batch.
+func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workflow.Executor, ref types.WorkflowRef, lf *module.LockFile) (*workflow.WorkflowExecution, error) {
+	ps, err := workflowref.ParseSource(ref.Source)
+	if err != nil {
+		return nil, err
+	}
+	ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
+	kind, err := workflowref.ClassifyPath(ps.Path)
+	if err != nil {
+		return nil, err
+	}
+	if kind == workflowref.PathKindDir {
+		return nil, fmt.Errorf("lifecycle hook workflow ref %q resolves to a directory — must reference exactly one file", ref.Source)
+	}
+
+	files, err := workflowref.Resolve(ref.Source, ref.Path, lf)
+	if err != nil {
+		return nil, err
+	}
+	var wf workflow.Workflow
+	if err := yaml.Unmarshal(files[0].Data, &wf); err != nil {
+		return nil, fmt.Errorf("parse remote workflow %s: %w", ref.Source, err)
+	}
+	return executor.RunResolvedWorkflow(ctx, &wf, ref.String(), "")
+}
+
+// validateWorkflowRefsLocked checks — with no network access — that every
+// remote WorkflowRef in a cluster's lifecycle hooks is already present in
+// hyve.lock, mirroring the existing driver-module pre-flight check.
+func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	lists := [][]types.WorkflowRef{
+		c.Spec.Workflows.PreReconcile, c.Spec.Workflows.BeforeCreate,
+		c.Spec.Workflows.OnCreate, c.Spec.Workflows.OnDelete, c.Spec.Workflows.AfterDelete,
+	}
+	for _, list := range lists {
+		for _, ref := range list {
+			if !ref.IsRemote() {
+				continue
+			}
+			ps, err := workflowref.ParseSource(ref.Source)
+			if err != nil {
+				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+			}
+			ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
+			kind, err := workflowref.ClassifyPath(ps.Path)
+			if err != nil {
+				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+			}
+			if kind == workflowref.PathKindDir {
+				return fmt.Errorf("cluster %s: workflow ref %q resolves to a directory — lifecycle hooks must reference a single file", c.Metadata.Name, ref.Source)
+			}
+			if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
+				return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install`", c.Metadata.Name, ref.Source)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {

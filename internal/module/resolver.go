@@ -71,7 +71,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	}
 
 	// Resolve version to a concrete ref (tag or HEAD)
-	ref, err := resolveRef(host, org, repo, version)
+	ref, err := ResolveRef(host, org, repo, version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
 	}
@@ -84,7 +84,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := downloadAndExtract(downloadURL, tmpDir, repo, ref, subdir); err != nil {
+	if err := DownloadAndExtract(downloadURL, tmpDir, repo, ref, subdir); err != nil {
 		return nil, fmt.Errorf("failed to download module from %s: %w", downloadURL, err)
 	}
 
@@ -138,11 +138,11 @@ func parseGitSource(source string) (host, org, repo, subdir string, err error) {
 	return host, org, repo, subdir, nil
 }
 
-// resolveRef resolves a version string to a git ref.
+// ResolveRef resolves a version string to a git ref.
 // - "" or "latest": picks the highest semver tag; falls back to "HEAD" if no tags exist.
 // - semver constraint (e.g. "~> 1.2", ">= 1.0"): picks the highest matching tag.
 // - anything else: treated as an exact tag or commit ref.
-func resolveRef(host, org, repo, version string) (string, error) {
+func ResolveRef(host, org, repo, version string) (string, error) {
 	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
 
 	if version == "" || version == "latest" {
@@ -230,7 +230,7 @@ func listRemoteTags(repoURL string) ([]string, error) {
 	return tags, nil
 }
 
-func downloadAndExtract(url, destDir, repo, ref, subdir string) error {
+func DownloadAndExtract(url, destDir, repo, ref, subdir string) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("HTTP GET %s: %w", url, err)

@@ -1,5 +1,7 @@
 package template
 
+import "github.com/cbridges1/hyve/internal/types"
+
 // TemplateMetadata represents template metadata
 type TemplateMetadata struct {
 	Name        string `yaml:"name"`
@@ -8,20 +10,20 @@ type TemplateMetadata struct {
 
 // TemplateWorkflowsSpec defines workflows to run on cluster lifecycle events
 type TemplateWorkflowsSpec struct {
-	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
-	OnCreate     []string `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
-	OnDelete     []string `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
-	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
+	BeforeCreate []types.WorkflowRef `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
+	OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
+	OnDelete     []types.WorkflowRef `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
+	AfterDelete  []types.WorkflowRef `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
 }
 
 // UnmarshalYAML migrates the deprecated onDestroy key to onDelete transparently.
 func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type raw struct {
-		BeforeCreate []string `yaml:"beforeCreate,omitempty"`
-		OnCreate     []string `yaml:"onCreate,omitempty"`
-		OnDelete     []string `yaml:"onDelete,omitempty"`
-		OnDestroy    []string `yaml:"onDestroy,omitempty"` // deprecated: rename to onDelete in YAML
-		AfterDelete  []string `yaml:"afterDelete,omitempty"`
+		BeforeCreate []types.WorkflowRef `yaml:"beforeCreate,omitempty"`
+		OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty"`
+		OnDelete     []types.WorkflowRef `yaml:"onDelete,omitempty"`
+		OnDestroy    []types.WorkflowRef `yaml:"onDestroy,omitempty"` // deprecated: rename to onDelete in YAML
+		AfterDelete  []types.WorkflowRef `yaml:"afterDelete,omitempty"`
 	}
 	var r raw
 	if err := unmarshal(&r); err != nil {

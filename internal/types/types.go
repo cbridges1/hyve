@@ -1,23 +1,90 @@
 package types
 
+import "fmt"
+
+// WorkflowRef identifies one workflow to run for a lifecycle hook. Accepts
+// two YAML forms in the same list:
+//   - a plain scalar string: a local workflow name (existing behavior)
+//     e.g. "provision-network"
+//   - a mapping: {source: "github.com/org/repo//path@version", path: "override.yaml"}
+//     for a remote workflow. `path` is equivalent to an inline "//path" in
+//     Source and takes precedence, with a warning, if both are given.
+type WorkflowRef struct {
+	Name   string `yaml:"-"`                // set for the local-name (string) form; empty for the remote form
+	Source string `yaml:"source,omitempty"` // set for the remote (mapping) form; empty for the local form
+	Path   string `yaml:"path,omitempty"`
+}
+
+// IsRemote reports whether this ref names a remote source rather than a
+// local workflow name.
+func (r WorkflowRef) IsRemote() bool { return r.Source != "" }
+
+// String returns a human-readable label — the local name, or the source
+// string (with path noted if set) for a remote ref.
+func (r WorkflowRef) String() string {
+	if !r.IsRemote() {
+		return r.Name
+	}
+	if r.Path != "" {
+		return r.Source + " (path: " + r.Path + ")"
+	}
+	return r.Source
+}
+
+// UnmarshalYAML mirrors WorkflowsSpec's existing old-style (func-based)
+// interface below.
+func (r *WorkflowRef) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var name string
+	if err := unmarshal(&name); err == nil {
+		*r = WorkflowRef{Name: name}
+		return nil
+	}
+	type raw struct {
+		Source string `yaml:"source"`
+		Path   string `yaml:"path,omitempty"`
+	}
+	var rw raw
+	if err := unmarshal(&rw); err != nil {
+		return fmt.Errorf("workflows entry must be a string (local workflow name) or a mapping with 'source': %w", err)
+	}
+	if rw.Source == "" {
+		return fmt.Errorf("workflows entry mapping must set 'source'")
+	}
+	*r = WorkflowRef{Source: rw.Source, Path: rw.Path}
+	return nil
+}
+
+// MarshalYAML renders a local ref as a bare string and a remote ref as a
+// {source, path} mapping.
+func (r WorkflowRef) MarshalYAML() (interface{}, error) {
+	if !r.IsRemote() {
+		return r.Name, nil
+	}
+	type raw struct {
+		Source string `yaml:"source"`
+		Path   string `yaml:"path,omitempty"`
+	}
+	return raw{Source: r.Source, Path: r.Path}, nil
+}
+
 // WorkflowsSpec defines workflows to run on cluster lifecycle events
 type WorkflowsSpec struct {
-	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
-	OnCreate     []string `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
-	OnDelete     []string `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
-	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
-	PreReconcile []string `yaml:"preReconcile,omitempty"` // Workflows to run before reconcile pre-flight (no kubeconfig)
+	BeforeCreate []WorkflowRef `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
+	OnCreate     []WorkflowRef `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
+	OnDelete     []WorkflowRef `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
+	AfterDelete  []WorkflowRef `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
+	PreReconcile []WorkflowRef `yaml:"preReconcile,omitempty"` // Workflows to run before reconcile pre-flight (no kubeconfig)
 }
 
 // UnmarshalYAML migrates the deprecated onDestroy key to onDelete transparently.
 func (ws *WorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type raw struct {
-		BeforeCreate []string `yaml:"beforeCreate,omitempty"`
-		OnCreate     []string `yaml:"onCreate,omitempty"`
-		OnDelete     []string `yaml:"onDelete,omitempty"`
-		OnDestroy    []string `yaml:"onDestroy,omitempty"` // deprecated: use onDelete
-		AfterDelete  []string `yaml:"afterDelete,omitempty"`
-		PreReconcile []string `yaml:"preReconcile,omitempty"`
+		BeforeCreate []WorkflowRef `yaml:"beforeCreate,omitempty"`
+		OnCreate     []WorkflowRef `yaml:"onCreate,omitempty"`
+		OnDelete     []WorkflowRef `yaml:"onDelete,omitempty"`
+		OnDestroy    []WorkflowRef `yaml:"onDestroy,omitempty"` // deprecated: use onDelete
+		AfterDelete  []WorkflowRef `yaml:"afterDelete,omitempty"`
+		PreReconcile []WorkflowRef `yaml:"preReconcile,omitempty"`
 	}
 	var r raw
 	if err := unmarshal(&r); err != nil {

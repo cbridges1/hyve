@@ -16,8 +16,19 @@ import (
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/template"
+	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
 )
+
+// joinWorkflowRefs renders a []types.WorkflowRef list for display —
+// WorkflowRef.String() handles both local names and remote sources.
+func joinWorkflowRefs(refs []types.WorkflowRef) string {
+	parts := make([]string, len(refs))
+	for i, r := range refs {
+		parts[i] = r.String()
+	}
+	return strings.Join(parts, ", ")
+}
 
 // Cmd is the root template command exposed to the parent.
 var Cmd = templateCmd
@@ -170,15 +181,15 @@ func createTemplate(
 
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
-	parseWorkflows := func(s string) []string {
+	parseWorkflows := func(s string) []types.WorkflowRef {
 		if s == "" {
 			return nil
 		}
 		parts := strings.Split(s, ",")
-		out := make([]string, 0, len(parts))
+		out := make([]types.WorkflowRef, 0, len(parts))
 		for _, p := range parts {
 			if p = strings.TrimSpace(p); p != "" {
-				out = append(out, p)
+				out = append(out, types.WorkflowRef{Name: p})
 			}
 		}
 		return out
@@ -233,16 +244,16 @@ func createTemplate(
 		}
 	}
 	if wf := tmpl.Spec.Workflows.BeforeCreate; len(wf) > 0 {
-		log.Printf("  BeforeCreate: %s", strings.Join(wf, ", "))
+		log.Printf("  BeforeCreate: %s", joinWorkflowRefs(wf))
 	}
 	if wf := tmpl.Spec.Workflows.OnCreate; len(wf) > 0 {
-		log.Printf("  OnCreate: %s", strings.Join(wf, ", "))
+		log.Printf("  OnCreate: %s", joinWorkflowRefs(wf))
 	}
 	if wf := tmpl.Spec.Workflows.OnDelete; len(wf) > 0 {
-		log.Printf("  OnDelete: %s", strings.Join(wf, ", "))
+		log.Printf("  OnDelete: %s", joinWorkflowRefs(wf))
 	}
 	if wf := tmpl.Spec.Workflows.AfterDelete; len(wf) > 0 {
-		log.Printf("  AfterDelete: %s", strings.Join(wf, ", "))
+		log.Printf("  AfterDelete: %s", joinWorkflowRefs(wf))
 	}
 	if schedule != "" {
 		log.Printf("  Expiry Schedule: %s", schedule)
@@ -291,10 +302,10 @@ func listTemplates() {
 			log.Printf("    Region: %s", tmpl.Spec.Region)
 		}
 		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
-			log.Printf("    OnCreate: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
+			log.Printf("    OnCreate: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnCreate))
 		}
 		if len(tmpl.Spec.Workflows.OnDelete) > 0 {
-			log.Printf("    OnDelete: %s", strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
+			log.Printf("    OnDelete: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnDelete))
 		}
 		if tmpl.Spec.Schedule != "" {
 			log.Printf("    Expiry Schedule: %s", tmpl.Spec.Schedule)
@@ -416,10 +427,10 @@ func executeTemplate(templateName, clusterName, region string, overrides map[str
 		}
 	}
 	if len(tmpl.Spec.Workflows.OnCreate) > 0 {
-		log.Printf("  OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
+		log.Printf("  OnCreate Workflows: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnCreate))
 	}
 	if len(tmpl.Spec.Workflows.OnDelete) > 0 {
-		log.Printf("  OnDelete Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
+		log.Printf("  OnDelete Workflows: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnDelete))
 	}
 	if tmpl.Spec.Schedule != "" {
 		log.Printf("  Expiry Schedule: %s → %s", tmpl.Spec.Schedule, clusterDef.Spec.ExpiresAt)
@@ -497,8 +508,17 @@ func validateTemplate(name string) {
 		warnings = append(warnings, "Missing spec.driver.version (will default to 'latest')")
 	}
 
-	allWorkflows := append(tmpl.Spec.Workflows.OnCreate, tmpl.Spec.Workflows.OnDelete...)
-	if len(allWorkflows) > 0 {
+	hasLocalWorkflowRefs := false
+	for _, ref := range append(append([]types.WorkflowRef{}, tmpl.Spec.Workflows.OnCreate...), tmpl.Spec.Workflows.OnDelete...) {
+		if !ref.IsRemote() {
+			hasLocalWorkflowRefs = true
+			break
+		}
+	}
+	// Remote refs can't be validated against the local workflows/ directory
+	// without a network fetch — that's out of scope for `template validate`,
+	// which only checks local-name refs exist in workflows/.
+	if hasLocalWorkflowRefs {
 		workflowMgr, err := workflow.NewManager(shared.GetLocalPath())
 		if err == nil {
 			availableWorkflows, err := workflowMgr.ListWorkflows()
@@ -507,14 +527,14 @@ func validateTemplate(name string) {
 				for _, wf := range availableWorkflows {
 					workflowMap[wf.Metadata.Name] = true
 				}
-				for _, wfName := range tmpl.Spec.Workflows.OnCreate {
-					if !workflowMap[wfName] {
-						warnings = append(warnings, fmt.Sprintf("OnCreate workflow '%s' not found in repository", wfName))
+				for _, ref := range tmpl.Spec.Workflows.OnCreate {
+					if !ref.IsRemote() && !workflowMap[ref.Name] {
+						warnings = append(warnings, fmt.Sprintf("OnCreate workflow '%s' not found in repository", ref.Name))
 					}
 				}
-				for _, wfName := range tmpl.Spec.Workflows.OnDelete {
-					if !workflowMap[wfName] {
-						warnings = append(warnings, fmt.Sprintf("OnDelete workflow '%s' not found in repository", wfName))
+				for _, ref := range tmpl.Spec.Workflows.OnDelete {
+					if !ref.IsRemote() && !workflowMap[ref.Name] {
+						warnings = append(warnings, fmt.Sprintf("OnDelete workflow '%s' not found in repository", ref.Name))
 					}
 				}
 			}

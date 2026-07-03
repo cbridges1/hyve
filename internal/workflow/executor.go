@@ -72,13 +72,27 @@ func (e *Executor) RunWorkflowNoCluster(ctx context.Context, workflowName string
 	return e.RunWorkflow(ctx, workflowName, "")
 }
 
-// RunWorkflow executes a workflow.
+// RunWorkflow executes a workflow, looking it up by name in the local
+// workflows/ directory first.
 func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster string) (*WorkflowExecution, error) {
-	workflow, err := e.manager.GetWorkflow(workflowName)
+	wf, err := e.manager.GetWorkflow(workflowName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workflow: %w", err)
 	}
+	return e.runWorkflow(ctx, wf, workflowName, cluster)
+}
 
+// RunResolvedWorkflow executes an already-loaded workflow definition (e.g.
+// one fetched from a remote source via internal/workflowref) without going
+// through the local workflows/ directory lookup RunWorkflow performs.
+// displayName is used for logging/execution IDs/env vars only — typically
+// wf.Metadata.Name or the workflow's full remote source string.
+func (e *Executor) RunResolvedWorkflow(ctx context.Context, wf *Workflow, displayName, cluster string) (*WorkflowExecution, error) {
+	return e.runWorkflow(ctx, wf, displayName, cluster)
+}
+
+// runWorkflow is the shared body of RunWorkflow/RunResolvedWorkflow.
+func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName string, cluster string) (*WorkflowExecution, error) {
 	targetCluster := cluster
 	if targetCluster == "" {
 		targetCluster = e.currentCluster
@@ -86,7 +100,7 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 
 	execution := &WorkflowExecution{
 		ID:           generateExecutionID(),
-		WorkflowName: workflowName,
+		WorkflowName: displayName,
 		Cluster:      targetCluster,
 		Status:       StatusRunning,
 		StartTime:    time.Now(),
@@ -97,10 +111,10 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 	}
 
 	e.execution = execution
-	e.addLog("INFO", "", "", fmt.Sprintf("Starting workflow '%s'", workflowName))
+	e.addLog("INFO", "", "", fmt.Sprintf("Starting workflow '%s'", displayName))
 
 	// Validate workflow requirements
-	if workflow.Spec.Requirements != nil {
+	if wf.Spec.Requirements != nil {
 		e.addLog("INFO", "", "", "Validating workflow requirements...")
 		validator, err := NewRequirementValidator()
 		if err != nil {
@@ -110,13 +124,13 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 		}
 		defer validator.Close()
 
-		if err := validator.ValidateRequirements(workflow.Spec.Requirements); err != nil {
+		if err := validator.ValidateRequirements(wf.Spec.Requirements); err != nil {
 			e.execution.Status = StatusFailed
 			e.addLog("ERROR", "", "", fmt.Sprintf("Requirements validation failed: %v", err))
 			return execution, fmt.Errorf("requirements validation failed: %w", err)
 		}
 
-		if err := validator.LoadSecretsIntoEnvironment(workflow.Spec.Requirements); err != nil {
+		if err := validator.LoadSecretsIntoEnvironment(wf.Spec.Requirements); err != nil {
 			e.execution.Status = StatusFailed
 			e.addLog("ERROR", "", "", fmt.Sprintf("Failed to load secrets: %v", err))
 			return execution, fmt.Errorf("failed to load secrets: %w", err)
@@ -135,19 +149,19 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 		}
 	}
 
-	if err := e.setupEnvironmentVariables(workflow); err != nil {
+	if err := e.setupEnvironmentVariables(wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", fmt.Sprintf("Failed to setup environment variables: %v", err))
 		return execution, fmt.Errorf("failed to setup environment variables: %w", err)
 	}
 
-	if err := e.validateInputs(workflow); err != nil {
+	if err := e.validateInputs(wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", err.Error())
 		return execution, err
 	}
 
-	if err := e.executeJobs(ctx, workflow); err != nil {
+	if err := e.executeJobs(ctx, wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", fmt.Sprintf("Workflow failed: %v", err))
 		e.finalizeExecution()

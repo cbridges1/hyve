@@ -305,6 +305,62 @@ func TestRunWorkflow_Success(t *testing.T) {
 	assert.Equal(t, JobStatusCompleted, result.JobResults["greet"].Status)
 }
 
+func TestRunResolvedWorkflow_MatchesRunWorkflow(t *testing.T) {
+	mgr, _ := setupTestEnvironment(t)
+
+	wf := &Workflow{
+		Metadata: WorkflowMetadata{Name: "simple"},
+		Spec: WorkflowSpec{
+			Jobs: []WorkflowJob{
+				{
+					Name:  "greet",
+					Steps: []WorkflowStep{{Name: "say-hello", Command: "echo hello"}},
+				},
+			},
+		},
+	}
+	require.NoError(t, mgr.CreateWorkflow(wf))
+
+	execViaName, err := NewExecutor(mgr, "")
+	require.NoError(t, err)
+	viaName, err := execViaName.RunWorkflow(context.Background(), "simple", "")
+	require.NoError(t, err)
+
+	execViaResolved, err := NewExecutor(mgr, "")
+	require.NoError(t, err)
+	viaResolved, err := execViaResolved.RunResolvedWorkflow(context.Background(), wf, "simple", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, viaName.Status, viaResolved.Status)
+	assert.Equal(t, viaName.WorkflowName, viaResolved.WorkflowName)
+	assert.Equal(t, viaName.JobResults["greet"].Status, viaResolved.JobResults["greet"].Status)
+}
+
+func TestRunResolvedWorkflow_DisplayNameUsedWhenMetadataNameDiffers(t *testing.T) {
+	mgr, _ := setupTestEnvironment(t)
+
+	// A workflow fetched from a remote source has no local manager entry —
+	// RunResolvedWorkflow must not require one, and should use the caller's
+	// displayName (e.g. the full remote source string) for the execution record.
+	wf := &Workflow{
+		Metadata: WorkflowMetadata{Name: "remote-workflow"},
+		Spec: WorkflowSpec{
+			Jobs: []WorkflowJob{
+				{Name: "job", Steps: []WorkflowStep{{Name: "step", Command: "echo hi"}}},
+			},
+		},
+	}
+
+	exec, err := NewExecutor(mgr, "")
+	require.NoError(t, err)
+
+	displayName := "github.com/org/repo//remote-workflow.yaml@v1.0.0"
+	result, err := exec.RunResolvedWorkflow(context.Background(), wf, displayName, "")
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, result.Status)
+	assert.Equal(t, displayName, result.WorkflowName)
+}
+
 func TestRunWorkflow_WorkflowNotFound(t *testing.T) {
 	mgr, _ := setupTestEnvironment(t)
 
