@@ -26,11 +26,17 @@ type ResolvedModule struct {
 	Version  string // canonical resolved version (e.g. "v1.2.3"); empty for local paths
 }
 
+// IsLocalSource reports whether a module source string names a local path
+// ("./..." or an absolute path) rather than a remote Git reference.
+func IsLocalSource(source string) bool {
+	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/")
+}
+
 // Resolve fetches and caches a module, returning its local directory.
 // For local paths (starting with "./" or absolute): returns the dir directly, no caching.
 // For Git sources: downloads, hashes, and caches under ~/.hyve/module-cache/{sha256}/.
 func Resolve(source, version string, locked *LockedModule, repoRoot string) (*ResolvedModule, error) {
-	if strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/") {
+	if IsLocalSource(source) {
 		return resolveLocal(source, repoRoot)
 	}
 	return resolveGit(source, version, locked)
@@ -356,7 +362,7 @@ func readRunnerFromManifest(dir string) (LockedRunner, error) {
 func LoadManifestForSource(source, version, repoRoot string, lf *LockFile) (*ModuleManifest, error) {
 	var dir string
 
-	if strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/") {
+	if IsLocalSource(source) {
 		resolved, err := resolveLocal(source, repoRoot)
 		if err != nil {
 			return nil, nil // not available locally

@@ -10,6 +10,59 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
+func TestValidateDriverModuleLocked(t *testing.T) {
+	t.Run("no driver source errors", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "test"}}
+		err := validateDriverModuleLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no driver specified")
+	})
+
+	t.Run("local source needs no lock entry", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./custom-modules/civo", Version: "latest"}},
+		}
+		assert.NoError(t, validateDriverModuleLocked(c, lf))
+	})
+
+	t.Run("absolute path source needs no lock entry", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "/opt/modules/civo", Version: "latest"}},
+		}
+		assert.NoError(t, validateDriverModuleLocked(c, lf))
+	})
+
+	t.Run("remote source not in lock errors", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "github.com/hyve-modules/civo", Version: "v1.0.0"}},
+		}
+		err := validateDriverModuleLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in hyve.lock")
+	})
+
+	t.Run("remote source present in lock passes", func(t *testing.T) {
+		lf := &module.LockFile{
+			Version: 1,
+			Modules: map[string]*module.LockedModule{
+				"github.com/hyve-modules/civo@v1.0.0": {Source: "github.com/hyve-modules/civo@v1.0.0"},
+			},
+		}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "github.com/hyve-modules/civo", Version: "v1.0.0"}},
+		}
+		assert.NoError(t, validateDriverModuleLocked(c, lf))
+	})
+}
+
 func TestValidateWorkflowRefsLocked(t *testing.T) {
 	t.Run("no remote refs is always fine", func(t *testing.T) {
 		lf := &module.LockFile{Version: 1}

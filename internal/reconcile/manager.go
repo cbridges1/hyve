@@ -45,12 +45,8 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 	}
 
 	for _, c := range clusterDefs {
-		if c.Spec.Driver.Source == "" {
-			return fmt.Errorf("cluster %s: no driver specified — set spec.driver.source in the cluster YAML", c.Metadata.Name)
-		}
-		if lf.GetLocked(c.Spec.Driver.Source, c.Spec.Driver.Version) == nil {
-			return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install`",
-				c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version)
+		if err := validateDriverModuleLocked(c, lf); err != nil {
+			return err
 		}
 		if err := validateWorkflowRefsLocked(c, lf); err != nil {
 			return err
@@ -371,9 +367,29 @@ func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workfl
 	return executor.RunResolvedWorkflow(ctx, &wf, ref.String(), "")
 }
 
+// validateDriverModuleLocked checks that a cluster's driver module is either
+// a local path (needs no hyve.lock entry — module.Resolve reads it straight
+// off disk via module.resolveLocal, with no digest to verify, so a lock
+// entry for one only ever holds an empty resolved/sha256 pair: required
+// presence, zero actual integrity value) or already present in hyve.lock.
+// Mirrors validateWorkflowRefsLocked's local/remote split below.
+func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	if c.Spec.Driver.Source == "" {
+		return fmt.Errorf("cluster %s: no driver specified — set spec.driver.source in the cluster YAML", c.Metadata.Name)
+	}
+	if module.IsLocalSource(c.Spec.Driver.Source) {
+		return nil
+	}
+	if lf.GetLocked(c.Spec.Driver.Source, c.Spec.Driver.Version) == nil {
+		return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install`",
+			c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version)
+	}
+	return nil
+}
+
 // validateWorkflowRefsLocked checks — with no network access — that every
 // remote WorkflowRef in a cluster's lifecycle hooks is already present in
-// hyve.lock, mirroring the existing driver-module pre-flight check.
+// hyve.lock. Mirrors validateDriverModuleLocked's local/remote split above.
 func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
 	lists := [][]types.WorkflowRef{
 		c.Spec.Workflows.PreReconcile, c.Spec.Workflows.BeforeCreate,
