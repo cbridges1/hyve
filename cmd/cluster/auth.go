@@ -47,7 +47,7 @@ func runClusterAuth(name string, method string) {
 		log.Fatalf("Failed to load hyve.lock: %v", err)
 	}
 	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
-	if locked == nil {
+	if locked == nil && !mod.IsLocalSource(cluster.Spec.Driver.Source) {
 		log.Fatalf("Module %s@%s not in hyve.lock — run `hyve module install`",
 			cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
 	}

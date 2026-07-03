@@ -30,7 +30,7 @@ var validateCmd = &cobra.Command{
 			log.Fatalf("Failed to load lock file: %v", err)
 		}
 		locked := lf.GetLocked(source, version)
-		if locked == nil {
+		if locked == nil && !mod.IsLocalSource(source) {
 			log.Fatalf("Module %s@%s not in hyve.lock", source, version)
 		}
 		resolved, err := mod.Resolve(source, version, locked, repoPath)
