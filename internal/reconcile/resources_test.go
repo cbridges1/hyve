@@ -1,0 +1,71 @@
+package reconcile
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/cbridges1/hyve/internal/types"
+)
+
+func TestNeedsApply(t *testing.T) {
+	assert.True(t, needsApply(true, true))
+	assert.True(t, needsApply(true, false))
+	assert.True(t, needsApply(false, true))
+	assert.False(t, needsApply(false, false))
+}
+
+func TestDriftReason(t *testing.T) {
+	assert.Equal(t, "config changed + live drift", driftReason(true, true))
+	assert.Equal(t, "config changed", driftReason(true, false))
+	assert.Equal(t, "live drift", driftReason(false, true))
+}
+
+func TestFindOrphanedResources_NoOrphans(t *testing.T) {
+	resources := []types.ResourceRef{{Name: "a"}, {Name: "b"}}
+	applied := map[string]*types.AppliedResource{
+		"a": {}, "b": {},
+	}
+	assert.Empty(t, findOrphanedResources(resources, applied))
+}
+
+func TestFindOrphanedResources_SomeOrphaned(t *testing.T) {
+	resources := []types.ResourceRef{{Name: "a"}}
+	applied := map[string]*types.AppliedResource{
+		"a": {}, "b": {}, "c": {},
+	}
+	assert.Equal(t, []string{"b", "c"}, findOrphanedResources(resources, applied))
+}
+
+func TestFindOrphanedResources_EmptyApplied(t *testing.T) {
+	resources := []types.ResourceRef{{Name: "a"}}
+	assert.Empty(t, findOrphanedResources(resources, map[string]*types.AppliedResource{}))
+}
+
+func TestFindOrphanedResources_EmptyResources(t *testing.T) {
+	applied := map[string]*types.AppliedResource{"a": {}, "b": {}}
+	assert.Equal(t, []string{"a", "b"}, findOrphanedResources(nil, applied))
+}
+
+func TestValidateResourceRef_SourceOnly(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml"})
+	assert.NoError(t, err)
+}
+
+func TestValidateResourceRef_HelmOnly(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Helm: &types.HelmSpec{Chart: "c"}})
+	assert.NoError(t, err)
+}
+
+func TestValidateResourceRef_BothSet(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Helm: &types.HelmSpec{Chart: "c"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not both")
+}
+
+func TestValidateResourceRef_NeitherSet(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of source or helm")
+}

@@ -34,6 +34,21 @@ func TestLoadRepoConfig_NoFile(t *testing.T) {
 	require.NotNil(t, cfg)
 	assert.Equal(t, ReconcileModeLocal, cfg.Reconcile.Mode)
 	assert.False(t, cfg.Reconcile.StrictDelete)
+	assert.False(t, cfg.Reconcile.StrictResourceDelete)
+}
+
+func TestLoadRepoConfig_StrictResourceDeleteTrue(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "clusters")
+
+	content := "reconcile:\n  mode: local\n  strictResourceDelete: true\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "hyve.yaml"), []byte(content), 0644))
+
+	mgr := newTestManager(stateDir)
+	cfg, err := mgr.LoadRepoConfig()
+	require.NoError(t, err)
+	assert.True(t, cfg.Reconcile.StrictResourceDelete)
+	assert.False(t, cfg.Reconcile.StrictDelete)
 }
 
 func TestLoadRepoConfig_WithLocalMode(t *testing.T) {

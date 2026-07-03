@@ -463,7 +463,7 @@ func executeTemplate(templateName, clusterName, region string, overrides map[str
 	}
 
 	log.Println("\n1️⃣ Reconciling cluster...")
-	shared.RunReconciliation("")
+	shared.RunReconciliation("", false)
 	log.Printf("\n✅ Template execution completed for '%s'", clusterName)
 }
 

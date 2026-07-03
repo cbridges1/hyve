@@ -135,7 +135,9 @@ func GetLocalPath() string {
 }
 
 // RunReconciliation runs reconciliation, optionally from a specific local path.
-func RunReconciliation(repoPath string) {
+// When dryRun is true, the entire cycle is read-only — see
+// reconcile.Reconciler.ReconcileAll for exactly what's gated.
+func RunReconciliation(repoPath string, dryRun bool) {
 	ctx := gocontext.Background()
 
 	var stateMgr *state.Manager
@@ -147,7 +149,7 @@ func RunReconciliation(repoPath string) {
 		}
 		log.Printf("Using local repository path: %s", absPath)
 		stateMgr = CreateStateManagerFromPath(absPath)
-		RunLocalReconciliation(ctx, stateMgr)
+		RunLocalReconciliation(ctx, stateMgr, dryRun)
 		return
 	}
 
@@ -171,6 +173,10 @@ func RunReconciliation(repoPath string) {
 	if repoCfg.Reconcile.Mode == state.ReconcileModeCICD {
 		log.Println("Reconcile mode: cicd")
 		log.Println("Skipping local reconciliation — cluster provisioning will be handled by the CI/CD pipeline.")
+		if dryRun {
+			log.Println("DRY RUN: would push desired state to repository — skipping (this branch only pushes, nothing to preview)")
+			return
+		}
 		log.Println("Pushing desired state to repository...")
 		if err := stateMgr.CommitAndPush(ctx, "Update desired cluster state"); err != nil {
 			log.Printf("❌ Failed to push state: %v", err)
@@ -184,11 +190,12 @@ func RunReconciliation(repoPath string) {
 		return
 	}
 
-	RunLocalReconciliation(ctx, stateMgr)
+	RunLocalReconciliation(ctx, stateMgr, dryRun)
 }
 
-// RunLocalReconciliation performs full local reconciliation.
-func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager) {
+// RunLocalReconciliation performs full local reconciliation. When dryRun is
+// true, nothing is mutated — see reconcile.Reconciler.ReconcileAll.
+func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager, dryRun bool) {
 	clusterDefs, err := stateMgr.LoadClusterDefinitions()
 	if err != nil {
 		log.Fatalf("Failed to load cluster definitions: %v", err)
@@ -201,7 +208,7 @@ func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager) {
 	clusterDefs = stateMgr.OrderClusters(clusterDefs)
 
 	reconciler := reconcile.NewReconciler(stateMgr)
-	if err = reconciler.ReconcileAll(ctx, clusterDefs); err != nil {
+	if err = reconciler.ReconcileAll(ctx, clusterDefs, dryRun); err != nil {
 		log.Fatalf("Reconciliation failed: %v", err)
 	}
 

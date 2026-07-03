@@ -31,7 +31,14 @@ func NewReconciler(stateMgr *state.Manager) *Reconciler {
 
 // ReconcileAll reconciles every cluster definition, looping until all have been
 // processed and the repository state has converged.
-func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.ClusterDefinition) error {
+//
+// When dryRun is true, the whole cycle is read-only: cluster create/delete/
+// scale/workflows and resource apply/delete are all skipped and logged as
+// "would run" instead of executed — see reconcileCluster and
+// reconcileResources for exactly what's gated. Pre-flight validation
+// (hyve.lock presence) still runs and still fails hard, matching Terraform's
+// `plan` failing on invalid config.
+func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.ClusterDefinition, dryRun bool) error {
 	lf, err := module.LoadLockFile(r.stateMgr.LocalPath())
 	if err != nil {
 		return fmt.Errorf("failed to load hyve.lock: %w", err)
@@ -56,14 +63,18 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 	}
 
 	log.Printf("═══════════════════════════════════════════")
-	log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
+	if dryRun {
+		log.Printf("  DRY RUN: previewing %d cluster(s) — nothing will be changed", len(clusterDefs))
+	} else {
+		log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
+	}
 	log.Printf("═══════════════════════════════════════════")
 
-	r.convergenceLoop(ctx, clusterDefs, lf)
+	r.convergenceLoop(ctx, clusterDefs, lf, dryRun)
 	return nil
 }
 
-func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.ClusterDefinition, lf *module.LockFile) []types.ClusterDefinition {
+func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.ClusterDefinition, lf *module.LockFile, dryRun bool) []types.ClusterDefinition {
 	processed := make(map[string]bool)
 	currentDefs := initialDefs
 
@@ -100,7 +111,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 				}
 			}
 
-			if err := r.reconcileCluster(ctx, *next, lf); err != nil {
+			if err := r.reconcileCluster(ctx, *next, lf, dryRun); err != nil {
 				log.Printf("[%s] reconcile error: %v", name, err)
 			}
 		}
@@ -120,7 +131,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 	return currentDefs
 }
 
-func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile) error {
+func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
 	name := cluster.Metadata.Name
 	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
 	resolved, err := module.Resolve(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
@@ -140,28 +151,61 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
+		if dryRun {
+			log.Printf("[%s] DRY RUN: would delete cluster", name)
+			return nil
+		}
 		return r.deleteCluster(ctx, cluster, exec, env, lf)
 
 	case cluster.Spec.Delete && status == "NOT_FOUND":
+		if dryRun {
+			log.Printf("[%s] DRY RUN: already gone in cloud, would remove YAML", name)
+			return nil
+		}
 		log.Printf("[%s] Already gone — removing YAML", name)
 		return r.removeClusterFile(ctx, cluster)
 
 	case !cluster.Spec.Delete && (status == "NOT_FOUND" || status == "FAILED"):
+		if dryRun {
+			log.Printf("[%s] DRY RUN: would create cluster", name)
+			return nil
+		}
 		return r.createCluster(ctx, cluster, exec, env, lf)
 
 	case status == "ACTIVE" && !cluster.Spec.Delete:
+		// Hoisted out of the paramsChanged branch: resource reconciliation
+		// below needs KUBECONFIG regardless of param drift, and must not
+		// assume auth already ran this cycle (the no-drift path previously
+		// never called OperationAuth at all). Calling it once here,
+		// unconditionally, also avoids a redundant double-auth call on
+		// cycles that have both param drift and resource work. Auth itself
+		// is read-only (credential/kubeconfig setup) so it still runs for
+		// real even in dry-run — kubectl diff needs it to reach the live
+		// cluster.
+		if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+			log.Printf("[%s] Warning: auth failed: %v", name, authErr)
+		}
+
 		if r.paramsChanged(cluster) {
-			log.Printf("[%s] Param drift detected — scaling", name)
-			if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
-				log.Printf("[%s] Warning: auth failed before scale: %v", name, authErr)
-			}
-			r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
-			if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
-				log.Printf("[%s] Warning: scale failed: %v", name, scaleErr)
+			if dryRun {
+				log.Printf("[%s] DRY RUN: param drift detected — would run PreReconcile workflows and scale", name)
+			} else {
+				log.Printf("[%s] Param drift detected — scaling", name)
+				r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
+				if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
+					log.Printf("[%s] Warning: scale failed: %v", name, scaleErr)
+				}
 			}
 		} else {
 			log.Printf("[%s] Up to date — no action needed", name)
 		}
+
+		repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
+		if cfgErr != nil {
+			log.Printf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
+			repoCfg = &state.RepoConfig{}
+		}
+		return r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 
 	case status == "CREATING" || status == "UPDATING" || status == "DELETING":
 		log.Printf("[%s] Operation in progress (%s) — skipping", name, status)

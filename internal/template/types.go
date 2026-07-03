@@ -57,6 +57,7 @@ type TemplateSpec struct {
 	Params    map[string]string     `yaml:"params,omitempty"`
 	Region    string                `yaml:"region,omitempty"`
 	Workflows TemplateWorkflowsSpec `yaml:"workflows,omitempty"`
+	Resources []types.ResourceRef   `yaml:"resources,omitempty"`
 
 	// Schedule is a 5-field cron expression (e.g. "0 20 * * 5").
 	// At template execution time the next occurrence is calculated and written

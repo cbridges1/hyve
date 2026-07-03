@@ -80,7 +80,7 @@ func resolveFile(ps ParsedSource, lf *module.LockFile) (*ResolvedWorkflowFile, e
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", ps.Version, canonicalSource, err)
 	}
 
-	archiveDir, cleanup, err := fetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref)
+	archiveDir, cleanup, err := FetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func resolveDir(ps ParsedSource) ([]*ResolvedWorkflowFile, error) {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", ps.Version, ps.RepoSource(), err)
 	}
 
-	archiveDir, cleanup, err := fetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref)
+	archiveDir, cleanup, err := FetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -130,10 +130,12 @@ func resolveDir(ps ParsedSource) ([]*ResolvedWorkflowFile, error) {
 	return files, nil
 }
 
-// fetchRepoArchive downloads+extracts the WHOLE repo at ref into a temp dir
+// FetchRepoArchive downloads+extracts the WHOLE repo at ref into a temp dir
 // (module.DownloadAndExtract with subdir=""), returning the dir and a
-// cleanup func the caller must defer.
-func fetchRepoArchive(host, org, repo, ref string) (dir string, cleanup func(), err error) {
+// cleanup func the caller must defer. Exported so internal/resourceref can
+// reuse this fetch primitive rather than reimplementing the temp-dir +
+// download wrapper a third time.
+func FetchRepoArchive(host, org, repo, ref string) (dir string, cleanup func(), err error) {
 	downloadURL := fmt.Sprintf("https://%s/%s/%s/archive/%s.tar.gz", host, org, repo, ref)
 	tmpDir, err := os.MkdirTemp("", "hyve-workflowref-*")
 	if err != nil {

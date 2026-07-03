@@ -163,5 +163,5 @@ func markClusterForDeletion(clusterName string) {
 	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Mark cluster %s for deletion", clusterName))
 	log.Printf("📝 Cluster '%s' marked for deletion", clusterName)
 	log.Printf("   Reconciler will run onDelete workflows, delete via the module, and remove the YAML.")
-	shared.RunReconciliation("")
+	shared.RunReconciliation("", false)
 }

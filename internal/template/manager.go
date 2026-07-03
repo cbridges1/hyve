@@ -194,6 +194,7 @@ func (t *Template) GenerateClusterDefinition(name, region string, overrides map[
 				OnDelete:     t.Spec.Workflows.OnDelete,
 				AfterDelete:  t.Spec.Workflows.AfterDelete,
 			},
+			Resources: t.Spec.Resources,
 		},
 	}
 }

@@ -138,6 +138,16 @@ type ClusterSpec struct {
 
 	Workflows WorkflowsSpec `yaml:"workflows,omitempty"`
 
+	// Resources declares Kubernetes manifests hyve should own, drift-check, and
+	// re-apply on every reconcile cycle for an ACTIVE cluster — unconditionally,
+	// not gated by param drift. See ResourceRef.
+	Resources []ResourceRef `yaml:"resources,omitempty"`
+
+	// AppliedResources is reconciler-owned state tracking what Resources entries
+	// are currently applied, keyed by ResourceRef.Name. Mirrors DriverOutputs —
+	// never hand-edit.
+	AppliedResources map[string]*AppliedResource `yaml:"appliedResources,omitempty"`
+
 	// PendingWorkflows is a Git-audited queue of one-off workflow runs. Entries without
 	// a runAt execute immediately on the next reconcile; entries with a runAt execute
 	// when the current time is at or past that timestamp. The reconciler removes entries
