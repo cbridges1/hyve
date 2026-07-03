@@ -251,6 +251,20 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
+
+	// Apply spec.resources on the same cycle the cluster is created, rather
+	// than waiting for the next ACTIVE-branch reconcile. A failure here is a
+	// warning, not a hard error, matching the soft-failure convention already
+	// used for everything else past OperationCreate in this function.
+	repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
+	if cfgErr != nil {
+		log.Printf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
+		repoCfg = &state.RepoConfig{}
+	}
+	if resErr := r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
+		log.Printf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
+	}
+
 	return nil
 }
 
