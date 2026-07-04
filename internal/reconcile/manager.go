@@ -265,6 +265,12 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 		log.Printf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
 	}
 
+	// Runs after spec.resources so afterCreate workflows can rely on resource-created
+	// objects (namespaces, Deployments) already existing — unlike onCreate, which runs
+	// before resources. Fires regardless of the resource-reconciliation outcome above,
+	// matching this function's existing soft-failure convention.
+	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterCreate, cluster, env, lf)
+
 	return nil
 }
 

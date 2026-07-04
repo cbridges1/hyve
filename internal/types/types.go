@@ -70,7 +70,8 @@ func (r WorkflowRef) MarshalYAML() (interface{}, error) {
 // WorkflowsSpec defines workflows to run on cluster lifecycle events
 type WorkflowsSpec struct {
 	BeforeCreate []WorkflowRef `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
-	OnCreate     []WorkflowRef `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
+	OnCreate     []WorkflowRef `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation, before spec.resources applies
+	AfterCreate  []WorkflowRef `yaml:"afterCreate,omitempty"`  // Workflows to run after cluster creation, after spec.resources has applied
 	OnDelete     []WorkflowRef `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
 	AfterDelete  []WorkflowRef `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
 	PreReconcile []WorkflowRef `yaml:"preReconcile,omitempty"` // Workflows to run before reconcile pre-flight (no kubeconfig)
@@ -81,6 +82,7 @@ func (ws *WorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	type raw struct {
 		BeforeCreate []WorkflowRef `yaml:"beforeCreate,omitempty"`
 		OnCreate     []WorkflowRef `yaml:"onCreate,omitempty"`
+		AfterCreate  []WorkflowRef `yaml:"afterCreate,omitempty"`
 		OnDelete     []WorkflowRef `yaml:"onDelete,omitempty"`
 		OnDestroy    []WorkflowRef `yaml:"onDestroy,omitempty"` // deprecated: use onDelete
 		AfterDelete  []WorkflowRef `yaml:"afterDelete,omitempty"`
@@ -92,6 +94,7 @@ func (ws *WorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	}
 	ws.BeforeCreate = r.BeforeCreate
 	ws.OnCreate = r.OnCreate
+	ws.AfterCreate = r.AfterCreate
 	ws.OnDelete = r.OnDelete
 	ws.AfterDelete = r.AfterDelete
 	ws.PreReconcile = r.PreReconcile

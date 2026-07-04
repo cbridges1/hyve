@@ -11,7 +11,8 @@ type TemplateMetadata struct {
 // TemplateWorkflowsSpec defines workflows to run on cluster lifecycle events
 type TemplateWorkflowsSpec struct {
 	BeforeCreate []types.WorkflowRef `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
-	OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
+	OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation, before spec.resources applies
+	AfterCreate  []types.WorkflowRef `yaml:"afterCreate,omitempty"`  // Workflows to run after cluster creation, after spec.resources has applied
 	OnDelete     []types.WorkflowRef `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
 	AfterDelete  []types.WorkflowRef `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
 }
@@ -21,6 +22,7 @@ func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error
 	type raw struct {
 		BeforeCreate []types.WorkflowRef `yaml:"beforeCreate,omitempty"`
 		OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty"`
+		AfterCreate  []types.WorkflowRef `yaml:"afterCreate,omitempty"`
 		OnDelete     []types.WorkflowRef `yaml:"onDelete,omitempty"`
 		OnDestroy    []types.WorkflowRef `yaml:"onDestroy,omitempty"` // deprecated: rename to onDelete in YAML
 		AfterDelete  []types.WorkflowRef `yaml:"afterDelete,omitempty"`
@@ -31,6 +33,7 @@ func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error
 	}
 	ws.BeforeCreate = r.BeforeCreate
 	ws.OnCreate = r.OnCreate
+	ws.AfterCreate = r.AfterCreate
 	ws.OnDelete = r.OnDelete
 	ws.AfterDelete = r.AfterDelete
 	if len(ws.OnDelete) == 0 && len(r.OnDestroy) > 0 {

@@ -249,6 +249,9 @@ func createTemplate(
 	if wf := tmpl.Spec.Workflows.OnCreate; len(wf) > 0 {
 		log.Printf("  OnCreate: %s", joinWorkflowRefs(wf))
 	}
+	if wf := tmpl.Spec.Workflows.AfterCreate; len(wf) > 0 {
+		log.Printf("  AfterCreate: %s", joinWorkflowRefs(wf))
+	}
 	if wf := tmpl.Spec.Workflows.OnDelete; len(wf) > 0 {
 		log.Printf("  OnDelete: %s", joinWorkflowRefs(wf))
 	}
@@ -303,6 +306,9 @@ func listTemplates() {
 		}
 		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
 			log.Printf("    OnCreate: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnCreate))
+		}
+		if len(tmpl.Spec.Workflows.AfterCreate) > 0 {
+			log.Printf("    AfterCreate: %s", joinWorkflowRefs(tmpl.Spec.Workflows.AfterCreate))
 		}
 		if len(tmpl.Spec.Workflows.OnDelete) > 0 {
 			log.Printf("    OnDelete: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnDelete))
@@ -429,6 +435,9 @@ func executeTemplate(templateName, clusterName, region string, overrides map[str
 	if len(tmpl.Spec.Workflows.OnCreate) > 0 {
 		log.Printf("  OnCreate Workflows: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnCreate))
 	}
+	if len(tmpl.Spec.Workflows.AfterCreate) > 0 {
+		log.Printf("  AfterCreate Workflows: %s", joinWorkflowRefs(tmpl.Spec.Workflows.AfterCreate))
+	}
 	if len(tmpl.Spec.Workflows.OnDelete) > 0 {
 		log.Printf("  OnDelete Workflows: %s", joinWorkflowRefs(tmpl.Spec.Workflows.OnDelete))
 	}
@@ -509,7 +518,7 @@ func validateTemplate(name string) {
 	}
 
 	hasLocalWorkflowRefs := false
-	for _, ref := range append(append([]types.WorkflowRef{}, tmpl.Spec.Workflows.OnCreate...), tmpl.Spec.Workflows.OnDelete...) {
+	for _, ref := range append(append(append([]types.WorkflowRef{}, tmpl.Spec.Workflows.OnCreate...), tmpl.Spec.Workflows.AfterCreate...), tmpl.Spec.Workflows.OnDelete...) {
 		if !ref.IsRemote() {
 			hasLocalWorkflowRefs = true
 			break
@@ -530,6 +539,11 @@ func validateTemplate(name string) {
 				for _, ref := range tmpl.Spec.Workflows.OnCreate {
 					if !ref.IsRemote() && !workflowMap[ref.Name] {
 						warnings = append(warnings, fmt.Sprintf("OnCreate workflow '%s' not found in repository", ref.Name))
+					}
+				}
+				for _, ref := range tmpl.Spec.Workflows.AfterCreate {
+					if !ref.IsRemote() && !workflowMap[ref.Name] {
+						warnings = append(warnings, fmt.Sprintf("AfterCreate workflow '%s' not found in repository", ref.Name))
 					}
 				}
 				for _, ref := range tmpl.Spec.Workflows.OnDelete {

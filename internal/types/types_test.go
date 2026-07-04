@@ -66,6 +66,22 @@ onCreate:
 	assert.True(t, ws.OnCreate[1].IsRemote())
 }
 
+func TestWorkflowsSpecUnmarshalYAML_AfterCreate(t *testing.T) {
+	doc := `
+onCreate:
+  - deploy-podinfo
+afterCreate:
+  - deploy-pangolin-node
+  - deploy-wireguard
+`
+	var ws WorkflowsSpec
+	require.NoError(t, yaml.Unmarshal([]byte(doc), &ws))
+	require.Len(t, ws.OnCreate, 1)
+	require.Len(t, ws.AfterCreate, 2)
+	assert.Equal(t, "deploy-pangolin-node", ws.AfterCreate[0].Name)
+	assert.Equal(t, "deploy-wireguard", ws.AfterCreate[1].Name)
+}
+
 func TestWorkflowsSpecUnmarshalYAML_OnDestroyMigrationStillWorks(t *testing.T) {
 	doc := `
 onDestroy:
