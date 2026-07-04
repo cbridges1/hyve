@@ -66,6 +66,7 @@ func interactiveGitRepo() error {
 						huh.NewOption("Add repository", "add"),
 						huh.NewOption("Use (switch to) repository", "use"),
 						huh.NewOption("Show status", "status"),
+						huh.NewOption("Move repository local path", "set-path"),
 						huh.NewOption("Remove repository", "remove"),
 						huh.NewOption("← Back", "back"),
 					).
@@ -91,6 +92,10 @@ func interactiveGitRepo() error {
 			if err := interactiveGitRepoUse(); err != nil && err != shared.ErrBack {
 				return err
 			}
+		case "set-path":
+			if err := interactiveGitRepoSetPath(); err != nil && err != shared.ErrBack {
+				return err
+			}
 		case "remove":
 			if err := interactiveGitRepoRemove(); err != nil && err != shared.ErrBack {
 				return err
@@ -99,10 +104,55 @@ func interactiveGitRepo() error {
 	}
 }
 
+func interactiveGitRepoSetPath() error {
+	name := ""
+	if err := shared.SelectFromList("Repository to move", shared.FetchGitRepoNames(), &name); err != nil {
+		return err
+	}
+
+	const customKey = "__custom__"
+	const defaultKey = "__default__"
+
+	var choice string
+	err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("New location").
+				Options(
+					huh.NewOption("Enter a custom path...", customKey),
+					huh.NewOption("Reset to default (~/.hyve/repositories/<name>)", defaultKey),
+				).
+				Value(&choice),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	if choice == defaultKey {
+		resetRepoPath(name)
+		return nil
+	}
+
+	var newPath string
+	err = shared.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title("New local path").Validate(shared.RequireNotEmpty).Value(&newPath),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+
+	setRepoPath(name, newPath)
+	return nil
+}
+
 func interactiveGitRepoAdd() error {
 	var (
 		name       string
 		repoURL    string
+		localPath  string
 		setCurrent bool
 	)
 
@@ -110,6 +160,7 @@ func interactiveGitRepoAdd() error {
 		huh.NewGroup(
 			huh.NewInput().Title("Repository alias").Placeholder("production").Validate(shared.RequireNotEmpty).Value(&name),
 			huh.NewInput().Title("Repository URL").Placeholder("https://github.com/org/hyve-state.git").Validate(shared.RequireNotEmpty).Value(&repoURL),
+			huh.NewInput().Title("Local clone path (optional)").Placeholder("leave blank for ~/.hyve/repositories/<alias>").Value(&localPath),
 			huh.NewConfirm().
 				Title("Set as current active repository?").
 				Affirmative("Yes").
@@ -121,7 +172,7 @@ func interactiveGitRepoAdd() error {
 		return err
 	}
 
-	addGitRepository(name, repoURL, setCurrent)
+	addGitRepository(name, repoURL, setCurrent, localPath)
 	return nil
 }
 
