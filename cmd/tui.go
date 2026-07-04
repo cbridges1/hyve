@@ -12,8 +12,8 @@ import (
 	"github.com/cbridges1/hyve/cmd/workflow"
 )
 
-var interactiveCmd = &cobra.Command{
-	Use:   "interactive",
+var tuiCmd = &cobra.Command{
+	Use:   "tui",
 	Short: "Launch the interactive TUI",
 	Long:  "Navigate and run any Hyve command through a guided terminal user interface.",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -67,8 +67,4 @@ var interactiveCmd = &cobra.Command{
 			}
 		}
 	},
-}
-
-func init() {
-	interactiveCmd.Aliases = []string{"tui"}
 }
