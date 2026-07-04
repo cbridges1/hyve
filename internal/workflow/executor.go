@@ -113,6 +113,15 @@ func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName st
 	e.execution = execution
 	e.addLog("INFO", "", "", fmt.Sprintf("Starting workflow '%s'", displayName))
 
+	// Apply caller-injected variables (--set flags, or values the interactive TUI
+	// collected for spec.inputs) before requirements validation, so a --set/prompted
+	// value can satisfy a spec.requirements.secrets entry of the same name.
+	// Previously this only happened in setupEnvironmentVariables, which runs after
+	// validation — meaning no --set or prompted value could ever satisfy a
+	// requirements.secrets check, only a variable already present in the process
+	// environment before hyve was invoked at all.
+	e.applyInjectedVars()
+
 	// Validate workflow requirements
 	if wf.Spec.Requirements != nil {
 		e.addLog("INFO", "", "", "Validating workflow requirements...")
@@ -188,12 +197,19 @@ func (e *Executor) setupEnvironmentVariables(workflow *Workflow) error {
 	}
 
 	// Apply caller-injected variables last — highest priority, override everything above
+	e.applyInjectedVars()
+
+	return nil
+}
+
+// applyInjectedVars exports e.injectedVars (--set flags, or values the interactive
+// TUI collected for spec.inputs) into both e.variables and the process
+// environment. Idempotent — safe to call more than once per run.
+func (e *Executor) applyInjectedVars() {
 	for k, v := range e.injectedVars {
 		e.variables[k] = v
 		os.Setenv(k, v)
 	}
-
-	return nil
 }
 
 // exportDefinitionEnvironmentVariables injects HYVE_* variables derived from a cluster

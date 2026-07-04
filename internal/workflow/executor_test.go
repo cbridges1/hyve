@@ -425,3 +425,35 @@ func TestRunWorkflow_EnvVarsAvailableToSteps(t *testing.T) {
 	_, err = exec.RunWorkflow(context.Background(), "env-test", "")
 	require.NoError(t, err)
 }
+
+func TestRunWorkflow_InjectedVarSatisfiesRequiredSecret(t *testing.T) {
+	mgr, _ := setupTestEnvironment(t)
+
+	wf := &Workflow{
+		Metadata: WorkflowMetadata{Name: "needs-secret"},
+		Spec: WorkflowSpec{
+			Requirements: &WorkflowRequirements{
+				Secrets: []SecretRequirement{
+					{Name: "TEST_INJECTED_SECRET_XYZ", Required: true},
+				},
+			},
+			Jobs: []WorkflowJob{
+				{
+					Name:  "use-secret",
+					Steps: []WorkflowStep{{Name: "check", Command: "test -n \"$TEST_INJECTED_SECRET_XYZ\""}},
+				},
+			},
+		},
+	}
+	require.NoError(t, mgr.CreateWorkflow(wf))
+
+	exec, err := NewExecutor(mgr, "")
+	require.NoError(t, err)
+	// Simulates --set TEST_INJECTED_SECRET_XYZ=... or a TUI-prompted spec.inputs
+	// value — neither is a real process env var before RunWorkflow is called.
+	exec.InjectVars(map[string]string{"TEST_INJECTED_SECRET_XYZ": "value-from-set-flag"})
+
+	result, err := exec.RunWorkflow(context.Background(), "needs-secret", "")
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, result.Status)
+}
