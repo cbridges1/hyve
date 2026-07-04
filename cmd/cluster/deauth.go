@@ -1,4 +1,4 @@
-package kubeconfig
+package cluster
 
 import (
 	"log"
@@ -10,30 +10,14 @@ import (
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 )
 
-// Cmd is the root kubeconfig command exposed to the parent.
-var Cmd = kubeconfigCmd
-
-var kubeconfigCmd = &cobra.Command{
-	Use:   "kubeconfig",
-	Short: "Manage kubeconfig contexts",
-	Long: `Commands to manage kubectl contexts in ~/.kube/config.
-
-Kubeconfigs are configured by running 'hyve cluster auth <name>', which
-executes the module's auth operation (e.g. civo kubernetes config --save)
-and merges the cluster context into ~/.kube/config automatically.`,
-}
-
-var kubeconfigRemoveCmd = &cobra.Command{
-	Use:   "remove [cluster-name]",
-	Short: "Remove a cluster context from ~/.kube/config",
+var deauthCmd = &cobra.Command{
+	Use:   "deauth [cluster-name]",
+	Short: "Remove a cluster's context from ~/.kube/config",
+	Long:  "Remove the context, cluster, and user entries a previous `hyve cluster auth` added to ~/.kube/config.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		removeFromKubeConfig(args[0])
 	},
-}
-
-func init() {
-	kubeconfigCmd.AddCommand(kubeconfigRemoveCmd)
 }
 
 func removeFromKubeConfig(clusterName string) {

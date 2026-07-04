@@ -8,7 +8,6 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/cluster"
 	gitpkg "github.com/cbridges1/hyve/cmd/git"
-	"github.com/cbridges1/hyve/cmd/kubeconfig"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
@@ -69,7 +68,6 @@ func init() {
 	rootCmd.AddCommand(reconcileCmd)
 	rootCmd.AddCommand(cluster.Cmd)
 	rootCmd.AddCommand(gitpkg.Cmd)
-	rootCmd.AddCommand(kubeconfig.Cmd)
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)

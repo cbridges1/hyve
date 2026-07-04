@@ -6,7 +6,6 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/cluster"
 	gitpkg "github.com/cbridges1/hyve/cmd/git"
-	"github.com/cbridges1/hyve/cmd/kubeconfig"
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
@@ -24,11 +23,10 @@ var tuiCmd = &cobra.Command{
 					huh.NewSelect[string]().
 						Title("Hyve — what would you like to do?").
 						Options(
-							huh.NewOption("cluster    — list, inspect, delete, auth", "cluster"),
-							huh.NewOption("template   — create, execute, manage templates", "template"),
-							huh.NewOption("git        — manage Git repositories", "git"),
-							huh.NewOption("workflow   — automated pipelines", "workflow"),
-							huh.NewOption("kubeconfig — cluster access", "kubeconfig"),
+							huh.NewOption("cluster  — list, inspect, delete, auth/deauth", "cluster"),
+							huh.NewOption("template — create, execute, manage templates", "template"),
+							huh.NewOption("git      — manage Git repositories", "git"),
+							huh.NewOption("workflow — automated pipelines", "workflow"),
 							huh.NewOption("Quit", "quit"),
 						).
 						Value(&section),
@@ -55,8 +53,6 @@ var tuiCmd = &cobra.Command{
 				runErr = gitpkg.RunInteractive()
 			case "workflow":
 				runErr = workflow.RunInteractive()
-			case "kubeconfig":
-				runErr = kubeconfig.RunInteractive()
 			}
 			// ErrBack from a top-level section just returns to this menu
 			if runErr == huh.ErrUserAborted {

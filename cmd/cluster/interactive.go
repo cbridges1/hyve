@@ -17,7 +17,8 @@ func RunInteractive() error {
 					Options(
 						huh.NewOption("List clusters", "list"),
 						huh.NewOption("Show cluster details", "show"),
-						huh.NewOption("Configure kubeconfig", "auth"),
+						huh.NewOption("Configure kubeconfig (auth)", "auth"),
+						huh.NewOption("Remove kubeconfig context (deauth)", "deauth"),
 						huh.NewOption("Delete a cluster", "delete"),
 						huh.NewOption("← Back", "back"),
 					).
@@ -39,6 +40,10 @@ func RunInteractive() error {
 			}
 		case "auth":
 			if err := interactiveClusterAuth(); err != nil && err != shared.ErrBack {
+				return err
+			}
+		case "deauth":
+			if err := interactiveClusterDeauth(); err != nil && err != shared.ErrBack {
 				return err
 			}
 		case "delete":
@@ -64,6 +69,33 @@ func interactiveClusterAuth() error {
 		return err
 	}
 	runClusterAuth(name, "")
+	return nil
+}
+
+func interactiveClusterDeauth() error {
+	name := ""
+	if err := shared.SelectFromList("Cluster to remove context for", shared.FetchClusterNames(), &name); err != nil {
+		return err
+	}
+
+	var confirm bool
+	err := shared.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Remove context '" + name + "' from ~/.kube/config?").
+				Affirmative("Yes, remove").
+				Negative("Cancel").
+				Value(&confirm),
+		),
+	).Run()
+	if err != nil {
+		return err
+	}
+	if !confirm {
+		return nil
+	}
+
+	removeFromKubeConfig(name)
 	return nil
 }
 

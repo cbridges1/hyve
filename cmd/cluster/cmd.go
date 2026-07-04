@@ -42,4 +42,5 @@ func init() {
 	Cmd.AddCommand(showCmd)
 	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(authCmd)
+	Cmd.AddCommand(deauthCmd)
 }
