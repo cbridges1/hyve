@@ -2,70 +2,70 @@ package module
 
 // ModuleManifest is parsed from module.yaml inside a module directory.
 type ModuleManifest struct {
-	APIVersion string         `yaml:"apiVersion"`
-	Kind       string         `yaml:"kind"`
-	Metadata   ModuleMetadata `yaml:"metadata"`
-	Spec       ModuleSpec     `yaml:"spec"`
+	APIVersion string         `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string         `yaml:"kind" json:"kind"`
+	Metadata   ModuleMetadata `yaml:"metadata" json:"metadata"`
+	Spec       ModuleSpec     `yaml:"spec" json:"spec"`
 }
 
 type ModuleMetadata struct {
-	Name        string   `yaml:"name"`
-	Version     string   `yaml:"version"`
-	Description string   `yaml:"description,omitempty"`
-	Author      string   `yaml:"author,omitempty"`
-	License     string   `yaml:"license,omitempty"`
-	Tags        []string `yaml:"tags,omitempty"`
-	Type        string   `yaml:"type,omitempty"`
+	Name        string   `yaml:"name" json:"name"`
+	Version     string   `yaml:"version" json:"version"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Author      string   `yaml:"author,omitempty" json:"author,omitempty"`
+	License     string   `yaml:"license,omitempty" json:"license,omitempty"`
+	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Type        string   `yaml:"type,omitempty" json:"type,omitempty"`
 }
 
 type ModuleSpec struct {
-	Runner         RunnerConfig       `yaml:"runner,omitempty"`
-	Params         []ParamSpec        `yaml:"params,omitempty"`
-	Requirements   ModuleRequirements `yaml:"requirements,omitempty"`
-	StatusCacheTTL string             `yaml:"statusCacheTTL,omitempty"`
+	Runner         RunnerConfig       `yaml:"runner,omitempty" json:"runner,omitempty"`
+	Params         []ParamSpec        `yaml:"params,omitempty" json:"params,omitempty"`
+	Requirements   ModuleRequirements `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	StatusCacheTTL string             `yaml:"statusCacheTTL,omitempty" json:"statusCacheTTL,omitempty"`
 }
 
 type RunnerConfig struct {
-	Image string `yaml:"image,omitempty"`
+	Image string `yaml:"image,omitempty" json:"image,omitempty"`
 }
 
 type ParamSpec struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description,omitempty"`
-	Default     string   `yaml:"default,omitempty"`
-	Required    bool     `yaml:"required,omitempty"`
-	Choices     []string `yaml:"choices,omitempty"`
+	Name        string   `yaml:"name" json:"name"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Default     string   `yaml:"default,omitempty" json:"default,omitempty"`
+	Required    bool     `yaml:"required,omitempty" json:"required,omitempty"`
+	Choices     []string `yaml:"choices,omitempty" json:"choices,omitempty"`
 }
 
 type ModuleRequirements struct {
-	Env   []EnvRequirement  `yaml:"env,omitempty"`
-	Tools []ToolRequirement `yaml:"tools,omitempty"`
+	Env   []EnvRequirement  `yaml:"env,omitempty" json:"env,omitempty"`
+	Tools []ToolRequirement `yaml:"tools,omitempty" json:"tools,omitempty"`
 }
 
 type EnvRequirement struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Injected    bool   `yaml:"injected,omitempty"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Injected    bool   `yaml:"injected,omitempty" json:"injected,omitempty"`
 }
 
 type ToolRequirement struct {
-	Name        string `yaml:"name"`
-	Version     string `yaml:"version,omitempty"`
-	Description string `yaml:"description,omitempty"`
+	Name        string `yaml:"name" json:"name"`
+	Version     string `yaml:"version,omitempty" json:"version,omitempty"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 // LockFile represents hyve.lock.
 type LockFile struct {
-	Version   int                        `yaml:"version"`
-	Modules   map[string]*LockedModule   `yaml:"modules"`
-	Workflows map[string]*LockedWorkflow `yaml:"workflows,omitempty"`
+	Version   int                        `yaml:"version" json:"version"`
+	Modules   map[string]*LockedModule   `yaml:"modules" json:"modules"`
+	Workflows map[string]*LockedWorkflow `yaml:"workflows,omitempty" json:"workflows,omitempty"`
 }
 
 type LockedModule struct {
-	Source   string       `yaml:"source"`
-	Resolved string       `yaml:"resolved"`
-	SHA256   string       `yaml:"sha256"`
-	Runner   LockedRunner `yaml:"runner,omitempty"`
+	Source   string       `yaml:"source" json:"source"`
+	Resolved string       `yaml:"resolved" json:"resolved"`
+	SHA256   string       `yaml:"sha256" json:"sha256"`
+	Runner   LockedRunner `yaml:"runner,omitempty" json:"runner,omitempty"`
 }
 
 // LockedWorkflow is one resolved, content-hashed remote workflow file. Unlike
@@ -73,15 +73,15 @@ type LockedModule struct {
 // to find a locked entry by bare name, which modules never need since a
 // cluster's driver is always referenced by an explicit source+version.
 type LockedWorkflow struct {
-	Name     string `yaml:"name"`
-	Source   string `yaml:"source"`   // canonical "host/org/repo//path/file.yaml" — never a directory
-	Resolved string `yaml:"resolved"` // full download URL for this exact file at the pinned ref
-	SHA256   string `yaml:"sha256"`   // sha256 of this file's raw bytes only
+	Name     string `yaml:"name" json:"name"`
+	Source   string `yaml:"source" json:"source"`     // canonical "host/org/repo//path/file.yaml" — never a directory
+	Resolved string `yaml:"resolved" json:"resolved"` // full download URL for this exact file at the pinned ref
+	SHA256   string `yaml:"sha256" json:"sha256"`     // sha256 of this file's raw bytes only
 }
 
 type LockedRunner struct {
-	Image  string `yaml:"image,omitempty"`
-	Digest string `yaml:"digest,omitempty"`
+	Image  string `yaml:"image,omitempty" json:"image,omitempty"`
+	Digest string `yaml:"digest,omitempty" json:"digest,omitempty"`
 }
 
 // ClusterAuth is parsed from auth.yaml (kind: ClusterAuth).

@@ -570,8 +570,9 @@ func showGitStatus() {
 		log.Fatalf("Failed to create git backend: %v", err)
 	}
 
-	if err := gitMgr.Clone(ctx); err != nil {
-		log.Printf("❌ Connection failed: %v", err)
+	report := internalgit.Status(ctx, gitMgr)
+	if !report.Connected {
+		log.Printf("❌ Connection failed: %s", report.Error)
 	} else {
 		log.Println("✅ Connection successful")
 	}
@@ -969,57 +970,31 @@ func syncGitChanges(message string) {
 		log.Fatalf("Failed to create git backend: %v", err)
 	}
 
-	if err := gitMgr.InitializeRepo(ctx); err != nil {
-		log.Fatalf("Failed to initialize repository: %v", err)
-	}
-
-	currentBranch, err := gitMgr.GetCurrentBranch(ctx)
+	report, err := internalgit.Sync(ctx, gitMgr, message)
 	if err != nil {
-		log.Fatalf("Failed to get current branch: %v", err)
+		log.Fatalf("%v", err)
 	}
 
-	log.Printf("🔄 Syncing branch '%s' with remote...", currentBranch)
+	log.Printf("🔄 Syncing branch '%s' with remote...", report.Branch)
 
 	log.Println("1. Pulling latest changes from remote...")
-	if err := gitMgr.Pull(ctx); err != nil {
-		log.Printf("⚠️  Failed to pull changes: %v", err)
+	if report.PullWarning != "" {
+		log.Printf("⚠️  Failed to pull changes: %s", report.PullWarning)
 	} else {
 		log.Println("✅ Pulled latest changes")
 	}
 
-	hasChanges, err := gitMgr.HasUncommittedChanges(ctx)
-	if err != nil {
-		log.Fatalf("Failed to check for changes: %v", err)
-	}
-
-	if !hasChanges {
+	if !report.HadChanges {
 		log.Println("\n✅ Repository is synchronized")
 		log.Println("💡 No local changes to push")
 		return
 	}
 
-	statusSummary, err := gitMgr.GetStatusSummary(ctx)
-	if err != nil {
-		log.Fatalf("Failed to get status: %v", err)
-	}
-
-	log.Printf("\n2. Local changes detected: %s", statusSummary)
-
-	if message == "" {
-		message = "Update repository state"
-	}
-
+	log.Printf("\n2. Local changes detected: %s", report.StatusSummary)
 	log.Println("3. Committing local changes...")
-	if err := gitMgr.Commit(ctx, message); err != nil {
-		log.Fatalf("Failed to commit changes: %v", err)
-	}
 	log.Println("✅ Changes committed")
-
 	log.Println("4. Pushing to remote...")
-	if err := gitMgr.Push(ctx); err != nil {
-		log.Fatalf("Failed to push changes: %v", err)
-	}
 	log.Println("✅ Changes pushed")
 
-	log.Printf("\n✅ Branch '%s' is now fully synchronized", currentBranch)
+	log.Printf("\n✅ Branch '%s' is now fully synchronized", report.Branch)
 }

@@ -29,38 +29,16 @@ Examples:
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
 
-		lf, err := mod.LoadLockFile(repoPath)
-		if err != nil {
-			log.Fatalf("Failed to load lock file: %v", err)
-		}
-
 		log.Printf("Resolving %s@%s...", source, version)
-		resolved, err := mod.Resolve(source, version, nil, repoPath)
+		lockVersion, resolved, alreadyLocked, err := mod.AddModule(repoPath, source, version)
 		if err != nil {
-			log.Fatalf("Failed to resolve module: %v", err)
+			log.Fatalf("%v", err)
 		}
-
-		// Use the canonical resolved version (e.g. "v1.2.3") as the lock key,
-		// not the user-supplied version string (which may be "latest" or a constraint).
-		lockVersion := resolved.Version
-		if lockVersion == "" {
-			lockVersion = version
-		}
-
-		if lf.GetLocked(source, lockVersion) != nil {
+		if alreadyLocked {
 			log.Printf("Already locked: %s@%s", source, lockVersion)
 			return
 		}
 
-		lf.SetLocked(source, lockVersion, &mod.LockedModule{
-			Source:   source,
-			Resolved: resolved.Resolved,
-			SHA256:   resolved.SHA256,
-			Runner:   resolved.Runner,
-		})
-		if err := mod.SaveLockFile(repoPath, lf); err != nil {
-			log.Fatalf("Failed to save lock file: %v", err)
-		}
 		log.Printf("Locked %s@%s (sha256: %s)", source, lockVersion, resolved.SHA256)
 		shared.CommitStateChanges(ctx, stateMgr, "chore: add module "+source+"@"+lockVersion)
 	},

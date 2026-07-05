@@ -20,17 +20,14 @@ var removeCmd = &cobra.Command{
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
-		lf, err := mod.LoadLockFile(repoPath)
+
+		removed, err := mod.RemoveModule(repoPath, source, version)
 		if err != nil {
-			log.Fatalf("Failed to load lock file: %v", err)
+			log.Fatalf("%v", err)
 		}
-		if lf.GetLocked(source, version) == nil {
+		if !removed {
 			log.Printf("Not locked: %s@%s", source, version)
 			return
-		}
-		lf.RemoveLocked(source, version)
-		if err := mod.SaveLockFile(repoPath, lf); err != nil {
-			log.Fatalf("Failed to save lock file: %v", err)
 		}
 		log.Printf("✅ Removed %s@%s from hyve.lock", source, version)
 		shared.CommitStateChanges(ctx, stateMgr, "chore: remove module "+source+"@"+version)

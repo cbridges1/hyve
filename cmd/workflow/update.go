@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	mod "github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/workflowref"
 )
 
@@ -25,30 +24,15 @@ unlike a version-argument command, there is no separate <version> argument.`,
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
 
-		lf, err := mod.LoadLockFile(repoPath)
-		if err != nil {
-			log.Fatalf("Failed to load lock file: %v", err)
-		}
-
 		log.Printf("Re-resolving %s ...", source)
-		// nil lf forces a full re-resolve, bypassing any cache short-circuit.
-		files, err := workflowref.Resolve(source, pathFlag, nil)
+		updated, err := workflowref.Update(repoPath, source, pathFlag)
 		if err != nil {
-			log.Fatalf("Failed to resolve workflow: %v", err)
+			log.Fatalf("%v", err)
 		}
-		for _, f := range files {
-			lf.SetLockedWorkflow(f.CanonicalSource, f.RawVersion, &mod.LockedWorkflow{
-				Name:     f.Name,
-				Source:   f.CanonicalSource,
-				Resolved: f.Resolved,
-				SHA256:   f.SHA256,
-			})
+		for _, f := range updated {
 			log.Printf("✅ Updated %s@%s (name=%s, sha256=%s)", f.CanonicalSource, f.RawVersion, f.Name, f.SHA256)
 		}
 
-		if err := mod.SaveLockFile(repoPath, lf); err != nil {
-			log.Fatalf("Failed to save lock file: %v", err)
-		}
 		shared.CommitStateChanges(ctx, stateMgr, "chore: update workflow "+source)
 	},
 }

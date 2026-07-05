@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	mod "github.com/cbridges1/hyve/internal/module"
@@ -25,27 +22,11 @@ var infoCmd = &cobra.Command{
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
 
-		lf, err := mod.LoadLockFile(repoPath)
+		manifest, resolvedDir, err := mod.ModuleInfo(repoPath, source, version)
 		if err != nil {
-			log.Fatalf("Failed to load lock file: %v", err)
-		}
-		locked := lf.GetLocked(source, version)
-		if locked == nil && !mod.IsLocalSource(source) {
-			log.Fatalf("Module %s@%s not in hyve.lock — run `hyve module add %s %s`", source, version, source, version)
-		}
-		resolved, err := mod.Resolve(source, version, locked, repoPath)
-		if err != nil {
-			log.Fatalf("Failed to resolve module: %v", err)
+			log.Fatalf("%v", err)
 		}
 
-		data, err := os.ReadFile(filepath.Join(resolved.Dir, "module.yaml"))
-		if err != nil {
-			log.Fatalf("Failed to read module.yaml: %v", err)
-		}
-		var manifest mod.ModuleManifest
-		if err := yaml.Unmarshal(data, &manifest); err != nil {
-			log.Fatalf("Failed to parse module.yaml: %v", err)
-		}
 		fmt.Printf("📦 %s@%s\n", source, version)
 		fmt.Printf("  Name:        %s\n", manifest.Metadata.Name)
 		fmt.Printf("  Version:     %s\n", manifest.Metadata.Version)
@@ -69,6 +50,6 @@ var infoCmd = &cobra.Command{
 				}
 			}
 		}
-		fmt.Printf("  Path:        %s\n", resolved.Dir)
+		fmt.Printf("  Path:        %s\n", resolvedDir)
 	},
 }

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -25,6 +26,13 @@ type Executor struct {
 	injectedVars   map[string]string // extra vars provided by caller (--set flags or definition injection)
 	workingDir     string
 	repoName       string
+
+	// Output, when set, additionally receives every log line and step
+	// output byte produced during execution — used by hyve-server to
+	// capture live progress for polling/WebSocket streaming without
+	// affecting the CLI's normal stdout/log.Printf behavior. Left nil by
+	// the CLI, which never sets it.
+	Output io.Writer
 }
 
 // NewExecutor creates a new workflow executor.
@@ -344,6 +352,9 @@ func (e *Executor) addLog(level, job, step, message string) {
 		prefix += fmt.Sprintf("[%s]", step)
 	}
 	log.Printf("%s %s", prefix, message)
+	if e.Output != nil {
+		fmt.Fprintf(e.Output, "%s %s\n", prefix, message)
+	}
 }
 
 // finalizeExecution finalizes the workflow execution

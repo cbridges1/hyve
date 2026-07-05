@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"sort"
 	"strings"
@@ -23,10 +24,25 @@ import (
 // to the module identified by each cluster's spec.driver.
 type Reconciler struct {
 	stateMgr *state.Manager
+
+	// Logger, when set, additionally receives every progress line logged
+	// during a reconcile run — used by hyve-server to capture live progress
+	// for polling/WebSocket streaming without affecting the CLI's normal
+	// stdout/log.Printf behavior. Left nil by the CLI, which never sets it.
+	Logger io.Writer
 }
 
 func NewReconciler(stateMgr *state.Manager) *Reconciler {
 	return &Reconciler{stateMgr: stateMgr}
+}
+
+// logf logs a progress line the same way log.Printf does, and additionally
+// writes it to r.Logger when set.
+func (r *Reconciler) logf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+	if r.Logger != nil {
+		fmt.Fprintf(r.Logger, format+"\n", args...)
+	}
 }
 
 // ReconcileAll reconciles every cluster definition, looping until all have been
@@ -54,17 +70,17 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 	}
 
 	if len(clusterDefs) == 0 {
-		log.Println("No cluster definitions found — skipping reconcile")
+		r.logf("No cluster definitions found — skipping reconcile")
 		return nil
 	}
 
-	log.Printf("═══════════════════════════════════════════")
+	r.logf("═══════════════════════════════════════════")
 	if dryRun {
-		log.Printf("  DRY RUN: previewing %d cluster(s) — nothing will be changed", len(clusterDefs))
+		r.logf("  DRY RUN: previewing %d cluster(s) — nothing will be changed", len(clusterDefs))
 	} else {
-		log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
+		r.logf("  Reconciling %d cluster(s)", len(clusterDefs))
 	}
-	log.Printf("═══════════════════════════════════════════")
+	r.logf("═══════════════════════════════════════════")
 
 	r.convergenceLoop(ctx, clusterDefs, lf, dryRun)
 	return nil
@@ -89,36 +105,36 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		name := next.Metadata.Name
 		processed[name] = true
 
-		log.Printf("───────────────────────────────────────────")
-		log.Printf("  [%s]  driver=%s@%s  region=%s", name, next.Spec.Driver.Source, next.Spec.Driver.Version, next.Metadata.Region)
-		log.Printf("───────────────────────────────────────────")
+		r.logf("───────────────────────────────────────────")
+		r.logf("  [%s]  driver=%s@%s  region=%s", name, next.Spec.Driver.Source, next.Spec.Driver.Version, next.Metadata.Region)
+		r.logf("───────────────────────────────────────────")
 
 		if next.Spec.Pause {
-			log.Printf("[%s] Paused — skipping reconciliation", name)
+			r.logf("[%s] Paused — skipping reconciliation", name)
 		} else {
 			if next.Spec.ExpiresAt != "" {
 				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
 					if time.Now().After(t) {
-						log.Printf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, next.Spec.ExpiresAt)
+						r.logf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, next.Spec.ExpiresAt)
 						next.Spec.Delete = true
 					}
 				} else {
-					log.Printf("[%s] Warning: invalid expiresAt value '%s': %v", name, next.Spec.ExpiresAt, err)
+					r.logf("[%s] Warning: invalid expiresAt value '%s': %v", name, next.Spec.ExpiresAt, err)
 				}
 			}
 
 			if err := r.reconcileCluster(ctx, *next, lf, dryRun); err != nil {
-				log.Printf("[%s] reconcile error: %v", name, err)
+				r.logf("[%s] reconcile error: %v", name, err)
 			}
 		}
 
 		if err := r.stateMgr.SyncWithRemote(ctx); err != nil {
-			log.Printf("Warning: failed to sync after %s: %v", name, err)
+			r.logf("Warning: failed to sync after %s: %v", name, err)
 		}
 
 		reloaded, err := r.stateMgr.LoadClusterDefinitions()
 		if err != nil {
-			log.Printf("Warning: failed to reload cluster definitions: %v", err)
+			r.logf("Warning: failed to reload cluster definitions: %v", err)
 		} else {
 			currentDefs = reloaded
 		}
@@ -143,27 +159,27 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		return fmt.Errorf("status check failed: %w", err)
 	}
 	status := statusResult.Outputs["HYVE_CLUSTER_STATUS"]
-	log.Printf("[%s] status: %s", name, status)
+	r.logf("[%s] status: %s", name, status)
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
 		if dryRun {
-			log.Printf("[%s] DRY RUN: would delete cluster", name)
+			r.logf("[%s] DRY RUN: would delete cluster", name)
 			return nil
 		}
 		return r.deleteCluster(ctx, cluster, exec, env, lf)
 
 	case cluster.Spec.Delete && status == "NOT_FOUND":
 		if dryRun {
-			log.Printf("[%s] DRY RUN: already gone in cloud, would remove YAML", name)
+			r.logf("[%s] DRY RUN: already gone in cloud, would remove YAML", name)
 			return nil
 		}
-		log.Printf("[%s] Already gone — removing YAML", name)
+		r.logf("[%s] Already gone — removing YAML", name)
 		return r.removeClusterFile(ctx, cluster)
 
 	case !cluster.Spec.Delete && (status == "NOT_FOUND" || status == "FAILED"):
 		if dryRun {
-			log.Printf("[%s] DRY RUN: would create cluster", name)
+			r.logf("[%s] DRY RUN: would create cluster", name)
 			return nil
 		}
 		return r.createCluster(ctx, cluster, exec, env, lf)
@@ -179,35 +195,35 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		// real even in dry-run — kubectl diff needs it to reach the live
 		// cluster.
 		if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
-			log.Printf("[%s] Warning: auth failed: %v", name, authErr)
+			r.logf("[%s] Warning: auth failed: %v", name, authErr)
 		}
 
 		if r.paramsChanged(cluster) {
 			if dryRun {
-				log.Printf("[%s] DRY RUN: param drift detected — would run PreReconcile workflows and scale", name)
+				r.logf("[%s] DRY RUN: param drift detected — would run PreReconcile workflows and scale", name)
 			} else {
-				log.Printf("[%s] Param drift detected — scaling", name)
+				r.logf("[%s] Param drift detected — scaling", name)
 				r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
 				if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
-					log.Printf("[%s] Warning: scale failed: %v", name, scaleErr)
+					r.logf("[%s] Warning: scale failed: %v", name, scaleErr)
 				}
 			}
 		} else {
-			log.Printf("[%s] Up to date — no action needed", name)
+			r.logf("[%s] Up to date — no action needed", name)
 		}
 
 		repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
 		if cfgErr != nil {
-			log.Printf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
+			r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 			repoCfg = &state.RepoConfig{}
 		}
 		return r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 
 	case status == "CREATING" || status == "UPDATING" || status == "DELETING":
-		log.Printf("[%s] Operation in progress (%s) — skipping", name, status)
+		r.logf("[%s] Operation in progress (%s) — skipping", name, status)
 
 	default:
-		log.Printf("[%s] Unhandled status %q", name, status)
+		r.logf("[%s] Unhandled status %q", name, status)
 	}
 
 	return nil
@@ -215,7 +231,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 
 func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
 	name := cluster.Metadata.Name
-	log.Printf("[%s] Creating cluster...", name)
+	r.logf("[%s] Creating cluster...", name)
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
 
@@ -233,21 +249,21 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = paramsHash(cluster.Spec.Params)
 
 	if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
-		log.Printf("[%s] Warning: failed to save driverOutputs: %v", name, err)
+		r.logf("[%s] Warning: failed to save driverOutputs: %v", name, err)
 	} else {
 		if commitErr := r.stateMgr.CommitAndPush(ctx, "reconcile: create "+name); commitErr != nil {
-			log.Printf("[%s] Warning: failed to commit driverOutputs: %v", name, commitErr)
+			r.logf("[%s] Warning: failed to commit driverOutputs: %v", name, commitErr)
 		}
 	}
 
-	log.Printf("[%s] ✅ Cluster created", name)
+	r.logf("[%s] ✅ Cluster created", name)
 
 	// Rebuild env so onCreate workflows see the new driverOutputs.
 	env = buildModuleEnv(cluster, nil)
 	exec.Env = env
 
 	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
-		log.Printf("[%s] Warning: auth failed: %v", name, authErr)
+		r.logf("[%s] Warning: auth failed: %v", name, authErr)
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
@@ -258,11 +274,11 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	// used for everything else past OperationCreate in this function.
 	repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
 	if cfgErr != nil {
-		log.Printf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
+		r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 		repoCfg = &state.RepoConfig{}
 	}
 	if resErr := r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
-		log.Printf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
+		r.logf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
 	}
 
 	// Runs after spec.resources so afterCreate workflows can rely on resource-created
@@ -276,10 +292,10 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 
 func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
 	name := cluster.Metadata.Name
-	log.Printf("[%s] Deleting cluster...", name)
+	r.logf("[%s] Deleting cluster...", name)
 
 	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
-		log.Printf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
+		r.logf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
@@ -288,7 +304,7 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 		return fmt.Errorf("delete operation failed: %w", err)
 	}
 
-	log.Printf("[%s] ✅ Cluster deleted", name)
+	r.logf("[%s] ✅ Cluster deleted", name)
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env, lf)
 
@@ -301,7 +317,7 @@ func (r *Reconciler) removeClusterFile(ctx context.Context, cluster types.Cluste
 		return fmt.Errorf("remove cluster file: %w", err)
 	}
 	if err := r.stateMgr.CommitAndPush(ctx, "reconcile: delete "+name); err != nil {
-		log.Printf("[%s] Warning: failed to commit cluster file removal: %v", name, err)
+		r.logf("[%s] Warning: failed to commit cluster file removal: %v", name, err)
 	}
 	return nil
 }
@@ -314,7 +330,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 
 	wfMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
 	if err != nil {
-		log.Printf("[%s] Failed to create workflow manager: %v", name, err)
+		r.logf("[%s] Failed to create workflow manager: %v", name, err)
 		return
 	}
 
@@ -327,15 +343,16 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 
 	executor, err := workflow.NewExecutor(wfMgr, "")
 	if err != nil {
-		log.Printf("[%s] Failed to create workflow executor: %v", name, err)
+		r.logf("[%s] Failed to create workflow executor: %v", name, err)
 		return
 	}
 	defer executor.Close()
+	executor.Output = r.Logger
 	executor.InjectVars(injected)
 
 	for _, ref := range refs {
 		label := ref.String()
-		log.Printf("[%s] ▶  Workflow '%s' starting...", name, label)
+		r.logf("[%s] ▶  Workflow '%s' starting...", name, label)
 
 		var execution *workflow.WorkflowExecution
 		var runErr error
@@ -345,13 +362,13 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf)
 		}
 		if runErr != nil {
-			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", name, label, runErr)
+			r.logf("[%s] ⚠️  Workflow '%s' failed: %v", name, label, runErr)
 			continue
 		}
 		if execution.Status == workflow.StatusCompleted {
-			log.Printf("[%s] ✅ Workflow '%s' completed", name, label)
+			r.logf("[%s] ✅ Workflow '%s' completed", name, label)
 		} else {
-			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, label, execution.Status)
+			r.logf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, label, execution.Status)
 		}
 	}
 }

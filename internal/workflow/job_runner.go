@@ -211,8 +211,14 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 	// can print prompts before waiting for user input. A MultiWriter tees the
 	// stream into buf so captureHookOutputVars still works on the full output.
 	var buf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	stdoutWriters := []io.Writer{os.Stdout, &buf}
+	stderrWriters := []io.Writer{os.Stderr, &buf}
+	if e.Output != nil {
+		stdoutWriters = append(stdoutWriters, e.Output)
+		stderrWriters = append(stderrWriters, e.Output)
+	}
+	cmd.Stdout = io.MultiWriter(stdoutWriters...)
+	cmd.Stderr = io.MultiWriter(stderrWriters...)
 	err := cmd.Run()
 	output := buf.Bytes()
 	result.Output = string(output)

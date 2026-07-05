@@ -2,14 +2,11 @@ package workflow
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"log"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	mod "github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/workflowref"
 )
 
@@ -20,31 +17,17 @@ var workflowVerifyCmd = &cobra.Command{
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 
-		lf, err := mod.LoadLockFile(stateMgr.LocalPath())
+		results, failed, err := workflowref.Verify(stateMgr.LocalPath())
 		if err != nil {
-			log.Fatalf("Failed to load lock file: %v", err)
+			log.Fatalf("%v", err)
 		}
 
-		failed := 0
-		for key, w := range lf.Workflows {
-			if w.SHA256 == "" || !workflowref.IsCached(w.SHA256) {
-				log.Printf("❌ %s (name=%s): not cached — run `hyve workflow install`", key, w.Name)
-				failed++
-				continue
+		for _, r := range results {
+			if r.OK {
+				log.Printf("✅ %s (name=%s)", r.Key, r.Name)
+			} else {
+				log.Printf("❌ %s (name=%s): %s", r.Key, r.Name, r.Reason)
 			}
-			data, err := workflowref.ReadCached(w.SHA256)
-			if err != nil {
-				log.Printf("❌ %s: failed to read cache: %v", key, err)
-				failed++
-				continue
-			}
-			sum := sha256.Sum256(data)
-			if hex.EncodeToString(sum[:]) != w.SHA256 {
-				log.Printf("❌ %s: cached content does not match sha256 (corrupted cache)", key)
-				failed++
-				continue
-			}
-			log.Printf("✅ %s (name=%s)", key, w.Name)
 		}
 
 		if failed > 0 {

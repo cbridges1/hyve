@@ -72,4 +72,6 @@ func init() {
 	rootCmd.AddCommand(template.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
 	rootCmd.AddCommand(tuiCmd)
+	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(openCmd)
 }

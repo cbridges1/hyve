@@ -26,14 +26,56 @@ const (
 
 // ReconcileConfig holds reconciliation configuration from the repository
 type ReconcileConfig struct {
-	Mode                 ReconcileMode `yaml:"mode"`
-	StrictDelete         bool          `yaml:"strictDelete"`
-	StrictResourceDelete bool          `yaml:"strictResourceDelete"`
+	Mode                 ReconcileMode `yaml:"mode" json:"mode"`
+	StrictDelete         bool          `yaml:"strictDelete" json:"strictDelete"`
+	StrictResourceDelete bool          `yaml:"strictResourceDelete" json:"strictResourceDelete"`
+}
+
+// ServerAuthMode selects how hyve-server validates incoming requests.
+type ServerAuthMode string
+
+const (
+	// ServerAuthModeNone requires no Authorization header; the server binds
+	// to 127.0.0.1 only unless --require-auth is also set.
+	ServerAuthModeNone ServerAuthMode = "none"
+	// ServerAuthModeForward delegates the entire validity decision to an
+	// external HTTP endpoint (server.auth.forward.validateUrl) — hyve never
+	// inspects, decodes, or has any opinion about the credential's format.
+	ServerAuthModeForward ServerAuthMode = "forward"
+)
+
+// ForwardAuthConfig configures forward-auth mode: the incoming Authorization
+// header is relayed as-is to ValidateURL; a 2xx response lets the request
+// through, anything else (or a network error/timeout) rejects it with 401.
+type ForwardAuthConfig struct {
+	// ValidateURL is read from HYVE_AUTH_VALIDATE_URL when unset here.
+	ValidateURL string `yaml:"validateUrl,omitempty" json:"validateUrl,omitempty"`
+	// Timeout is a Go duration string (e.g. "3s"), read from
+	// HYVE_AUTH_VALIDATE_TIMEOUT when unset here. Defaults to 3s.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// ServerAuthConfig is the server.auth section of hyve.yaml.
+type ServerAuthConfig struct {
+	Mode    ServerAuthMode    `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Forward ForwardAuthConfig `yaml:"forward,omitempty" json:"forward,omitempty"`
+}
+
+// ServerConfig is the server section of hyve.yaml — configuration for
+// `hyve serve`. All fields are optional.
+type ServerConfig struct {
+	// Port hyve serve listens on. Also read from --port / HYVE_PORT.
+	Port int `yaml:"port,omitempty" json:"port,omitempty"`
+	// FrontendUrl is opened (with ?server=<addr> appended) by `hyve open`.
+	// If empty, hyve open opens http://localhost:<port> directly.
+	FrontendUrl string           `yaml:"frontendUrl,omitempty" json:"frontendUrl,omitempty"`
+	Auth        ServerAuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
 // RepoConfig represents the repository-level Hyve configuration stored in hyve.yaml
 type RepoConfig struct {
-	Reconcile ReconcileConfig `yaml:"reconcile"`
+	Reconcile ReconcileConfig `yaml:"reconcile" json:"reconcile"`
+	Server    ServerConfig    `yaml:"server,omitempty" json:"server,omitempty"`
 }
 
 // Manager handles state file operations using Git repositories
@@ -119,6 +161,22 @@ func (m *Manager) LoadRepoConfig() (*RepoConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// SaveRepoConfig writes cfg back to hyve.yaml at the repository root. The
+// caller is responsible for committing the change if it should be pushed to
+// the remote. It does not restart the server — a change to cfg.Server only
+// takes effect on the next `hyve serve` invocation.
+func (m *Manager) SaveRepoConfig(cfg *RepoConfig) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal hyve.yaml: %w", err)
+	}
+	configPath := filepath.Join(filepath.Dir(m.stateDir), "hyve.yaml")
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write hyve.yaml: %w", err)
+	}
+	return nil
 }
 
 // SaveClusterDefinition writes a cluster definition back to its YAML file in the
