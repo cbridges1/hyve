@@ -1,0 +1,295 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "hyve-server",
+    "version": "0.1.0",
+    "description": "REST + WebSocket API exposing the same operations available through the hyve CLI. Every endpoint is a thin wrapper around the same internal packages the CLI calls."
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": { "error": { "type": "string" } },
+        "required": ["error"]
+      },
+      "ExecutionRef": {
+        "type": "object",
+        "properties": { "executionId": { "type": "string" } },
+        "required": ["executionId"]
+      },
+      "ClusterDefinition": {
+        "type": "object",
+        "description": "apiVersion/kind/metadata/spec — see docs/concepts/clusters for the full field reference.",
+        "properties": {
+          "apiVersion": { "type": "string" },
+          "kind": { "type": "string" },
+          "metadata": { "type": "object" },
+          "spec": { "type": "object" }
+        }
+      },
+      "Template": {
+        "type": "object",
+        "properties": {
+          "apiVersion": { "type": "string" },
+          "kind": { "type": "string" },
+          "metadata": { "type": "object" },
+          "spec": { "type": "object" }
+        }
+      },
+      "Workflow": {
+        "type": "object",
+        "properties": {
+          "apiVersion": { "type": "string" },
+          "kind": { "type": "string" },
+          "metadata": { "type": "object" },
+          "spec": { "type": "object" }
+        }
+      },
+      "ValidationResult": {
+        "type": "object",
+        "properties": {
+          "errors": { "type": "array", "items": { "type": "string" } },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "valid": { "type": "boolean" }
+        }
+      },
+      "Execution": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["reconcile", "workflow", "module-install", "workflow-install"] },
+          "status": { "type": "string", "enum": ["running", "succeeded", "failed"] },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "endedAt": { "type": "string", "format": "date-time" },
+          "error": { "type": "string" }
+        }
+      },
+      "LogLine": {
+        "type": "object",
+        "properties": {
+          "seq": { "type": "integer" },
+          "line": { "type": "string" },
+          "capturedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "securitySchemes": {
+      "forwardAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Forwarded verbatim to server.auth.forward.validateUrl — hyve never inspects the token's format. No-op when server.auth.mode is 'none'."
+      }
+    }
+  },
+  "security": [{ "forwardAuth": [] }],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "security": [],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/auth/check": {
+      "get": {
+        "summary": "Verify the caller's token without making a full API request",
+        "responses": { "200": { "description": "valid, or auth.mode is none" }, "401": { "description": "missing/invalid/unreachable validator" } }
+      }
+    },
+    "/openapi.json": {
+      "get": { "summary": "This document", "security": [], "responses": { "200": { "description": "OK" } } }
+    },
+    "/clusters": {
+      "get": {
+        "summary": "List clusters",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/ClusterDefinition" } } } } } }
+      },
+      "post": {
+        "summary": "Create a cluster from a template (mirrors `hyve cluster create`)",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": {
+            "name": { "type": "string" }, "template": { "type": "string" }, "region": { "type": "string" },
+            "params": { "type": "object", "additionalProperties": { "type": "string" } }
+          }, "required": ["name", "template"] } } }
+        },
+        "responses": { "201": { "description": "Created" }, "400": { "description": "Bad request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/clusters/{name}": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "summary": "Get a cluster (Accept: application/x-yaml for raw YAML)",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterDefinition" } }, "application/x-yaml": {} } }, "404": { "description": "Not found" } }
+      },
+      "put": { "summary": "Full replace of the cluster YAML", "responses": { "200": { "description": "OK" } } },
+      "patch": { "summary": "Partial update: pause, delete flag, params, expiresAt", "responses": { "200": { "description": "OK" } } },
+      "delete": { "summary": "Mark for deletion and trigger reconcile (mirrors `hyve cluster delete`)", "responses": { "202": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecutionRef" } } } } } }
+    },
+    "/clusters/{name}/resources": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "summary": "spec.resources (declared) + spec.appliedResources (tracked) — read-only, no live cluster calls", "responses": { "200": { "description": "OK" } } }
+    },
+    "/clusters/{name}/kubeconfig": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Run the module's auth operation, return the resulting kubeconfig YAML (mirrors `hyve cluster auth`)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "method": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "OK", "content": { "application/x-yaml": {} } } }
+      },
+      "delete": { "summary": "Remove this cluster's context/cluster/user entries from ~/.kube/config (mirrors `hyve cluster deauth`)", "responses": { "204": { "description": "No Content" } } }
+    },
+    "/templates": {
+      "get": { "summary": "List templates", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Template" } } } } } } },
+      "post": { "summary": "Create a template", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Template" } }, "application/x-yaml": {} } }, "responses": { "201": { "description": "Created" } } }
+    },
+    "/templates/{name}": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "summary": "Get a template (Accept: application/x-yaml for raw YAML)", "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } } },
+      "put": { "summary": "Full replace of the template YAML", "responses": { "200": { "description": "OK" } } },
+      "delete": { "summary": "Delete a template", "responses": { "204": { "description": "No Content" } } }
+    },
+    "/templates/{name}/validate": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": { "summary": "Checks driver is set and referenced local workflows exist (mirrors `hyve template validate`)", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationResult" } } } } } }
+    },
+    "/workflows": {
+      "get": { "summary": "List workflows", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Workflow" } } } } } } },
+      "post": { "summary": "Create a workflow", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workflow" } }, "application/x-yaml": {} } }, "responses": { "201": { "description": "Created" } } }
+    },
+    "/workflows/{name}": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "summary": "Get a workflow", "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } } },
+      "put": { "summary": "Full replace of the workflow YAML", "responses": { "200": { "description": "OK" } } },
+      "delete": { "summary": "Delete a workflow", "responses": { "204": { "description": "No Content" } } }
+    },
+    "/workflows/{name}/run": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Run a workflow asynchronously (mirrors `hyve workflow run`)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "cluster": { "type": "string" }, "inputs": { "type": "object", "additionalProperties": { "type": "string" } }
+        } } } } },
+        "responses": { "202": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecutionRef" } } } } }
+      }
+    },
+    "/workflows/{name}/validate": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": { "summary": "Mirrors `hyve workflow validate`", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationResult" } } } } } }
+    },
+    "/workflows/install": {
+      "post": { "summary": "Resolve every remote workflow reference found in templates/clusters into hyve.lock, asynchronously (mirrors `hyve workflow install`)", "responses": { "202": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecutionRef" } } } } } }
+    },
+    "/workflows/refs/update": {
+      "post": {
+        "summary": "Re-resolve one remote workflow reference to latest (mirrors `hyve workflow update <source>`)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "source": { "type": "string" }, "path": { "type": "string" } }, "required": ["source"] } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/workflows/refs/verify": {
+      "get": { "summary": "Verify every locked workflow's cached content matches its sha256 (mirrors `hyve workflow verify`)", "responses": { "200": { "description": "OK" } } }
+    },
+    "/modules": {
+      "get": { "summary": "List locked modules", "responses": { "200": { "description": "OK" } } },
+      "post": {
+        "summary": "Lock a new module (mirrors `hyve module add <source>[@<version>]`)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "source": { "type": "string" }, "version": { "type": "string" } }, "required": ["source"] } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/modules/{source}": {
+      "parameters": [{ "name": "source", "in": "path", "required": true, "schema": { "type": "string" }, "description": "May contain slashes — the one path-segment exception in this API, kept for symmetry with `hyve module info`." }],
+      "get": {
+        "summary": "Module info: manifest, params, requirements (mirrors `hyve module info <source> <version>`)",
+        "parameters": [{ "name": "version", "in": "query", "schema": { "type": "string" }, "description": "Defaults to 'latest'." }],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/modules/update": {
+      "post": {
+        "summary": "Re-resolve a locked source@version, refreshing its sha256 (mirrors `hyve module update <source> <version>`)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "source": { "type": "string" }, "version": { "type": "string" } }, "required": ["source", "version"] } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/modules/remove": {
+      "post": {
+        "summary": "Mirrors `hyve module remove <source> <version>`",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "source": { "type": "string" }, "version": { "type": "string" } }, "required": ["source", "version"] } } } },
+        "responses": { "204": { "description": "No Content" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/modules/validate": {
+      "post": {
+        "summary": "Mirrors `hyve module validate <source> <version>`",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "source": { "type": "string" }, "version": { "type": "string" } }, "required": ["source", "version"] } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/modules/install": {
+      "post": { "summary": "Lock every module referenced by templates/clusters, asynchronously (mirrors `hyve module install`)", "responses": { "202": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecutionRef" } } } } } }
+    },
+    "/modules/init": {
+      "post": {
+        "summary": "Scaffold a new module skeleton (mirrors `hyve module init <name>`)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"] } } } },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/lock": {
+      "get": { "summary": "Parsed hyve.lock contents", "responses": { "200": { "description": "OK" } } }
+    },
+    "/config": {
+      "get": { "summary": "Parsed hyve.yaml (reconcile + server sections)", "responses": { "200": { "description": "OK" } } },
+      "patch": { "summary": "Partial update, writes through to hyve.yaml and commits", "responses": { "200": { "description": "OK" } } }
+    },
+    "/git/status": {
+      "get": { "summary": "Mirrors `hyve git status` for the bound repo", "responses": { "200": { "description": "OK" } } }
+    },
+    "/git/sync": {
+      "post": {
+        "summary": "Mirrors `hyve git sync`",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "message": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/reconcile": {
+      "post": {
+        "summary": "Full reconcile, asynchronously (mirrors `hyve reconcile [--dry-run]`)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "dryRun": { "type": "boolean" } } } } } },
+        "responses": { "202": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecutionRef" } } } } }
+      }
+    },
+    "/reconcile/clusters/{name}": {
+      "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Reconcile a single cluster, asynchronously",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "dryRun": { "type": "boolean" } } } } } },
+        "responses": { "202": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecutionRef" } } } } }
+      }
+    },
+    "/executions": {
+      "get": { "summary": "List recent executions, most recent first", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Execution" } } } } } } }
+    },
+    "/executions/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "summary": "Execution status + metadata", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Execution" } } } }, "404": { "description": "Not found" } } }
+    },
+    "/executions/{id}/logs": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "since", "in": "query", "schema": { "type": "integer" }, "description": "Return only lines with seq > since, for incremental polling." },
+        { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+      ],
+      "get": { "summary": "Paginated log lines", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "lines": { "type": "array", "items": { "$ref": "#/components/schemas/LogLine" } } } } } } } } }
+    },
+    "/executions/{id}/stream": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "summary": "WebSocket upgrade — streams LogLine as newline-delimited JSON. Replays stored lines first, then streams live lines until the execution reaches a terminal state.",
+        "responses": { "101": { "description": "Switching Protocols" }, "404": { "description": "Not found" } }
+      }
+    }
+  }
+}
