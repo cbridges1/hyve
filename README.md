@@ -41,7 +41,29 @@ Full documentation at **[hyve.mintlify.app](https://hyve.mintlify.app)** — CLI
 
 ## Installation
 
-Requires Go 1.21+ and the system `git` binary in `PATH`.
+**Homebrew (macOS/Linux):**
+
+```bash
+brew install cbridges1/tap/hyve
+```
+
+**Binary download:**
+
+Prebuilt binaries for macOS, Linux, and Windows (amd64/arm64) are attached to every [GitHub Release](https://github.com/cbridges1/hyve/releases).
+
+```bash
+curl -sL https://github.com/cbridges1/hyve/releases/latest/download/hyve_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz | tar xz
+sudo mv hyve /usr/local/bin/
+```
+
+**Docker:**
+
+```bash
+docker pull ghcr.io/cbridges1/hyve:latest
+docker run --rm -v "$(pwd)":/repo ghcr.io/cbridges1/hyve:latest reconcile --path .
+```
+
+Requires Go 1.21+ and the system `git` binary in `PATH` for the options below.
 
 **Using `go install`:**
 
