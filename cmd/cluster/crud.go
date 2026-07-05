@@ -73,7 +73,7 @@ func listClusters() {
 
 	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
 		log.Println("❌ No clusters found")
-		log.Println("\n💡 Run 'hyve template execute <template> <cluster>' to create a cluster")
+		log.Println("\n💡 Run 'hyve cluster create <cluster> --template <template>' to create a cluster")
 		return
 	}
 
@@ -109,7 +109,7 @@ func listClusters() {
 
 	if len(clusters) == 0 {
 		log.Println("❌ No clusters found")
-		log.Println("\n💡 Run 'hyve template execute <template> <cluster>' to create a cluster")
+		log.Println("\n💡 Run 'hyve cluster create <cluster> --template <template>' to create a cluster")
 		return
 	}
 

@@ -8,7 +8,7 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "cluster",
 	Short: "Manage clusters",
-	Long:  "Commands to list, inspect, delete, and configure clusters",
+	Long:  "Commands to create, list, inspect, delete, and configure clusters",
 }
 
 var showCmd = &cobra.Command{
@@ -38,6 +38,7 @@ var listCmd = &cobra.Command{
 }
 
 func init() {
+	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(showCmd)
 	Cmd.AddCommand(deleteCmd)

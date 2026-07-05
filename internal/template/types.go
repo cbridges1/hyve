@@ -63,14 +63,15 @@ type TemplateSpec struct {
 	Resources []types.ResourceRef   `yaml:"resources,omitempty"`
 
 	// Schedule is a 5-field cron expression (e.g. "0 20 * * 5").
-	// At template execution time the next occurrence is calculated and written
-	// to the generated cluster's spec.expiresAt field.
+	// When a cluster is created from this template, the next occurrence is
+	// calculated and written to the generated cluster's spec.expiresAt field.
 	Schedule string `yaml:"schedule,omitempty"`
 
-	// LockParams prevents users from overriding default param values at
-	// template execution time. When true, the TUI skips the param override
-	// step and the --set flag on `hyve template execute` is silently ignored.
-	// Intended for admins who want to enforce standard cluster configurations.
+	// LockParams prevents users from overriding default param values when
+	// creating a cluster from this template. When true, the TUI skips the
+	// param override step and the --set flag on `hyve cluster create` is
+	// silently ignored. Intended for admins who want to enforce standard
+	// cluster configurations.
 	LockParams bool `yaml:"lockParams,omitempty"`
 }
 

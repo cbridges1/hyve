@@ -6,8 +6,6 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	"github.com/cbridges1/hyve/internal/module"
-	"github.com/cbridges1/hyve/internal/template"
 )
 
 // RunInteractive runs the interactive template menu.
@@ -20,7 +18,6 @@ func RunInteractive() error {
 					Title("Template — what would you like to do?").
 					Options(
 						huh.NewOption("List templates", "list"),
-						huh.NewOption("Execute a template", "execute"),
 						huh.NewOption("Show template details", "show"),
 						huh.NewOption("Create a template", "create"),
 						huh.NewOption("Validate a template", "validate"),
@@ -39,10 +36,6 @@ func RunInteractive() error {
 			return shared.ErrBack
 		case "list":
 			listTemplates()
-		case "execute":
-			if err := interactiveTemplateExecute(); err != nil && err != shared.ErrBack {
-				return err
-			}
 		case "show":
 			if err := interactiveTemplateShow(); err != nil && err != shared.ErrBack {
 				return err
@@ -78,77 +71,6 @@ func interactiveTemplateValidate() error {
 		return err
 	}
 	validateTemplate(name)
-	return nil
-}
-
-func interactiveTemplateExecute() error {
-	templateName := ""
-	if err := shared.SelectFromList("Template to execute", shared.FetchTemplateNames(), &templateName); err != nil {
-		return err
-	}
-
-	// Load template early — needed for LockParams check and driver info.
-	tmpl, _ := template.NewManager(shared.GetRepoPath()).GetTemplate(templateName)
-
-	var clusterName, region string
-	err := shared.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Cluster name").
-				Placeholder("my-cluster").
-				Validate(shared.ValidateClusterName).
-				Value(&clusterName),
-			huh.NewInput().
-				Title("Region override (leave blank to use template default)").
-				Value(&region),
-		),
-	).Run()
-	if err != nil {
-		return err
-	}
-
-	overrides := map[string]string{}
-
-	// Skip param overrides entirely when the template admin has locked them.
-	if tmpl != nil && tmpl.Spec.LockParams {
-		executeTemplate(templateName, clusterName, region, overrides)
-		return nil
-	}
-
-	// Ask whether the user wants to override any default params.
-	var wantOverrides bool
-	if err := shared.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title("Override default params?").
-				Description("The template provides defaults for all params. Select Yes to customise them.").
-				Affirmative("Yes — customise params").
-				Negative("No — use defaults").
-				Value(&wantOverrides),
-		),
-	).Run(); err != nil {
-		return err
-	}
-
-	if wantOverrides {
-		var driverSource, driverVersion string
-		if tmpl != nil {
-			driverSource = tmpl.Spec.Driver.Source
-			driverVersion = tmpl.Spec.Driver.Version
-		}
-		manifest := loadManifest(driverSource, driverVersion)
-		// Pre-populate with template defaults so users see current values.
-		var existing map[string]string
-		if tmpl != nil {
-			existing = tmpl.Spec.Params
-		}
-		overrides, err = collectParamValues(manifest, existing, "Param overrides")
-		if err != nil {
-			return err
-		}
-	}
-
-	executeTemplate(templateName, clusterName, region, overrides)
 	return nil
 }
 
@@ -195,8 +117,8 @@ func interactiveTemplateCreate() error {
 		driverVersion = "latest"
 	}
 
-	manifest := loadManifest(driverSource, driverVersion)
-	params, err := collectParamValues(manifest, nil, "Default params (optional)")
+	manifest := shared.LoadManifest(driverSource, driverVersion)
+	params, err := shared.CollectParamValues(manifest, nil, "Default params (optional)")
 	if err != nil {
 		return err
 	}
@@ -228,7 +150,7 @@ func interactiveTemplateCreate() error {
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Lock params?").
-				Description("When locked, users cannot override default param values at execute time.").
+				Description("When locked, users cannot override default param values when creating a cluster from this template.").
 				Affirmative("Yes — lock params").
 				Negative("No — allow overrides").
 				Value(&lockParams),
@@ -317,96 +239,4 @@ func interactiveTemplateDelete() error {
 
 	deleteTemplate(name)
 	return nil
-}
-
-// loadManifest loads the module.yaml for the given driver source/version.
-// Returns nil if the manifest is not available locally.
-func loadManifest(source, version string) *module.ModuleManifest {
-	repoRoot := shared.GetRepoPath()
-	lf, _ := module.LoadLockFile(repoRoot)
-	m, _ := module.LoadManifestForSource(source, version, repoRoot, lf)
-	return m
-}
-
-// collectParamValues runs a per-param form when a manifest is available.
-// Choice params use a dropdown; free-text params use an input field.
-// Falls back to a raw KEY=VALUE input when manifest is nil or has no params.
-// existing is used to pre-populate values (e.g. when editing overrides).
-func collectParamValues(manifest *module.ModuleManifest, existing map[string]string, fallbackTitle string) (map[string]string, error) {
-	if manifest == nil || len(manifest.Spec.Params) == 0 {
-		var paramsRaw string
-		err := shared.NewForm(
-			huh.NewGroup(
-				huh.NewInput().
-					Title(fallbackTitle).
-					Description("KEY=VALUE pairs, comma-separated. e.g. node_size=g4s.kube.medium,node_count=3").
-					Value(&paramsRaw),
-			),
-		).Run()
-		if err != nil {
-			return nil, err
-		}
-		return parseParamOverrides(paramsRaw), nil
-	}
-
-	params := manifest.Spec.Params
-	values := make([]string, len(params))
-	for i, p := range params {
-		values[i] = p.Default
-		if existing != nil {
-			if v, ok := existing[p.Name]; ok {
-				values[i] = v
-			}
-		}
-	}
-
-	fields := make([]huh.Field, 0, len(params))
-	for i, p := range params {
-		title := p.Name
-		if p.Description != "" {
-			title = p.Name + " — " + p.Description
-		}
-		if len(p.Choices) > 0 {
-			opts := make([]huh.Option[string], len(p.Choices))
-			for j, c := range p.Choices {
-				opts[j] = huh.NewOption(c, c)
-			}
-			fields = append(fields, huh.NewSelect[string]().
-				Title(title).
-				Options(opts...).
-				Value(&values[i]))
-		} else {
-			fields = append(fields, huh.NewInput().
-				Title(title).
-				Value(&values[i]))
-		}
-	}
-
-	if err := shared.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
-		return nil, err
-	}
-
-	result := make(map[string]string, len(params))
-	for i, p := range params {
-		if values[i] != "" {
-			result[p.Name] = values[i]
-		}
-	}
-	return result, nil
-}
-
-// parseParamOverrides splits a "key=value,key2=value2" string into a map.
-func parseParamOverrides(raw string) map[string]string {
-	out := map[string]string{}
-	for _, pair := range strings.Split(raw, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-		}
-	}
-	return out
 }

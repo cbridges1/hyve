@@ -23,8 +23,8 @@ var tuiCmd = &cobra.Command{
 					huh.NewSelect[string]().
 						Title("Hyve — what would you like to do?").
 						Options(
-							huh.NewOption("cluster  — list, inspect, delete, auth/deauth", "cluster"),
-							huh.NewOption("template — create, execute, manage templates", "template"),
+							huh.NewOption("cluster  — create, list, inspect, delete, auth/deauth", "cluster"),
+							huh.NewOption("template — create, manage templates", "template"),
 							huh.NewOption("git      — manage Git repositories", "git"),
 							huh.NewOption("workflow — automated pipelines", "workflow"),
 							huh.NewOption("Quit", "quit"),
