@@ -85,8 +85,8 @@ hyve template create my-civo-template \
   --set node_size=g4s.kube.medium \
   --set node_count=3
 
-# 4. Execute the template to generate a cluster YAML and commit it
-hyve template execute my-civo-template my-cluster
+# 4. Create a cluster from the template — generates a cluster YAML and commits it
+hyve cluster create my-cluster --template my-civo-template
 
 # 5. Reconcile — provisions the cluster and runs any lifecycle hooks
 hyve reconcile
