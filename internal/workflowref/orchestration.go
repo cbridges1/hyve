@@ -23,10 +23,10 @@ type NameCollision struct {
 // LockedRef is one remote workflow file Install resolved and locked (or found
 // already up to date).
 type LockedRef struct {
-	CanonicalSource string
-	RawVersion      string
-	Name            string
-	SHA256          string
+	CanonicalSource string `json:"canonicalSource"`
+	RawVersion      string `json:"rawVersion"`
+	Name            string `json:"name"`
+	SHA256          string `json:"sha256"`
 }
 
 // GatherWorkflowRefs collects the deduplicated remote WorkflowRefs referenced
@@ -158,10 +158,10 @@ func Update(repoPath, source, pathOverride string) ([]LockedRef, error) {
 
 // VerifyResult reports the verification outcome for one locked workflow entry.
 type VerifyResult struct {
-	Key    string // hyve.lock key ("source@version")
-	Name   string
-	OK     bool
-	Reason string // set when OK is false
+	Key    string `json:"key"` // hyve.lock key ("source@version")
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"` // set when OK is false
 }
 
 // Verify checks that every locked workflow's cached content still matches its

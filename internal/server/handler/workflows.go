@@ -235,6 +235,9 @@ func (h *WorkflowsHandlers) VerifyRefs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if results == nil {
+		results = []workflowref.VerifyResult{}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"results": results,
 		"failed":  failed,
