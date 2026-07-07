@@ -216,12 +216,13 @@ func ValidateModule(repoPath, source, version string) (validationErrors []string
 	}
 
 	var errs []string
+	var manifest ModuleManifest
 	manifestPath := filepath.Join(resolved.Dir, "module.yaml")
+	authPath := filepath.Join(resolved.Dir, "auth.yaml")
 	data, readErr := os.ReadFile(manifestPath)
 	if readErr != nil {
 		errs = append(errs, fmt.Sprintf("missing module.yaml: %v", readErr))
 	} else {
-		var manifest ModuleManifest
 		if unmarshalErr := yaml.Unmarshal(data, &manifest); unmarshalErr != nil {
 			errs = append(errs, fmt.Sprintf("invalid module.yaml: %v", unmarshalErr))
 		} else {
@@ -250,8 +251,23 @@ func ValidateModule(repoPath, source, version string) (validationErrors []string
 		errs = append(errs, "no operation files found (expected create.yaml/create.sh, etc.)")
 	}
 
+	// authOnly modules specifically need auth.yaml/auth.sh — give a targeted
+	// error instead of relying on the generic anyOp check above (which a
+	// create/delete/scale-only module lacking auth would also pass).
+	if manifest.Metadata.Type == ModuleTypeAuthOnly {
+		hasAuth := false
+		for _, ext := range []string{".yaml", ".sh", ""} {
+			if _, statErr := os.Stat(filepath.Join(resolved.Dir, "auth"+ext)); statErr == nil {
+				hasAuth = true
+				break
+			}
+		}
+		if !hasAuth {
+			errs = append(errs, "module.yaml declares metadata.type: authOnly but auth.yaml is missing — authOnly modules must provide auth.yaml or auth.sh")
+		}
+	}
+
 	// Validate auth.yaml if present
-	authPath := filepath.Join(resolved.Dir, "auth.yaml")
 	if authData, readErr := os.ReadFile(authPath); readErr == nil {
 		var ca ClusterAuth
 		if unmarshalErr := yaml.Unmarshal(authData, &ca); unmarshalErr != nil {
@@ -308,8 +324,12 @@ func ModuleInfo(repoPath, source, version string) (manifest *ModuleManifest, res
 }
 
 // InitModuleSkeleton scaffolds a new module directory at repoPath/modules/<name>/
-// with a starter module.yaml and no-op operation scripts.
-func InitModuleSkeleton(repoPath, name string) (dir string, err error) {
+// with a starter module.yaml and no-op operation scripts. When authOnly is
+// true, it scaffolds only module.yaml (with metadata.type: authOnly) and
+// auth.sh — appropriate for a module that only configures kubeconfig access
+// to an already-existing, non-provisionable cluster (e.g. k3d) and has no
+// create/delete/status/scale of its own.
+func InitModuleSkeleton(repoPath, name string, authOnly bool) (dir string, err error) {
 	dir = filepath.Join(repoPath, "modules", name)
 	if _, statErr := os.Stat(dir); statErr == nil {
 		return "", fmt.Errorf("directory %s already exists", dir)
@@ -318,38 +338,53 @@ func InitModuleSkeleton(repoPath, name string) (dir string, err error) {
 		return "", fmt.Errorf("failed to create %s: %w", dir, err)
 	}
 
+	typeField := ""
+	if authOnly {
+		typeField = "\n  type: authOnly"
+	}
 	manifest := fmt.Sprintf(`apiVersion: v1
 kind: Module
 metadata:
   name: %s
   version: 0.1.0
-  description: TODO — describe what this module manages
+  description: TODO — describe what this module manages%s
 spec:
   params:
     - name: example
       description: Example parameter
       required: false
       default: ""
-`, name)
+`, name, typeField)
 
 	writeFile := func(rel, content string) error {
 		p := filepath.Join(dir, rel)
 		return os.WriteFile(p, []byte(content), 0644)
 	}
-	files := map[string]string{
-		"module.yaml": manifest,
-		"create.sh":   "#!/bin/sh\nset -e\necho 'HYVE_CLUSTER_STATUS=ACTIVE'\n",
-		"delete.sh":   "#!/bin/sh\nset -e\necho 'HYVE_CLUSTER_STATUS=NOT_FOUND'\n",
-		"status.sh":   "#!/bin/sh\nset -e\necho 'HYVE_CLUSTER_STATUS=NOT_FOUND'\n",
-		"auth.sh":     "#!/bin/sh\nset -e\necho 'auth: no-op'\n",
-		"scale.sh":    "#!/bin/sh\nset -e\necho 'scale: no-op'\n",
+
+	var scripts []string
+	files := map[string]string{"module.yaml": manifest}
+	if authOnly {
+		files["auth.sh"] = "#!/bin/sh\nset -e\n" +
+			"# TODO — write this cluster's kubeconfig entry, e.g.:\n" +
+			"#   k3d kubeconfig merge \"$HYVE_CLUSTER_NAME\" --kubeconfig-merge-default\n" +
+			"echo 'auth: no-op'\n"
+		scripts = []string{"auth.sh"}
+	} else {
+		files["create.sh"] = "#!/bin/sh\nset -e\necho 'HYVE_CLUSTER_STATUS=ACTIVE'\n"
+		files["delete.sh"] = "#!/bin/sh\nset -e\necho 'HYVE_CLUSTER_STATUS=NOT_FOUND'\n"
+		files["status.sh"] = "#!/bin/sh\nset -e\necho 'HYVE_CLUSTER_STATUS=NOT_FOUND'\n"
+		files["auth.sh"] = "#!/bin/sh\nset -e\necho 'auth: no-op'\n"
+		files["scale.sh"] = "#!/bin/sh\nset -e\necho 'scale: no-op'\n"
+		scripts = []string{"create.sh", "delete.sh", "status.sh", "auth.sh", "scale.sh"}
 	}
-	for _, rel := range []string{"module.yaml", "create.sh", "delete.sh", "status.sh", "auth.sh", "scale.sh"} {
-		if err := writeFile(rel, files[rel]); err != nil {
-			return "", fmt.Errorf("failed to write %s: %w", rel, err)
+
+	if err := writeFile("module.yaml", files["module.yaml"]); err != nil {
+		return "", fmt.Errorf("failed to write module.yaml: %w", err)
+	}
+	for _, s := range scripts {
+		if err := writeFile(s, files[s]); err != nil {
+			return "", fmt.Errorf("failed to write %s: %w", s, err)
 		}
-	}
-	for _, s := range []string{"create.sh", "delete.sh", "status.sh", "auth.sh", "scale.sh"} {
 		os.Chmod(filepath.Join(dir, s), 0755)
 	}
 	return dir, nil

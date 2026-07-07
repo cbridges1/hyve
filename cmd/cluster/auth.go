@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
 	mod "github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/types"
 )
@@ -57,11 +58,24 @@ func runClusterAuth(name string, method string) {
 		log.Fatalf("Failed to resolve module: %v", err)
 	}
 
+	manifest, _ := mod.LoadManifestForSource(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, repoPath, lf)
+	if manifest != nil {
+		if reqErr := mod.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+			log.Fatalf("%v", reqErr)
+		}
+	}
+
 	env := moduleEnv(cluster)
 	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: repoPath, AuthMethod: method}
 
 	if _, err := executor.Execute(ctx, mod.OperationAuth); err != nil {
 		log.Fatalf("Auth failed: %v", err)
+	}
+
+	if kcPath, pathErr := mod.DefaultKubeconfigPath(); pathErr != nil {
+		log.Printf("Warning: could not resolve kubeconfig path: %v", pathErr)
+	} else if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
+		log.Printf("Warning: failed to deduplicate kubeconfig: %v", err)
 	}
 
 	fmt.Printf("kubectl context for '%s' configured\n", name)

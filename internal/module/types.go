@@ -132,6 +132,13 @@ const (
 	OperationScale  OperationType = "scale"
 )
 
+// ModuleTypeAuthOnly marks a module that only manages authentication for an
+// already-existing, non-provisionable cluster (e.g. k3d, a pre-existing
+// cloud cluster). Such modules typically have no create/delete/status —
+// the reconciler treats an empty HYVE_CLUSTER_STATUS as ACTIVE for them
+// rather than requiring a status op to say so explicitly.
+const ModuleTypeAuthOnly = "authOnly"
+
 // OperationResult holds HYVE_KEY=value outputs captured from an operation.
 type OperationResult struct {
 	Outputs  map[string]string

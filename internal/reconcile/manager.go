@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/cbridges1/hyve/internal/kubeconfig"
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
@@ -151,6 +152,14 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		return fmt.Errorf("resolve module: %w", err)
 	}
 
+	manifest, _ := module.LoadManifestForSource(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
+	if manifest != nil {
+		if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+			return reqErr
+		}
+	}
+	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
+
 	env := buildModuleEnv(cluster, nil)
 	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath()}
 
@@ -159,6 +168,12 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		return fmt.Errorf("status check failed: %w", err)
 	}
 	status := statusResult.Outputs["HYVE_CLUSTER_STATUS"]
+	// authOnly modules typically have no status op at all; treat the resulting
+	// empty string as ACTIVE rather than requiring an explicit status script —
+	// a status script that legitimately prints nothing is treated identically.
+	if status == "" && isAuthOnly {
+		status = "ACTIVE"
+	}
 	r.logf("[%s] status: %s", name, status)
 
 	switch {
@@ -196,6 +211,8 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		// cluster.
 		if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
 			r.logf("[%s] Warning: auth failed: %v", name, authErr)
+		} else {
+			r.dedupeKubeconfigAfterAuth(name)
 		}
 
 		if r.paramsChanged(cluster) {
@@ -264,6 +281,8 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 
 	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
 		r.logf("[%s] Warning: auth failed: %v", name, authErr)
+	} else {
+		r.dedupeKubeconfigAfterAuth(name)
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
@@ -296,6 +315,8 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 
 	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
 		r.logf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
+	} else {
+		r.dedupeKubeconfigAfterAuth(name)
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
@@ -309,6 +330,21 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env, lf)
 
 	return r.removeClusterFile(ctx, cluster)
+}
+
+// dedupeKubeconfigAfterAuth rewrites ~/.kube/config to remove duplicate
+// entries an external auth tool may have appended (e.g. civo without
+// --merge). Failures are logged as warnings, never fatal — kubeconfig
+// hygiene is best-effort, not part of the reconcile contract.
+func (r *Reconciler) dedupeKubeconfigAfterAuth(name string) {
+	kcPath, err := module.DefaultKubeconfigPath()
+	if err != nil {
+		r.logf("[%s] Warning: could not resolve kubeconfig path: %v", name, err)
+		return
+	}
+	if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
+		r.logf("[%s] Warning: failed to deduplicate kubeconfig: %v", name, err)
+	}
 }
 
 func (r *Reconciler) removeClusterFile(ctx context.Context, cluster types.ClusterDefinition) error {

@@ -11,10 +11,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// defaultKubeconfigPath returns the path kubectl uses when KUBECONFIG is unset.
-func defaultKubeconfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".kube", "config")
+// DefaultKubeconfigPath returns the path kubectl uses when KUBECONFIG is unset.
+func DefaultKubeconfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".kube", "config"), nil
 }
 
 // Executor runs module operations in host mode.
@@ -185,9 +188,10 @@ func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec, method
 		// Explicitly set KUBECONFIG in the process env so kubectl in any
 		// subsequent subprocess definitely picks up the right file, even
 		// if KUBECONFIG was previously unset or pointed elsewhere.
-		kc := defaultKubeconfigPath()
-		if _, err := os.Stat(kc); err == nil {
-			os.Setenv("KUBECONFIG", kc)
+		if kc, pathErr := DefaultKubeconfigPath(); pathErr == nil {
+			if _, statErr := os.Stat(kc); statErr == nil {
+				os.Setenv("KUBECONFIG", kc)
+			}
 		}
 	}
 

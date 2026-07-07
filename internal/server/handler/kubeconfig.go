@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,14 +20,6 @@ type KubeconfigHandlers struct {
 }
 
 func NewKubeconfigHandlers(deps *Deps) *KubeconfigHandlers { return &KubeconfigHandlers{deps} }
-
-func defaultKubeconfigPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".kube", "config"), nil
-}
 
 func moduleEnv(cluster *types.ClusterDefinition) []string {
 	env := []string{
@@ -93,16 +86,27 @@ func (h *KubeconfigHandlers) Auth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	manifest, _ := mod.LoadManifestForSource(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, h.RepoPath, lf)
+	if manifest != nil {
+		if reqErr := mod.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+			writeError(w, http.StatusBadRequest, reqErr.Error())
+			return
+		}
+	}
+
 	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: moduleEnv(&cluster), WorkDir: h.RepoPath, AuthMethod: req.Method}
 	if _, err := executor.Execute(r.Context(), mod.OperationAuth); err != nil {
 		writeError(w, http.StatusInternalServerError, "auth failed: "+err.Error())
 		return
 	}
 
-	kubeconfigPath, err := defaultKubeconfigPath()
+	kubeconfigPath, err := mod.DefaultKubeconfigPath()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if err := kubeconfig.DeduplicateKubeconfigEntries(kubeconfigPath); err != nil {
+		log.Printf("Warning: failed to deduplicate kubeconfig: %v", err)
 	}
 	kcData, err := os.ReadFile(kubeconfigPath)
 	if err != nil {
@@ -119,7 +123,7 @@ func (h *KubeconfigHandlers) Auth(w http.ResponseWriter, r *http.Request) {
 // from ~/.kube/config.
 func (h *KubeconfigHandlers) Deauth(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	kubeconfigPath, err := defaultKubeconfigPath()
+	kubeconfigPath, err := mod.DefaultKubeconfigPath()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -138,4 +142,61 @@ func (h *KubeconfigHandlers) Deauth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Sync handles POST /clusters/kubeconfig/sync?dryRun=true — mirrors `hyve
+// cluster auth sync`: diffs ~/.kube/config context names against known
+// cluster definitions and removes orphaned contexts (cluster+user included).
+func (h *KubeconfigHandlers) Sync(w http.ResponseWriter, r *http.Request) {
+	dryRun := r.URL.Query().Get("dryRun") == "true"
+
+	clusterDefs, err := h.StateMgr.LoadClusterDefinitions()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	known := make(map[string]bool, len(clusterDefs))
+	for _, c := range clusterDefs {
+		known[c.Metadata.Name] = true
+	}
+
+	kubeconfigPath, err := mod.DefaultKubeconfigPath()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	data, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, map[string][]string{"removed": {}})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	contextNames, err := kubeconfig.ContextNames(string(data))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var orphans, removed []string
+	for _, name := range contextNames {
+		if !known[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	for _, name := range orphans {
+		if dryRun {
+			removed = append(removed, name)
+			continue
+		}
+		if err := kubeconfig.RemoveKubeconfigContext(string(data), name, kubeconfigPath); err != nil {
+			continue // best-effort, matches CLI's log-and-continue
+		}
+		removed = append(removed, name)
+		data, _ = os.ReadFile(kubeconfigPath) // same re-read requirement as the CLI
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"removed": removed})
 }

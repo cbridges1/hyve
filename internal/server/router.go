@@ -60,6 +60,7 @@ func newRouter(cfg routerConfig) (http.Handler, error) {
 	protected.HandleFunc("GET /clusters/{name}/resources", clusters.Resources)
 	protected.HandleFunc("POST /clusters/{name}/kubeconfig", kubeconfigH.Auth)
 	protected.HandleFunc("DELETE /clusters/{name}/kubeconfig", kubeconfigH.Deauth)
+	protected.HandleFunc("POST /clusters/kubeconfig/sync", kubeconfigH.Sync)
 
 	protected.HandleFunc("GET /templates", templates.List)
 	protected.HandleFunc("GET /templates/{name}", templates.Get)

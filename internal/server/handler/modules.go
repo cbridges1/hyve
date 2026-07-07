@@ -198,7 +198,8 @@ func (h *ModulesHandlers) Install(w http.ResponseWriter, r *http.Request) {
 // skeleton, mirroring `hyve module init <name>`.
 func (h *ModulesHandlers) Init(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		AuthOnly bool   `json:"authOnly,omitempty"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -207,7 +208,7 @@ func (h *ModulesHandlers) Init(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	dir, err := mod.InitModuleSkeleton(h.RepoPath, req.Name)
+	dir, err := mod.InitModuleSkeleton(h.RepoPath, req.Name, req.AuthOnly)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
