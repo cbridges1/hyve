@@ -144,6 +144,19 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 	return currentDefs
 }
 
+// effectiveStatus applies the authOnly default: an authOnly module's status
+// op typically doesn't exist, so an empty HYVE_CLUSTER_STATUS is treated as
+// ACTIVE rather than falling into the reconciler's "Unhandled status" no-op.
+// A status script that exists but legitimately prints nothing is treated
+// identically to one that's absent — this function doesn't distinguish the
+// two cases, by design (see internal/module/executor.go's Execute).
+func effectiveStatus(status string, isAuthOnly bool) string {
+	if status == "" && isAuthOnly {
+		return "ACTIVE"
+	}
+	return status
+}
+
 func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
 	name := cluster.Metadata.Name
 	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
@@ -167,13 +180,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	if err != nil {
 		return fmt.Errorf("status check failed: %w", err)
 	}
-	status := statusResult.Outputs["HYVE_CLUSTER_STATUS"]
-	// authOnly modules typically have no status op at all; treat the resulting
-	// empty string as ACTIVE rather than requiring an explicit status script —
-	// a status script that legitimately prints nothing is treated identically.
-	if status == "" && isAuthOnly {
-		status = "ACTIVE"
-	}
+	status := effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
 	r.logf("[%s] status: %s", name, status)
 
 	switch {

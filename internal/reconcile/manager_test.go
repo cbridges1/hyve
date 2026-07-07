@@ -63,6 +63,24 @@ func TestValidateDriverModuleLocked(t *testing.T) {
 	})
 }
 
+func TestEffectiveStatus(t *testing.T) {
+	t.Run("empty status defaults to ACTIVE for authOnly modules", func(t *testing.T) {
+		assert.Equal(t, "ACTIVE", effectiveStatus("", true))
+	})
+
+	t.Run("empty status stays empty for normal modules", func(t *testing.T) {
+		assert.Equal(t, "", effectiveStatus("", false))
+	})
+
+	t.Run("non-empty status is never overridden, authOnly or not", func(t *testing.T) {
+		for _, isAuthOnly := range []bool{true, false} {
+			assert.Equal(t, "NOT_FOUND", effectiveStatus("NOT_FOUND", isAuthOnly))
+			assert.Equal(t, "FAILED", effectiveStatus("FAILED", isAuthOnly))
+			assert.Equal(t, "ACTIVE", effectiveStatus("ACTIVE", isAuthOnly))
+		}
+	})
+}
+
 func TestValidateWorkflowRefsLocked(t *testing.T) {
 	t.Run("no remote refs is always fine", func(t *testing.T) {
 		lf := &module.LockFile{Version: 1}

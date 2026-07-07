@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // TestRemoveKubeconfigContext tests removing a context from kubeconfig
@@ -116,6 +117,132 @@ func TestRemoveItemByName(t *testing.T) {
 	assert.Contains(t, names, "item1")
 	assert.Contains(t, names, "item3")
 	assert.NotContains(t, names, "item2")
+}
+
+// TestDeduplicateKubeconfigEntries tests that duplicate cluster/context/user
+// entries sharing a name are collapsed to the last (freshest) one.
+func TestDeduplicateKubeconfigEntries(t *testing.T) {
+	t.Run("collapses duplicates, keeping the last entry", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config")
+
+		original := `apiVersion: v1
+kind: Config
+current-context: my-cluster
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://old-ip:6443
+- name: my-cluster
+  cluster:
+    server: https://new-ip:6443
+contexts:
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: my-cluster
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: my-cluster
+- name: other-cluster
+  context:
+    cluster: other-cluster
+    user: other-cluster
+users:
+- name: my-cluster
+  user:
+    token: old-token
+- name: my-cluster
+  user:
+    token: new-token
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(original), 0600))
+
+		err := DeduplicateKubeconfigEntries(configPath)
+		require.NoError(t, err)
+
+		modifiedData, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		modified := string(modifiedData)
+
+		// The freshest (last-written) values survive.
+		assert.Contains(t, modified, "https://new-ip:6443")
+		assert.NotContains(t, modified, "https://old-ip:6443")
+		assert.Contains(t, modified, "new-token")
+		assert.NotContains(t, modified, "old-token")
+		// The distinct, non-duplicated context is untouched.
+		assert.Contains(t, modified, "other-cluster")
+
+		var config KubeConfigStructure
+		require.NoError(t, yaml.Unmarshal(modifiedData, &config))
+		assert.Len(t, config.Clusters, 1)
+		assert.Len(t, config.Contexts, 2)
+		assert.Len(t, config.Users, 1)
+	})
+
+	t.Run("no-op when nothing is duplicated", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config")
+		original := `apiVersion: v1
+kind: Config
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://example.com
+contexts:
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: my-cluster
+users:
+- name: my-cluster
+  user:
+    token: my-token
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(original), 0600))
+		before, err := os.Stat(configPath)
+		require.NoError(t, err)
+
+		require.NoError(t, DeduplicateKubeconfigEntries(configPath))
+
+		after, err := os.Stat(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, before.ModTime(), after.ModTime(), "file should not be rewritten when there's nothing to dedupe")
+	})
+
+	t.Run("missing file is a no-op, not an error", func(t *testing.T) {
+		err := DeduplicateKubeconfigEntries(filepath.Join(t.TempDir(), "does-not-exist"))
+		assert.NoError(t, err)
+	})
+}
+
+// TestContextNames tests extracting context names from a kubeconfig.
+func TestContextNames(t *testing.T) {
+	config := `apiVersion: v1
+kind: Config
+contexts:
+- name: cluster-a
+  context:
+    cluster: cluster-a
+    user: cluster-a
+- name: cluster-b
+  context:
+    cluster: cluster-b
+    user: cluster-b
+`
+	names, err := ContextNames(config)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"cluster-a", "cluster-b"}, names)
+}
+
+func TestContextNamesEmptyConfig(t *testing.T) {
+	names, err := ContextNames("apiVersion: v1\nkind: Config\n")
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}
+
+func TestContextNamesInvalidYAML(t *testing.T) {
+	_, err := ContextNames("not: valid: yaml: [")
+	assert.Error(t, err)
 }
 
 // TestMultipleContextRemoval tests removing multiple contexts sequentially
