@@ -6,7 +6,7 @@
 
 A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commit the change, and Hyve reconciles the desired state — locally or through a CI/CD pipeline. Cloud operations are delegated to **modules**: versioned, self-contained packages that implement cluster operations via shell scripts or workflow YAMLs. No cloud SDKs are embedded in Hyve itself.
 
-[![Documentation](https://img.shields.io/badge/docs-hyve.mintlify.app-green)](https://hyve.mintlify.app)
+[![Documentation](https://img.shields.io/badge/docs-hyve--website-green)](https://cbridges1.github.io/hyve-website/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Features
@@ -37,7 +37,7 @@ A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commi
 
 ## Documentation
 
-Full documentation at **[hyve.mintlify.app](https://hyve.mintlify.app)** — CLI reference, module authoring guide, and provider-specific walkthroughs.
+Full documentation at **[cbridges1.github.io/hyve-website](https://cbridges1.github.io/hyve-website/)** — CLI reference, module authoring guide, and provider-specific walkthroughs.
 
 ## Installation
 
