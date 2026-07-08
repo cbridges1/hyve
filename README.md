@@ -13,7 +13,7 @@ A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commi
 
 - **GitOps Native** — All cluster state lives in Git. Every change is version-controlled, reviewed through pull requests, and rolled back with a revert commit.
 - **Module System** — Modules are versioned packages for any cloud provider. Install once, reference from any template. No cloud SDKs bundled.
-- **Lifecycle Hooks** — `beforeCreate`, `onCreate`, `onDelete`, `afterDelete` — run arbitrary workflows at each stage of a cluster's lifecycle, automatically.
+- **Lifecycle Hooks** — `beforeCreate`, `onCreate`, `afterCreate`, `onDelete`, `afterDelete` — run arbitrary workflows at each stage of a cluster's lifecycle, automatically.
 - **Cluster Templates** — Define the shape of a cluster once; execute the template by name to stamp out clusters consistently.
 - **Variable Injection** — Module params are injected as `HYVE_PARAM_*` env vars. Workflow outputs flow back as `HYVE_KEY=value` lines and are persisted for the next reconcile.
 - **Any Provider** — First-party modules for Civo, AWS EKS, GCP GKE, and Azure AKS. Community modules for anything else. Your credentials stay in your environment.
@@ -24,14 +24,15 @@ A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commi
 
 **Continuous reconciliation, not plan-and-apply.** Commit to create, delete the file to destroy, update a field to reconcile the difference. The same `hyve reconcile` command handles all three cases.
 
-**Lifecycle hooks are built in.** Four hook points cover the full cluster lifecycle:
+**Lifecycle hooks are built in.** Five hook points cover the full cluster lifecycle:
 
-| Hook | Cluster Exists? | When It Runs |
-|------|-----------------|--------------|
-| `beforeCreate` | No | Before provisioning — provision VPCs, IAM roles, etc. |
-| `onCreate` | Yes | After the cluster is active — deploy apps, configure monitoring |
-| `onDelete` | Yes | Before deletion — drain workloads, export backups |
-| `afterDelete` | No | After deletion — destroy VPCs, release IPs, clean up roles |
+| Hook           | Cluster Exists? | When It Runs |
+|----------------|-----------------|--------------|
+| `beforeCreate` | No              | Before provisioning — provision VPCs, IAM roles, etc. |
+| `onCreate`     | Yes             | After the cluster is active, before `spec.resources` applies — deploy apps, configure monitoring |
+| `afterCreate`  | Yes             | After the cluster is active and `spec.resources` has applied — anything depending on a resource-created object (e.g. a Secret referenced by a resource-managed Deployment) |
+| `onDelete`     | Yes             | Before deletion — drain workloads, export backups |
+| `afterDelete`  | No              | After deletion — destroy VPCs, release IPs, clean up roles |
 
 **Modules, not embedded SDKs.** Old-style GitOps tools embed cloud SDKs. If your provider isn't supported, you're stuck. Hyve modules shell out to any CLI tool you already have configured — your credentials, your tools, your control.
 
