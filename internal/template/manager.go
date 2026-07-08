@@ -31,7 +31,6 @@ func (m *Manager) EnsureTemplatesDir() error {
 
 // GetTemplatePath returns the path to a template file
 func (m *Manager) GetTemplatePath(name string) string {
-	// Ensure .yaml extension
 	if !strings.HasSuffix(name, ".yaml") {
 		name = name + ".yaml"
 	}
@@ -46,12 +45,10 @@ func (m *Manager) CreateTemplate(template *Template) error {
 
 	templatePath := m.GetTemplatePath(template.Metadata.Name)
 
-	// Check if template already exists
 	if _, err := os.Stat(templatePath); err == nil {
 		return fmt.Errorf("template '%s' already exists", template.Metadata.Name)
 	}
 
-	// Set defaults
 	if template.APIVersion == "" {
 		template.APIVersion = "v1"
 	}
@@ -59,13 +56,11 @@ func (m *Manager) CreateTemplate(template *Template) error {
 		template.Kind = "Template"
 	}
 
-	// Marshal to YAML
 	data, err := yaml.Marshal(template)
 	if err != nil {
 		return fmt.Errorf("failed to marshal template: %w", err)
 	}
 
-	// Write to file
 	if err := os.WriteFile(templatePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write template file: %w", err)
 	}
@@ -170,69 +165,47 @@ func (m *Manager) DeleteTemplate(name string) error {
 	return nil
 }
 
-// ConvertToClusterDefinition converts a template to a cluster definition.
-// Provider-specific account fields are carried over from the template when present.
-// The caller may override any of these by assigning to the returned ClusterDefinition
-// before use (e.g. from CLI flags passed to `template execute`).
-func (m *Manager) ConvertToClusterDefinition(template *Template, clusterName string) *types.ClusterDefinition {
-	// skipIfDynamic returns an empty string for fields declared in DynamicFields
-	// so that resolveHookEnvVars can populate them after the beforeCreate workflow runs.
-	skipIfDynamic := func(fieldName, value string) string {
-		if template.Spec.IsDynamicField(fieldName) {
-			return ""
-		}
-		return value
+// GenerateClusterDefinition produces a ClusterDefinition from a template,
+// optionally overriding region and any params via the overrides map.
+func (t *Template) GenerateClusterDefinition(name, region string, overrides map[string]string) types.ClusterDefinition {
+	params := make(map[string]string, len(t.Spec.Params))
+	for k, v := range t.Spec.Params {
+		params[k] = v
 	}
-
-	return &types.ClusterDefinition{
+	for k, v := range overrides {
+		params[k] = v
+	}
+	if region == "" {
+		region = t.Spec.Region
+	}
+	return types.ClusterDefinition{
 		APIVersion: "v1",
 		Kind:       "Cluster",
-		Metadata: types.ClusterMetadata{
-			Name:   clusterName,
-			Region: template.Spec.Region,
-		},
+		Metadata:   types.ClusterMetadata{Name: name, Region: region},
 		Spec: types.ClusterSpec{
-			Provider:    template.Spec.Provider,
-			Nodes:       template.Spec.Nodes,
-			NodeGroups:  template.Spec.NodeGroups,
-			ClusterType: template.Spec.ClusterType,
-			Ingress: types.IngressSpec{
-				Enabled:      template.Spec.Ingress.Enabled,
-				LoadBalancer: template.Spec.Ingress.LoadBalancer,
-				ChartVersion: template.Spec.Ingress.ChartVersion,
+			Driver: types.DriverRef{
+				Source:  t.Spec.Driver.Source,
+				Version: t.Spec.Driver.Version,
 			},
+			Params: params,
 			Workflows: types.WorkflowsSpec{
-				BeforeCreate: template.Spec.Workflows.BeforeCreate,
-				OnCreate:     template.Spec.Workflows.OnCreate,
-				OnDelete:     template.Spec.Workflows.OnDelete,
-				AfterDelete:  template.Spec.Workflows.AfterDelete,
+				BeforeCreate: t.Spec.Workflows.BeforeCreate,
+				OnCreate:     t.Spec.Workflows.OnCreate,
+				AfterCreate:  t.Spec.Workflows.AfterCreate,
+				OnDelete:     t.Spec.Workflows.OnDelete,
+				AfterDelete:  t.Spec.Workflows.AfterDelete,
 			},
-			// AWS-specific fields — dynamic fields left empty for hook population
-			AWSAccount:      template.Spec.AWSAccount,
-			AWSVPCID:        skipIfDynamic(FieldAWSVPCID, template.Spec.AWSVPCID),
-			AWSEKSRoleName:  skipIfDynamic(FieldAWSEKSRoleName, template.Spec.AWSEKSRoleName),
-			AWSNodeRoleName: skipIfDynamic(FieldAWSNodeRoleName, template.Spec.AWSNodeRoleName),
-			// Azure-specific fields
-			AzureSubscription:  template.Spec.AzureSubscription,
-			AzureResourceGroup: skipIfDynamic(FieldAzureResourceGroup, template.Spec.AzureResourceGroup),
-			// GCP-specific fields
-			GCPProject: template.Spec.GCPProject,
-			// Civo-specific fields
-			CivoOrganization: template.Spec.CivoOrganization,
+			Resources: t.Spec.Resources,
 		},
 	}
 }
 
-// ExecuteTemplate creates a cluster from a template
-func (m *Manager) ExecuteTemplate(ctx context.Context, templateName, clusterName string) (*Template, *types.ClusterDefinition, error) {
-	// Get template
+// ExecuteTemplate creates a cluster definition from a template
+func (m *Manager) ExecuteTemplate(ctx context.Context, templateName, clusterName string, region string, overrides map[string]string) (*Template, *types.ClusterDefinition, error) {
 	template, err := m.GetTemplate(templateName)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Convert to cluster definition
-	clusterDef := m.ConvertToClusterDefinition(template, clusterName)
-
-	return template, clusterDef, nil
+	def := template.GenerateClusterDefinition(clusterName, region, overrides)
+	return template, &def, nil
 }

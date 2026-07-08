@@ -1,0 +1,20 @@
+# Used by GoReleaser (see .goreleaser.yaml `dockers:`) — it cross-compiles
+# the hyve binary once per platform via `builds:`, then packages the
+# already-built binary here rather than rebuilding Go from source per image.
+# For a local `docker build` that compiles from source, use ./Dockerfile
+# instead. Keep the apk package list identical between the two.
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates bash git curl jq openssl \
+    kubectl helm
+
+# GoReleaser's multi-platform docker build stages each platform's binary
+# under <os>/<arch>/ in the build context (buildx's TARGETOS/TARGETARCH
+# convention) rather than at the context root.
+ARG TARGETOS
+ARG TARGETARCH
+COPY ${TARGETOS}/${TARGETARCH}/hyve /usr/local/bin/hyve
+
+WORKDIR /repo
+ENTRYPOINT ["hyve"]
+CMD ["--help"]

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -12,31 +13,36 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	cluster_pkg "github.com/cbridges1/hyve/internal/cluster"
-	"github.com/cbridges1/hyve/internal/kubeconfig"
-	"github.com/cbridges1/hyve/internal/provider"
-	"github.com/cbridges1/hyve/internal/providerconfig"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
 // Executor handles workflow execution
 type Executor struct {
-	manager           *Manager
-	kubeconfigManager *kubeconfig.Manager
-	execution         *WorkflowExecution
-	currentCluster    string
-	variables         map[string]string
-	injectedVars      map[string]string // extra vars provided by caller (--set flags or definition injection)
-	workingDir        string
-	repoName          string
+	manager        *Manager
+	execution      *WorkflowExecution
+	currentCluster string
+	variables      map[string]string
+	injectedVars   map[string]string // extra vars provided by caller (--set flags or definition injection)
+	workingDir     string
+	repoName       string
+
+	// Output, when set, additionally receives every log line and step
+	// output byte produced during execution — used by hyve-server to
+	// capture live progress for polling/WebSocket streaming without
+	// affecting the CLI's normal stdout/log.Printf behavior. Left nil by
+	// the CLI, which never sets it.
+	Output io.Writer
 }
 
-// NewExecutor creates a new workflow executor
+// NewExecutor creates a new workflow executor.
+//
+// The cluster argument identifies the cluster the workflow is associated with
+// (it is set as WORKFLOW_CLUSTER and can be referenced by the workflow).
+// In the module-based architecture the executor does NOT auto-sync kubeconfigs
+// or contact cloud providers — that is the responsibility of the calling code
+// (typically the module's auth operation).
 func NewExecutor(manager *Manager, cluster string) (*Executor, error) {
-	var kubeconfigMgr *kubeconfig.Manager
-	var err error
-
 	var repoName string
 	execRepoMgr, repoErr := repository.NewManager()
 	if repoErr == nil {
@@ -46,40 +52,27 @@ func NewExecutor(manager *Manager, cluster string) (*Executor, error) {
 		}
 	}
 
-	if cluster != "" {
-		kubeconfigMgr, err = kubeconfig.NewManager(repoName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create kubeconfig manager: %w", err)
-		}
-	}
-
 	return &Executor{
-		manager:           manager,
-		kubeconfigManager: kubeconfigMgr,
-		currentCluster:    cluster,
-		variables:         make(map[string]string),
-		injectedVars:      make(map[string]string),
-		workingDir:        manager.localPath,
-		repoName:          repoName,
+		manager:        manager,
+		currentCluster: cluster,
+		variables:      make(map[string]string),
+		injectedVars:   make(map[string]string),
+		workingDir:     manager.localPath,
+		repoName:       repoName,
 	}, nil
 }
 
 // InjectVars pre-loads key/value pairs into the executor's variable set.
 // These are applied with highest priority — after all automatically derived
-// variables — so they can override anything. Use this to supply ad-hoc
-// --set KEY=VALUE values or pre-computed definition variables.
+// variables — so they can override anything.
 func (e *Executor) InjectVars(vars map[string]string) {
 	for k, v := range vars {
 		e.injectedVars[k] = v
 	}
 }
 
-// RunWorkflowNoCluster executes a workflow without kubeconfig injection.
-// Use this for lifecycle hooks that run before the cluster is created (beforeCreate)
-// or after it is deleted (afterDelete), when no kubeconfig is available.
-// If clusterDef is non-nil, known cluster fields (name, region, provider, credentials)
-// are injected as HYVE_* environment variables so hooks can provision or clean up
-// cloud infrastructure for the right cluster and account.
+// RunWorkflowNoCluster is retained for API compatibility with the reconciler.
+// Definition env vars are injected if a clusterDef is supplied.
 func (e *Executor) RunWorkflowNoCluster(ctx context.Context, workflowName string, clusterDef *types.ClusterDefinition) (*WorkflowExecution, error) {
 	if clusterDef != nil {
 		e.exportDefinitionEnvironmentVariables(clusterDef)
@@ -87,23 +80,35 @@ func (e *Executor) RunWorkflowNoCluster(ctx context.Context, workflowName string
 	return e.RunWorkflow(ctx, workflowName, "")
 }
 
-// RunWorkflow executes a workflow
+// RunWorkflow executes a workflow, looking it up by name in the local
+// workflows/ directory first.
 func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster string) (*WorkflowExecution, error) {
-	workflow, err := e.manager.GetWorkflow(workflowName)
+	wf, err := e.manager.GetWorkflow(workflowName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workflow: %w", err)
 	}
+	return e.runWorkflow(ctx, wf, workflowName, cluster)
+}
 
-	// Use specified cluster or default
+// RunResolvedWorkflow executes an already-loaded workflow definition (e.g.
+// one fetched from a remote source via internal/workflowref) without going
+// through the local workflows/ directory lookup RunWorkflow performs.
+// displayName is used for logging/execution IDs/env vars only — typically
+// wf.Metadata.Name or the workflow's full remote source string.
+func (e *Executor) RunResolvedWorkflow(ctx context.Context, wf *Workflow, displayName, cluster string) (*WorkflowExecution, error) {
+	return e.runWorkflow(ctx, wf, displayName, cluster)
+}
+
+// runWorkflow is the shared body of RunWorkflow/RunResolvedWorkflow.
+func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName string, cluster string) (*WorkflowExecution, error) {
 	targetCluster := cluster
 	if targetCluster == "" {
 		targetCluster = e.currentCluster
 	}
 
-	// Create execution instance
 	execution := &WorkflowExecution{
 		ID:           generateExecutionID(),
-		WorkflowName: workflowName,
+		WorkflowName: displayName,
 		Cluster:      targetCluster,
 		Status:       StatusRunning,
 		StartTime:    time.Now(),
@@ -114,10 +119,19 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 	}
 
 	e.execution = execution
-	e.addLog("INFO", "", "", fmt.Sprintf("Starting workflow '%s'", workflowName))
+	e.addLog("INFO", "", "", fmt.Sprintf("Starting workflow '%s'", displayName))
+
+	// Apply caller-injected variables (--set flags, or values the interactive TUI
+	// collected for spec.inputs) before requirements validation, so a --set/prompted
+	// value can satisfy a spec.requirements.secrets entry of the same name.
+	// Previously this only happened in setupEnvironmentVariables, which runs after
+	// validation — meaning no --set or prompted value could ever satisfy a
+	// requirements.secrets check, only a variable already present in the process
+	// environment before hyve was invoked at all.
+	e.applyInjectedVars()
 
 	// Validate workflow requirements
-	if workflow.Spec.Requirements != nil {
+	if wf.Spec.Requirements != nil {
 		e.addLog("INFO", "", "", "Validating workflow requirements...")
 		validator, err := NewRequirementValidator()
 		if err != nil {
@@ -127,15 +141,13 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 		}
 		defer validator.Close()
 
-		// Validate all requirements
-		if err := validator.ValidateRequirements(workflow.Spec.Requirements); err != nil {
+		if err := validator.ValidateRequirements(wf.Spec.Requirements); err != nil {
 			e.execution.Status = StatusFailed
 			e.addLog("ERROR", "", "", fmt.Sprintf("Requirements validation failed: %v", err))
 			return execution, fmt.Errorf("requirements validation failed: %w", err)
 		}
 
-		// Load secrets into environment
-		if err := validator.LoadSecretsIntoEnvironment(workflow.Spec.Requirements); err != nil {
+		if err := validator.LoadSecretsIntoEnvironment(wf.Spec.Requirements); err != nil {
 			e.execution.Status = StatusFailed
 			e.addLog("ERROR", "", "", fmt.Sprintf("Failed to load secrets: %v", err))
 			return execution, fmt.Errorf("failed to load secrets: %w", err)
@@ -144,47 +156,29 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 		e.addLog("INFO", "", "", "✅ All requirements validated successfully")
 	}
 
-	// Set up kubeconfig unless the workflow opts out of the cluster pre-flight.
-	// When preFlight.cluster == "skip", inject definition-derived env vars from
-	// the on-disk cluster YAML (same as beforeCreate hooks) but skip the EKS
-	// DescribeCluster call and kubeconfig sync entirely — necessary for workflows
-	// whose purpose is to obtain credentials in the first place.
-	var kubeconfigPath string
+	// Inject cluster definition env vars when a target cluster is known.
+	// The KUBECONFIG environment is left to the caller (or module's auth op).
 	if targetCluster != "" {
-		if workflow.Spec.PreFlight.Cluster == "skip" {
-			e.addLog("INFO", "", "", fmt.Sprintf("Pre-flight skipped for cluster '%s' (preFlight.cluster: skip)", targetCluster))
-			if clusterDef, defErr := e.loadClusterDefinition(targetCluster); defErr == nil {
-				e.exportDefinitionEnvironmentVariables(clusterDef)
-			} else {
-				e.addLog("WARN", "", "", fmt.Sprintf("Could not load cluster definition for env injection: %v", defErr))
-			}
+		if clusterDef, defErr := e.loadClusterDefinition(targetCluster); defErr == nil {
+			e.exportDefinitionEnvironmentVariables(clusterDef)
 		} else {
-			kubeconfigPath, err = e.setupKubeconfig(ctx, targetCluster)
-			if err != nil {
-				e.execution.Status = StatusFailed
-				e.addLog("ERROR", "", "", fmt.Sprintf("Failed to setup kubeconfig: %v", err))
-				return execution, fmt.Errorf("failed to setup kubeconfig: %w", err)
-			}
-			defer e.cleanupKubeconfig(kubeconfigPath)
+			e.addLog("WARN", "", "", fmt.Sprintf("Could not load cluster definition for env injection: %v", defErr))
 		}
 	}
 
-	// Set up environment variables
-	if err := e.setupEnvironmentVariables(ctx, workflow, targetCluster, kubeconfigPath); err != nil {
+	if err := e.setupEnvironmentVariables(wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", fmt.Sprintf("Failed to setup environment variables: %v", err))
 		return execution, fmt.Errorf("failed to setup environment variables: %w", err)
 	}
 
-	// Validate that all declared inputs are satisfied
-	if err := e.validateInputs(workflow); err != nil {
+	if err := e.validateInputs(wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", err.Error())
 		return execution, err
 	}
 
-	// Execute jobs
-	if err := e.executeJobs(ctx, workflow); err != nil {
+	if err := e.executeJobs(ctx, wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", fmt.Sprintf("Workflow failed: %v", err))
 		e.finalizeExecution()
@@ -198,138 +192,36 @@ func (e *Executor) RunWorkflow(ctx context.Context, workflowName string, cluster
 	return execution, nil
 }
 
-// setupKubeconfig sets up kubeconfig for the target cluster.
-// It always attempts a fresh sync from the provider first (ensuring tokens are
-// current), then falls back to whatever is stored in the database.
-func (e *Executor) setupKubeconfig(ctx context.Context, cluster string) (string, error) {
-	if e.kubeconfigManager == nil {
-		return "", fmt.Errorf("kubeconfig manager not initialized")
-	}
-
-	// Attempt a fresh sync so credentials are never stale (e.g. GCP bearer tokens).
-	clusterDef, defErr := e.loadClusterDefinition(cluster)
-	if defErr == nil {
-		prov, provErr := e.createProviderFromClusterDef(clusterDef)
-		if provErr == nil {
-			syncer := kubeconfig.NewSyncer(e.kubeconfigManager, prov)
-			if err := syncer.SyncSingleKubeconfig(ctx, cluster); err != nil {
-				log.Printf("Warning: kubeconfig sync failed for cluster '%s', falling back to cached credentials: %v", cluster, err)
-			}
-		} else {
-			log.Printf("Warning: could not create provider for kubeconfig sync: %v", provErr)
-		}
-	} else {
-		log.Printf("Warning: could not load cluster definition for kubeconfig sync: %v", defErr)
-	}
-
-	kc, err := e.kubeconfigManager.GetKubeconfig(cluster)
-	if err != nil {
-		return "", fmt.Errorf("failed to get kubeconfig: %w", err)
-	}
-
-	var kubeconfigData string
-
-	if kc == nil {
-		// Sync didn't store anything — try fetching directly from the provider.
-		log.Printf("No stored kubeconfig found for cluster '%s', fetching from provider...", cluster)
-
-		if defErr != nil {
-			return "", fmt.Errorf("no kubeconfig found for cluster '%s' and failed to load cluster definition: %w", cluster, defErr)
-		}
-
-		prov, err := e.createProviderFromClusterDef(clusterDef)
-		if err != nil {
-			return "", fmt.Errorf("no kubeconfig found for cluster '%s' and failed to create provider: %w", cluster, err)
-		}
-
-		clusterMgr := cluster_pkg.NewManager(prov)
-		clusterInfo, err := clusterMgr.GetClusterInfo(ctx, cluster)
-		if err != nil {
-			return "", fmt.Errorf("no kubeconfig found for cluster '%s' and failed to fetch from provider: %w", cluster, err)
-		}
-
-		if clusterInfo == nil || clusterInfo.Kubeconfig == "" {
-			// Last resort: check HYVE_CLUSTER_KUBECONFIG environment variable,
-			// which may be set externally by a CI/CD pipeline step.
-			if envKC := os.Getenv("HYVE_CLUSTER_KUBECONFIG"); envKC != "" {
-				log.Printf("Using kubeconfig from HYVE_CLUSTER_KUBECONFIG environment variable for cluster '%s'", cluster)
-				kubeconfigData = envKC
-			} else {
-				return "", fmt.Errorf("no kubeconfig found for cluster '%s'", cluster)
-			}
-		} else {
-			kubeconfigData = clusterInfo.Kubeconfig
-		}
-
-		if _, err := e.kubeconfigManager.StoreKubeconfig(cluster, kubeconfigData); err != nil {
-			log.Printf("Warning: failed to store kubeconfig for cluster '%s': %v", cluster, err)
-		}
-	} else {
-		kubeconfigData, err = kc.GetConfig()
-		if err != nil {
-			return "", fmt.Errorf("failed to decrypt kubeconfig: %w", err)
-		}
-	}
-
-	// Create temporary kubeconfig file
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get user home directory: %w", err)
-	}
-	tempDir := filepath.Join(homeDir, ".hyve", "temp")
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create temp directory: %w", err)
-	}
-
-	tempFile := filepath.Join(tempDir, fmt.Sprintf("kubeconfig-workflow-%s", cluster))
-	if err := os.WriteFile(tempFile, []byte(kubeconfigData), 0600); err != nil {
-		return "", fmt.Errorf("failed to write temporary kubeconfig: %w", err)
-	}
-
-	return tempFile, nil
-}
-
-// cleanupKubeconfig cleans up temporary kubeconfig file
-func (e *Executor) cleanupKubeconfig(kubeconfigPath string) {
-	if kubeconfigPath != "" {
-		os.Remove(kubeconfigPath)
-	}
-}
-
-// setupEnvironmentVariables sets up environment variables for the workflow
-func (e *Executor) setupEnvironmentVariables(ctx context.Context, workflow *Workflow, targetCluster string, kubeconfigPath string) error {
+func (e *Executor) setupEnvironmentVariables(workflow *Workflow) error {
 	e.variables["WORKFLOW_NAME"] = workflow.Metadata.Name
 	e.variables["WORKFLOW_CLUSTER"] = e.currentCluster
 	e.variables["WORKFLOW_EXECUTION_ID"] = e.execution.ID
 	e.variables["HYVE_REPOSITORY"] = e.repoName
 	e.variables["HYVE_REPOSITORY_PATH"] = e.manager.localPath
 
-	if kubeconfigPath != "" {
-		e.variables["KUBECONFIG"] = kubeconfigPath
-		os.Setenv("KUBECONFIG", kubeconfigPath)
-	}
-
-	// Export cluster-specific environment variables if cluster is specified
-	if targetCluster != "" {
-		if err := e.exportClusterEnvironmentVariables(ctx, targetCluster); err != nil {
-			log.Printf("Warning: Failed to export cluster environment variables: %v", err)
-			// Don't fail the workflow if we can't get cluster info
-		}
+	// Honour KUBECONFIG from the caller's environment.
+	if kc := os.Getenv("KUBECONFIG"); kc != "" {
+		e.variables["KUBECONFIG"] = kc
 	}
 
 	// Apply caller-injected variables last — highest priority, override everything above
-	for k, v := range e.injectedVars {
-		e.variables[k] = v
-		os.Setenv(k, v)
-	}
+	e.applyInjectedVars()
 
 	return nil
 }
 
+// applyInjectedVars exports e.injectedVars (--set flags, or values the interactive
+// TUI collected for spec.inputs) into both e.variables and the process
+// environment. Idempotent — safe to call more than once per run.
+func (e *Executor) applyInjectedVars() {
+	for k, v := range e.injectedVars {
+		e.variables[k] = v
+		os.Setenv(k, v)
+	}
+}
+
 // exportDefinitionEnvironmentVariables injects HYVE_* variables derived from a cluster
-// definition into the executor's variable set. Used by beforeCreate and afterDelete hooks
-// where the cluster does not exist yet (or no longer exists) but the definition fields
-// (name, region, provider, account) are still known and useful to the hook script.
+// definition into the executor's variable set.
 func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.ClusterDefinition) {
 	setEnv := func(key, value string) {
 		if value == "" {
@@ -341,29 +233,21 @@ func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.Cluste
 
 	setEnv("HYVE_CLUSTER_NAME", clusterDef.Metadata.Name)
 	setEnv("HYVE_CLUSTER_REGION", clusterDef.Metadata.Region)
-	setEnv("HYVE_CLUSTER_PROVIDER", clusterDef.Spec.Provider)
-	setEnv("HYVE_CLUSTER_TYPE", clusterDef.Spec.ClusterType)
-	setEnv("HYVE_CLUSTER_K8S_VERSION", clusterDef.Spec.KubernetesVersion)
+	setEnv("HYVE_DRIVER_SOURCE", clusterDef.Spec.Driver.Source)
+	setEnv("HYVE_DRIVER_VERSION", clusterDef.Spec.Driver.Version)
 
-	// Provider-specific account identifiers — only the field relevant to the
-	// cluster's provider will be non-empty and therefore exported.
-	setEnv("HYVE_AWS_ACCOUNT", clusterDef.Spec.AWSAccount)
-	setEnv("HYVE_GCP_PROJECT", clusterDef.Spec.GCPProject)
-	setEnv("HYVE_AZURE_SUBSCRIPTION", clusterDef.Spec.AzureSubscription)
-	setEnv("HYVE_CIVO_ORG", clusterDef.Spec.CivoOrganization)
-
-	// Resolved IDs and spec fields useful to terraform variable substitution.
-	setEnv("HYVE_CLUSTER_ACCOUNT_ID", clusterDef.Spec.AWSAccountID)
-	setEnv("HYVE_CLUSTER_VPC_ID", clusterDef.Spec.AWSVPCID)
-
-	// Export provider credentials so hooks can authenticate with the cloud API
-	// to provision or clean up supporting infrastructure.
-	e.exportProviderCredentials(clusterDef)
+	// Flatten params into HYVE_PARAM_<KEY>
+	for k, v := range clusterDef.Spec.Params {
+		setEnv("HYVE_PARAM_"+strings.ToUpper(k), v)
+	}
+	// Pass through previously captured driver outputs.
+	for k, v := range clusterDef.Spec.DriverOutputs {
+		setEnv(k, v)
+	}
 }
 
 // validateInputs checks that every input declared in the workflow's spec.inputs section
 // has a value — either in the executor's variable set or already in the process environment.
-// Returns a descriptive error listing all missing inputs.
 func (e *Executor) validateInputs(wf *Workflow) error {
 	if len(wf.Spec.Inputs) == 0 {
 		return nil
@@ -388,244 +272,11 @@ func (e *Executor) validateInputs(wf *Workflow) error {
 		strings.Join(missing, "\n  - "))
 }
 
-// exportClusterEnvironmentVariables exports cluster-specific environment variables
-func (e *Executor) exportClusterEnvironmentVariables(ctx context.Context, clusterName string) error {
-	// Load cluster definitions from YAML files
-	clusterDef, err := e.loadClusterDefinition(clusterName)
-	if err != nil {
-		return fmt.Errorf("failed to load cluster definition: %w", err)
-	}
-
-	// Export provider credentials as standard CLI env vars so that tools like
-	// the aws CLI, gcloud, and the EKS/GKE kubeconfig exec plugins can authenticate
-	// without requiring a locally-installed and configured cloud CLI.
-	e.exportProviderCredentials(clusterDef)
-
-	// Create provider for this cluster
-	prov, err := e.createProviderFromClusterDef(clusterDef)
-	if err != nil {
-		return fmt.Errorf("failed to create provider: %w", err)
-	}
-
-	// Create cluster manager
-	clusterMgr := cluster_pkg.NewManager(prov)
-
-	// Get cluster information
-	clusterInfo, err := clusterMgr.GetClusterInfo(ctx, clusterName)
-	if err != nil {
-		return fmt.Errorf("failed to get cluster info: %w", err)
-	}
-
-	if clusterInfo == nil {
-		return fmt.Errorf("cluster info not found")
-	}
-
-	// Set HYVE_CLUSTER_* environment variables
-	e.variables["HYVE_CLUSTER_NAME"] = clusterInfo.Name
-	e.variables["HYVE_CLUSTER_IP_ADDRESS"] = clusterInfo.IPAddress
-	e.variables["HYVE_CLUSTER_ACCESS_PORT"] = clusterInfo.AccessPort
-	e.variables["HYVE_CLUSTER_ID"] = clusterInfo.ID
-	e.variables["HYVE_CLUSTER_STATUS"] = clusterInfo.Status
-	e.variables["HYVE_CLUSTER_KUBECONFIG"] = clusterInfo.Kubeconfig
-	e.variables["HYVE_CLUSTER_OIDC_URL"] = clusterInfo.OIDCIssuerURL
-
-	// Also export to process environment so they're available in scripts
-	os.Setenv("HYVE_CLUSTER_NAME", clusterInfo.Name)
-	os.Setenv("HYVE_CLUSTER_IP_ADDRESS", clusterInfo.IPAddress)
-	os.Setenv("HYVE_CLUSTER_ACCESS_PORT", clusterInfo.AccessPort)
-	os.Setenv("HYVE_CLUSTER_ID", clusterInfo.ID)
-	os.Setenv("HYVE_CLUSTER_STATUS", clusterInfo.Status)
-	os.Setenv("HYVE_CLUSTER_KUBECONFIG", clusterInfo.Kubeconfig)
-	if clusterInfo.OIDCIssuerURL != "" {
-		os.Setenv("HYVE_CLUSTER_OIDC_URL", clusterInfo.OIDCIssuerURL)
-	}
-
-	log.Printf("✅ Exported cluster information to environment:")
-	log.Printf("  HYVE_CLUSTER_NAME=%s", clusterInfo.Name)
-	log.Printf("  HYVE_CLUSTER_IP_ADDRESS=%s", clusterInfo.IPAddress)
-	log.Printf("  HYVE_CLUSTER_ACCESS_PORT=%s", clusterInfo.AccessPort)
-	log.Printf("  HYVE_CLUSTER_ID=%s", clusterInfo.ID)
-	log.Printf("  HYVE_CLUSTER_STATUS=%s", clusterInfo.Status)
-
-	return nil
-}
-
-// exportProviderCredentials sets the standard CLI environment variables for the
-// cluster's cloud provider so that tools invoked by workflow steps (e.g. aws,
-// kubectl with an EKS exec-plugin, gcloud, az) can authenticate using the same
-// credentials stored in provider-configs/*.yaml — no locally-installed CLI login
-// is required.
-func (e *Executor) exportProviderCredentials(clusterDef *types.ClusterDefinition) {
-	providerName := strings.ToLower(clusterDef.Spec.Provider)
-	if providerName == "" {
-		providerName = "civo"
-	}
-
-	pcMgr := providerconfig.NewManager(e.manager.localPath)
-
-	setEnv := func(key, value string) {
-		if value == "" {
-			return
-		}
-		e.variables[key] = value
-		os.Setenv(key, value)
-	}
-
-	switch providerName {
-	case "aws":
-		accountName := clusterDef.Spec.AWSAccount
-		if accountName == "" {
-			return
-		}
-		keyID, secret, session, _ := pcMgr.GetAWSCredentials(accountName)
-		setEnv("AWS_ACCESS_KEY_ID", keyID)
-		setEnv("AWS_SECRET_ACCESS_KEY", secret)
-		setEnv("AWS_SESSION_TOKEN", session)
-		setEnv("AWS_DEFAULT_REGION", clusterDef.Metadata.Region)
-		if keyID != "" {
-			log.Printf("✅ Exported AWS credentials for account '%s' (region: %s)", accountName, clusterDef.Metadata.Region)
-		}
-
-	case "gcp":
-		accountName := clusterDef.Spec.GCPProject
-		if accountName == "" {
-			return
-		}
-		credJSON, err := pcMgr.GetGCPCredentialsJSON(accountName)
-		if err != nil || credJSON == "" {
-			return
-		}
-		// Write credentials to a temp file; GOOGLE_APPLICATION_CREDENTIALS must be a path.
-		homeDir, homeDirErr := os.UserHomeDir()
-		if homeDirErr != nil {
-			log.Printf("Warning: failed to get home directory for GCP credentials: %v", homeDirErr)
-			return
-		}
-		tempDir := filepath.Join(homeDir, ".hyve", "temp")
-		if mkErr := os.MkdirAll(tempDir, 0755); mkErr != nil {
-			log.Printf("Warning: failed to create temp dir for GCP credentials: %v", mkErr)
-			return
-		}
-		credFile := filepath.Join(tempDir, fmt.Sprintf("gcp-creds-%s.json", accountName))
-		if writeErr := os.WriteFile(credFile, []byte(credJSON), 0600); writeErr != nil {
-			log.Printf("Warning: failed to write GCP credentials file: %v", writeErr)
-			return
-		}
-		setEnv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
-		projectID := clusterDef.Spec.GCPProjectID
-		if projectID == "" {
-			projectID, _ = pcMgr.GetGCPProjectID(accountName)
-		}
-		setEnv("CLOUDSDK_CORE_PROJECT", projectID)
-		setEnv("GCLOUD_PROJECT", projectID)
-		log.Printf("✅ Exported GCP credentials for project '%s'", accountName)
-
-	case "azure":
-		accountName := clusterDef.Spec.AzureSubscription
-		if accountName == "" {
-			return
-		}
-		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(accountName)
-		subID := clusterDef.Spec.AzureSubscriptionID
-		if subID == "" {
-			subID, _ = pcMgr.GetAzureSubscriptionID(accountName)
-		}
-		setEnv("AZURE_TENANT_ID", tenantID)
-		setEnv("AZURE_CLIENT_ID", clientID)
-		setEnv("AZURE_CLIENT_SECRET", clientSecret)
-		setEnv("AZURE_SUBSCRIPTION_ID", subID)
-		if clientID != "" {
-			log.Printf("✅ Exported Azure credentials for subscription '%s'", accountName)
-		}
-
-	case "civo":
-		accountName := clusterDef.Spec.CivoOrganization
-		if accountName == "" {
-			return
-		}
-		token, err := pcMgr.GetCivoToken(accountName)
-		if err != nil || token == "" {
-			return
-		}
-		setEnv("CIVO_TOKEN", token)
-		log.Printf("✅ Exported Civo token for organization '%s'", accountName)
-	}
-}
-
-// createProviderFromClusterDef creates a provider for the given cluster definition.
-// Credentials are resolved exclusively from provider-configs/*.yaml files in the
-// repository, so this works in CI/CD pipelines where the local SQLite database
-// is not available.
-func (e *Executor) createProviderFromClusterDef(clusterDef *types.ClusterDefinition) (provider.Provider, error) {
-	providerName := clusterDef.Spec.Provider
-	if providerName == "" {
-		providerName = "civo"
-	}
-
-	opts := provider.ProviderOptions{
-		Region: clusterDef.Metadata.Region,
-	}
-
-	pcMgr := providerconfig.NewManager(e.manager.localPath)
-
-	switch strings.ToLower(providerName) {
-	case "civo":
-		opts.AccountName = clusterDef.Spec.CivoOrganization
-		if opts.AccountName != "" {
-			if token, err := pcMgr.GetCivoToken(opts.AccountName); err == nil && token != "" {
-				opts.APIKey = token
-			}
-		}
-	case "aws":
-		opts.AccountName = clusterDef.Spec.AWSAccount
-		opts.AWSProfile = clusterDef.Spec.AWSProfile
-		if opts.AccountName != "" {
-			keyID, secret, session, _ := pcMgr.GetAWSCredentials(opts.AccountName)
-			opts.AccessKeyID = keyID
-			opts.SecretAccessKey = secret
-			opts.SessionToken = session
-		}
-	case "gcp":
-		opts.AccountName = clusterDef.Spec.GCPProject
-		if clusterDef.Spec.GCPProjectID != "" {
-			opts.ProjectID = clusterDef.Spec.GCPProjectID
-		} else if opts.AccountName != "" {
-			if projectID, err := pcMgr.GetGCPProjectID(opts.AccountName); err == nil {
-				opts.ProjectID = projectID
-			}
-		}
-		if opts.AccountName != "" {
-			credJSON, _ := pcMgr.GetGCPCredentialsJSON(opts.AccountName)
-			opts.GCPCredentialsJSON = credJSON
-		}
-	case "azure":
-		opts.AccountName = clusterDef.Spec.AzureSubscription
-		opts.AzureResourceGroup = clusterDef.Spec.AzureResourceGroup
-		if clusterDef.Spec.AzureSubscriptionID != "" {
-			opts.AzureSubscriptionID = clusterDef.Spec.AzureSubscriptionID
-		} else if opts.AccountName != "" {
-			if subID, err := pcMgr.GetAzureSubscriptionID(opts.AccountName); err == nil {
-				opts.AzureSubscriptionID = subID
-			}
-		}
-		if opts.AccountName != "" {
-			tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(opts.AccountName)
-			opts.AzureTenantID = tenantID
-			opts.AzureClientID = clientID
-			opts.AzureClientSecret = clientSecret
-		}
-	}
-
-	factory := provider.NewFactory()
-	return factory.CreateProviderWithOptions(providerName, opts)
-}
-
 // loadClusterDefinition loads a cluster definition from YAML file
 func (e *Executor) loadClusterDefinition(clusterName string) (*types.ClusterDefinition, error) {
 	clustersDir := filepath.Join(e.manager.localPath, "clusters")
 	var clusterDef *types.ClusterDefinition
 
-	// Check if clusters directory exists
 	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("clusters directory not found at %s", clustersDir)
 	}
@@ -647,10 +298,6 @@ func (e *Executor) loadClusterDefinition(clusterName string) (*types.ClusterDefi
 		var cluster types.ClusterDefinition
 		if err := yaml.Unmarshal(data, &cluster); err != nil {
 			return fmt.Errorf("failed to unmarshal cluster definition from %s: %w", path, err)
-		}
-
-		if cluster.Metadata.Region == "" && cluster.Spec.Region != "" {
-			cluster.Metadata.Region = cluster.Spec.Region
 		}
 
 		if cluster.Metadata.Name == clusterName {
@@ -694,7 +341,6 @@ func (e *Executor) addLog(level, job, step, message string) {
 
 	e.execution.Logs = append(e.execution.Logs, entry)
 
-	// Also log to stdout for immediate feedback
 	prefix := fmt.Sprintf("[%s]", level)
 	if e.currentCluster != "" {
 		prefix += fmt.Sprintf("[%s]", e.currentCluster)
@@ -706,6 +352,9 @@ func (e *Executor) addLog(level, job, step, message string) {
 		prefix += fmt.Sprintf("[%s]", step)
 	}
 	log.Printf("%s %s", prefix, message)
+	if e.Output != nil {
+		fmt.Fprintf(e.Output, "%s %s\n", prefix, message)
+	}
 }
 
 // finalizeExecution finalizes the workflow execution
@@ -720,10 +369,7 @@ func generateExecutionID() string {
 	return fmt.Sprintf("exec_%d", time.Now().Unix())
 }
 
-// Close closes the executor and cleans up resources
+// Close closes the executor and cleans up resources.
 func (e *Executor) Close() error {
-	if e.kubeconfigManager != nil {
-		return e.kubeconfigManager.Close()
-	}
 	return nil
 }

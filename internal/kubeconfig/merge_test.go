@@ -7,101 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
-
-// TestMergeKubeconfigs tests merging two kubeconfig YAML strings
-func TestMergeKubeconfigs(t *testing.T) {
-	existingConfig := `apiVersion: v1
-kind: Config
-current-context: existing-context
-clusters:
-- name: existing-cluster
-  cluster:
-    server: https://existing.example.com
-contexts:
-- name: existing-context
-  context:
-    cluster: existing-cluster
-    user: existing-user
-users:
-- name: existing-user
-  user:
-    token: existing-token
-`
-
-	newConfig := `apiVersion: v1
-kind: Config
-clusters:
-- name: new-cluster
-  cluster:
-    server: https://new.example.com
-contexts:
-- name: new-context
-  context:
-    cluster: new-cluster
-    user: new-user
-users:
-- name: new-user
-  user:
-    token: new-token
-`
-
-	merged, err := MergeKubeconfigs(existingConfig, newConfig)
-	require.NoError(t, err)
-
-	assert.Contains(t, merged, "existing-cluster")
-	assert.Contains(t, merged, "new-cluster")
-	assert.Contains(t, merged, "existing-context")
-	assert.Contains(t, merged, "new-context")
-	assert.Contains(t, merged, "existing-user")
-	assert.Contains(t, merged, "new-user")
-	assert.Contains(t, merged, "current-context: existing-context")
-}
-
-// TestMergeKubeconfigsReplace tests that new configs replace old ones with same name
-func TestMergeKubeconfigsReplace(t *testing.T) {
-	existingConfig := `apiVersion: v1
-kind: Config
-clusters:
-- name: my-cluster
-  cluster:
-    server: https://old.example.com
-contexts:
-- name: my-context
-  context:
-    cluster: my-cluster
-    user: my-user
-users:
-- name: my-user
-  user:
-    token: old-token
-`
-
-	newConfig := `apiVersion: v1
-kind: Config
-clusters:
-- name: my-cluster
-  cluster:
-    server: https://new.example.com
-contexts:
-- name: my-context
-  context:
-    cluster: my-cluster
-    user: my-user
-users:
-- name: my-user
-  user:
-    token: new-token
-`
-
-	merged, err := MergeKubeconfigs(existingConfig, newConfig)
-	require.NoError(t, err)
-
-	assert.NotContains(t, merged, "old.example.com")
-	assert.Contains(t, merged, "new.example.com")
-	assert.NotContains(t, merged, "old-token")
-	assert.Contains(t, merged, "new-token")
-}
 
 // TestRemoveKubeconfigContext tests removing a context from kubeconfig
 func TestRemoveKubeconfigContext(t *testing.T) {
@@ -190,55 +97,6 @@ users:
 	assert.Contains(t, modified, "my-user")
 }
 
-// TestMergeEmptyExistingConfig tests merging when existing config is empty
-func TestMergeEmptyExistingConfig(t *testing.T) {
-	emptyConfig := `apiVersion: v1
-kind: Config
-clusters: []
-contexts: []
-users: []
-`
-
-	newConfig := `apiVersion: v1
-kind: Config
-clusters:
-- name: new-cluster
-  cluster:
-    server: https://new.example.com
-contexts:
-- name: new-context
-  context:
-    cluster: new-cluster
-    user: new-user
-users:
-- name: new-user
-  user:
-    token: new-token
-`
-
-	merged, err := MergeKubeconfigs(emptyConfig, newConfig)
-	require.NoError(t, err)
-
-	assert.Contains(t, merged, "new-cluster")
-	assert.Contains(t, merged, "new-context")
-	assert.Contains(t, merged, "new-user")
-}
-
-// TestMergeInvalidYAML tests error handling for invalid YAML
-func TestMergeInvalidYAML(t *testing.T) {
-	validConfig := `apiVersion: v1
-kind: Config
-clusters: []
-`
-	invalidConfig := `this is not valid yaml: {[}`
-
-	_, err := MergeKubeconfigs(invalidConfig, validConfig)
-	assert.Error(t, err, "Expected error when merging with invalid existing config")
-
-	_, err = MergeKubeconfigs(validConfig, invalidConfig)
-	assert.Error(t, err, "Expected error when merging with invalid new config")
-}
-
 // TestRemoveItemByName tests the removeItemByName helper function
 func TestRemoveItemByName(t *testing.T) {
 	items := []map[string]interface{}{
@@ -261,33 +119,130 @@ func TestRemoveItemByName(t *testing.T) {
 	assert.NotContains(t, names, "item2")
 }
 
-// TestMergeItems tests the mergeItems helper function
-func TestMergeItems(t *testing.T) {
-	existing := []map[string]interface{}{
-		{"name": "item1", "data": "old-value1"},
-		{"name": "item2", "data": "value2"},
-	}
+// TestDeduplicateKubeconfigEntries tests that duplicate cluster/context/user
+// entries sharing a name are collapsed to the last (freshest) one.
+func TestDeduplicateKubeconfigEntries(t *testing.T) {
+	t.Run("collapses duplicates, keeping the last entry", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config")
 
-	newItems := []map[string]interface{}{
-		{"name": "item1", "data": "new-value1"}, // Update existing
-		{"name": "item3", "data": "value3"},     // Add new
-	}
+		original := `apiVersion: v1
+kind: Config
+current-context: my-cluster
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://old-ip:6443
+- name: my-cluster
+  cluster:
+    server: https://new-ip:6443
+contexts:
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: my-cluster
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: my-cluster
+- name: other-cluster
+  context:
+    cluster: other-cluster
+    user: other-cluster
+users:
+- name: my-cluster
+  user:
+    token: old-token
+- name: my-cluster
+  user:
+    token: new-token
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(original), 0600))
 
-	result := mergeItems(existing, newItems)
-	require.Len(t, result, 3)
+		err := DeduplicateKubeconfigEntries(configPath)
+		require.NoError(t, err)
 
-	itemMap := make(map[string]string)
-	for _, item := range result {
-		if name, ok := item["name"].(string); ok {
-			if data, ok := item["data"].(string); ok {
-				itemMap[name] = data
-			}
-		}
-	}
+		modifiedData, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		modified := string(modifiedData)
 
-	assert.Equal(t, "new-value1", itemMap["item1"])
-	assert.Equal(t, "value2", itemMap["item2"])
-	assert.Equal(t, "value3", itemMap["item3"])
+		// The freshest (last-written) values survive.
+		assert.Contains(t, modified, "https://new-ip:6443")
+		assert.NotContains(t, modified, "https://old-ip:6443")
+		assert.Contains(t, modified, "new-token")
+		assert.NotContains(t, modified, "old-token")
+		// The distinct, non-duplicated context is untouched.
+		assert.Contains(t, modified, "other-cluster")
+
+		var config KubeConfigStructure
+		require.NoError(t, yaml.Unmarshal(modifiedData, &config))
+		assert.Len(t, config.Clusters, 1)
+		assert.Len(t, config.Contexts, 2)
+		assert.Len(t, config.Users, 1)
+	})
+
+	t.Run("no-op when nothing is duplicated", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config")
+		original := `apiVersion: v1
+kind: Config
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://example.com
+contexts:
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: my-cluster
+users:
+- name: my-cluster
+  user:
+    token: my-token
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(original), 0600))
+		before, err := os.Stat(configPath)
+		require.NoError(t, err)
+
+		require.NoError(t, DeduplicateKubeconfigEntries(configPath))
+
+		after, err := os.Stat(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, before.ModTime(), after.ModTime(), "file should not be rewritten when there's nothing to dedupe")
+	})
+
+	t.Run("missing file is a no-op, not an error", func(t *testing.T) {
+		err := DeduplicateKubeconfigEntries(filepath.Join(t.TempDir(), "does-not-exist"))
+		assert.NoError(t, err)
+	})
+}
+
+// TestContextNames tests extracting context names from a kubeconfig.
+func TestContextNames(t *testing.T) {
+	config := `apiVersion: v1
+kind: Config
+contexts:
+- name: cluster-a
+  context:
+    cluster: cluster-a
+    user: cluster-a
+- name: cluster-b
+  context:
+    cluster: cluster-b
+    user: cluster-b
+`
+	names, err := ContextNames(config)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"cluster-a", "cluster-b"}, names)
+}
+
+func TestContextNamesEmptyConfig(t *testing.T) {
+	names, err := ContextNames("apiVersion: v1\nkind: Config\n")
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}
+
+func TestContextNamesInvalidYAML(t *testing.T) {
+	_, err := ContextNames("not: valid: yaml: [")
+	assert.Error(t, err)
 }
 
 // TestMultipleContextRemoval tests removing multiple contexts sequentially

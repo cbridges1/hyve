@@ -17,66 +17,6 @@ type KubeConfigStructure struct {
 	Users          []map[string]interface{} `yaml:"users"`
 }
 
-// MergeKubeconfigs merges two kubeconfig YAML strings
-func MergeKubeconfigs(existingConfig, newConfig string) (string, error) {
-	var existing KubeConfigStructure
-	var new KubeConfigStructure
-
-	// Parse existing config
-	if err := yaml.Unmarshal([]byte(existingConfig), &existing); err != nil {
-		return "", fmt.Errorf("failed to parse existing kubeconfig: %w", err)
-	}
-
-	// Parse new config
-	if err := yaml.Unmarshal([]byte(newConfig), &new); err != nil {
-		return "", fmt.Errorf("failed to parse new kubeconfig: %w", err)
-	}
-
-	// Merge clusters
-	existing.Clusters = mergeItems(existing.Clusters, new.Clusters)
-
-	// Merge contexts
-	existing.Contexts = mergeItems(existing.Contexts, new.Contexts)
-
-	// Merge users
-	existing.Users = mergeItems(existing.Users, new.Users)
-
-	// Marshal back to YAML
-	result, err := yaml.Marshal(&existing)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal merged kubeconfig: %w", err)
-	}
-
-	return string(result), nil
-}
-
-// mergeItems merges two slices of kubeconfig items (clusters, contexts, or users)
-// Items from the new slice replace items with the same name in the existing slice
-func mergeItems(existing, new []map[string]interface{}) []map[string]interface{} {
-	// Create a map for quick lookup
-	existingMap := make(map[string]map[string]interface{})
-	for _, item := range existing {
-		if name, ok := item["name"].(string); ok {
-			existingMap[name] = item
-		}
-	}
-
-	// Add or replace items from new
-	for _, item := range new {
-		if name, ok := item["name"].(string); ok {
-			existingMap[name] = item
-		}
-	}
-
-	// Convert back to slice
-	result := make([]map[string]interface{}, 0, len(existingMap))
-	for _, item := range existingMap {
-		result = append(result, item)
-	}
-
-	return result
-}
-
 // RemoveKubeconfigContext removes a context and its associated cluster and user from a kubeconfig file
 func RemoveKubeconfigContext(configContent, contextName, configPath string) error {
 	var config KubeConfigStructure
@@ -143,4 +83,75 @@ func removeItemByName(items []map[string]interface{}, name string) []map[string]
 		}
 	}
 	return result
+}
+
+// DeduplicateKubeconfigEntries rewrites configPath so that, for each of
+// clusters/contexts/users, only the LAST entry with a given "name" survives
+// — the entry an external tool (civo, aws eks update-kubeconfig, k3d, ...)
+// just wrote as a side effect of `hyve cluster auth`. Earlier duplicate
+// entries sharing that name are dropped. A no-op if the file doesn't exist
+// yet, or if nothing was actually duplicated.
+func DeduplicateKubeconfigEntries(configPath string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read kubeconfig: %w", err)
+	}
+
+	var config KubeConfigStructure
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return fmt.Errorf("failed to parse kubeconfig: %w", err)
+	}
+
+	before := len(config.Clusters) + len(config.Contexts) + len(config.Users)
+	config.Clusters = keepLastByName(config.Clusters)
+	config.Contexts = keepLastByName(config.Contexts)
+	config.Users = keepLastByName(config.Users)
+	if len(config.Clusters)+len(config.Contexts)+len(config.Users) == before {
+		return nil // nothing was duplicated — skip the rewrite
+	}
+
+	result, err := yaml.Marshal(&config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal deduplicated kubeconfig: %w", err)
+	}
+	return os.WriteFile(configPath, result, 0600)
+}
+
+// keepLastByName keeps, for each unique "name" value, only the entry at the
+// last index it appears at — the freshest write — dropping earlier entries
+// with the same name. Relative order of surviving entries is preserved.
+func keepLastByName(items []map[string]interface{}) []map[string]interface{} {
+	lastIdx := make(map[string]int, len(items))
+	for i, item := range items {
+		if name, ok := item["name"].(string); ok {
+			lastIdx[name] = i
+		}
+	}
+	result := make([]map[string]interface{}, 0, len(items))
+	for i, item := range items {
+		name, ok := item["name"].(string)
+		if !ok || lastIdx[name] == i {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// ContextNames returns the name of every context entry in configContent —
+// used by `hyve cluster auth sync` to diff against known cluster names.
+func ContextNames(configContent string) ([]string, error) {
+	var config KubeConfigStructure
+	if err := yaml.Unmarshal([]byte(configContent), &config); err != nil {
+		return nil, fmt.Errorf("failed to parse kubeconfig: %w", err)
+	}
+	names := make([]string, 0, len(config.Contexts))
+	for _, ctx := range config.Contexts {
+		if name, ok := ctx["name"].(string); ok {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }

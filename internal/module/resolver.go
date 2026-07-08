@@ -1,0 +1,395 @@
+package module
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/Masterminds/semver/v3"
+	"gopkg.in/yaml.v3"
+)
+
+// ResolvedModule points to the local directory containing the module files.
+type ResolvedModule struct {
+	Dir      string
+	SHA256   string
+	Resolved string
+	Runner   LockedRunner
+	Version  string // canonical resolved version (e.g. "v1.2.3"); empty for local paths
+}
+
+// IsLocalSource reports whether a module source string names a local path
+// ("./..." or an absolute path) rather than a remote Git reference.
+func IsLocalSource(source string) bool {
+	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/")
+}
+
+// Resolve fetches and caches a module, returning its local directory.
+// For local paths (starting with "./" or absolute): returns the dir directly, no caching.
+// For Git sources: downloads, hashes, and caches under ~/.hyve/module-cache/{sha256}/.
+func Resolve(source, version string, locked *LockedModule, repoRoot string) (*ResolvedModule, error) {
+	if IsLocalSource(source) {
+		return resolveLocal(source, repoRoot)
+	}
+	return resolveGit(source, version, locked)
+}
+
+func resolveLocal(source, repoRoot string) (*ResolvedModule, error) {
+	var dir string
+	if filepath.IsAbs(source) {
+		dir = source
+	} else {
+		dir = filepath.Join(repoRoot, source)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("local module path not found: %s", dir)
+	}
+	return &ResolvedModule{Dir: dir}, nil
+}
+
+func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, error) {
+	host, org, repo, subdir, err := parseGitSource(source)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache hit: if locked and cached, return immediately
+	if locked != nil && locked.SHA256 != "" && IsCached(locked.SHA256) {
+		cacheDir, err := CachePath(locked.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		runner, _ := readRunnerFromManifest(cacheDir)
+		return &ResolvedModule{
+			Dir:      cacheDir,
+			SHA256:   locked.SHA256,
+			Resolved: locked.Resolved,
+			Runner:   runner,
+		}, nil
+	}
+
+	// Resolve version to a concrete ref (tag or HEAD)
+	ref, err := ResolveRef(host, org, repo, version)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
+	}
+
+	// Download archive
+	downloadURL := fmt.Sprintf("https://%s/%s/%s/archive/%s.tar.gz", host, org, repo, ref)
+	tmpDir, err := os.MkdirTemp("", "hyve-module-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := DownloadAndExtract(downloadURL, tmpDir, repo, ref, subdir); err != nil {
+		return nil, fmt.Errorf("failed to download module from %s: %w", downloadURL, err)
+	}
+
+	// Compute SHA256 of directory contents
+	digest, err := hashDir(tmpDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash module directory: %w", err)
+	}
+
+	// Verify digest if locked
+	if locked != nil && locked.SHA256 != "" && digest != locked.SHA256 {
+		return nil, fmt.Errorf("digest mismatch for %s: expected %s, got %s", source, locked.SHA256, digest)
+	}
+
+	// Store in cache (StoreInCache may move tmpDir)
+	if err := StoreInCache(digest, tmpDir); err != nil {
+		return nil, fmt.Errorf("failed to cache module: %w", err)
+	}
+
+	cacheDir, err := CachePath(digest)
+	if err != nil {
+		return nil, err
+	}
+
+	runner, _ := readRunnerFromManifest(cacheDir)
+	return &ResolvedModule{
+		Dir:      cacheDir,
+		SHA256:   digest,
+		Resolved: downloadURL,
+		Runner:   runner,
+		Version:  ref,
+	}, nil
+}
+
+// parseGitSource parses "github.com/org/repo//subdir" into components.
+func parseGitSource(source string) (host, org, repo, subdir string, err error) {
+	// Check for subdir separator
+	parts := strings.SplitN(source, "//", 2)
+	if len(parts) == 2 {
+		subdir = parts[1]
+		source = parts[0]
+	}
+
+	segments := strings.Split(source, "/")
+	if len(segments) < 3 {
+		return "", "", "", "", fmt.Errorf("invalid module source %q: expected host/org/repo[//subdir]", source)
+	}
+	host = segments[0]
+	org = segments[1]
+	repo = segments[2]
+	return host, org, repo, subdir, nil
+}
+
+// ResolveRef resolves a version string to a git ref.
+// - "" or "latest": picks the highest semver tag; falls back to "HEAD" if no tags exist.
+// - semver constraint (e.g. "~> 1.2", ">= 1.0"): picks the highest matching tag.
+// - anything else: treated as an exact tag or commit ref.
+func ResolveRef(host, org, repo, version string) (string, error) {
+	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
+
+	if version == "" || version == "latest" {
+		tags, err := listRemoteTags(repoURL)
+		if err != nil || len(tags) == 0 {
+			return "HEAD", nil
+		}
+		return latestSemverTag(tags, ""), nil
+	}
+
+	// Try to parse as semver constraint
+	constraint, err := semver.NewConstraint(version)
+	if err != nil {
+		// Not a constraint — treat as exact ref (tag or commit)
+		return version, nil
+	}
+
+	tags, err := listRemoteTags(repoURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to list tags for %s: %w", repoURL, err)
+	}
+
+	best := latestSemverTag(tags, version)
+	if best == "" {
+		return "", fmt.Errorf("no tag satisfies constraint %q", version)
+	}
+	// Verify the chosen tag satisfies the constraint (latestSemverTag with a
+	// constraint arg already filters, but double-check for the error case).
+	v, err := semver.NewVersion(best)
+	if err != nil || !constraint.Check(v) {
+		return "", fmt.Errorf("no tag satisfies constraint %q", version)
+	}
+	return best, nil
+}
+
+// latestSemverTag returns the highest semver tag from the list. When constraint
+// is non-empty it is applied as a filter. Returns "" if no matching tag is found.
+func latestSemverTag(tags []string, constraintStr string) string {
+	var c *semver.Constraints
+	if constraintStr != "" {
+		var err error
+		c, err = semver.NewConstraint(constraintStr)
+		if err != nil {
+			c = nil
+		}
+	}
+	var best *semver.Version
+	var bestTag string
+	for _, tag := range tags {
+		v, err := semver.NewVersion(tag)
+		if err != nil {
+			continue
+		}
+		if c != nil && !c.Check(v) {
+			continue
+		}
+		if best == nil || v.GreaterThan(best) {
+			best = v
+			bestTag = tag
+		}
+	}
+	return bestTag
+}
+
+func listRemoteTags(repoURL string) ([]string, error) {
+	cmd := exec.Command("git", "ls-remote", "--tags", repoURL)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var tags []string
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		ref := parts[1]
+		if strings.HasSuffix(ref, "^{}") {
+			continue
+		}
+		if tag, ok := strings.CutPrefix(ref, "refs/tags/"); ok {
+			tags = append(tags, tag)
+		}
+	}
+	return tags, nil
+}
+
+func DownloadAndExtract(url, destDir, repo, ref, subdir string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("HTTP GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, url)
+	}
+
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	// GitHub archive prefix: "<repo>-<ref>/" — strip it. The ref in the URL is
+	// typically a tag like "v1.2.3"; the directory inside the tarball strips
+	// any leading "v". We try both forms.
+	prefix1 := repo + "-" + strings.TrimPrefix(ref, "v") + "/"
+	prefix2 := repo + "-" + ref + "/"
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar read: %w", err)
+		}
+		name := hdr.Name
+		var stripped string
+		switch {
+		case strings.HasPrefix(name, prefix1):
+			stripped = strings.TrimPrefix(name, prefix1)
+		case strings.HasPrefix(name, prefix2):
+			stripped = strings.TrimPrefix(name, prefix2)
+		default:
+			// Fall back: strip the first path segment whatever it is.
+			idx := strings.IndexByte(name, '/')
+			if idx < 0 {
+				continue
+			}
+			stripped = name[idx+1:]
+		}
+		if subdir != "" {
+			if !strings.HasPrefix(stripped, subdir+"/") && stripped != subdir {
+				continue
+			}
+			stripped = strings.TrimPrefix(stripped, subdir+"/")
+			stripped = strings.TrimPrefix(stripped, subdir)
+		}
+		if stripped == "" {
+			continue
+		}
+		target := filepath.Join(destDir, stripped)
+		if hdr.Typeflag == tar.TypeDir {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
+	}
+	return nil
+}
+
+// hashDir computes a deterministic SHA256 over all files in a directory.
+func hashDir(dir string) (string, error) {
+	var paths []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(paths)
+
+	h := sha256.New()
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		fmt.Fprintf(h, "%s\n", rel)
+		h.Write(data)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func readRunnerFromManifest(dir string) (LockedRunner, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "module.yaml"))
+	if err != nil {
+		return LockedRunner{}, err
+	}
+	var m ModuleManifest
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return LockedRunner{}, err
+	}
+	return LockedRunner{Image: m.Spec.Runner.Image}, nil
+}
+
+// LoadManifestForSource resolves a module's directory and reads its module.yaml.
+// For local paths the directory is read directly; for Git sources the cached
+// directory (looked up via lf) is used. Returns nil without error when the
+// module cannot be found locally (not yet installed).
+func LoadManifestForSource(source, version, repoRoot string, lf *LockFile) (*ModuleManifest, error) {
+	var dir string
+
+	if IsLocalSource(source) {
+		resolved, err := resolveLocal(source, repoRoot)
+		if err != nil {
+			return nil, nil // not available locally
+		}
+		dir = resolved.Dir
+	} else {
+		if lf == nil {
+			return nil, nil
+		}
+		locked := lf.GetLocked(source, version)
+		if locked == nil || locked.SHA256 == "" || !IsCached(locked.SHA256) {
+			return nil, nil
+		}
+		cacheDir, err := CachePath(locked.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		dir = cacheDir
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "module.yaml"))
+	if err != nil {
+		return nil, nil
+	}
+	var m ModuleManifest
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parse module.yaml for %s: %w", source, err)
+	}
+	return &m, nil
+}

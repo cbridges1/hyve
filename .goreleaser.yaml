@@ -1,0 +1,97 @@
+version: 2
+
+project_name: hyve
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: hyve
+    main: .
+    binary: hyve
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/cbridges1/hyve/cmd.version={{ .Version }}
+      - -X github.com/cbridges1/hyve/cmd.commit={{ .Commit }}
+      - -X github.com/cbridges1/hyve/cmd.date={{ .Date }}
+
+archives:
+  - id: hyve
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "^Merge pull request"
+      - "^Merge branch"
+
+# Built from the binary `builds:` already cross-compiled for each platform —
+# Dockerfile.release just packages the pre-built binary into a multi-arch
+# image rather than re-running `go build` inside Docker.
+dockers_v2:
+  - ids: [hyve]
+    dockerfile: Dockerfile.release
+    images:
+      - ghcr.io/cbridges1/hyve
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+
+# Requires a pre-existing, separate `cbridges1/homebrew-tap` repository —
+# GoReleaser pushes the generated formula there, it doesn't create the repo.
+# `goreleaser check` flags `brews` as deprecated (soft-deprecation notice) —
+# there is no replacement key in the current OSS schema for a formula tap
+# (only `homebrew_casks`, which is for GUI/cask-style apps, not a CLI
+# formula), so this is still the correct, functional option.
+brews:
+  - name: hyve
+    repository:
+      owner: cbridges1
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/cbridges1/hyve"
+    description: "GitOps-driven Kubernetes cluster lifecycle management"
+    license: "MIT"
+    install: |
+      bin.install "hyve"
+    test: |
+      system "#{bin}/hyve", "--version"
+
+release:
+  github:
+    owner: cbridges1
+    name: hyve
+  prerelease: auto

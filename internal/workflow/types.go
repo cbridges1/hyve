@@ -6,19 +6,19 @@ import (
 
 // Workflow represents a workflow definition
 type Workflow struct {
-	APIVersion string           `yaml:"apiVersion"`
-	Kind       string           `yaml:"kind"`
-	Metadata   WorkflowMetadata `yaml:"metadata"`
-	Spec       WorkflowSpec     `yaml:"spec"`
+	APIVersion string           `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string           `yaml:"kind" json:"kind"`
+	Metadata   WorkflowMetadata `yaml:"metadata" json:"metadata"`
+	Spec       WorkflowSpec     `yaml:"spec" json:"spec"`
 }
 
 // WorkflowMetadata contains workflow metadata
 type WorkflowMetadata struct {
-	Name        string            `yaml:"name"`
-	Description string            `yaml:"description,omitempty"`
-	Labels      map[string]string `yaml:"labels,omitempty"`
-	Created     time.Time         `yaml:"created,omitempty"`
-	Updated     time.Time         `yaml:"updated,omitempty"`
+	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Created     time.Time         `yaml:"created,omitempty" json:"created,omitempty"`
+	Updated     time.Time         `yaml:"updated,omitempty" json:"updated,omitempty"`
 }
 
 // WorkflowInput declares a variable that must be present before the workflow runs.
@@ -26,9 +26,9 @@ type WorkflowMetadata struct {
 // When run ad-hoc via `hyve workflow run`, missing inputs are prompted in the TUI or
 // must be supplied with --set KEY=VALUE on the CLI.
 type WorkflowInput struct {
-	Name        string `yaml:"name"`                  // Environment variable name (e.g. HYVE_CLUSTER_NAME)
-	Description string `yaml:"description,omitempty"` // Shown as the prompt label in the TUI
-	Default     string `yaml:"default,omitempty"`     // Used when not provided; empty means no default
+	Name        string `yaml:"name" json:"name"`                                   // Environment variable name (e.g. HYVE_CLUSTER_NAME)
+	Description string `yaml:"description,omitempty" json:"description,omitempty"` // Shown as the prompt label in the TUI
+	Default     string `yaml:"default,omitempty" json:"default,omitempty"`         // Used when not provided; empty means no default
 }
 
 // WorkflowPreFlight controls the cluster pre-flight check run before the workflow.
@@ -39,78 +39,78 @@ type WorkflowPreFlight struct {
 	//   "skip"           — inject HYVE_CLUSTER_NAME etc. from the on-disk YAML
 	//                      but skip all AWS calls; use for auth-bootstrap workflows
 	//                      whose purpose is to obtain credentials in the first place.
-	Cluster string `yaml:"cluster,omitempty"`
+	Cluster string `yaml:"cluster,omitempty" json:"cluster,omitempty"`
 }
 
 // WorkflowSpec defines the workflow specification
 type WorkflowSpec struct {
-	Inputs       []WorkflowInput       `yaml:"inputs,omitempty"` // Variables required at runtime
-	Requirements *WorkflowRequirements `yaml:"requirements,omitempty"`
-	PreFlight    WorkflowPreFlight     `yaml:"preFlight,omitempty"`
-	Triggers     []WorkflowTrigger     `yaml:"triggers,omitempty"`
-	Jobs         []WorkflowJob         `yaml:"jobs"`
-	Env          map[string]string     `yaml:"env,omitempty"`
+	Inputs       []WorkflowInput       `yaml:"inputs,omitempty" json:"inputs,omitempty"` // Variables required at runtime
+	Requirements *WorkflowRequirements `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	PreFlight    WorkflowPreFlight     `yaml:"preFlight,omitempty" json:"preFlight,omitempty"`
+	Triggers     []WorkflowTrigger     `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Jobs         []WorkflowJob         `yaml:"jobs" json:"jobs"`
+	Env          map[string]string     `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
 // WorkflowRequirements defines prerequisites for workflow execution
 type WorkflowRequirements struct {
-	Tools   []ToolRequirement   `yaml:"tools,omitempty"`   // CLI tools that must be available
-	Secrets []SecretRequirement `yaml:"secrets,omitempty"` // Secrets that must be configured
+	Tools   []ToolRequirement   `yaml:"tools,omitempty" json:"tools,omitempty"`     // CLI tools that must be available
+	Secrets []SecretRequirement `yaml:"secrets,omitempty" json:"secrets,omitempty"` // Secrets that must be configured
 }
 
 // ToolRequirement specifies a required CLI tool
 type ToolRequirement struct {
-	Name        string `yaml:"name"`                  // Tool name (e.g., "kubectl", "helm", "docker")
-	Version     string `yaml:"version,omitempty"`     // Minimum version (optional)
-	Description string `yaml:"description,omitempty"` // Human-readable description
+	Name        string `yaml:"name" json:"name"`                                   // Tool name (e.g., "kubectl", "helm", "docker")
+	Version     string `yaml:"version,omitempty" json:"version,omitempty"`         // Minimum version (optional)
+	Description string `yaml:"description,omitempty" json:"description,omitempty"` // Human-readable description
 }
 
 // SecretRequirement specifies a required secret or credential
 type SecretRequirement struct {
-	Name        string `yaml:"name"`                  // Environment variable name (e.g., "DOCKER_TOKEN")
-	Provider    string `yaml:"provider,omitempty"`    // Provider name for database lookup (e.g., "docker", "github")
-	Required    bool   `yaml:"required"`              // Whether this secret is mandatory
-	Description string `yaml:"description,omitempty"` // Human-readable description
+	Name        string `yaml:"name" json:"name"`                                   // Environment variable name (e.g., "DOCKER_TOKEN")
+	Provider    string `yaml:"provider,omitempty" json:"provider,omitempty"`       // Provider name for database lookup (e.g., "docker", "github")
+	Required    bool   `yaml:"required" json:"required"`                           // Whether this secret is mandatory
+	Description string `yaml:"description,omitempty" json:"description,omitempty"` // Human-readable description
 }
 
 // WorkflowTrigger defines when the workflow should run
 type WorkflowTrigger struct {
-	Type   string                 `yaml:"type"` // manual, schedule, webhook
-	Config map[string]interface{} `yaml:"config,omitempty"`
+	Type   string                 `yaml:"type" json:"type"` // manual, schedule, webhook
+	Config map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
 }
 
 // WorkflowJob represents a job within a workflow
 type WorkflowJob struct {
-	Name        string               `yaml:"name"`
-	Description string               `yaml:"description,omitempty"`
-	If          string               `yaml:"if,omitempty"`        // Condition to run this job
-	DependsOn   []string             `yaml:"dependsOn,omitempty"` // Job dependencies
-	Cluster     string               `yaml:"cluster,omitempty"`   // Specific cluster to run on
-	Env         map[string]string    `yaml:"env,omitempty"`       // Job-specific environment variables
-	Steps       []WorkflowStep       `yaml:"steps"`
-	Timeout     string               `yaml:"timeout,omitempty"` // e.g., "5m", "1h"
-	Retry       *WorkflowRetryPolicy `yaml:"retry,omitempty"`
+	Name        string               `yaml:"name" json:"name"`
+	Description string               `yaml:"description,omitempty" json:"description,omitempty"`
+	If          string               `yaml:"if,omitempty" json:"if,omitempty"`               // Condition to run this job
+	DependsOn   []string             `yaml:"dependsOn,omitempty" json:"dependsOn,omitempty"` // Job dependencies
+	Cluster     string               `yaml:"cluster,omitempty" json:"cluster,omitempty"`     // Specific cluster to run on
+	Env         map[string]string    `yaml:"env,omitempty" json:"env,omitempty"`             // Job-specific environment variables
+	Steps       []WorkflowStep       `yaml:"steps" json:"steps"`
+	Timeout     string               `yaml:"timeout,omitempty" json:"timeout,omitempty"` // e.g., "5m", "1h"
+	Retry       *WorkflowRetryPolicy `yaml:"retry,omitempty" json:"retry,omitempty"`
 }
 
 // WorkflowStep represents a single step in a job
 type WorkflowStep struct {
-	Name            string            `yaml:"name"`
-	Description     string            `yaml:"description,omitempty"`
-	If              string            `yaml:"if,omitempty"`              // Condition to run this step
-	Command         string            `yaml:"command,omitempty"`         // Command to execute
-	Script          string            `yaml:"script,omitempty"`          // Multi-line script
-	Action          string            `yaml:"action,omitempty"`          // Pre-defined action
-	With            map[string]string `yaml:"with,omitempty"`            // Parameters for action
-	Env             map[string]string `yaml:"env,omitempty"`             // Step-specific environment variables
-	WorkingDir      string            `yaml:"workingDir,omitempty"`      // Working directory for this step
-	Timeout         string            `yaml:"timeout,omitempty"`         // Step timeout
-	ContinueOnError bool              `yaml:"continueOnError,omitempty"` // Continue even if step fails
+	Name            string            `yaml:"name" json:"name"`
+	Description     string            `yaml:"description,omitempty" json:"description,omitempty"`
+	If              string            `yaml:"if,omitempty" json:"if,omitempty"`                           // Condition to run this step
+	Command         string            `yaml:"command,omitempty" json:"command,omitempty"`                 // Command to execute
+	Script          string            `yaml:"script,omitempty" json:"script,omitempty"`                   // Multi-line script
+	Action          string            `yaml:"action,omitempty" json:"action,omitempty"`                   // Pre-defined action
+	With            map[string]string `yaml:"with,omitempty" json:"with,omitempty"`                       // Parameters for action
+	Env             map[string]string `yaml:"env,omitempty" json:"env,omitempty"`                         // Step-specific environment variables
+	WorkingDir      string            `yaml:"workingDir,omitempty" json:"workingDir,omitempty"`           // Working directory for this step
+	Timeout         string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`                 // Step timeout
+	ContinueOnError bool              `yaml:"continueOnError,omitempty" json:"continueOnError,omitempty"` // Continue even if step fails
 }
 
 // WorkflowRetryPolicy defines retry behavior for jobs
 type WorkflowRetryPolicy struct {
-	MaxAttempts int    `yaml:"maxAttempts"`
-	Delay       string `yaml:"delay,omitempty"` // e.g., "30s", "1m"
+	MaxAttempts int    `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay       string `yaml:"delay,omitempty" json:"delay,omitempty"` // e.g., "30s", "1m"
 }
 
 // WorkflowExecution represents a workflow execution instance

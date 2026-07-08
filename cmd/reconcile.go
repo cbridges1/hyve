@@ -17,10 +17,12 @@ reconciliation runs locally, bypassing the cicd mode check in hyve.yaml. This is
 intended for use inside CI/CD pipelines that have already checked out the repository.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		repoPath, _ := cmd.Flags().GetString("path")
-		shared.RunReconciliation(repoPath)
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		shared.RunReconciliation(repoPath, dryRun)
 	},
 }
 
 func init() {
 	reconcileCmd.Flags().StringP("path", "p", "", "Path to a local repository checkout; bypasses cicd mode check and runs reconciliation directly")
+	reconcileCmd.Flags().Bool("dry-run", false, "Preview what reconcile would do without changing anything — cluster create/delete/scale/workflows and resource apply/delete are all skipped and logged instead of run")
 }

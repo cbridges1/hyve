@@ -2,104 +2,96 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"gopkg.in/yaml.v3"
 
-	"github.com/cbridges1/hyve/internal/cluster"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
-	"github.com/cbridges1/hyve/internal/provider"
-	"github.com/cbridges1/hyve/internal/providerconfig"
-	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/workflowref"
 )
 
-// Reconciler handles the reconciliation of clusters using provider abstraction
+// Reconciler orchestrates cluster lifecycle by delegating all cloud operations
+// to the module identified by each cluster's spec.driver.
 type Reconciler struct {
-	providerFactory *provider.Factory
-	stateMgr        *state.Manager
+	stateMgr *state.Manager
+
+	// Logger, when set, additionally receives every progress line logged
+	// during a reconcile run — used by hyve-server to capture live progress
+	// for polling/WebSocket streaming without affecting the CLI's normal
+	// stdout/log.Printf behavior. Left nil by the CLI, which never sets it.
+	Logger io.Writer
 }
 
-// NewReconciler creates a new reconciler
 func NewReconciler(stateMgr *state.Manager) *Reconciler {
-	return &Reconciler{
-		providerFactory: provider.NewFactory(),
-		stateMgr:        stateMgr,
+	return &Reconciler{stateMgr: stateMgr}
+}
+
+// logf logs a progress line the same way log.Printf does, and additionally
+// writes it to r.Logger when set.
+func (r *Reconciler) logf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+	if r.Logger != nil {
+		fmt.Fprintf(r.Logger, format+"\n", args...)
 	}
 }
 
-// ReconcileAll reconciles all clusters across all regions
-func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.ClusterDefinition) error {
-	// Load reconcile config to determine strictDelete setting.
-	strictDelete := false
-	log.Printf("Loading repo config from: %s", r.stateMgr.LocalPath())
-	if repoCfg, err := r.stateMgr.LoadRepoConfig(); err == nil {
-		strictDelete = repoCfg.Reconcile.StrictDelete
-		log.Printf("Repo config loaded: mode=%s strictDelete=%v", repoCfg.Reconcile.Mode, strictDelete)
-	} else {
-		log.Printf("Warning: failed to load repo config: %v — defaulting strictDelete=false", err)
-	}
-	if strictDelete {
-		log.Println("Strict-delete mode enabled: cloud clusters not present in YAML will be deleted")
+// ReconcileAll reconciles every cluster definition, looping until all have been
+// processed and the repository state has converged.
+//
+// When dryRun is true, the whole cycle is read-only: cluster create/delete/
+// scale/workflows and resource apply/delete are all skipped and logged as
+// "would run" instead of executed — see reconcileCluster and
+// reconcileResources for exactly what's gated. Pre-flight validation
+// (hyve.lock presence) still runs and still fails hard, matching Terraform's
+// `plan` failing on invalid config.
+func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.ClusterDefinition, dryRun bool) error {
+	lf, err := module.LoadLockFile(r.stateMgr.LocalPath())
+	if err != nil {
+		return fmt.Errorf("failed to load hyve.lock: %w", err)
 	}
 
-	if len(clusterDefs) == 0 && !strictDelete {
-		log.Println("No cluster definitions found in state/clusters directory — skipping reconcile")
+	for _, c := range clusterDefs {
+		if err := validateDriverModuleLocked(c, lf); err != nil {
+			return err
+		}
+		if err := validateWorkflowRefsLocked(c, lf); err != nil {
+			return err
+		}
+	}
+
+	if len(clusterDefs) == 0 {
+		r.logf("No cluster definitions found — skipping reconcile")
 		return nil
 	}
 
-	if len(clusterDefs) > 0 {
-		log.Printf("═══════════════════════════════════════════")
-		log.Printf("  Reconciling %d cluster(s)", len(clusterDefs))
-		log.Printf("═══════════════════════════════════════════")
+	r.logf("═══════════════════════════════════════════")
+	if dryRun {
+		r.logf("  DRY RUN: previewing %d cluster(s) — nothing will be changed", len(clusterDefs))
+	} else {
+		r.logf("  Reconciling %d cluster(s)", len(clusterDefs))
 	}
+	r.logf("═══════════════════════════════════════════")
 
-	// Convergence loop: process one cluster at a time, syncing repo state between each
-	// reconciliation so concurrent pipeline runs are reflected before the next cluster is handled.
-	finalDefs := r.convergenceLoop(ctx, clusterDefs)
-
-	// Orphan cleanup using the final desired state after all reconciliations complete.
-	r.cleanupOrphansByRegion(ctx, finalDefs)
-
-	if strictDelete {
-		if len(finalDefs) == 0 {
-			log.Println("No cluster definitions found — strict-delete sweeping all cloud clusters...")
-		} else {
-			log.Println("strict-delete: sweeping all configured provider accounts for orphaned clusters...")
-		}
-		r.strictDeleteSweep(ctx)
-	}
-
-	if len(finalDefs) > 0 {
-		log.Printf("═══════════════════════════════════════════")
-		log.Printf("  Post-reconcile: exporting cluster info & syncing kubeconfigs")
-		log.Printf("═══════════════════════════════════════════")
-		r.exportAllClusterInfo(ctx, finalDefs)
-
-		if err := r.syncKubeconfigs(ctx, finalDefs); err != nil {
-			log.Printf("Failed to sync kubeconfigs: %v", err)
-		}
-	}
-
+	r.convergenceLoop(ctx, clusterDefs, lf, dryRun)
 	return nil
 }
 
-// convergenceLoop processes clusters one at a time, syncing the remote repo and reloading
-// cluster definitions between each reconciliation. This ensures that state changes committed
-// by concurrent pipeline runs are reflected before the next cluster is handled, avoiding
-// redundant work and converging to the true desired state faster.
-func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.ClusterDefinition) []types.ClusterDefinition {
+func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.ClusterDefinition, lf *module.LockFile, dryRun bool) []types.ClusterDefinition {
 	processed := make(map[string]bool)
 	currentDefs := initialDefs
 
 	for {
-		// Find the next cluster that has not yet been processed in this run.
 		var next *types.ClusterDefinition
 		for i := range currentDefs {
 			if !processed[currentDefs[i].Metadata.Name] {
@@ -111,69 +103,39 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 			break
 		}
 
-		clusterName := next.Metadata.Name
-		processed[clusterName] = true
+		name := next.Metadata.Name
+		processed[name] = true
 
-		providerName := next.Spec.Provider
-		if providerName == "" {
-			providerName = "civo"
-		}
-		log.Printf("───────────────────────────────────────────")
-		log.Printf("  [%s]  provider=%s  region=%s", clusterName, providerName, next.Metadata.Region)
-		log.Printf("───────────────────────────────────────────")
+		r.logf("───────────────────────────────────────────")
+		r.logf("  [%s]  driver=%s@%s  region=%s", name, next.Spec.Driver.Source, next.Spec.Driver.Version, next.Metadata.Region)
+		r.logf("───────────────────────────────────────────")
 
 		if next.Spec.Pause {
-			log.Printf("[%s] Paused — skipping reconciliation", clusterName)
+			r.logf("[%s] Paused — skipping reconciliation", name)
 		} else {
-			// Check whether the cluster has passed its expiry time. Treat it
-			// identically to delete: true so that onDelete workflows run and the
-			// YAML file is cleaned up automatically.
 			if next.Spec.ExpiresAt != "" {
 				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
 					if time.Now().After(t) {
-						log.Printf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion",
-							clusterName, next.Spec.ExpiresAt)
+						r.logf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, next.Spec.ExpiresAt)
 						next.Spec.Delete = true
 					}
 				} else {
-					log.Printf("[%s] Warning: invalid expiresAt value '%s': %v", clusterName, next.Spec.ExpiresAt, err)
+					r.logf("[%s] Warning: invalid expiresAt value '%s': %v", name, next.Spec.ExpiresAt, err)
 				}
 			}
 
-			prov, err := r.createProviderForCluster(*next)
-			if err != nil {
-				log.Printf("Failed to create provider for cluster %s: %v", clusterName, err)
-			} else {
-				clusterMgr := cluster.NewManager(prov)
-				reconcileErr := r.reconcileCluster(ctx, clusterMgr, *next)
-				if reconcileErr != nil {
-					log.Printf("Failed to reconcile cluster %s: %v", clusterName, reconcileErr)
-				} else if next.Spec.Delete {
-					// onDelete workflows ran and the cloud cluster was deleted — now
-					// remove the YAML marker and push so the repo reflects the final state.
-					if removeErr := r.stateMgr.RemoveClusterFile(clusterName); removeErr != nil {
-						log.Printf("Warning: failed to remove cluster file for %s: %v", clusterName, removeErr)
-					} else {
-						commitMsg := fmt.Sprintf("chore: remove cluster definition for %s after deletion", clusterName)
-						if commitErr := r.stateMgr.CommitAndPush(ctx, commitMsg); commitErr != nil {
-							log.Printf("Warning: failed to commit cluster file removal for %s: %v", clusterName, commitErr)
-						} else {
-							log.Printf("Removed cluster definition file for %s and pushed to remote", clusterName)
-						}
-					}
-				}
+			if err := r.reconcileCluster(ctx, *next, lf, dryRun); err != nil {
+				r.logf("[%s] reconcile error: %v", name, err)
 			}
 		}
 
-		// Pull latest remote changes so that clusters already reconciled by a
-		// concurrent pipeline run are visible in the next iteration.
 		if err := r.stateMgr.SyncWithRemote(ctx); err != nil {
-			log.Printf("Warning: failed to sync with remote after reconciling %s: %v", clusterName, err)
+			r.logf("Warning: failed to sync after %s: %v", name, err)
 		}
 
 		reloaded, err := r.stateMgr.LoadClusterDefinitions()
 		if err != nil {
-			log.Printf("Warning: failed to reload cluster definitions after reconciling %s: %v", clusterName, err)
+			r.logf("Warning: failed to reload cluster definitions: %v", err)
 		} else {
 			currentDefs = reloaded
 		}
@@ -182,619 +144,381 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 	return currentDefs
 }
 
-// cleanupOrphansByRegion removes managed-prefix clusters that are no longer in the desired
-// state, grouped by region so each provider scope is cleaned up independently.
-func (r *Reconciler) cleanupOrphansByRegion(ctx context.Context, clusterDefs []types.ClusterDefinition) {
-	regionClusters := make(map[string][]types.ClusterDefinition)
-	for _, cd := range clusterDefs {
-		regionClusters[cd.Metadata.Region] = append(regionClusters[cd.Metadata.Region], cd)
+// effectiveStatus applies the authOnly default: an authOnly module's status
+// op typically doesn't exist, so an empty HYVE_CLUSTER_STATUS is treated as
+// ACTIVE rather than falling into the reconciler's "Unhandled status" no-op.
+// A status script that exists but legitimately prints nothing is treated
+// identically to one that's absent — this function doesn't distinguish the
+// two cases, by design (see internal/module/executor.go's Execute).
+func effectiveStatus(status string, isAuthOnly bool) string {
+	if status == "" && isAuthOnly {
+		return "ACTIVE"
 	}
-
-	for region, clusters := range regionClusters {
-		prov, err := r.createProviderForCluster(clusters[0])
-		if err != nil {
-			log.Printf("Failed to create provider for cleanup in region %s: %v", region, err)
-			continue
-		}
-		clusterMgr := cluster.NewManager(prov)
-		if err := r.cleanupOrphanedResources(ctx, clusterMgr, clusters); err != nil {
-			log.Printf("Failed to cleanup orphaned resources in region %s: %v", region, err)
-		}
-	}
+	return status
 }
 
-// createProviderForCluster creates a provider with credentials resolved from the provider
-// config YAML files (provider-configs/*.yaml). Values may be literal strings or
-// ${ENV_VAR} references that are expanded at resolution time.
-func (r *Reconciler) createProviderForCluster(clusterDef types.ClusterDefinition) (provider.Provider, error) {
-	providerName := clusterDef.Spec.Provider
-	if providerName == "" {
-		providerName = "civo" // default
+func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
+	name := cluster.Metadata.Name
+	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
+	resolved, err := module.Resolve(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
+	if err != nil {
+		return fmt.Errorf("resolve module: %w", err)
 	}
 
-	opts := provider.ProviderOptions{
-		Region:      clusterDef.Metadata.Region,
-		AccountName: clusterDef.Spec.CivoOrganization, // overridden below per-provider
+	manifest, _ := module.LoadManifestForSource(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
+	if manifest != nil {
+		if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+			return reqErr
+		}
 	}
+	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
 
-	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
+	env := buildModuleEnv(cluster, nil)
+	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath()}
 
-	switch strings.ToLower(providerName) {
-	case "civo":
-		opts.AccountName = clusterDef.Spec.CivoOrganization
-		if opts.AccountName != "" {
-			if token, err := pcMgr.GetCivoToken(opts.AccountName); err == nil && token != "" {
-				opts.APIKey = token
+	statusResult, err := exec.Execute(ctx, module.OperationStatus)
+	if err != nil {
+		return fmt.Errorf("status check failed: %w", err)
+	}
+	status := effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
+	r.logf("[%s] status: %s", name, status)
+
+	switch {
+	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
+		if dryRun {
+			r.logf("[%s] DRY RUN: would delete cluster", name)
+			return nil
+		}
+		return r.deleteCluster(ctx, cluster, exec, env, lf)
+
+	case cluster.Spec.Delete && status == "NOT_FOUND":
+		if dryRun {
+			r.logf("[%s] DRY RUN: already gone in cloud, would remove YAML", name)
+			return nil
+		}
+		r.logf("[%s] Already gone — removing YAML", name)
+		return r.removeClusterFile(ctx, cluster)
+
+	case !cluster.Spec.Delete && (status == "NOT_FOUND" || status == "FAILED"):
+		if dryRun {
+			r.logf("[%s] DRY RUN: would create cluster", name)
+			return nil
+		}
+		return r.createCluster(ctx, cluster, exec, env, lf)
+
+	case status == "ACTIVE" && !cluster.Spec.Delete:
+		// Hoisted out of the paramsChanged branch: resource reconciliation
+		// below needs KUBECONFIG regardless of param drift, and must not
+		// assume auth already ran this cycle (the no-drift path previously
+		// never called OperationAuth at all). Calling it once here,
+		// unconditionally, also avoids a redundant double-auth call on
+		// cycles that have both param drift and resource work. Auth itself
+		// is read-only (credential/kubeconfig setup) so it still runs for
+		// real even in dry-run — kubectl diff needs it to reach the live
+		// cluster.
+		if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+			r.logf("[%s] Warning: auth failed: %v", name, authErr)
+		} else {
+			r.dedupeKubeconfigAfterAuth(name)
+		}
+
+		if r.paramsChanged(cluster) {
+			if dryRun {
+				r.logf("[%s] DRY RUN: param drift detected — would run PreReconcile workflows and scale", name)
+			} else {
+				r.logf("[%s] Param drift detected — scaling", name)
+				r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
+				if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
+					r.logf("[%s] Warning: scale failed: %v", name, scaleErr)
+				}
 			}
+		} else {
+			r.logf("[%s] Up to date — no action needed", name)
 		}
 
-	case "aws":
-		opts.AccountName = clusterDef.Spec.AWSAccount
-		opts.AWSProfile = clusterDef.Spec.AWSProfile
-		if opts.AccountName != "" {
-			keyID, secret, session, _ := pcMgr.GetAWSCredentials(opts.AccountName)
-			opts.AccessKeyID = keyID
-			opts.SecretAccessKey = secret
-			opts.SessionToken = session
+		repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
+		if cfgErr != nil {
+			r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
+			repoCfg = &state.RepoConfig{}
 		}
+		return r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 
-	case "gcp":
-		opts.AccountName = clusterDef.Spec.GCPProject
-		if clusterDef.Spec.GCPProjectID != "" {
-			opts.ProjectID = clusterDef.Spec.GCPProjectID
-			log.Printf("Using GCP project ID '%s' for cluster %s", clusterDef.Spec.GCPProjectID, clusterDef.Metadata.Name)
-		} else if opts.AccountName != "" {
-			projectID, err := pcMgr.GetGCPProjectID(opts.AccountName)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve GCP project '%s': %w", opts.AccountName, err)
-			}
-			opts.ProjectID = projectID
-			log.Printf("Using GCP project '%s' (ID: %s) for cluster %s", opts.AccountName, projectID, clusterDef.Metadata.Name)
-		}
-		if opts.AccountName != "" {
-			credJSON, _ := pcMgr.GetGCPCredentialsJSON(opts.AccountName)
-			opts.GCPCredentialsJSON = credJSON
-		}
+	case status == "CREATING" || status == "UPDATING" || status == "DELETING":
+		r.logf("[%s] Operation in progress (%s) — skipping", name, status)
 
-	case "azure":
-		opts.AccountName = clusterDef.Spec.AzureSubscription
-		if clusterDef.Spec.AzureSubscriptionID != "" {
-			opts.AzureSubscriptionID = clusterDef.Spec.AzureSubscriptionID
-			log.Printf("Using Azure subscription ID '%s' for cluster %s", clusterDef.Spec.AzureSubscriptionID, clusterDef.Metadata.Name)
-		} else if opts.AccountName != "" {
-			subID, err := pcMgr.GetAzureSubscriptionID(opts.AccountName)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve Azure subscription '%s': %w", opts.AccountName, err)
-			}
-			opts.AzureSubscriptionID = subID
-			log.Printf("Using Azure subscription '%s' (ID: %s) for cluster %s", opts.AccountName, subID, clusterDef.Metadata.Name)
-		}
-		if opts.AccountName != "" {
-			tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(opts.AccountName)
-			opts.AzureTenantID = tenantID
-			opts.AzureClientID = clientID
-			opts.AzureClientSecret = clientSecret
-		}
-		opts.AzureResourceGroup = clusterDef.Spec.AzureResourceGroup
-	}
-
-	return r.providerFactory.CreateProviderWithOptions(providerName, opts)
-}
-
-// reconcileCluster handles the reconciliation of a single cluster
-func (r *Reconciler) reconcileCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
-	// Run preReconcile workflows before any AWS calls so credential-refresh
-	// workflows can populate env vars that the provider SDK reads.
-	if len(clusterDef.Spec.Workflows.PreReconcile) > 0 {
-		log.Printf("[%s] 🔑 Running preReconcile workflows...", clusterDef.Metadata.Name)
-		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.PreReconcile, clusterDef)
-	}
-
-	action := clusterMgr.DetermineAction(ctx, clusterDef)
-
-	switch action {
-	case types.ActionCreate:
-		return r.createCluster(ctx, clusterMgr, clusterDef)
-	case types.ActionUpdate:
-		return r.updateCluster(ctx, clusterMgr, clusterDef)
-	case types.ActionDelete:
-		return r.deleteCluster(ctx, clusterMgr, clusterDef)
-	case types.ActionNone:
-		log.Printf("[%s] Up to date — no action needed", clusterDef.Metadata.Name)
-		return nil
 	default:
-		log.Printf("[%s] Unknown action: %v", clusterDef.Metadata.Name, action)
-		return nil
-	}
-}
-
-// createCluster creates a new cluster
-func (r *Reconciler) createCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
-	existingCluster, err := clusterMgr.FindByName(ctx, clusterDef.Metadata.Name)
-	if err != nil {
-		return err
-	}
-
-	if existingCluster != nil {
-		log.Printf("[%s] Already exists (ID: %s, status: %s) — skipping create",
-			clusterDef.Metadata.Name, existingCluster.ID, existingCluster.Status)
-		return nil
-	}
-
-	// Run beforeCreate workflows. After they complete, read any HYVE_* env vars
-	// they exported and write the resolved values back to the provider config YAML.
-	// No cluster exists yet, so kubeconfig injection is skipped; known definition
-	// fields are injected as HYVE_* vars so hooks can provision supporting infrastructure.
-	if len(clusterDef.Spec.Workflows.BeforeCreate) > 0 {
-		log.Printf("[%s] 🔄 Running beforeCreate workflows...", clusterDef.Metadata.Name)
-		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.BeforeCreate, clusterDef)
-		if err := resolveHookEnvVars(ctx, r.stateMgr, &clusterDef); err != nil {
-			log.Printf("[%s] Warning: failed to resolve hook env vars: %v", clusterDef.Metadata.Name, err)
-		}
-		// Write the resolved values (VPC ID, role names, etc.) back to the cluster
-		// YAML so that a future reconciliation can recreate the cluster without
-		// re-running the beforeCreate workflow from scratch.
-		if err := r.stateMgr.SaveClusterDefinition(&clusterDef); err != nil {
-			log.Printf("[%s] Warning: failed to persist resolved cluster values: %v", clusterDef.Metadata.Name, err)
-		} else {
-			log.Printf("[%s] 💾 Persisted resolved cluster values to YAML", clusterDef.Metadata.Name)
-		}
-	}
-
-	// Resolve awsAccount alias → awsAccountId when only the alias was provided.
-	// Mirrors the interactive flow in cmd/cluster/crud.go so hand-written cluster
-	// YAMLs that omit awsAccountId still produce correct IAM role ARNs.
-	if clusterDef.Spec.AWSAccountID == "" && clusterDef.Spec.AWSAccount != "" {
-		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
-		if id, err := pcMgr.GetAWSAccountID(clusterDef.Spec.AWSAccount); err == nil {
-			clusterDef.Spec.AWSAccountID = id
-			log.Printf("[%s] Resolved awsAccount '%s' → awsAccountId '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSAccount, id)
-		} else {
-			log.Printf("[%s] Warning: could not resolve awsAccount '%s': %v", clusterDef.Metadata.Name, clusterDef.Spec.AWSAccount, err)
-		}
-	}
-	// Same for Azure and GCP.
-	if clusterDef.Spec.AzureSubscriptionID == "" && clusterDef.Spec.AzureSubscription != "" {
-		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
-		if id, err := pcMgr.GetAzureSubscriptionID(clusterDef.Spec.AzureSubscription); err == nil {
-			clusterDef.Spec.AzureSubscriptionID = id
-		}
-	}
-	if clusterDef.Spec.GCPProjectID == "" && clusterDef.Spec.GCPProject != "" {
-		pcMgr := providerconfig.NewManager(r.stateMgr.LocalPath())
-		if id, err := pcMgr.GetGCPProjectID(clusterDef.Spec.GCPProject); err == nil {
-			clusterDef.Spec.GCPProjectID = id
-		}
-	}
-
-	// Construct AWS role ARNs from direct role names + account ID.
-	if clusterDef.Spec.AWSEKSRoleARN == "" && clusterDef.Spec.AWSEKSRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
-		clusterDef.Spec.AWSEKSRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSEKSRoleName)
-		log.Printf("[%s] Constructed EKS role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSEKSRoleName)
-	}
-	if clusterDef.Spec.AWSNodeRoleARN == "" && clusterDef.Spec.AWSNodeRoleName != "" && clusterDef.Spec.AWSAccountID != "" {
-		clusterDef.Spec.AWSNodeRoleARN = fmt.Sprintf("arn:aws:iam::%s:role/%s", clusterDef.Spec.AWSAccountID, clusterDef.Spec.AWSNodeRoleName)
-		log.Printf("[%s] Constructed node role ARN from name '%s'", clusterDef.Metadata.Name, clusterDef.Spec.AWSNodeRoleName)
-	}
-
-	log.Printf("[%s] Creating cluster...", clusterDef.Metadata.Name)
-	createdCluster, err := clusterMgr.Create(ctx, clusterDef)
-	if err != nil {
-		return err
-	}
-
-	err = clusterMgr.WaitForReady(ctx, createdCluster.ID)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("[%s] ✅ Cluster created successfully", clusterDef.Metadata.Name)
-
-	// Run onCreate workflows if defined
-	if len(clusterDef.Spec.Workflows.OnCreate) > 0 {
-		log.Printf("[%s] 🔄 Running onCreate workflows...", clusterDef.Metadata.Name)
-		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnCreate, clusterDef.Metadata.Name)
+		r.logf("[%s] Unhandled status %q", name, status)
 	}
 
 	return nil
 }
 
-// updateCluster updates an existing cluster
-func (r *Reconciler) updateCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
-	return clusterMgr.Update(ctx, clusterDef)
-}
+func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
+	name := cluster.Metadata.Name
+	r.logf("[%s] Creating cluster...", name)
 
-// deleteCluster deletes a cluster and its associated resources
-func (r *Reconciler) deleteCluster(ctx context.Context, clusterMgr *cluster.Manager, clusterDef types.ClusterDefinition) error {
-	existingCluster, err := clusterMgr.FindByName(ctx, clusterDef.Metadata.Name)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
+
+	result, err := exec.Execute(ctx, module.OperationCreate)
 	if err != nil {
-		return err
+		return fmt.Errorf("create operation failed: %w", err)
 	}
 
-	if existingCluster == nil {
-		log.Printf("[%s] Not found in cloud — nothing to delete", clusterDef.Metadata.Name)
-		return nil
+	if cluster.Spec.DriverOutputs == nil {
+		cluster.Spec.DriverOutputs = make(map[string]string)
+	}
+	for k, v := range result.Outputs {
+		cluster.Spec.DriverOutputs[k] = v
+	}
+	cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = paramsHash(cluster.Spec.Params)
+
+	if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
+		r.logf("[%s] Warning: failed to save driverOutputs: %v", name, err)
+	} else {
+		if commitErr := r.stateMgr.CommitAndPush(ctx, "reconcile: create "+name); commitErr != nil {
+			r.logf("[%s] Warning: failed to commit driverOutputs: %v", name, commitErr)
+		}
 	}
 
-	// Run onDelete workflows before deletion if defined
-	if len(clusterDef.Spec.Workflows.OnDelete) > 0 {
-		log.Printf("[%s] 🔄 Running onDelete workflows...", clusterDef.Metadata.Name)
-		r.runWorkflows(ctx, clusterDef.Spec.Workflows.OnDelete, clusterDef.Metadata.Name)
+	r.logf("[%s] ✅ Cluster created", name)
+
+	// Rebuild env so onCreate workflows see the new driverOutputs.
+	env = buildModuleEnv(cluster, nil)
+	exec.Env = env
+
+	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+		r.logf("[%s] Warning: auth failed: %v", name, authErr)
+	} else {
+		r.dedupeKubeconfigAfterAuth(name)
 	}
 
-	log.Printf("[%s] Deleting cluster (ID: %s)...", clusterDef.Metadata.Name, existingCluster.ID)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
 
-	err = clusterMgr.Delete(ctx, existingCluster.ID)
-	if err != nil {
-		return err
+	// Apply spec.resources on the same cycle the cluster is created, rather
+	// than waiting for the next ACTIVE-branch reconcile. A failure here is a
+	// warning, not a hard error, matching the soft-failure convention already
+	// used for everything else past OperationCreate in this function.
+	repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
+	if cfgErr != nil {
+		r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
+		repoCfg = &state.RepoConfig{}
+	}
+	if resErr := r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
+		r.logf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
 	}
 
-	log.Printf("[%s] ✅ Cluster deleted successfully", clusterDef.Metadata.Name)
-
-	// Run afterDelete workflows now that the cloud cluster is gone.
-	// No cluster exists at this point, so kubeconfig injection is skipped; definition
-	// fields are injected as HYVE_* vars so hooks can clean up supporting infrastructure.
-	if len(clusterDef.Spec.Workflows.AfterDelete) > 0 {
-		log.Printf("[%s] 🔄 Running afterDelete workflows...", clusterDef.Metadata.Name)
-		r.runWorkflowsNoCluster(ctx, clusterDef.Spec.Workflows.AfterDelete, clusterDef)
-	}
+	// Runs after spec.resources so afterCreate workflows can rely on resource-created
+	// objects (namespaces, Deployments) already existing — unlike onCreate, which runs
+	// before resources. Fires regardless of the resource-reconciliation outcome above,
+	// matching this function's existing soft-failure convention.
+	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterCreate, cluster, env, lf)
 
 	return nil
 }
 
-// cleanupOrphanedResources removes managed-prefix clusters that are no longer defined
-func (r *Reconciler) cleanupOrphanedResources(ctx context.Context, clusterMgr *cluster.Manager, clusters []types.ClusterDefinition) error {
-	orphanedClusters, err := clusterMgr.FindOrphaned(ctx, clusters)
-	if err != nil {
-		return err
+func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
+	name := cluster.Metadata.Name
+	r.logf("[%s] Deleting cluster...", name)
+
+	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+		r.logf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
+	} else {
+		r.dedupeKubeconfigAfterAuth(name)
 	}
 
-	return clusterMgr.CleanupOrphaned(ctx, orphanedClusters)
+	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
+
+	if _, err := exec.Execute(ctx, module.OperationDelete); err != nil {
+		return fmt.Errorf("delete operation failed: %w", err)
+	}
+
+	r.logf("[%s] ✅ Cluster deleted", name)
+
+	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env, lf)
+
+	return r.removeClusterFile(ctx, cluster)
 }
 
-// strictDeleteSweep deletes every cloud cluster that has no matching YAML definition.
-// It reads all configured accounts/projects/subscriptions/organizations from the
-// provider config files and queries each one independently for active clusters,
-// comparing the results against the current repository state.
-func (r *Reconciler) strictDeleteSweep(ctx context.Context) {
-	// Load the current desired state fresh from the repository.
-	desiredClusters, err := r.stateMgr.LoadClusterDefinitions()
+// dedupeKubeconfigAfterAuth rewrites ~/.kube/config to remove duplicate
+// entries an external auth tool may have appended (e.g. civo without
+// --merge). Failures are logged as warnings, never fatal — kubeconfig
+// hygiene is best-effort, not part of the reconcile contract.
+func (r *Reconciler) dedupeKubeconfigAfterAuth(name string) {
+	kcPath, err := module.DefaultKubeconfigPath()
 	if err != nil {
-		log.Printf("strict-delete: failed to load cluster definitions: %v", err)
+		r.logf("[%s] Warning: could not resolve kubeconfig path: %v", name, err)
 		return
 	}
-
-	pcMgr := providerconfig.NewManager(r.stateMgr.GetStateRoot())
-
-	// --- Civo organizations ---
-	civoOrgs, err := pcMgr.ListCivoOrganizations()
-	if err != nil {
-		log.Printf("strict-delete: failed to list Civo organizations: %v", err)
-	}
-	// When no named organizations are configured, sweep with empty credentials
-	// so clusters in unregistered accounts are still found.
-	if len(civoOrgs) == 0 {
-		civoOrgs = []providerconfig.CivoOrganization{{Name: "", Regions: nil}}
-	}
-	for _, org := range civoOrgs {
-		regions := org.Regions
-		if len(regions) == 0 {
-			regions = []string{"PHX1", "NYC1", "FRA1", "LON1"}
-		}
-		for _, region := range dedupRegions(regions) {
-			prov, err := r.createProviderForCluster(types.ClusterDefinition{
-				Metadata: types.ClusterMetadata{Region: region},
-				Spec:     types.ClusterSpec{Provider: "civo", CivoOrganization: org.Name},
-			})
-			if err != nil {
-				log.Printf("strict-delete: Civo org=%q region=%s: failed to create provider: %v", org.Name, region, err)
-				continue
-			}
-			log.Printf("strict-delete: sweeping Civo org=%q region=%s", org.Name, region)
-			if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
-				log.Printf("strict-delete: Civo org=%q region=%s: %v", org.Name, region, err)
-			}
-		}
-	}
-
-	// --- AWS accounts ---
-	awsAccounts, err := pcMgr.ListAWSAccounts()
-	if err != nil {
-		log.Printf("strict-delete: failed to list AWS accounts: %v", err)
-	}
-	// When no named accounts are configured, fall back to the default credential
-	// chain (AWS_ACCESS_KEY_ID / AWS_PROFILE / instance role) so clusters in
-	// unregistered accounts are still found.
-	if len(awsAccounts) == 0 {
-		awsAccounts = []providerconfig.AWSAccount{{Name: "", Regions: nil}}
-	}
-	for _, account := range awsAccounts {
-		regions := account.Regions
-		if len(regions) == 0 {
-			regions = []string{"us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"}
-		}
-		for _, region := range dedupRegions(regions) {
-			prov, err := r.createProviderForCluster(types.ClusterDefinition{
-				Metadata: types.ClusterMetadata{Region: region},
-				Spec:     types.ClusterSpec{Provider: "aws", AWSAccount: account.Name},
-			})
-			if err != nil {
-				log.Printf("strict-delete: AWS account=%q region=%s: failed to create provider: %v", account.Name, region, err)
-				continue
-			}
-			log.Printf("strict-delete: sweeping AWS account=%q region=%s", account.Name, region)
-			if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
-				log.Printf("strict-delete: AWS account=%q region=%s: %v", account.Name, region, err)
-			}
-		}
-	}
-
-	// --- GCP projects ---
-	// Use "-" as the location to list all clusters across all zones and regions
-	// in a single API call per project (GCP wildcard location).
-	gcpProjects, err := pcMgr.ListGCPProjects()
-	if err != nil {
-		log.Printf("strict-delete: failed to list GCP projects: %v", err)
-	}
-	for _, project := range gcpProjects {
-		prov, err := r.createProviderForCluster(types.ClusterDefinition{
-			Metadata: types.ClusterMetadata{Region: "-"},
-			Spec:     types.ClusterSpec{Provider: "gcp", GCPProject: project.Name},
-		})
-		if err != nil {
-			log.Printf("strict-delete: GCP project=%q: failed to create provider: %v", project.Name, err)
-			continue
-		}
-		log.Printf("strict-delete: sweeping GCP project=%q (all regions)", project.Name)
-		if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
-			log.Printf("strict-delete: GCP project=%q: %v", project.Name, err)
-		}
-	}
-
-	// --- Azure subscriptions ---
-	// Query resource groups dynamically via the Azure API instead of reading from config.
-	azureSubs, err := pcMgr.ListAzureSubscriptions()
-	if err != nil {
-		log.Printf("strict-delete: failed to list Azure subscriptions: %v", err)
-	}
-	for _, sub := range azureSubs {
-		subID := sub.SubscriptionID
-		if subID == "" {
-			log.Printf("strict-delete: Azure subscription=%q has no subscription ID, skipping", sub.Name)
-			continue
-		}
-		tenantID, clientID, clientSecret, _ := pcMgr.GetAzureCredentials(sub.Name)
-		var rgClient *armresources.ResourceGroupsClient
-		var rgClientErr error
-		if tenantID != "" && clientID != "" && clientSecret != "" {
-			cred, credErr := azidentity.NewClientSecretCredential(tenantID, clientID, clientSecret, nil)
-			if credErr != nil {
-				log.Printf("strict-delete: Azure sub=%q: failed to create credentials: %v", sub.Name, credErr)
-				continue
-			}
-			rgClient, rgClientErr = armresources.NewResourceGroupsClient(subID, cred, nil)
-		} else {
-			defCred, credErr := azidentity.NewDefaultAzureCredential(nil)
-			if credErr != nil {
-				log.Printf("strict-delete: Azure sub=%q: failed to create default credentials: %v", sub.Name, credErr)
-				continue
-			}
-			rgClient, rgClientErr = armresources.NewResourceGroupsClient(subID, defCred, nil)
-		}
-		if rgClientErr != nil {
-			log.Printf("strict-delete: Azure sub=%q: failed to create resource groups client: %v", sub.Name, rgClientErr)
-			continue
-		}
-		pager := rgClient.NewListPager(nil)
-		for pager.More() {
-			page, pageErr := pager.NextPage(ctx)
-			if pageErr != nil {
-				log.Printf("strict-delete: Azure sub=%q: failed to list resource groups: %v", sub.Name, pageErr)
-				break
-			}
-			for _, rg := range page.Value {
-				if rg.Name == nil || rg.Location == nil {
-					continue
-				}
-				rgName := *rg.Name
-				location := *rg.Location
-				prov, err := r.createProviderForCluster(types.ClusterDefinition{
-					Metadata: types.ClusterMetadata{Region: location},
-					Spec: types.ClusterSpec{
-						Provider:           "azure",
-						AzureSubscription:  sub.Name,
-						AzureResourceGroup: rgName,
-					},
-				})
-				if err != nil {
-					log.Printf("strict-delete: Azure sub=%q rg=%q: failed to create provider: %v", sub.Name, rgName, err)
-					continue
-				}
-				log.Printf("strict-delete: sweeping Azure subscription=%q resource-group=%q", sub.Name, rgName)
-				if err := cluster.NewManager(prov).StrictDeleteOrphans(ctx, desiredClusters); err != nil {
-					log.Printf("strict-delete: Azure sub=%q rg=%q: %v", sub.Name, rgName, err)
-				}
-			}
-		}
+	if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
+		r.logf("[%s] Warning: failed to deduplicate kubeconfig: %v", name, err)
 	}
 }
 
-// dedupRegions returns the input slice with duplicates removed, preserving order.
-func dedupRegions(regions []string) []string {
-	seen := make(map[string]bool)
-	out := make([]string, 0, len(regions))
-	for _, r := range regions {
-		if !seen[r] {
-			seen[r] = true
-			out = append(out, r)
-		}
+func (r *Reconciler) removeClusterFile(ctx context.Context, cluster types.ClusterDefinition) error {
+	name := cluster.Metadata.Name
+	if err := r.stateMgr.RemoveClusterFile(name); err != nil {
+		return fmt.Errorf("remove cluster file: %w", err)
 	}
-	return out
-}
-
-// exportAllClusterInfo exports information for all active clusters
-func (r *Reconciler) exportAllClusterInfo(ctx context.Context, clusterDefs []types.ClusterDefinition) {
-	for _, clusterDef := range clusterDefs {
-		err := r.exportClusterInfo(ctx, clusterDef)
-		if err != nil {
-			log.Printf("Failed to export info for cluster %s: %v", clusterDef.Metadata.Name, err)
-		}
+	if err := r.stateMgr.CommitAndPush(ctx, "reconcile: delete "+name); err != nil {
+		r.logf("[%s] Warning: failed to commit cluster file removal: %v", name, err)
 	}
-}
-
-// exportClusterInfo exports cluster information
-func (r *Reconciler) exportClusterInfo(ctx context.Context, clusterDef types.ClusterDefinition) error {
-	prov, err := r.createProviderForCluster(clusterDef)
-	if err != nil {
-		return fmt.Errorf("failed to create provider: %w", err)
-	}
-
-	clusterMgr := cluster.NewManager(prov)
-	return exportClusterInfoToEnv(ctx, clusterMgr, clusterDef.Metadata.Name)
-}
-
-// syncKubeconfigs syncs kubeconfigs for all active clusters
-func (r *Reconciler) syncKubeconfigs(ctx context.Context, clusterDefs []types.ClusterDefinition) error {
-	// Get current repository name
-	repoMgr, err := repository.NewManager()
-	if err != nil {
-		return fmt.Errorf("failed to create repository manager: %w", err)
-	}
-	defer repoMgr.Close()
-
-	currentRepo, err := repoMgr.GetCurrentRepository()
-	if err != nil {
-		return fmt.Errorf("failed to get current repository: %w", err)
-	}
-
-	// Create kubeconfig manager
-	kubeconfigMgr, err := kubeconfig.NewManager(currentRepo.Name)
-	if err != nil {
-		return fmt.Errorf("failed to create kubeconfig manager: %w", err)
-	}
-	defer kubeconfigMgr.Close()
-
-	// Collect all active cluster names for orphan cleanup after syncing.
-	activeClusterNames := make([]string, 0, len(clusterDefs))
-	for _, cd := range clusterDefs {
-		activeClusterNames = append(activeClusterNames, cd.Metadata.Name)
-	}
-
-	// Group clusters by region so each cluster gets a provider with the right credentials.
-	regionClusters := make(map[string][]types.ClusterDefinition)
-	for _, clusterDef := range clusterDefs {
-		region := clusterDef.Metadata.Region
-		regionClusters[region] = append(regionClusters[region], clusterDef)
-	}
-
-	// Sync kubeconfigs for each cluster individually (different credentials per cluster).
-	// Use SyncSingleKubeconfig so cleanup is NOT called per-iteration — calling
-	// CleanupOrphanedKubeconfigs with a single name inside a loop would delete every
-	// other cluster's kubeconfig before its iteration runs.
-	for region, clusters := range regionClusters {
-		for _, clusterDef := range clusters {
-			prov, err := r.createProviderForCluster(clusterDef)
-			if err != nil {
-				log.Printf("Failed to create provider for cluster %s in region %s: %v",
-					clusterDef.Metadata.Name, region, err)
-				continue
-			}
-
-			syncer := kubeconfig.NewSyncer(kubeconfigMgr, prov)
-			if err := syncer.SyncSingleKubeconfig(ctx, clusterDef.Metadata.Name); err != nil {
-				log.Printf("Failed to sync kubeconfig for cluster %s in region %s: %v",
-					clusterDef.Metadata.Name, region, err)
-			}
-		}
-	}
-
-	// Clean up kubeconfigs for clusters no longer in the desired state.
-	if err := kubeconfigMgr.CleanupOrphanedKubeconfigs(activeClusterNames); err != nil {
-		log.Printf("Failed to cleanup orphaned kubeconfigs: %v", err)
-	}
-
 	return nil
 }
 
-// runWorkflowsNoCluster executes a list of workflows without kubeconfig injection.
-// Use this for hooks that run before the cluster is created (beforeCreate) or after
-// it is deleted (afterDelete), when no kubeconfig is available.
-// Known cluster fields (name, region, provider, credentials) are injected as HYVE_*
-// environment variables from the cluster definition so hooks can provision or clean up
-// supporting infrastructure for the right cluster and account.
-func (r *Reconciler) runWorkflowsNoCluster(ctx context.Context, workflowNames []string, clusterDef types.ClusterDefinition) {
-	if len(workflowNames) == 0 {
+func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef, cluster types.ClusterDefinition, env []string, lf *module.LockFile) {
+	if len(refs) == 0 {
+		return
+	}
+	name := cluster.Metadata.Name
+
+	wfMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
+	if err != nil {
+		r.logf("[%s] Failed to create workflow manager: %v", name, err)
 		return
 	}
 
-	clusterName := clusterDef.Metadata.Name
-
-	workflowMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
-	if err != nil {
-		log.Printf("⚠️  Failed to create workflow manager: %v", err)
-		return
+	injected := make(map[string]string, len(env))
+	for _, kv := range env {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			injected[kv[:idx]] = kv[idx+1:]
+		}
 	}
 
-	executor, err := workflow.NewExecutor(workflowMgr, "")
+	executor, err := workflow.NewExecutor(wfMgr, "")
 	if err != nil {
-		log.Printf("⚠️  Failed to create workflow executor: %v", err)
+		r.logf("[%s] Failed to create workflow executor: %v", name, err)
 		return
 	}
 	defer executor.Close()
+	executor.Output = r.Logger
+	executor.InjectVars(injected)
 
-	for _, workflowName := range workflowNames {
-		log.Printf("[%s] ▶  Workflow '%s' starting (no cluster)...", clusterName, workflowName)
+	for _, ref := range refs {
+		label := ref.String()
+		r.logf("[%s] ▶  Workflow '%s' starting...", name, label)
 
-		execution, err := executor.RunWorkflowNoCluster(ctx, workflowName, &clusterDef)
-		if err != nil {
-			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", clusterName, workflowName, err)
+		var execution *workflow.WorkflowExecution
+		var runErr error
+		if !ref.IsRemote() {
+			execution, runErr = executor.RunWorkflow(ctx, ref.Name, "")
+		} else {
+			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf)
+		}
+		if runErr != nil {
+			r.logf("[%s] ⚠️  Workflow '%s' failed: %v", name, label, runErr)
 			continue
 		}
-
 		if execution.Status == workflow.StatusCompleted {
-			log.Printf("[%s] ✅ Workflow '%s' completed", clusterName, workflowName)
+			r.logf("[%s] ✅ Workflow '%s' completed", name, label)
 		} else {
-			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", clusterName, workflowName, execution.Status)
+			r.logf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, label, execution.Status)
 		}
 	}
 }
 
-// runWorkflows executes a list of workflows for a cluster
-func (r *Reconciler) runWorkflows(ctx context.Context, workflowNames []string, clusterName string) {
-	if len(workflowNames) == 0 {
-		return
-	}
-
-	// Create workflow manager using the local path already known to the state
-	// manager — avoids a database lookup that fails when --path is used.
-	workflowMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
+// runRemoteWorkflowHook resolves a remote WorkflowRef using hyve.lock as a
+// cache hint (a matching locked+cached entry means no network call — the
+// pre-flight check in ReconcileAll already guarantees a locked entry
+// exists) and executes it. A lifecycle hook ref must resolve to a single
+// file: directory-kind sources are rejected here — a hook names exactly one
+// workflow to run, not a batch.
+func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workflow.Executor, ref types.WorkflowRef, lf *module.LockFile) (*workflow.WorkflowExecution, error) {
+	ps, err := workflowref.ParseSource(ref.Source)
 	if err != nil {
-		log.Printf("⚠️  Failed to create workflow manager: %v", err)
-		return
+		return nil, err
 	}
-
-	// Create workflow executor
-	executor, err := workflow.NewExecutor(workflowMgr, clusterName)
+	ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
+	kind, err := workflowref.ClassifyPath(ps.Path)
 	if err != nil {
-		log.Printf("⚠️  Failed to create workflow executor: %v", err)
-		return
+		return nil, err
 	}
-	defer executor.Close()
+	if kind == workflowref.PathKindDir {
+		return nil, fmt.Errorf("lifecycle hook workflow ref %q resolves to a directory — must reference exactly one file", ref.Source)
+	}
 
-	// Run each workflow
-	for _, workflowName := range workflowNames {
-		log.Printf("[%s] ▶  Workflow '%s' starting...", clusterName, workflowName)
+	files, err := workflowref.Resolve(ref.Source, ref.Path, lf)
+	if err != nil {
+		return nil, err
+	}
+	var wf workflow.Workflow
+	if err := yaml.Unmarshal(files[0].Data, &wf); err != nil {
+		return nil, fmt.Errorf("parse remote workflow %s: %w", ref.Source, err)
+	}
+	return executor.RunResolvedWorkflow(ctx, &wf, ref.String(), "")
+}
 
-		execution, err := executor.RunWorkflow(ctx, workflowName, clusterName)
-		if err != nil {
-			log.Printf("[%s] ⚠️  Workflow '%s' failed: %v", clusterName, workflowName, err)
-			continue
-		}
+// validateDriverModuleLocked checks that a cluster's driver module is either
+// a local path (needs no hyve.lock entry — module.Resolve reads it straight
+// off disk via module.resolveLocal, with no digest to verify, so a lock
+// entry for one only ever holds an empty resolved/sha256 pair: required
+// presence, zero actual integrity value) or already present in hyve.lock.
+// Mirrors validateWorkflowRefsLocked's local/remote split below.
+func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	if c.Spec.Driver.Source == "" {
+		return fmt.Errorf("cluster %s: no driver specified — set spec.driver.source in the cluster YAML", c.Metadata.Name)
+	}
+	if module.IsLocalSource(c.Spec.Driver.Source) {
+		return nil
+	}
+	if lf.GetLocked(c.Spec.Driver.Source, c.Spec.Driver.Version) == nil {
+		return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install`",
+			c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version)
+	}
+	return nil
+}
 
-		if execution.Status == workflow.StatusCompleted {
-			log.Printf("[%s] ✅ Workflow '%s' completed", clusterName, workflowName)
-		} else {
-			log.Printf("[%s] ⚠️  Workflow '%s' finished with status: %s", clusterName, workflowName, execution.Status)
+// validateWorkflowRefsLocked checks — with no network access — that every
+// remote WorkflowRef in a cluster's lifecycle hooks is already present in
+// hyve.lock. Mirrors validateDriverModuleLocked's local/remote split above.
+func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	lists := [][]types.WorkflowRef{
+		c.Spec.Workflows.PreReconcile, c.Spec.Workflows.BeforeCreate,
+		c.Spec.Workflows.OnCreate, c.Spec.Workflows.OnDelete, c.Spec.Workflows.AfterDelete,
+	}
+	for _, list := range lists {
+		for _, ref := range list {
+			if !ref.IsRemote() {
+				continue
+			}
+			ps, err := workflowref.ParseSource(ref.Source)
+			if err != nil {
+				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+			}
+			ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
+			kind, err := workflowref.ClassifyPath(ps.Path)
+			if err != nil {
+				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+			}
+			if kind == workflowref.PathKindDir {
+				return fmt.Errorf("cluster %s: workflow ref %q resolves to a directory — lifecycle hooks must reference a single file", c.Metadata.Name, ref.Source)
+			}
+			if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
+				return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install`", c.Metadata.Name, ref.Source)
+			}
 		}
 	}
+	return nil
+}
+
+func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {
+	stored := cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"]
+	return stored != "" && stored != paramsHash(cluster.Spec.Params)
+}
+
+func paramsHash(params map[string]string) string {
+	if len(params) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	ordered := make(map[string]string, len(params))
+	for _, k := range keys {
+		ordered[k] = params[k]
+	}
+	data, _ := json.Marshal(ordered)
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h[:])
 }

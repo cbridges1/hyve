@@ -2,17 +2,14 @@ package shared
 
 import (
 	gocontext "context"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/state"
-	"github.com/cbridges1/hyve/internal/types"
 )
 
 // SyncRepoState performs a git pull to synchronise the local repository with
@@ -27,7 +24,6 @@ func SyncRepoState(ctx gocontext.Context) {
 
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		// No repository configured — nothing to sync.
 		return
 	}
 
@@ -102,63 +98,6 @@ func CommitStateChanges(ctx gocontext.Context, stateMgr *state.Manager, message 
 	log.Println("✅ Changes committed and pushed to remote repository successfully")
 }
 
-// ParseNodeGroup parses a node group spec string into a types.NodeGroup.
-// Format: name=workers,type=t3.medium,count=3[,min=1,max=5,disk=50,spot=true,mode=System]
-func ParseNodeGroup(s string) (types.NodeGroup, error) {
-	ng := types.NodeGroup{}
-	for _, part := range strings.Split(s, ",") {
-		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		k, v := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
-		switch k {
-		case "name":
-			ng.Name = v
-		case "type", "instanceType":
-			ng.InstanceType = v
-		case "count":
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return ng, fmt.Errorf("invalid count '%s': %w", v, err)
-			}
-			ng.Count = n
-		case "min":
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return ng, fmt.Errorf("invalid min '%s': %w", v, err)
-			}
-			ng.MinCount = n
-		case "max":
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return ng, fmt.Errorf("invalid max '%s': %w", v, err)
-			}
-			ng.MaxCount = n
-		case "disk":
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return ng, fmt.Errorf("invalid disk '%s': %w", v, err)
-			}
-			ng.DiskSize = n
-		case "spot":
-			ng.Spot = strings.EqualFold(v, "true")
-		case "mode":
-			ng.Mode = v
-		}
-	}
-	if ng.Name == "" {
-		return ng, fmt.Errorf("node group must have a name (name=<value>)")
-	}
-	if ng.InstanceType == "" {
-		return ng, fmt.Errorf("node group '%s' must have a type (type=<value>)", ng.Name)
-	}
-	if ng.Count < 1 {
-		ng.Count = 1
-	}
-	return ng, nil
-}
-
 // GetAuthCredentials returns the git auth token from the HYVE_GIT_TOKEN env var.
 // Username is always empty — the system git credential helper handles auth.
 func GetAuthCredentials(_ *repository.Repository) (username, token string) {
@@ -196,7 +135,9 @@ func GetLocalPath() string {
 }
 
 // RunReconciliation runs reconciliation, optionally from a specific local path.
-func RunReconciliation(repoPath string) {
+// When dryRun is true, the entire cycle is read-only — see
+// reconcile.Reconciler.ReconcileAll for exactly what's gated.
+func RunReconciliation(repoPath string, dryRun bool) {
 	ctx := gocontext.Background()
 
 	var stateMgr *state.Manager
@@ -208,7 +149,7 @@ func RunReconciliation(repoPath string) {
 		}
 		log.Printf("Using local repository path: %s", absPath)
 		stateMgr = CreateStateManagerFromPath(absPath)
-		RunLocalReconciliation(ctx, stateMgr)
+		RunLocalReconciliation(ctx, stateMgr, dryRun)
 		return
 	}
 
@@ -232,6 +173,10 @@ func RunReconciliation(repoPath string) {
 	if repoCfg.Reconcile.Mode == state.ReconcileModeCICD {
 		log.Println("Reconcile mode: cicd")
 		log.Println("Skipping local reconciliation — cluster provisioning will be handled by the CI/CD pipeline.")
+		if dryRun {
+			log.Println("DRY RUN: would push desired state to repository — skipping (this branch only pushes, nothing to preview)")
+			return
+		}
 		log.Println("Pushing desired state to repository...")
 		if err := stateMgr.CommitAndPush(ctx, "Update desired cluster state"); err != nil {
 			log.Printf("❌ Failed to push state: %v", err)
@@ -245,11 +190,12 @@ func RunReconciliation(repoPath string) {
 		return
 	}
 
-	RunLocalReconciliation(ctx, stateMgr)
+	RunLocalReconciliation(ctx, stateMgr, dryRun)
 }
 
-// RunLocalReconciliation performs full local reconciliation.
-func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager) {
+// RunLocalReconciliation performs full local reconciliation. When dryRun is
+// true, nothing is mutated — see reconcile.Reconciler.ReconcileAll.
+func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager, dryRun bool) {
 	clusterDefs, err := stateMgr.LoadClusterDefinitions()
 	if err != nil {
 		log.Fatalf("Failed to load cluster definitions: %v", err)
@@ -262,7 +208,7 @@ func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager) {
 	clusterDefs = stateMgr.OrderClusters(clusterDefs)
 
 	reconciler := reconcile.NewReconciler(stateMgr)
-	if err = reconciler.ReconcileAll(ctx, clusterDefs); err != nil {
+	if err = reconciler.ReconcileAll(ctx, clusterDefs, dryRun); err != nil {
 		log.Fatalf("Reconciliation failed: %v", err)
 	}
 

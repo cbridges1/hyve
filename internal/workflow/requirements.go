@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-
-	"github.com/cbridges1/hyve/internal/providerconfig"
 )
 
 // RequirementValidator validates workflow requirements
@@ -86,24 +84,10 @@ func (v *RequirementValidator) validateSecret(secret SecretRequirement) error {
 		return nil // Secret available in environment
 	}
 
-	// Handle different providers
-	switch secret.Provider {
-	case "civo":
-		if providerconfig.ReadCivoCLIToken() != "" {
-			return nil
-		}
-
-	case "aws", "gcp", "azure":
-		// These providers use native CLI authentication
-		// We can't easily check if they're authenticated here, so we skip validation
-		// Authentication will be validated when the provider is actually used
-		return nil
-
-	default:
-		// Unknown provider or no provider specified
-		// If no provider is specified, we can only check environment variable (already done above)
-		// For unknown providers, we fall through to the "not found" logic
-	}
+	// The legacy provider-specific credential lookup was removed when the
+	// SDK-based providers were replaced by user-supplied modules. Secrets
+	// should now be provided through environment variables (set externally
+	// or via the module's auth operation).
 
 	// Secret not found
 	if secret.Required {
@@ -199,27 +183,9 @@ func (v *RequirementValidator) LoadSecretsIntoEnvironment(requirements *Workflow
 		return nil
 	}
 
-	for _, secret := range requirements.Secrets {
-		// Skip if already in environment
-		if os.Getenv(secret.Name) != "" {
-			continue
-		}
-
-		// For Civo, read the token from ~/.civo.json (local mode) or CIVO_TOKEN env var.
-		// AWS, GCP, Azure use native CLI authentication.
-		if secret.Provider == "civo" {
-			token := providerconfig.ReadCivoCLIToken()
-			if token == "" {
-				token = os.Getenv("CIVO_TOKEN")
-			}
-			if token != "" {
-				if err := os.Setenv(secret.Name, token); err != nil {
-					return fmt.Errorf("failed to set environment variable '%s': %w", secret.Name, err)
-				}
-			}
-		}
-		// For other providers (AWS, GCP, Azure), their SDKs handle auth automatically
-	}
-
+	// Secrets are now expected to be in the environment when the workflow
+	// runs (set by the caller, by `--set KEY=VALUE`, or by the module's
+	// auth operation). This call is a no-op kept for API stability.
+	_ = requirements
 	return nil
 }

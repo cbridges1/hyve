@@ -5,21 +5,16 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/cbridges1/hyve/cmd/cluster"
 	"github.com/cbridges1/hyve/cmd/shared"
-	"github.com/cbridges1/hyve/internal/kubeconfig"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/types"
-	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // Cmd is the root template command exposed to the parent.
@@ -28,59 +23,48 @@ var Cmd = templateCmd
 var templateCmd = &cobra.Command{
 	Use:   "template",
 	Short: "Manage cluster templates",
-	Long:  "Create, list, delete, and execute cluster templates with associated workflows",
+	Long:  "Create, list, delete, and validate cluster templates with associated workflows. To create a cluster from a template, see `hyve cluster create`.",
 }
 
 var templateCreateCmd = &cobra.Command{
 	Use:   "create [template-name]",
 	Short: "Create a new cluster template",
-	Long: `Create a new cluster template with cluster specifications and workflows.
-
-The template will be created interactively, prompting for cluster details
-and workflows to execute upon cluster creation or destruction.`,
-	Args: cobra.ExactArgs(1),
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		templateName := args[0]
 		description, _ := cmd.Flags().GetString("description")
-		provider, _ := cmd.Flags().GetString("provider")
+		driverSource, _ := cmd.Flags().GetString("driver")
+		driverVersion, _ := cmd.Flags().GetString("driver-version")
 		region, _ := cmd.Flags().GetString("region")
-		nodes, _ := cmd.Flags().GetString("nodes")
-		clusterType, _ := cmd.Flags().GetString("cluster-type")
-		orgName, _ := cmd.Flags().GetString("org")
-		accountName, _ := cmd.Flags().GetString("account")
-		vpcID, _ := cmd.Flags().GetString("vpc-id")
-		eksRoleName, _ := cmd.Flags().GetString("eks-role-name")
-		nodeRoleName, _ := cmd.Flags().GetString("node-role-name")
-		subscription, _ := cmd.Flags().GetString("subscription")
-		resourceGroup, _ := cmd.Flags().GetString("resource-group")
-		project, _ := cmd.Flags().GetString("project")
+		setVals, _ := cmd.Flags().GetStringArray("set")
 		beforeCreate, _ := cmd.Flags().GetString("before-create")
 		onCreate, _ := cmd.Flags().GetString("on-create")
 		onDelete, _ := cmd.Flags().GetString("on-delete")
 		afterDelete, _ := cmd.Flags().GetString("after-delete")
 		schedule, _ := cmd.Flags().GetString("schedule")
+		lockParams, _ := cmd.Flags().GetBool("lock-params")
 
-		var nodeGroups []types.NodeGroup
-		if ngStrs, _ := cmd.Flags().GetStringArray("node-group"); len(ngStrs) > 0 {
-			for _, s := range ngStrs {
-				ng, err := shared.ParseNodeGroup(s)
-				if err != nil {
-					log.Fatalf("Invalid --node-group value '%s': %v", s, err)
-				}
-				nodeGroups = append(nodeGroups, ng)
-			}
+		if driverSource == "" {
+			log.Fatal("--driver is required")
 		}
 
-		createTemplate(templateName, description, provider, region, nodes, clusterType, nodeGroups,
-			orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project,
-			beforeCreate, onCreate, onDelete, afterDelete, schedule)
+		params := map[string]string{}
+		for _, kv := range setVals {
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) != 2 {
+				log.Fatalf("Invalid --set value %q (expected KEY=VALUE)", kv)
+			}
+			params[parts[0]] = parts[1]
+		}
+
+		createTemplate(templateName, description, driverSource, driverVersion, region, params,
+			beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
 	},
 }
 
 var templateListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all cluster templates",
-	Long:  "Display all available cluster templates in the current repository",
 	Run: func(cmd *cobra.Command, args []string) {
 		listTemplates()
 	},
@@ -89,128 +73,60 @@ var templateListCmd = &cobra.Command{
 var templateDeleteCmd = &cobra.Command{
 	Use:   "delete [template-name]",
 	Short: "Delete a cluster template",
-	Long:  "Remove a cluster template from the repository",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		templateName := args[0]
-		deleteTemplate(templateName)
-	},
-}
-
-var templateExecuteCmd = &cobra.Command{
-	Use:   "execute [template-name] [cluster-name]",
-	Short: "Create a cluster from a template",
-	Long: `Execute a cluster template to create a new cluster.
-
-The provider type in the template determines which account flag is required:
-  --org            Civo organization name    (required for civo)
-  --account        AWS account alias         (required for aws)
-  --vpc-id         AWS VPC ID               (optional for aws)
-  --eks-role-name  IAM role name for EKS     (optional for aws)
-  --node-role-name IAM role name for nodes   (optional for aws)
-  --subscription   Azure subscription alias  (required for azure)
-  --resource-group Azure resource group      (required for azure)
-  --project     GCP project alias          (required for gcp)
-
-This command:
-  1. Creates a cluster based on the template specifications
-  2. Waits for the cluster to become ready
-  3. Executes all workflows defined in the template`,
-	Args: cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		templateName := args[0]
-		clusterName := args[1]
-		org, _ := cmd.Flags().GetString("org")
-		account, _ := cmd.Flags().GetString("account")
-		vpcID, _ := cmd.Flags().GetString("vpc-id")
-		eksRoleName, _ := cmd.Flags().GetString("eks-role-name")
-		nodeRoleName, _ := cmd.Flags().GetString("node-role-name")
-		subscription, _ := cmd.Flags().GetString("subscription")
-		resourceGroup, _ := cmd.Flags().GetString("resource-group")
-		project, _ := cmd.Flags().GetString("project")
-		executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project)
+		deleteTemplate(args[0])
 	},
 }
 
 var templateShowCmd = &cobra.Command{
 	Use:   "show [template-name]",
 	Short: "Show template details",
-	Long:  "Display the full details of a cluster template",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		templateName := args[0]
-		showTemplate(templateName)
+		showTemplate(args[0])
 	},
 }
 
 var templateValidateCmd = &cobra.Command{
 	Use:   "validate [template-name]",
 	Short: "Validate a template",
-	Long:  "Validate the syntax and structure of a cluster template definition",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		templateName := args[0]
-		validateTemplate(templateName)
+		validateTemplate(args[0])
 	},
 }
 
 func init() {
 	templateCreateCmd.Flags().StringP("description", "d", "", "Template description")
-	templateCreateCmd.Flags().StringP("provider", "p", "civo", "Cloud provider")
-	templateCreateCmd.Flags().StringP("region", "r", "PHX1", "Region")
-	templateCreateCmd.Flags().StringP("nodes", "n", "g4s.kube.small", "Node sizes (comma-separated, Civo only)")
-	templateCreateCmd.Flags().StringArrayP("node-group", "g", nil, `Node group spec (repeatable): name=workers,type=t3.medium,count=3[,min=1,max=5,disk=50,spot=true,mode=System]`)
-	templateCreateCmd.Flags().StringP("cluster-type", "t", "k3s", "Kubernetes cluster type")
-	templateCreateCmd.Flags().StringP("org", "o", "", "Civo organization alias (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("account", "a", "", "AWS account alias (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("vpc-id", "v", "", "AWS VPC ID (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("eks-role-name", "e", "", "IAM role name for EKS control plane (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("node-role-name", "N", "", "IAM role name for EKS node groups (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("subscription", "s", "", "Azure subscription alias (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("resource-group", "G", "", "Azure resource group (embedded in template; optional)")
-	templateCreateCmd.Flags().StringP("project", "P", "", "GCP project alias (embedded in template; optional)")
+	templateCreateCmd.Flags().String("driver", "", "Module source (e.g. github.com/hyve-modules/aws-eks)")
+	templateCreateCmd.Flags().String("driver-version", "latest", "Module version (semver constraint, tag, or commit)")
+	templateCreateCmd.Flags().StringP("region", "r", "", "Default region for clusters created from this template")
+	templateCreateCmd.Flags().StringArray("set", nil, "Default driver params (repeatable): KEY=VALUE")
 	templateCreateCmd.Flags().String("before-create", "", "Workflows to run before cluster creation (comma-separated)")
 	templateCreateCmd.Flags().StringP("on-create", "c", "", "Workflows to run after cluster creation (comma-separated)")
 	templateCreateCmd.Flags().String("on-delete", "", "Workflows to run before cluster destruction (comma-separated)")
 	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
-	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5' — every Friday at 8pm); evaluated at execute time")
-
-	templateExecuteCmd.Flags().StringP("org", "o", "", "Civo organization name (required for civo provider)")
-	templateExecuteCmd.Flags().StringP("account", "a", "", "AWS account alias (required for aws provider)")
-	templateExecuteCmd.Flags().StringP("vpc-id", "v", "", "AWS VPC ID")
-	templateExecuteCmd.Flags().StringP("eks-role-name", "e", "", "IAM role name for EKS control plane")
-	templateExecuteCmd.Flags().StringP("node-role-name", "n", "", "IAM role name for EKS node groups")
-	templateExecuteCmd.Flags().StringP("subscription", "s", "", "Azure subscription alias (required for azure provider)")
-	templateExecuteCmd.Flags().StringP("resource-group", "g", "", "Azure resource group name (required for azure provider)")
-	templateExecuteCmd.Flags().StringP("project", "p", "", "GCP project alias (required for gcp provider)")
+	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5')")
+	templateCreateCmd.Flags().Bool("lock-params", false, "Prevent users from overriding default params when creating a cluster from this template")
 
 	templateCmd.AddCommand(templateCreateCmd)
 	templateCmd.AddCommand(templateListCmd)
 	templateCmd.AddCommand(templateDeleteCmd)
-	templateCmd.AddCommand(templateExecuteCmd)
 	templateCmd.AddCommand(templateShowCmd)
 	templateCmd.AddCommand(templateValidateCmd)
 }
 
 func createTemplate(
-	name, description, provider, region, nodesSizes, clusterType string,
-	nodeGroups []types.NodeGroup,
-	orgName, accountName, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string,
+	name, description, driverSource, driverVersion, region string,
+	params map[string]string,
 	beforeCreateStr, onCreateStr, onDeleteStr, afterDeleteStr string,
 	schedule string,
+	lockParams bool,
 ) {
-	// cluster-type is only meaningful for Civo
-	if strings.ToLower(provider) != "civo" {
-		if clusterType != "" && clusterType != "k3s" {
-			log.Printf("⚠️  cluster-type is only supported for the Civo provider and will be ignored for '%s'", provider)
-		}
-		clusterType = ""
-	}
-
 	ctx := context.Background()
 	shared.SyncRepoState(ctx)
 
-	// Get repository path
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -223,30 +139,22 @@ func createTemplate(
 		return
 	}
 
-	// Create template manager
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
-	// Parse nodes
-	nodes := strings.Split(nodesSizes, ",")
-	for i, node := range nodes {
-		nodes[i] = strings.TrimSpace(node)
-	}
-
-	parseWorkflows := func(s string) []string {
+	parseWorkflows := func(s string) []types.WorkflowRef {
 		if s == "" {
 			return nil
 		}
 		parts := strings.Split(s, ",")
-		out := make([]string, 0, len(parts))
+		out := make([]types.WorkflowRef, 0, len(parts))
 		for _, p := range parts {
 			if p = strings.TrimSpace(p); p != "" {
-				out = append(out, p)
+				out = append(out, types.WorkflowRef{Name: p})
 			}
 		}
 		return out
 	}
 
-	// Create template
 	tmpl := &template.Template{
 		APIVersion: "v1",
 		Kind:       "Template",
@@ -255,37 +163,26 @@ func createTemplate(
 			Description: description,
 		},
 		Spec: template.TemplateSpec{
-			Provider:           provider,
-			Region:             region,
-			Nodes:              nodes,
-			NodeGroups:         nodeGroups,
-			ClusterType:        clusterType,
-			CivoOrganization:   orgName,
-			AWSAccount:         accountName,
-			AWSVPCID:           vpcID,
-			AWSEKSRoleName:     eksRoleName,
-			AWSNodeRoleName:    nodeRoleName,
-			AzureSubscription:  subscription,
-			AzureResourceGroup: resourceGroup,
-			GCPProject:         project,
+			Driver: template.TemplateDriverRef{Source: driverSource, Version: driverVersion},
+			Region: region,
+			Params: params,
 			Workflows: template.TemplateWorkflowsSpec{
 				BeforeCreate: parseWorkflows(beforeCreateStr),
 				OnCreate:     parseWorkflows(onCreateStr),
 				OnDelete:     parseWorkflows(onDeleteStr),
 				AfterDelete:  parseWorkflows(afterDeleteStr),
 			},
-			Schedule: schedule,
+			Schedule:   schedule,
+			LockParams: lockParams,
 		},
 	}
 
-	// Save template
 	if err := templateMgr.CreateTemplate(tmpl); err != nil {
 		log.Fatalf("Failed to create template: %v", err)
 	}
 
 	log.Printf("✅ Template '%s' created successfully", name)
 
-	// Commit and push template to Git
 	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
 	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
 	if err != nil {
@@ -296,34 +193,42 @@ func createTemplate(
 	}
 	log.Printf("Template path: %s", templateMgr.GetTemplatePath(name))
 	log.Println("\n📋 Template Details:")
-	log.Printf("  Provider: %s", provider)
-	log.Printf("  Region: %s", region)
-	log.Printf("  Nodes: %s", strings.Join(nodes, ", "))
-	log.Printf("  Cluster Type: %s", clusterType)
+	log.Printf("  Driver: %s@%s", driverSource, driverVersion)
+	if region != "" {
+		log.Printf("  Region: %s", region)
+	}
+	if len(params) > 0 {
+		log.Println("  Params:")
+		for k, v := range params {
+			log.Printf("    %s=%s", k, v)
+		}
+	}
 	if wf := tmpl.Spec.Workflows.BeforeCreate; len(wf) > 0 {
-		log.Printf("  BeforeCreate Workflows: %s", strings.Join(wf, ", "))
+		log.Printf("  BeforeCreate: %s", shared.JoinWorkflowRefs(wf))
 	}
 	if wf := tmpl.Spec.Workflows.OnCreate; len(wf) > 0 {
-		log.Printf("  OnCreate Workflows: %s", strings.Join(wf, ", "))
+		log.Printf("  OnCreate: %s", shared.JoinWorkflowRefs(wf))
+	}
+	if wf := tmpl.Spec.Workflows.AfterCreate; len(wf) > 0 {
+		log.Printf("  AfterCreate: %s", shared.JoinWorkflowRefs(wf))
 	}
 	if wf := tmpl.Spec.Workflows.OnDelete; len(wf) > 0 {
-		log.Printf("  OnDelete Workflows: %s", strings.Join(wf, ", "))
+		log.Printf("  OnDelete: %s", shared.JoinWorkflowRefs(wf))
 	}
 	if wf := tmpl.Spec.Workflows.AfterDelete; len(wf) > 0 {
-		log.Printf("  AfterDelete Workflows: %s", strings.Join(wf, ", "))
+		log.Printf("  AfterDelete: %s", shared.JoinWorkflowRefs(wf))
 	}
 	if schedule != "" {
 		log.Printf("  Expiry Schedule: %s", schedule)
 	}
 
-	log.Println("\n💡 Execute this template with:")
-	log.Printf("  hyve template execute %s <cluster-name>", name)
+	log.Println("\n💡 Create a cluster from this template with:")
+	log.Printf("  hyve cluster create <cluster-name> --template %s", name)
 }
 
 func listTemplates() {
 	shared.SyncRepoState(context.Background())
 
-	// Get repository path
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -336,9 +241,7 @@ func listTemplates() {
 		return
 	}
 
-	// Create template manager
 	templateMgr := template.NewManager(currentRepo.LocalPath)
-
 	templates, err := templateMgr.ListTemplates()
 	if err != nil {
 		log.Fatalf("Failed to list templates: %v", err)
@@ -347,7 +250,7 @@ func listTemplates() {
 	if len(templates) == 0 {
 		log.Println("No templates found")
 		log.Println("\n💡 Create a template with:")
-		log.Println("  hyve template create <name> --region PHX1 --nodes g4s.kube.medium")
+		log.Println("  hyve template create <name> --driver <source> --driver-version <ver>")
 		return
 	}
 
@@ -357,15 +260,18 @@ func listTemplates() {
 		if tmpl.Metadata.Description != "" {
 			log.Printf("    Description: %s", tmpl.Metadata.Description)
 		}
-		log.Printf("    Region: %s | Nodes: %s | Type: %s",
-			tmpl.Spec.Region,
-			strings.Join(tmpl.Spec.Nodes, ", "),
-			tmpl.Spec.ClusterType)
+		log.Printf("    Driver: %s@%s", tmpl.Spec.Driver.Source, tmpl.Spec.Driver.Version)
+		if tmpl.Spec.Region != "" {
+			log.Printf("    Region: %s", tmpl.Spec.Region)
+		}
 		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
-			log.Printf("    OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
+			log.Printf("    OnCreate: %s", shared.JoinWorkflowRefs(tmpl.Spec.Workflows.OnCreate))
+		}
+		if len(tmpl.Spec.Workflows.AfterCreate) > 0 {
+			log.Printf("    AfterCreate: %s", shared.JoinWorkflowRefs(tmpl.Spec.Workflows.AfterCreate))
 		}
 		if len(tmpl.Spec.Workflows.OnDelete) > 0 {
-			log.Printf("    OnDelete Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
+			log.Printf("    OnDelete: %s", shared.JoinWorkflowRefs(tmpl.Spec.Workflows.OnDelete))
 		}
 		if tmpl.Spec.Schedule != "" {
 			log.Printf("    Expiry Schedule: %s", tmpl.Spec.Schedule)
@@ -373,15 +279,14 @@ func listTemplates() {
 		log.Println()
 	}
 
-	log.Println("💡 Execute a template with:")
-	log.Println("  hyve template execute <template-name> <cluster-name>")
+	log.Println("💡 Create a cluster from a template with:")
+	log.Println("  hyve cluster create <cluster-name> --template <template-name>")
 }
 
 func deleteTemplate(name string) {
 	ctx := context.Background()
 	shared.SyncRepoState(ctx)
 
-	// Get repository path
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -394,17 +299,14 @@ func deleteTemplate(name string) {
 		return
 	}
 
-	// Create template manager
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
-	// Delete template
 	if err := templateMgr.DeleteTemplate(name); err != nil {
 		log.Fatalf("Failed to delete template: %v", err)
 	}
 
 	log.Printf("✅ Template '%s' deleted successfully", name)
 
-	// Commit and push deletion to Git
 	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
 	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
 	if err != nil {
@@ -418,7 +320,6 @@ func deleteTemplate(name string) {
 func showTemplate(name string) {
 	shared.SyncRepoState(context.Background())
 
-	// Get repository path
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -431,16 +332,13 @@ func showTemplate(name string) {
 		return
 	}
 
-	// Create template manager
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
-	// Get template
 	tmpl, err := templateMgr.GetTemplate(name)
 	if err != nil {
 		log.Fatalf("Failed to get template: %v", err)
 	}
 
-	// Marshal to YAML for display
 	data, err := yaml.Marshal(tmpl)
 	if err != nil {
 		log.Fatalf("Failed to marshal template: %v", err)
@@ -450,175 +348,7 @@ func showTemplate(name string) {
 	log.Println(string(data))
 }
 
-func executeTemplate(templateName, clusterName, org, account, vpcID, eksRoleName, nodeRoleName, subscription, resourceGroup, project string) {
-	ctx := context.Background()
-	shared.SyncRepoState(ctx)
-
-	// Get repository path
-	repoMgr, err := repository.NewManager()
-	if err != nil {
-		log.Fatalf("Failed to create repository manager: %v", err)
-	}
-	defer repoMgr.Close()
-
-	currentRepo, err := repoMgr.GetCurrentRepository()
-	if err != nil {
-		log.Println("❌ No Git repository configured")
-		return
-	}
-
-	// Get authentication
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-
-	// Create template manager
-	templateMgr := template.NewManager(currentRepo.LocalPath)
-
-	log.Printf("🚀 Executing template '%s' to create cluster '%s'...\n", templateName, clusterName)
-
-	// Execute template (get cluster definition)
-	tmpl, clusterDef, err := templateMgr.ExecuteTemplate(ctx, templateName, clusterName)
-	if err != nil {
-		log.Fatalf("Failed to execute template: %v", err)
-	}
-
-	// Apply provider-specific account flags: a flag overrides the template value;
-	// if neither the template nor the flag supplies a value, execution fails.
-	resolve := func(flagVal, templateVal, flag, hint string) string {
-		if flagVal != "" {
-			return flagVal
-		}
-		if templateVal != "" {
-			return templateVal
-		}
-		log.Fatalf("Missing required value: set %s in the template or pass --%s. %s", flag, flag, hint)
-		return ""
-	}
-
-	switch strings.ToLower(tmpl.Spec.Provider) {
-	case "civo":
-		clusterDef.Spec.CivoOrganization = resolve(org, clusterDef.Spec.CivoOrganization,
-			"org", "Use 'hyve config civo org list' to see available organizations.")
-	case "aws":
-		clusterDef.Spec.AWSAccount = resolve(account, clusterDef.Spec.AWSAccount,
-			"account", "Use 'hyve config aws account list' to see available accounts.")
-		if vpcID != "" {
-			clusterDef.Spec.AWSVPCID = vpcID
-		} else if clusterDef.Spec.AWSVPCID == "" && tmpl.Spec.AWSVPCID != "" && !tmpl.Spec.IsDynamicField(template.FieldAWSVPCID) {
-			clusterDef.Spec.AWSVPCID = tmpl.Spec.AWSVPCID
-		}
-		if eksRoleName != "" {
-			clusterDef.Spec.AWSEKSRoleName = eksRoleName
-		} else if clusterDef.Spec.AWSEKSRoleName == "" && tmpl.Spec.AWSEKSRoleName != "" && !tmpl.Spec.IsDynamicField(template.FieldAWSEKSRoleName) {
-			clusterDef.Spec.AWSEKSRoleName = tmpl.Spec.AWSEKSRoleName
-		}
-		if nodeRoleName != "" {
-			clusterDef.Spec.AWSNodeRoleName = nodeRoleName
-		} else if clusterDef.Spec.AWSNodeRoleName == "" && tmpl.Spec.AWSNodeRoleName != "" && !tmpl.Spec.IsDynamicField(template.FieldAWSNodeRoleName) {
-			clusterDef.Spec.AWSNodeRoleName = tmpl.Spec.AWSNodeRoleName
-		}
-	case "azure":
-		clusterDef.Spec.AzureSubscription = resolve(subscription, clusterDef.Spec.AzureSubscription,
-			"subscription", "Use 'hyve config azure subscription list' to see available subscriptions.")
-		clusterDef.Spec.AzureResourceGroup = resolve(resourceGroup, clusterDef.Spec.AzureResourceGroup,
-			"resource-group", "")
-	case "gcp":
-		clusterDef.Spec.GCPProject = resolve(project, clusterDef.Spec.GCPProject,
-			"project", "Use 'hyve config gcp project list' to see available projects.")
-	}
-
-	// Derive expiresAt from the template's cron schedule, if set.
-	if tmpl.Spec.Schedule != "" {
-		next, err := shared.CronNextOccurrence(tmpl.Spec.Schedule, time.Now())
-		if err != nil {
-			log.Fatalf("Failed to evaluate schedule %q: %v", tmpl.Spec.Schedule, err)
-		}
-		clusterDef.Spec.ExpiresAt = next.Format(time.RFC3339)
-	}
-
-	log.Println("📋 Template Details:")
-	log.Printf("  Provider: %s", tmpl.Spec.Provider)
-	log.Printf("  Region: %s", tmpl.Spec.Region)
-	log.Printf("  Nodes: %s", strings.Join(tmpl.Spec.Nodes, ", "))
-	log.Printf("  Cluster Type: %s", tmpl.Spec.ClusterType)
-	if len(tmpl.Spec.Workflows.OnCreate) > 0 {
-		log.Printf("  OnCreate Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
-	}
-	if len(tmpl.Spec.Workflows.OnDelete) > 0 {
-		log.Printf("  OnDelete Workflows: %s", strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
-	}
-	if tmpl.Spec.Schedule != "" {
-		log.Printf("  Expiry Schedule: %s → %s", tmpl.Spec.Schedule, clusterDef.Spec.ExpiresAt)
-	}
-
-	// Save cluster definition to clusters directory
-	clustersDir := filepath.Join(currentRepo.LocalPath, "clusters")
-	if err := os.MkdirAll(clustersDir, 0755); err != nil {
-		log.Fatalf("Failed to create clusters directory: %v", err)
-	}
-
-	clusterPath := filepath.Join(clustersDir, clusterName+".yaml")
-
-	// Marshal cluster definition
-	clusterData, err := yaml.Marshal(clusterDef)
-	if err != nil {
-		log.Fatalf("Failed to marshal cluster definition: %v", err)
-	}
-
-	if err := os.WriteFile(clusterPath, clusterData, 0644); err != nil {
-		log.Fatalf("Failed to write cluster file: %v", err)
-	}
-
-	log.Printf("\n✅ Cluster definition created: %s", clusterPath)
-
-	// Commit and push cluster definition to Git
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to create state manager: %v", err)
-		log.Println("💡 Cluster definition saved locally but not pushed to git")
-	} else {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
-	}
-
-	// Reconcile — same path as `hyve cluster add`, supports CI/CD mode.
-	log.Println("\n1️⃣ Reconciling cluster (create + wait for ready)...")
-	shared.RunReconciliation("")
-	log.Printf("✅ Cluster '%s' is ready", clusterName)
-
-	// Sync kubeconfig before running workflows
-	log.Println("\n2️⃣ Syncing kubeconfig...")
-	prov, provErr := cluster.CreateProviderForClusterDef(*clusterDef)
-	if provErr != nil {
-		log.Printf("⚠️  Warning: Failed to create provider: %v", provErr)
-		log.Println("Workflows may fail without valid kubeconfig")
-	} else {
-		clusterInfo, ciErr := prov.GetClusterInfo(ctx, clusterName)
-		if ciErr != nil {
-			log.Printf("⚠️  Warning: Failed to get cluster info: %v", ciErr)
-			log.Println("Workflows may fail without valid kubeconfig")
-		} else if clusterInfo.Kubeconfig == "" {
-			log.Printf("⚠️  Warning: Kubeconfig not yet available for cluster '%s', skipping storage", clusterName)
-		} else {
-			kubeconfigMgr, kcErr := kubeconfig.NewManager(currentRepo.Name)
-			if kcErr != nil {
-				log.Printf("⚠️  Warning: Failed to create kubeconfig manager: %v", kcErr)
-			} else {
-				defer kubeconfigMgr.Close()
-				if _, err := kubeconfigMgr.StoreKubeconfig(clusterName, clusterInfo.Kubeconfig); err != nil {
-					log.Printf("⚠️  Warning: Failed to store kubeconfig: %v", err)
-				} else {
-					log.Printf("✅ Kubeconfig synced and stored for cluster '%s'", clusterName)
-				}
-			}
-		}
-	}
-
-	log.Printf("\n✅ Template execution completed!")
-	log.Printf("\n💡 Cluster '%s' is now available", clusterName)
-	log.Println("💡 Use 'hyve kubeconfig sync' to get the kubeconfig")
-}
-
 func validateTemplate(name string) {
-	// Get repository path
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -631,10 +361,8 @@ func validateTemplate(name string) {
 		return
 	}
 
-	// Create template manager
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
-	// Get template
 	tmpl, err := templateMgr.GetTemplate(name)
 	if err != nil {
 		log.Fatalf("Failed to get template: %v", err)
@@ -642,163 +370,27 @@ func validateTemplate(name string) {
 
 	log.Printf("🔍 Validating template '%s'...\n", name)
 
-	errors := []string{}
-	warnings := []string{}
+	errors, warnings := template.Validate(currentRepo.LocalPath, tmpl)
 
-	// Validate required fields
-	if tmpl.APIVersion == "" {
-		errors = append(errors, "Missing apiVersion")
-	} else if tmpl.APIVersion != "v1" {
-		warnings = append(warnings, fmt.Sprintf("Unexpected apiVersion '%s', expected 'v1'", tmpl.APIVersion))
-	}
-
-	if tmpl.Kind == "" {
-		errors = append(errors, "Missing kind")
-	} else if tmpl.Kind != "Template" {
-		errors = append(errors, fmt.Sprintf("Invalid kind '%s', expected 'Template'", tmpl.Kind))
-	}
-
-	if tmpl.Metadata.Name == "" {
-		errors = append(errors, "Missing metadata.name")
-	}
-
-	// Validate spec fields
-	if tmpl.Spec.Provider == "" {
-		errors = append(errors, "Missing spec.provider")
-	} else {
-		validProviders := []string{"civo", "aws", "gcp", "azure"}
-		isValid := false
-		for _, p := range validProviders {
-			if tmpl.Spec.Provider == p {
-				isValid = true
-				break
-			}
-		}
-		if !isValid {
-			warnings = append(warnings, fmt.Sprintf("Provider '%s' may not be supported. Valid providers: %s", tmpl.Spec.Provider, strings.Join(validProviders, ", ")))
-		}
-	}
-
-	if tmpl.Spec.Region == "" {
-		errors = append(errors, "Missing spec.region")
-	} else if tmpl.Spec.Provider == "civo" {
-		// Validate Civo regions
-		validRegions := []string{"PHX1", "NYC1", "FRA1", "LON1"}
-		isValid := false
-		for _, r := range validRegions {
-			if tmpl.Spec.Region == r {
-				isValid = true
-				break
-			}
-		}
-		if !isValid {
-			warnings = append(warnings, fmt.Sprintf("Region '%s' may not be valid for Civo. Valid regions: %s", tmpl.Spec.Region, strings.Join(validRegions, ", ")))
-		}
-	}
-
-	if len(tmpl.Spec.Nodes) == 0 {
-		errors = append(errors, "Missing spec.nodes (at least one node required)")
-	} else {
-		// Validate node sizes for Civo
-		if tmpl.Spec.Provider == "civo" {
-			validNodeSizes := []string{
-				"g4s.kube.xsmall",
-				"g4s.kube.small",
-				"g4s.kube.medium",
-				"g4s.kube.large",
-				"g4s.kube.xlarge",
-			}
-			for _, node := range tmpl.Spec.Nodes {
-				isValid := false
-				for _, size := range validNodeSizes {
-					if node == size {
-						isValid = true
-						break
-					}
-				}
-				if !isValid {
-					warnings = append(warnings, fmt.Sprintf("Node size '%s' may not be valid for Civo", node))
-				}
-			}
-		}
-	}
-
-	if tmpl.Spec.ClusterType == "" {
-		warnings = append(warnings, "Missing spec.clusterType, defaulting to 'k3s'")
-	} else {
-		validTypes := []string{"k3s", "talos"}
-		isValid := false
-		for _, t := range validTypes {
-			if tmpl.Spec.ClusterType == t {
-				isValid = true
-				break
-			}
-		}
-		if !isValid {
-			warnings = append(warnings, fmt.Sprintf("Cluster type '%s' may not be supported. Valid types: %s", tmpl.Spec.ClusterType, strings.Join(validTypes, ", ")))
-		}
-	}
-
-	// Validate workflows exist
-	allWorkflows := append(tmpl.Spec.Workflows.OnCreate, tmpl.Spec.Workflows.OnDelete...)
-	if len(allWorkflows) > 0 {
-		workflowMgr, err := workflow.NewManager(shared.GetLocalPath())
-		if err == nil {
-			availableWorkflows, err := workflowMgr.ListWorkflows()
-			if err == nil {
-				workflowMap := make(map[string]bool)
-				for _, wf := range availableWorkflows {
-					workflowMap[wf.Metadata.Name] = true
-				}
-
-				for _, wfName := range tmpl.Spec.Workflows.OnCreate {
-					if !workflowMap[wfName] {
-						warnings = append(warnings, fmt.Sprintf("OnCreate workflow '%s' not found in repository", wfName))
-					}
-				}
-				for _, wfName := range tmpl.Spec.Workflows.OnDelete {
-					if !workflowMap[wfName] {
-						warnings = append(warnings, fmt.Sprintf("OnDelete workflow '%s' not found in repository", wfName))
-					}
-				}
-			}
-		}
-	}
-
-	// Print results
 	if len(errors) > 0 {
 		log.Println("\n❌ Validation Failed")
 		log.Println("\nErrors:")
-		for _, err := range errors {
-			log.Printf("  • %s", err)
+		for _, e := range errors {
+			log.Printf("  • %s", e)
 		}
 	}
-
 	if len(warnings) > 0 {
 		log.Println("\n⚠️  Warnings:")
-		for _, warn := range warnings {
-			log.Printf("  • %s", warn)
+		for _, w := range warnings {
+			log.Printf("  • %s", w)
 		}
 	}
-
 	if len(errors) == 0 {
 		log.Println("\n✅ Template is valid")
-		log.Printf("📋 Provider: %s", tmpl.Spec.Provider)
-		log.Printf("📋 Region: %s", tmpl.Spec.Region)
-		log.Printf("📋 Nodes: %d (%s)", len(tmpl.Spec.Nodes), strings.Join(tmpl.Spec.Nodes, ", "))
-		log.Printf("📋 Cluster Type: %s", tmpl.Spec.ClusterType)
-		log.Printf("📋 Ingress: %v", tmpl.Spec.Ingress.Enabled)
-		if len(tmpl.Spec.Workflows.OnCreate) > 0 {
-			log.Printf("📋 OnCreate Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnCreate), strings.Join(tmpl.Spec.Workflows.OnCreate, ", "))
-		} else {
-			log.Printf("📋 OnCreate Workflows: none")
+		log.Printf("📋 Driver: %s@%s", tmpl.Spec.Driver.Source, tmpl.Spec.Driver.Version)
+		if tmpl.Spec.Region != "" {
+			log.Printf("📋 Region: %s", tmpl.Spec.Region)
 		}
-		if len(tmpl.Spec.Workflows.OnDelete) > 0 {
-			log.Printf("📋 OnDelete Workflows: %d (%s)", len(tmpl.Spec.Workflows.OnDelete), strings.Join(tmpl.Spec.Workflows.OnDelete, ", "))
-		} else {
-			log.Printf("📋 OnDelete Workflows: none")
-		}
-
 		if len(warnings) == 0 {
 			log.Println("✨ No warnings")
 		}

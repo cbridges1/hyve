@@ -2,38 +2,30 @@ package template
 
 import "github.com/cbridges1/hyve/internal/types"
 
-// Field name constants matching the YAML keys of optional provider-specific
-// TemplateSpec fields. Use these with TemplateSpec.IsDynamicField so that
-// callers never embed raw strings.
-const (
-	FieldAWSVPCID           = "awsVpcId"
-	FieldAWSEKSRoleName     = "awsEksRoleName"
-	FieldAWSNodeRoleName    = "awsNodeRoleName"
-	FieldAzureResourceGroup = "azureResourceGroup"
-)
-
 // TemplateMetadata represents template metadata
 type TemplateMetadata struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 // TemplateWorkflowsSpec defines workflows to run on cluster lifecycle events
 type TemplateWorkflowsSpec struct {
-	BeforeCreate []string `yaml:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
-	OnCreate     []string `yaml:"onCreate,omitempty"`     // Workflows to run after cluster creation
-	OnDelete     []string `yaml:"onDelete,omitempty"`     // Workflows to run before cluster deletion
-	AfterDelete  []string `yaml:"afterDelete,omitempty"`  // Workflows to run after cluster deletion (no kubeconfig)
+	BeforeCreate []types.WorkflowRef `yaml:"beforeCreate,omitempty" json:"beforeCreate,omitempty"` // Workflows to run before cluster creation (no kubeconfig)
+	OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty" json:"onCreate,omitempty"`         // Workflows to run after cluster creation, before spec.resources applies
+	AfterCreate  []types.WorkflowRef `yaml:"afterCreate,omitempty" json:"afterCreate,omitempty"`   // Workflows to run after cluster creation, after spec.resources has applied
+	OnDelete     []types.WorkflowRef `yaml:"onDelete,omitempty" json:"onDelete,omitempty"`         // Workflows to run before cluster deletion
+	AfterDelete  []types.WorkflowRef `yaml:"afterDelete,omitempty" json:"afterDelete,omitempty"`   // Workflows to run after cluster deletion (no kubeconfig)
 }
 
 // UnmarshalYAML migrates the deprecated onDestroy key to onDelete transparently.
 func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type raw struct {
-		BeforeCreate []string `yaml:"beforeCreate,omitempty"`
-		OnCreate     []string `yaml:"onCreate,omitempty"`
-		OnDelete     []string `yaml:"onDelete,omitempty"`
-		OnDestroy    []string `yaml:"onDestroy,omitempty"` // deprecated: rename to onDelete in YAML
-		AfterDelete  []string `yaml:"afterDelete,omitempty"`
+		BeforeCreate []types.WorkflowRef `yaml:"beforeCreate,omitempty"`
+		OnCreate     []types.WorkflowRef `yaml:"onCreate,omitempty"`
+		AfterCreate  []types.WorkflowRef `yaml:"afterCreate,omitempty"`
+		OnDelete     []types.WorkflowRef `yaml:"onDelete,omitempty"`
+		OnDestroy    []types.WorkflowRef `yaml:"onDestroy,omitempty"` // deprecated: rename to onDelete in YAML
+		AfterDelete  []types.WorkflowRef `yaml:"afterDelete,omitempty"`
 	}
 	var r raw
 	if err := unmarshal(&r); err != nil {
@@ -41,6 +33,7 @@ func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error
 	}
 	ws.BeforeCreate = r.BeforeCreate
 	ws.OnCreate = r.OnCreate
+	ws.AfterCreate = r.AfterCreate
 	ws.OnDelete = r.OnDelete
 	ws.AfterDelete = r.AfterDelete
 	if len(ws.OnDelete) == 0 && len(r.OnDestroy) > 0 {
@@ -49,70 +42,46 @@ func (ws *TemplateWorkflowsSpec) UnmarshalYAML(unmarshal func(interface{}) error
 	return nil
 }
 
-// TemplateSpec represents the template specification.
-// Provider-specific account fields are optional in the template; if omitted they
-// must be supplied via the corresponding flag when running `template execute`.
-// A flag value always overrides the template value when both are present.
-type TemplateSpec struct {
-	Provider    string            `yaml:"provider"`
-	Region      string            `yaml:"region"`
-	Nodes       []string          `yaml:"nodes,omitempty"`
-	NodeGroups  []types.NodeGroup `yaml:"nodeGroups,omitempty"`
-	ClusterType string            `yaml:"clusterType"`
-	Ingress     struct {
-		Enabled      bool   `yaml:"enabled"`
-		LoadBalancer bool   `yaml:"loadBalancer"`
-		ChartVersion string `yaml:"chartVersion,omitempty"`
-	} `yaml:"ingress"`
-	Workflows TemplateWorkflowsSpec `yaml:"workflows,omitempty"`
-
-	// Schedule is a 5-field cron expression (e.g. "0 20 * * 5").
-	// At template execution time the next occurrence is calculated and written
-	// to the generated cluster's spec.expiresAt field.
-	Schedule string `yaml:"schedule,omitempty"`
-
-	// DynamicFields lists the names of optional provider-specific fields whose
-	// values will be supplied at runtime by a beforeCreate workflow (e.g. via
-	// HYVE_VPC_ID). The TUI skips the interactive prompt for these fields, and
-	// ConvertToClusterDefinition leaves them empty so resolveHookEnvVars can
-	// populate them after the workflow completes.
-	// Use the Field* constants (FieldAWSVPCID, FieldAWSEKSRoleName, etc.) as values.
-	DynamicFields []string `yaml:"dynamicFields,omitempty"`
-
-	// AWS-specific configuration
-	AWSAccount      string `yaml:"awsAccount,omitempty"`      // AWS account alias
-	AWSVPCID        string `yaml:"awsVpcId,omitempty"`        // AWS VPC ID
-	AWSEKSRoleName  string `yaml:"awsEksRoleName,omitempty"`  // IAM role name for EKS control plane
-	AWSNodeRoleName string `yaml:"awsNodeRoleName,omitempty"` // IAM role name for EKS node groups
-
-	// Azure-specific configuration (alias names defined in provider-configs/azure.yaml)
-	AzureSubscription  string `yaml:"azureSubscription,omitempty"`  // Azure subscription alias
-	AzureResourceGroup string `yaml:"azureResourceGroup,omitempty"` // Azure resource group name
-
-	// GCP-specific configuration (alias names defined in provider-configs/gcp.yaml)
-	GCPProject string `yaml:"gcpProject,omitempty"` // GCP project alias
-
-	// Civo-specific configuration
-	CivoOrganization string `yaml:"civoOrganization,omitempty"` // Civo organization alias
+// TemplateDriverRef identifies the module a template should use.
+type TemplateDriverRef struct {
+	Source  string `yaml:"source" json:"source"`
+	Version string `yaml:"version" json:"version"`
 }
 
-// IsDynamicField reports whether the named field is declared in DynamicFields.
-func (s *TemplateSpec) IsDynamicField(name string) bool {
-	for _, f := range s.DynamicFields {
-		if f == name {
-			return true
-		}
-	}
-	return false
+// TemplateRunnerConfig configures how the module should be executed.
+type TemplateRunnerConfig struct {
+	Image string `yaml:"image,omitempty" json:"image,omitempty"`
+}
+
+// TemplateSpec represents the template specification — driver-based.
+type TemplateSpec struct {
+	Driver    TemplateDriverRef     `yaml:"driver" json:"driver"`
+	Runner    TemplateRunnerConfig  `yaml:"runner,omitempty" json:"runner,omitempty"`
+	Params    map[string]string     `yaml:"params,omitempty" json:"params,omitempty"`
+	Region    string                `yaml:"region,omitempty" json:"region,omitempty"`
+	Workflows TemplateWorkflowsSpec `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	Resources []types.ResourceRef   `yaml:"resources,omitempty" json:"resources,omitempty"`
+
+	// Schedule is a 5-field cron expression (e.g. "0 20 * * 5").
+	// When a cluster is created from this template, the next occurrence is
+	// calculated and written to the generated cluster's spec.expiresAt field.
+	Schedule string `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+
+	// LockParams prevents users from overriding default param values when
+	// creating a cluster from this template. When true, the TUI skips the
+	// param override step and the --set flag on `hyve cluster create` is
+	// silently ignored. Intended for admins who want to enforce standard
+	// cluster configurations.
+	LockParams bool `yaml:"lockParams,omitempty" json:"lockParams,omitempty"`
 }
 
 // Template represents a complete cluster template definition
 type Template struct {
-	APIVersion string           `yaml:"apiVersion"`
-	Kind       string           `yaml:"kind"`
-	Metadata   TemplateMetadata `yaml:"metadata"`
-	Spec       TemplateSpec     `yaml:"spec"`
+	APIVersion string           `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string           `yaml:"kind" json:"kind"`
+	Metadata   TemplateMetadata `yaml:"metadata" json:"metadata"`
+	Spec       TemplateSpec     `yaml:"spec" json:"spec"`
 	// Filename is the on-disk filename (e.g. "my-template.yaml"). It is
 	// populated at runtime by the manager and never written to the YAML file.
-	Filename string `yaml:"-"`
+	Filename string `yaml:"-" json:"filename,omitempty"`
 }

@@ -2,11 +2,14 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -51,12 +54,52 @@ The repository name is used as a friendly identifier for switching between repos
 		repoName := args[0]
 		repoURL, _ := cmd.Flags().GetString("repo-url")
 		setCurrent, _ := cmd.Flags().GetBool("set-current")
+		customPath, _ := cmd.Flags().GetString("path")
 
 		if repoURL == "" {
 			log.Fatal("Repository URL is required. Use --repo-url flag.")
 		}
 
-		addGitRepository(repoName, repoURL, setCurrent)
+		addGitRepository(repoName, repoURL, setCurrent, customPath)
+	},
+}
+
+var gitPathCmd = &cobra.Command{
+	Use:   "path",
+	Short: "Print a repository's local filesystem path",
+	Long: `Print the absolute local path for the current repository (or a named one with
+--repo). Nothing else is written to stdout, so it composes with shell substitution:
+
+  cd "$(hyve git path)"
+  cd "$(hyve git path --repo my-other-repo)"`,
+	Run: func(cmd *cobra.Command, args []string) {
+		repoName, _ := cmd.Flags().GetString("repo")
+		printRepoPath(repoName)
+	},
+}
+
+var gitSetPathCmd = &cobra.Command{
+	Use:   "set-path <new-path>",
+	Short: "Move a repository's local clone to a new location",
+	Long: `Move the local clone for a repository to a new path on disk and persist it —
+no --path flag is needed on any future command, the new location is remembered.
+Use --repo to target a repository other than the current one.
+Use 'hyve git reset-path' to move it back to the default location.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		repoName, _ := cmd.Flags().GetString("repo")
+		setRepoPath(repoName, args[0])
+	},
+}
+
+var gitResetPathCmd = &cobra.Command{
+	Use:   "reset-path",
+	Short: "Move a repository's local clone back to the default location",
+	Long: `Move the local clone back to ~/.hyve/repositories/<name>, undoing a previous
+'hyve git set-path'. Use --repo to target a repository other than the current one.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		repoName, _ := cmd.Flags().GetString("repo")
+		resetRepoPath(repoName)
 	},
 }
 
@@ -207,6 +250,11 @@ This command:
 func init() {
 	gitAddCmd.Flags().StringP("repo-url", "r", "", "Git repository URL (required)")
 	gitAddCmd.Flags().BoolP("set-current", "c", false, "Set this repository as current after adding")
+	gitAddCmd.Flags().StringP("path", "p", "", "Custom local path for the repository clone (default: ~/.hyve/repositories/<name>)")
+
+	gitPathCmd.Flags().String("repo", "", "Repository name (default: current repository)")
+	gitSetPathCmd.Flags().String("repo", "", "Repository name to move (default: current repository)")
+	gitResetPathCmd.Flags().String("repo", "", "Repository name to reset (default: current repository)")
 
 	gitSyncCmd.Flags().StringP("message", "m", "", "Commit message for local changes before pushing")
 
@@ -226,6 +274,9 @@ func init() {
 	Cmd.AddCommand(gitListCmd)
 	Cmd.AddCommand(gitUseCmd)
 	Cmd.AddCommand(gitStatusCmd)
+	Cmd.AddCommand(gitPathCmd)
+	Cmd.AddCommand(gitSetPathCmd)
+	Cmd.AddCommand(gitResetPathCmd)
 	Cmd.AddCommand(gitRemoveCmd)
 	Cmd.AddCommand(gitResetCmd)
 	Cmd.AddCommand(gitBranchCmd)
@@ -234,12 +285,23 @@ func init() {
 	Cmd.AddCommand(gitSyncCmd)
 }
 
-func addGitRepository(name, repoURL string, setCurrent bool) {
-	repositoriesDir := filepath.Join(hyveHome(), "repositories")
-	localPath := filepath.Join(repositoriesDir, strings.ToLower(name))
-
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		log.Printf("Warning: Failed to create repositories directory: %v", err)
+func addGitRepository(name, repoURL string, setCurrent bool, customPath string) {
+	var localPath string
+	if customPath != "" {
+		abs, err := filepath.Abs(customPath)
+		if err != nil {
+			log.Fatalf("Failed to resolve path %q: %v", customPath, err)
+		}
+		localPath = abs
+		if err := os.MkdirAll(localPath, 0755); err != nil {
+			log.Fatalf("Failed to create directory %q: %v", localPath, err)
+		}
+	} else {
+		repositoriesDir := filepath.Join(hyveHome(), "repositories")
+		localPath = filepath.Join(repositoriesDir, strings.ToLower(name))
+		if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+			log.Printf("Warning: Failed to create repositories directory: %v", err)
+		}
 	}
 
 	log.Printf("Adding Git repository '%s': %s", name, repoURL)
@@ -289,7 +351,125 @@ func addGitRepository(name, repoURL string, setCurrent bool) {
 	log.Println("\n💡 Tips:")
 	log.Println("  - Use 'hyve git list' to see all repositories")
 	log.Println("  - Use 'hyve git use <name>' to switch repositories")
+	log.Println("  - Use 'hyve git set-path <path>' to move this repo's clone later")
 	log.Println("  - Set HYVE_GIT_TOKEN env var for authentication")
+}
+
+// dirExists reports whether path exists and is a directory.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// resolveRepoOrFatal returns the named repository, or the current repository if
+// repoName is empty, exiting the process on any error (matching this file's
+// existing log.Fatalf convention for CLI-facing errors).
+func resolveRepoOrFatal(repoName string) *repository.Repository {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to create repository manager: %v", err)
+	}
+	defer repoMgr.Close()
+
+	var repo *repository.Repository
+	if repoName != "" {
+		repo, err = repoMgr.GetRepositoryByName(repoName)
+	} else {
+		repo, err = repoMgr.GetCurrentRepository()
+	}
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	return repo
+}
+
+func printRepoPath(repoName string) {
+	repo := resolveRepoOrFatal(repoName)
+	fmt.Println(repo.LocalPath)
+}
+
+func setRepoPath(repoName, newPath string) {
+	repo := resolveRepoOrFatal(repoName)
+	moveRepoLocalPath(repo, newPath)
+}
+
+func resetRepoPath(repoName string) {
+	repo := resolveRepoOrFatal(repoName)
+	defaultPath := filepath.Join(hyveHome(), "repositories", strings.ToLower(repo.Name))
+	moveRepoLocalPath(repo, defaultPath)
+}
+
+// moveRepoLocalPath moves repo's on-disk clone (if one exists yet) from its
+// current LocalPath to newPath, then persists newPath via UpdateRepository so
+// no future command needs a --path flag to find it again. Prefers os.Rename
+// (instant, same-filesystem); falls back to `cp -a` + remove for cross-device
+// moves (e.g. onto a different disk/volume), mirroring how this codebase
+// already shells out to external tools (kubectl, helm, git) rather than
+// reimplementing them in pure Go.
+func moveRepoLocalPath(repo *repository.Repository, newPath string) {
+	absNew, err := filepath.Abs(newPath)
+	if err != nil {
+		log.Fatalf("Failed to resolve path %q: %v", newPath, err)
+	}
+
+	if absNew == repo.LocalPath {
+		log.Printf("Repository '%s' is already at %s", repo.Name, absNew)
+		return
+	}
+
+	oldPath := repo.LocalPath
+
+	if dirExists(oldPath) {
+		if dirExists(absNew) {
+			entries, err := os.ReadDir(absNew)
+			if err != nil {
+				log.Fatalf("Failed to inspect target directory %q: %v", absNew, err)
+			}
+			if len(entries) > 0 {
+				log.Fatalf("Target path %q already exists and is not empty — refusing to overwrite", absNew)
+			}
+			// Empty dir must go so Rename can (re)create it cleanly.
+			if err := os.Remove(absNew); err != nil {
+				log.Fatalf("Failed to clear empty target directory %q: %v", absNew, err)
+			}
+		}
+
+		if err := os.MkdirAll(filepath.Dir(absNew), 0755); err != nil {
+			log.Fatalf("Failed to create parent directory for %q: %v", absNew, err)
+		}
+
+		if err := os.Rename(oldPath, absNew); err != nil {
+			var linkErr *os.LinkError
+			if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
+				log.Println("Moving across filesystems, this may take a moment...")
+				if cpErr := exec.Command("cp", "-a", oldPath, absNew).Run(); cpErr != nil {
+					log.Fatalf("Failed to copy repository to %q: %v", absNew, cpErr)
+				}
+				if rmErr := os.RemoveAll(oldPath); rmErr != nil {
+					log.Printf("Warning: copied to new location but failed to remove old path %q: %v", oldPath, rmErr)
+				}
+			} else {
+				log.Fatalf("Failed to move repository to %q: %v", absNew, err)
+			}
+		}
+	} else {
+		log.Printf("No existing local clone found at %q — just updating the recorded path", oldPath)
+	}
+
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to create repository manager: %v", err)
+	}
+	defer repoMgr.Close()
+
+	if _, err := repoMgr.UpdateRepository(repo.Name, repo.RepoURL, absNew); err != nil {
+		log.Fatalf("Failed to persist new path: %v", err)
+	}
+
+	log.Printf("✅ Repository '%s' local path updated", repo.Name)
+	log.Printf("  Old: %s", oldPath)
+	log.Printf("  New: %s", absNew)
+	log.Println("\n💡 No --path flag needed going forward — this is persisted.")
 }
 
 func listGitRepositories() {
@@ -390,8 +570,9 @@ func showGitStatus() {
 		log.Fatalf("Failed to create git backend: %v", err)
 	}
 
-	if err := gitMgr.Clone(ctx); err != nil {
-		log.Printf("❌ Connection failed: %v", err)
+	report := internalgit.Status(ctx, gitMgr)
+	if !report.Connected {
+		log.Printf("❌ Connection failed: %s", report.Error)
 	} else {
 		log.Println("✅ Connection successful")
 	}
@@ -789,57 +970,31 @@ func syncGitChanges(message string) {
 		log.Fatalf("Failed to create git backend: %v", err)
 	}
 
-	if err := gitMgr.InitializeRepo(ctx); err != nil {
-		log.Fatalf("Failed to initialize repository: %v", err)
-	}
-
-	currentBranch, err := gitMgr.GetCurrentBranch(ctx)
+	report, err := internalgit.Sync(ctx, gitMgr, message)
 	if err != nil {
-		log.Fatalf("Failed to get current branch: %v", err)
+		log.Fatalf("%v", err)
 	}
 
-	log.Printf("🔄 Syncing branch '%s' with remote...", currentBranch)
+	log.Printf("🔄 Syncing branch '%s' with remote...", report.Branch)
 
 	log.Println("1. Pulling latest changes from remote...")
-	if err := gitMgr.Pull(ctx); err != nil {
-		log.Printf("⚠️  Failed to pull changes: %v", err)
+	if report.PullWarning != "" {
+		log.Printf("⚠️  Failed to pull changes: %s", report.PullWarning)
 	} else {
 		log.Println("✅ Pulled latest changes")
 	}
 
-	hasChanges, err := gitMgr.HasUncommittedChanges(ctx)
-	if err != nil {
-		log.Fatalf("Failed to check for changes: %v", err)
-	}
-
-	if !hasChanges {
+	if !report.HadChanges {
 		log.Println("\n✅ Repository is synchronized")
 		log.Println("💡 No local changes to push")
 		return
 	}
 
-	statusSummary, err := gitMgr.GetStatusSummary(ctx)
-	if err != nil {
-		log.Fatalf("Failed to get status: %v", err)
-	}
-
-	log.Printf("\n2. Local changes detected: %s", statusSummary)
-
-	if message == "" {
-		message = "Update repository state"
-	}
-
+	log.Printf("\n2. Local changes detected: %s", report.StatusSummary)
 	log.Println("3. Committing local changes...")
-	if err := gitMgr.Commit(ctx, message); err != nil {
-		log.Fatalf("Failed to commit changes: %v", err)
-	}
 	log.Println("✅ Changes committed")
-
 	log.Println("4. Pushing to remote...")
-	if err := gitMgr.Push(ctx); err != nil {
-		log.Fatalf("Failed to push changes: %v", err)
-	}
 	log.Println("✅ Changes pushed")
 
-	log.Printf("\n✅ Branch '%s' is now fully synchronized", currentBranch)
+	log.Printf("\n✅ Branch '%s' is now fully synchronized", report.Branch)
 }
