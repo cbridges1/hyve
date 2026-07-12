@@ -135,20 +135,22 @@ var gitStatusCmd = &cobra.Command{
 var gitRemoveCmd = &cobra.Command{
 	Use:   "remove [repository-name]",
 	Short: "Remove a Git repository configuration",
-	Long:  "Remove the specified repository configuration from storage",
+	Long:  "Remove the specified repository configuration from storage and delete its local clone from disk",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		repoName := args[0]
-		removeGitRepository(repoName)
+		keepFiles, _ := cmd.Flags().GetBool("keep-files")
+		removeGitRepository(repoName, keepFiles)
 	},
 }
 
 var gitResetCmd = &cobra.Command{
 	Use:   "reset",
 	Short: "Reset to local state management",
-	Long:  "Remove all Git repository configurations and revert to local state directory",
+	Long:  "Remove all Git repository configurations and their local clones, and revert to local state directory",
 	Run: func(cmd *cobra.Command, args []string) {
-		resetGitConfiguration()
+		keepFiles, _ := cmd.Flags().GetBool("keep-files")
+		resetGitConfiguration(keepFiles)
 	},
 }
 
@@ -251,6 +253,9 @@ func init() {
 	gitAddCmd.Flags().StringP("repo-url", "r", "", "Git repository URL (required)")
 	gitAddCmd.Flags().BoolP("set-current", "c", false, "Set this repository as current after adding")
 	gitAddCmd.Flags().StringP("path", "p", "", "Custom local path for the repository clone (default: ~/.hyve/repositories/<name>)")
+
+	gitRemoveCmd.Flags().Bool("keep-files", false, "Keep the local clone on disk instead of deleting it")
+	gitResetCmd.Flags().Bool("keep-files", false, "Keep local clones on disk instead of deleting them")
 
 	gitPathCmd.Flags().String("repo", "", "Repository name (default: current repository)")
 	gitSetPathCmd.Flags().String("repo", "", "Repository name to move (default: current repository)")
@@ -359,6 +364,24 @@ func addGitRepository(name, repoURL string, setCurrent bool, customPath string) 
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// removeLocalClone deletes a repository's local clone from disk, unless
+// keepFiles is set. Failures are logged as warnings rather than fatal errors —
+// the repository configuration has already been removed at this point, and a
+// leftover directory is far less disruptive than aborting mid-command.
+func removeLocalClone(path string, keepFiles bool) {
+	if keepFiles || path == "" {
+		return
+	}
+	if !dirExists(path) {
+		return
+	}
+	if err := os.RemoveAll(path); err != nil {
+		log.Printf("Warning: failed to remove local clone at %q: %v", path, err)
+		return
+	}
+	log.Printf("Removed local clone at %q", path)
 }
 
 // resolveRepoOrFatal returns the named repository, or the current repository if
@@ -578,18 +601,25 @@ func showGitStatus() {
 	}
 }
 
-func removeGitRepository(name string) {
+func removeGitRepository(name string, keepFiles bool) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
 	}
 	defer repoMgr.Close()
 
+	repo, err := repoMgr.GetRepositoryByName(name)
+	if err != nil {
+		log.Fatalf("Failed to look up repository: %v", err)
+	}
+
 	if err := repoMgr.DeleteRepository(name); err != nil {
 		log.Fatalf("Failed to remove repository: %v", err)
 	}
 
 	log.Printf("✅ Repository '%s' removed successfully", name)
+
+	removeLocalClone(repo.LocalPath, keepFiles)
 
 	repos, err := repoMgr.ListRepositories()
 	if err == nil && len(repos) > 0 {
@@ -602,7 +632,7 @@ func removeGitRepository(name string) {
 	}
 }
 
-func resetGitConfiguration() {
+func resetGitConfiguration(keepFiles bool) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -622,7 +652,9 @@ func resetGitConfiguration() {
 	for _, repo := range repos {
 		if err := repoMgr.DeleteRepository(repo.Name); err != nil {
 			log.Printf("Failed to remove repository '%s': %v", repo.Name, err)
+			continue
 		}
+		removeLocalClone(repo.LocalPath, keepFiles)
 	}
 
 	log.Println("✅ All Git configurations reset")

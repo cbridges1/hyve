@@ -79,9 +79,16 @@ func helmRenderManifest(ctx context.Context, workDir, releaseName string, h *typ
 	return stdout.Bytes(), nil
 }
 
-// helmUpgradeInstall runs `helm upgrade --install <name> <chart> ...`.
+// helmUpgradeInstall runs `helm upgrade --install <name> <chart> ...`. Passes
+// --create-namespace when a namespace is set — most charts (including some
+// widely-used ones, e.g. the official Portainer chart) don't render their own
+// Namespace object and simply assume it already exists, so without this flag
+// the very first install into a not-yet-existing namespace fails outright.
 func helmUpgradeInstall(ctx context.Context, workDir, releaseName string, h *types.HelmSpec) error {
 	args := append([]string{"upgrade", "--install", releaseName}, helmChartArgs(h)...)
+	if h.Namespace != "" {
+		args = append(args, "--create-namespace")
+	}
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	cmd.Dir = workDir
 	cmd.Env = os.Environ()

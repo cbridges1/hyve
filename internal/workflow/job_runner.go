@@ -189,22 +189,43 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 		cmd.Dir = e.workingDir
 	}
 
-	// Set environment variables
+	// Set environment variables. Inherited process env (which already includes
+	// any --set-injected vars, exported via os.Setenv in applyInjectedVars)
+	// always wins over workflow/job/step spec.env — those are fallback defaults
+	// for a variable that isn't otherwise present, not overrides. A duplicate
+	// KEY= entry later in cmd.Env silently blanks out an earlier real value
+	// (confirmed: the shell resolves duplicate env entries to the last one), so
+	// a workflow declaring e.g. `PANGOLIN_ENDPOINT: ""` purely to self-document
+	// an expected external input would otherwise wipe out the real value a
+	// caller had already exported.
 	cmd.Env = os.Environ()
+	envPresent := make(map[string]bool, len(cmd.Env))
+	for _, kv := range cmd.Env {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			envPresent[kv[:idx]] = true
+		}
+	}
+	addDefaultEnv := func(key, value string) {
+		if envPresent[key] {
+			return
+		}
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
+		envPresent[key] = true
+	}
 
 	// Add workflow-level env vars
 	for key, value := range workflow.Spec.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
+		addDefaultEnv(key, value)
 	}
 
 	// Add job-level env vars
 	for key, value := range job.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
+		addDefaultEnv(key, value)
 	}
 
 	// Add step-level env vars
 	for key, value := range step.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
+		addDefaultEnv(key, value)
 	}
 
 	// Stream output live so interactive steps (e.g. OAuth Device Authorization)

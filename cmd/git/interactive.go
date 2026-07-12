@@ -208,7 +208,7 @@ func interactiveGitRepoRemove() error {
 		return nil
 	}
 
-	removeGitRepository(name)
+	removeGitRepository(name, false)
 	return nil
 }
 
