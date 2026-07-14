@@ -92,3 +92,65 @@ onDestroy:
 	require.Len(t, ws.OnDelete, 1)
 	assert.Equal(t, "legacy-cleanup", ws.OnDelete[0].Name)
 }
+
+func TestSecretKeyRefUnmarshalYAML_String(t *testing.T) {
+	var k SecretKeyRef
+	require.NoError(t, yaml.Unmarshal([]byte(`PANGOLIN_ENDPOINT`), &k))
+	assert.Equal(t, "PANGOLIN_ENDPOINT", k.Env)
+	assert.Equal(t, "PANGOLIN_ENDPOINT", k.Key)
+}
+
+func TestSecretKeyRefUnmarshalYAML_Mapping(t *testing.T) {
+	var k SecretKeyRef
+	require.NoError(t, yaml.Unmarshal([]byte(`env: PORTAINER_PASSWORD
+key: password
+`), &k))
+	assert.Equal(t, "PORTAINER_PASSWORD", k.Env)
+	assert.Equal(t, "password", k.Key)
+}
+
+func TestSecretKeyRefUnmarshalYAML_MappingOmittedKeyDefaultsToEnv(t *testing.T) {
+	var k SecretKeyRef
+	require.NoError(t, yaml.Unmarshal([]byte(`env: PANGOLIN_ENDPOINT`), &k))
+	assert.Equal(t, "PANGOLIN_ENDPOINT", k.Env)
+	assert.Equal(t, "PANGOLIN_ENDPOINT", k.Key)
+}
+
+func TestSecretKeyRefUnmarshalYAML_MappingMissingEnv(t *testing.T) {
+	var k SecretKeyRef
+	err := yaml.Unmarshal([]byte(`key: password`), &k)
+	require.Error(t, err)
+}
+
+func TestSecretKeyRefMarshalUnmarshalRoundTrip(t *testing.T) {
+	keys := []SecretKeyRef{
+		{Env: "PANGOLIN_ENDPOINT", Key: "PANGOLIN_ENDPOINT"},
+		{Env: "PORTAINER_PASSWORD", Key: "password"},
+	}
+
+	data, err := yaml.Marshal(keys)
+	require.NoError(t, err)
+
+	var got []SecretKeyRef
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	assert.Equal(t, keys, got)
+}
+
+func TestResourceRefUnmarshalYAML_SecretKind(t *testing.T) {
+	doc := `
+name: github-secrets
+secret:
+  namespace: default
+  keys:
+    - PANGOLIN_ENDPOINT
+    - env: PORTAINER_PASSWORD
+      key: password
+`
+	var res ResourceRef
+	require.NoError(t, yaml.Unmarshal([]byte(doc), &res))
+	require.NotNil(t, res.Secret)
+	assert.Equal(t, "default", res.Secret.Namespace)
+	require.Len(t, res.Secret.Keys, 2)
+	assert.Equal(t, SecretKeyRef{Env: "PANGOLIN_ENDPOINT", Key: "PANGOLIN_ENDPOINT"}, res.Secret.Keys[0])
+	assert.Equal(t, SecretKeyRef{Env: "PORTAINER_PASSWORD", Key: "password"}, res.Secret.Keys[1])
+}

@@ -5,10 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/types"
@@ -16,20 +12,14 @@ import (
 
 func showCluster(clusterName string) {
 	ctx := gocontext.Background()
-	_, clustersDir := shared.CreateStateManager(ctx)
-	filePath := filepath.Join(clustersDir, clusterName+".yaml")
+	stateMgr, _ := shared.CreateStateManager(ctx)
 
-	data, err := os.ReadFile(filePath)
+	clusterDef, data, err := stateMgr.LoadClusterDefinition(clusterName)
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Fatalf("Cluster '%s' not found. Use 'hyve cluster list' to see available clusters.", clusterName)
 		}
 		log.Fatalf("Failed to read cluster file: %v", err)
-	}
-
-	var clusterDef types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &clusterDef); err != nil {
-		log.Fatalf("Failed to parse cluster definition: %v", err)
 	}
 
 	fmt.Printf("---\n%s", string(data))
@@ -69,39 +59,15 @@ func showCluster(clusterName string) {
 
 func listClusters() {
 	ctx := gocontext.Background()
-	_, clustersDir := shared.CreateStateManager(ctx)
+	stateMgr, _ := shared.CreateStateManager(ctx)
 
-	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
-		log.Println("❌ No clusters found")
-		log.Println("\n💡 Run 'hyve cluster create <cluster> --template <template>' to create a cluster")
-		return
-	}
-
-	entries, err := os.ReadDir(clustersDir)
+	defs, err := stateMgr.LoadClusterDefinitions()
 	if err != nil {
-		log.Fatalf("Failed to read clusters directory: %v", err)
+		log.Fatalf("Failed to load cluster definitions: %v", err)
 	}
 
 	var clusters []types.ClusterDefinition
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
-			continue
-		}
-		filePath := filepath.Join(clustersDir, name)
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			log.Printf("Warning: Failed to read %s: %v", name, err)
-			continue
-		}
-		var clusterDef types.ClusterDefinition
-		if err := yaml.Unmarshal(data, &clusterDef); err != nil {
-			log.Printf("Warning: Failed to parse %s: %v", name, err)
-			continue
-		}
+	for _, clusterDef := range defs {
 		if clusterDef.Kind == "Cluster" && !clusterDef.Spec.Delete {
 			clusters = append(clusters, clusterDef)
 		}
@@ -140,23 +106,14 @@ func listClusters() {
 // change. The reconciler picks this up on its next run.
 func markClusterForDeletion(clusterName string) {
 	ctx := gocontext.Background()
-	stateMgr, clustersDir := shared.CreateStateManager(ctx)
-	filePath := filepath.Join(clustersDir, clusterName+".yaml")
+	stateMgr, _ := shared.CreateStateManager(ctx)
 
-	data, err := os.ReadFile(filePath)
+	clusterDef, _, err := stateMgr.LoadClusterDefinition(clusterName)
 	if err != nil {
 		log.Fatalf("Failed to read cluster file: %v", err)
 	}
-	var clusterDef types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &clusterDef); err != nil {
-		log.Fatalf("Failed to parse cluster definition: %v", err)
-	}
 	clusterDef.Spec.Delete = true
-	updated, err := yaml.Marshal(&clusterDef)
-	if err != nil {
-		log.Fatalf("Failed to marshal cluster definition: %v", err)
-	}
-	if err := os.WriteFile(filePath, updated, 0644); err != nil {
+	if err := stateMgr.SaveClusterDefinition(clusterDef); err != nil {
 		log.Fatalf("Failed to write cluster definition: %v", err)
 	}
 

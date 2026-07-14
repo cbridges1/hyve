@@ -61,11 +61,34 @@ func TestValidateResourceRef_HelmOnly(t *testing.T) {
 func TestValidateResourceRef_BothSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Helm: &types.HelmSpec{Chart: "c"}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not both")
+	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
 }
 
 func TestValidateResourceRef_NeitherSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one of source or helm")
+	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+}
+
+func TestValidateResourceRef_SecretOnly(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Secret: &types.SecretSpec{Keys: []types.SecretKeyRef{{Env: "X", Key: "X"}}}})
+	assert.NoError(t, err)
+}
+
+func TestValidateResourceRef_SourceAndSecretBothSet(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Secret: &types.SecretSpec{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+}
+
+func TestValidateResourceRef_HelmAndSecretBothSet(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Helm: &types.HelmSpec{Chart: "c"}, Secret: &types.SecretSpec{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+}
+
+func TestValidateResourceRef_AllThreeSet(t *testing.T) {
+	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Helm: &types.HelmSpec{Chart: "c"}, Secret: &types.SecretSpec{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
 }

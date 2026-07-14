@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
@@ -34,11 +31,10 @@ func init() {
 
 func runClusterAuth(name string, method string) {
 	ctx := context.Background()
-	stateMgr, clustersDir := shared.CreateStateManager(ctx)
+	stateMgr, _ := shared.CreateStateManager(ctx)
 	repoPath := stateMgr.LocalPath()
 
-	clusterPath := filepath.Join(clustersDir, name+".yaml")
-	cluster, err := loadClusterFromFile(clusterPath)
+	cluster, _, err := stateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		log.Fatalf("Failed to load cluster '%s': %v", name, err)
 	}
@@ -79,18 +75,6 @@ func runClusterAuth(name string, method string) {
 	}
 
 	fmt.Printf("kubectl context for '%s' configured\n", name)
-}
-
-func loadClusterFromFile(path string) (*types.ClusterDefinition, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var c types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
 }
 
 func moduleEnv(cluster *types.ClusterDefinition) []string {

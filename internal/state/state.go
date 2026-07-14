@@ -179,24 +179,131 @@ func (m *Manager) SaveRepoConfig(cfg *RepoConfig) error {
 	return nil
 }
 
-// SaveClusterDefinition writes a cluster definition back to its YAML file in the
-// state directory. Only serializable fields are written (runtime-only yaml:"-"
-// fields such as AWSEKSRoleARN are not persisted). The caller is responsible for
-// committing the change if it should be pushed to the remote.
+// stateSidecarSuffix names the reconciler-owned sidecar file that holds
+// ClusterState (DriverOutputs/AppliedResources) alongside a cluster's
+// primary desired-state file. It deliberately still ends in ".yaml" (so it
+// stays plain YAML, human-inspectable, and git-diffable) — every walk over
+// stateDir must explicitly skip files with this suffix before doing its own
+// ".yaml"/".yml" check, or it will be picked up and unmarshaled as a bogus
+// second ClusterDefinition (empty Metadata/Kind).
+const stateSidecarSuffix = ".state.yaml"
+
+func (m *Manager) clusterPath(name string) string {
+	return filepath.Join(m.stateDir, name+".yaml")
+}
+
+func (m *Manager) sidecarPath(name string) string {
+	return filepath.Join(m.stateDir, name+stateSidecarSuffix)
+}
+
+// mergeSidecar overlays clusters/<name>.state.yaml onto cluster.Spec's
+// DriverOutputs/AppliedResources, if that file exists. If it doesn't, those
+// two fields are left exactly as yaml.Unmarshal decoded them from the
+// primary file — which is what makes reading a pre-migration monolithic
+// cluster file (inline appliedResources/driverOutputs, no sidecar yet) just
+// work with no special-case migration code. Once a sidecar exists, it is
+// authoritative and overwrites whatever came from the primary file.
+func (m *Manager) mergeSidecar(cluster *types.ClusterDefinition) error {
+	data, err := os.ReadFile(m.sidecarPath(cluster.Metadata.Name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var st types.ClusterState
+	if err := yaml.Unmarshal(data, &st); err != nil {
+		return err
+	}
+	cluster.Spec.DriverOutputs = st.DriverOutputs
+	cluster.Spec.AppliedResources = st.AppliedResources
+	return nil
+}
+
+// HasStateSidecar reports whether clusters/<name>.state.yaml exists.
+func (m *Manager) HasStateSidecar(name string) bool {
+	_, err := os.Stat(m.sidecarPath(name))
+	return err == nil
+}
+
+// LoadClusterDefinition loads one cluster by name, merging its primary
+// desired-state file with its state sidecar (if present) into a single
+// in-memory ClusterDefinition. Returns the merged definition and the raw
+// primary-file bytes (for byte-for-byte round-trip use, e.g. YAML content
+// negotiation) — deliberately only the primary file's bytes, never a
+// re-serialized merged view, so a caller that persists these bytes verbatim
+// never reintroduces reconciler-owned fields into the human-edited file.
+// The primary-file read's error is returned unwrapped so os.IsNotExist(err)
+// checks at call sites keep working unmodified.
+func (m *Manager) LoadClusterDefinition(name string) (*types.ClusterDefinition, []byte, error) {
+	data, err := os.ReadFile(m.clusterPath(name))
+	if err != nil {
+		return nil, nil, err
+	}
+	var def types.ClusterDefinition
+	if err := yaml.Unmarshal(data, &def); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse cluster definition %s: %w", name, err)
+	}
+	if err := m.mergeSidecar(&def); err != nil {
+		return nil, nil, fmt.Errorf("failed to merge state sidecar for %s: %w", name, err)
+	}
+	return &def, data, nil
+}
+
+// SaveClusterDefinition writes a cluster definition back to its primary YAML
+// file in the state directory, and its reconciler-owned DriverOutputs /
+// AppliedResources to a separate sidecar file (clusters/<name>.state.yaml) —
+// keeping machine bookkeeping (content hashes, timestamps, tracked-object
+// lists) out of the human-authored file's git diffs. def itself is left
+// untouched: the split is performed on a shallow copy (safe because
+// ClusterDefinition embeds ClusterSpec by value, not by pointer, so clearing
+// the copy's map fields doesn't affect the caller's maps). If the resulting
+// state is empty (e.g. a cluster with no resources yet), any existing
+// sidecar file is removed rather than left as an empty file. The caller is
+// responsible for committing the change if it should be pushed to the
+// remote.
 func (m *Manager) SaveClusterDefinition(def *types.ClusterDefinition) error {
-	data, err := yaml.Marshal(def)
+	if err := os.MkdirAll(m.stateDir, 0755); err != nil {
+		return fmt.Errorf("failed to create clusters directory: %w", err)
+	}
+
+	state := types.ClusterState{
+		DriverOutputs:    def.Spec.DriverOutputs,
+		AppliedResources: def.Spec.AppliedResources,
+	}
+
+	primary := *def
+	primary.Spec.DriverOutputs = nil
+	primary.Spec.AppliedResources = nil
+
+	data, err := yaml.Marshal(&primary)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cluster definition: %w", err)
 	}
-	path := filepath.Join(m.stateDir, def.Metadata.Name+".yaml")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(m.clusterPath(def.Metadata.Name), data, 0644); err != nil {
 		return fmt.Errorf("failed to write cluster definition: %w", err)
+	}
+
+	sidecarPath := m.sidecarPath(def.Metadata.Name)
+	if state.IsEmpty() {
+		if err := os.Remove(sidecarPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove empty state sidecar: %w", err)
+		}
+		return nil
+	}
+	sdata, err := yaml.Marshal(&state)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cluster state sidecar: %w", err)
+	}
+	if err := os.WriteFile(sidecarPath, sdata, 0644); err != nil {
+		return fmt.Errorf("failed to write cluster state sidecar: %w", err)
 	}
 	return nil
 }
 
-// RemoveClusterFile finds and removes the YAML file containing the given cluster
-// definition. The caller is responsible for committing the deletion.
+// RemoveClusterFile finds and removes the primary YAML file (and its state
+// sidecar, if any) for the given cluster. The caller is responsible for
+// committing the deletion.
 func (m *Manager) RemoveClusterFile(clusterName string) error {
 	var found string
 
@@ -204,7 +311,11 @@ func (m *Manager) RemoveClusterFile(clusterName string) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+		name := d.Name()
+		if d.IsDir() || strings.HasSuffix(name, stateSidecarSuffix) {
+			return nil
+		}
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -233,10 +344,15 @@ func (m *Manager) RemoveClusterFile(clusterName string) error {
 		return fmt.Errorf("failed to remove cluster file %s: %w", found, err)
 	}
 
+	if err := os.Remove(m.sidecarPath(clusterName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove state sidecar for %s: %w", clusterName, err)
+	}
+
 	return nil
 }
 
-// LoadClusterDefinitions loads all cluster definitions from YAML files
+// LoadClusterDefinitions loads all cluster definitions from YAML files,
+// merging each one's state sidecar (if present) — see mergeSidecar.
 func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
 	var clusters []types.ClusterDefinition
 
@@ -245,7 +361,11 @@ func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
 			return err
 		}
 
-		if d.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+		name := d.Name()
+		if d.IsDir() || strings.HasSuffix(name, stateSidecarSuffix) {
+			return nil
+		}
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
 			return nil
 		}
 
@@ -257,6 +377,9 @@ func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
 		var cluster types.ClusterDefinition
 		if err := yaml.Unmarshal(data, &cluster); err != nil {
 			return fmt.Errorf("failed to unmarshal YAML file %s: %w", path, err)
+		}
+		if err := m.mergeSidecar(&cluster); err != nil {
+			return fmt.Errorf("failed to merge state sidecar for %s: %w", cluster.Metadata.Name, err)
 		}
 
 		clusters = append(clusters, cluster)

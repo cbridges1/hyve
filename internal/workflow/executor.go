@@ -4,16 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -272,51 +270,26 @@ func (e *Executor) validateInputs(wf *Workflow) error {
 		strings.Join(missing, "\n  - "))
 }
 
-// loadClusterDefinition loads a cluster definition from YAML file
+// loadClusterDefinition loads a cluster definition by name, merging its
+// state sidecar (driverOutputs/appliedResources) if present — delegates to
+// state.Manager rather than hand-rolling a directory walk, so a workflow run
+// against a target cluster sees exactly the same merged definition every
+// other consumer does. NewManagerFromPath is a read-only, git-agnostic
+// construction (no credentials, no remote) — exactly what's needed here.
 func (e *Executor) loadClusterDefinition(clusterName string) (*types.ClusterDefinition, error) {
 	clustersDir := filepath.Join(e.manager.localPath, "clusters")
-	var clusterDef *types.ClusterDefinition
-
 	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("clusters directory not found at %s", clustersDir)
 	}
-
-	err := filepath.WalkDir(clustersDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() || (!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml")) {
-			return nil
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read file %s: %w", path, err)
-		}
-
-		var cluster types.ClusterDefinition
-		if err := yaml.Unmarshal(data, &cluster); err != nil {
-			return fmt.Errorf("failed to unmarshal cluster definition from %s: %w", path, err)
-		}
-
-		if cluster.Metadata.Name == clusterName {
-			clusterDef = &cluster
-			return filepath.SkipAll
-		}
-
-		return nil
-	})
-
+	stateMgr := state.NewManagerFromPath(clustersDir)
+	def, _, err := stateMgr.LoadClusterDefinition(clusterName)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("cluster %s not found in clusters directory", clusterName)
+		}
 		return nil, err
 	}
-
-	if clusterDef == nil {
-		return nil, fmt.Errorf("cluster %s not found in clusters directory", clusterName)
-	}
-
-	return clusterDef, nil
+	return def, nil
 }
 
 // expandVariables expands variables in a string

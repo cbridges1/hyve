@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/internal/types"
 )
@@ -240,4 +241,254 @@ func TestOrderClusters_Empty(t *testing.T) {
 func TestReconcileModeConstants(t *testing.T) {
 	assert.Equal(t, ReconcileMode("local"), ReconcileModeLocal)
 	assert.Equal(t, ReconcileMode("cicd"), ReconcileModeCICD)
+}
+
+// --- ClusterState sidecar split ---
+
+func testClusterDef(name string) *types.ClusterDefinition {
+	return &types.ClusterDefinition{
+		APIVersion: "v1",
+		Kind:       "Cluster",
+		Metadata:   types.ClusterMetadata{Name: name, Region: "NYC1"},
+		Spec: types.ClusterSpec{
+			Driver: types.DriverRef{Source: "./custom-modules/civo", Version: "latest"},
+			DriverOutputs: map[string]string{
+				"HYVE_CLUSTER_ID": "abc-123",
+			},
+			AppliedResources: map[string]*types.AppliedResource{
+				"toolbox-namespace": {
+					SourceSHA256: "deadbeef",
+					AppliedAt:    "2026-07-12T15:49:37Z",
+					Objects: []types.AppliedObject{
+						{APIVersion: "v1", Kind: "Namespace", Name: "toolbox"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestSaveClusterDefinition_SplitsSidecarFile(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("sun-hyve")
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	primaryData, err := os.ReadFile(mgr.clusterPath("sun-hyve"))
+	require.NoError(t, err)
+	var primary map[string]interface{}
+	require.NoError(t, yaml.Unmarshal(primaryData, &primary))
+	spec, ok := primary["spec"].(map[string]interface{})
+	require.True(t, ok)
+	_, hasDriverOutputs := spec["driverOutputs"]
+	_, hasAppliedResources := spec["appliedResources"]
+	assert.False(t, hasDriverOutputs, "primary file must not contain driverOutputs")
+	assert.False(t, hasAppliedResources, "primary file must not contain appliedResources")
+
+	sidecarData, err := os.ReadFile(mgr.sidecarPath("sun-hyve"))
+	require.NoError(t, err)
+	var state types.ClusterState
+	require.NoError(t, yaml.Unmarshal(sidecarData, &state))
+	assert.Equal(t, "abc-123", state.DriverOutputs["HYVE_CLUSTER_ID"])
+	require.Contains(t, state.AppliedResources, "toolbox-namespace")
+	assert.Equal(t, "deadbeef", state.AppliedResources["toolbox-namespace"].SourceSHA256)
+}
+
+func TestSaveClusterDefinition_NoSidecarWhenStateEmpty(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := &types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "fresh"}}
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	_, err := os.Stat(mgr.sidecarPath("fresh"))
+	assert.True(t, os.IsNotExist(err), "no sidecar file should be written for empty state")
+}
+
+func TestSaveClusterDefinition_RemovesStaleSidecarWhenStateBecomesEmpty(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("sun-hyve")
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+	_, err := os.Stat(mgr.sidecarPath("sun-hyve"))
+	require.NoError(t, err, "sidecar should exist after first save")
+
+	def.Spec.DriverOutputs = nil
+	def.Spec.AppliedResources = nil
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	_, err = os.Stat(mgr.sidecarPath("sun-hyve"))
+	assert.True(t, os.IsNotExist(err), "stale sidecar should be removed once state empties")
+}
+
+func TestSaveClusterDefinition_CreatesClustersDirIfMissing(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters") // never created
+	mgr := newTestManager(stateDir)
+
+	def := &types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "fresh"}}
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	_, err := os.Stat(mgr.clusterPath("fresh"))
+	assert.NoError(t, err)
+}
+
+func TestSaveClusterDefinition_DoesNotMutateCallersDef(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("sun-hyve")
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	// The caller's in-memory def must still have its maps populated —
+	// SaveClusterDefinition must only clear a shallow copy, never def itself.
+	assert.Equal(t, "abc-123", def.Spec.DriverOutputs["HYVE_CLUSTER_ID"])
+	assert.Contains(t, def.Spec.AppliedResources, "toolbox-namespace")
+}
+
+func TestLoadClusterDefinition_MergesSidecar(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
+	mgr := newTestManager(stateDir)
+
+	primary := "apiVersion: v1\nkind: Cluster\nmetadata:\n  name: sun-hyve\nspec:\n  driver:\n    source: ./custom-modules/civo\n"
+	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(primary), 0644))
+	sidecar := "driverOutputs:\n  HYVE_CLUSTER_ID: abc-123\nappliedResources:\n  toolbox-namespace:\n    sourceSHA256: deadbeef\n    appliedAt: \"2026-07-12T15:49:37Z\"\n"
+	require.NoError(t, os.WriteFile(mgr.sidecarPath("sun-hyve"), []byte(sidecar), 0644))
+
+	def, rawData, err := mgr.LoadClusterDefinition("sun-hyve")
+	require.NoError(t, err)
+	assert.Equal(t, "abc-123", def.Spec.DriverOutputs["HYVE_CLUSTER_ID"])
+	require.Contains(t, def.Spec.AppliedResources, "toolbox-namespace")
+	assert.Equal(t, primary, string(rawData), "raw bytes must be exactly the primary file's contents")
+}
+
+func TestLoadClusterDefinition_LegacyInlineFallback(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
+	mgr := newTestManager(stateDir)
+
+	// A pre-migration monolithic file: appliedResources/driverOutputs inline,
+	// no sidecar file at all.
+	legacy := `apiVersion: v1
+kind: Cluster
+metadata:
+  name: sun-hyve
+spec:
+  driver:
+    source: ./custom-modules/civo
+  driverOutputs:
+    HYVE_CLUSTER_ID: abc-123
+  appliedResources:
+    toolbox-namespace:
+      sourceSHA256: deadbeef
+      appliedAt: "2026-07-12T15:49:37Z"
+`
+	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(legacy), 0644))
+
+	def, _, err := mgr.LoadClusterDefinition("sun-hyve")
+	require.NoError(t, err)
+	assert.Equal(t, "abc-123", def.Spec.DriverOutputs["HYVE_CLUSTER_ID"])
+	require.Contains(t, def.Spec.AppliedResources, "toolbox-namespace")
+	assert.Equal(t, "deadbeef", def.Spec.AppliedResources["toolbox-namespace"].SourceSHA256)
+}
+
+func TestLoadClusterDefinition_SidecarWinsOverInlineData(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
+	mgr := newTestManager(stateDir)
+
+	primary := `metadata:
+  name: sun-hyve
+spec:
+  driverOutputs:
+    HYVE_CLUSTER_ID: stale-inline-value
+`
+	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(primary), 0644))
+	sidecar := "driverOutputs:\n  HYVE_CLUSTER_ID: fresh-sidecar-value\n"
+	require.NoError(t, os.WriteFile(mgr.sidecarPath("sun-hyve"), []byte(sidecar), 0644))
+
+	def, _, err := mgr.LoadClusterDefinition("sun-hyve")
+	require.NoError(t, err)
+	assert.Equal(t, "fresh-sidecar-value", def.Spec.DriverOutputs["HYVE_CLUSTER_ID"])
+}
+
+func TestLoadClusterDefinition_NotFound(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
+	mgr := newTestManager(stateDir)
+
+	_, _, err := mgr.LoadClusterDefinition("does-not-exist")
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestLoadClusterDefinitions_SkipsStateSidecarFiles(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("alpha")
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	clusters, err := mgr.LoadClusterDefinitions()
+	require.NoError(t, err)
+	require.Len(t, clusters, 1, "the .state.yaml sidecar must not be parsed as a second cluster")
+	assert.Equal(t, "alpha", clusters[0].Metadata.Name)
+	assert.Contains(t, clusters[0].Spec.AppliedResources, "toolbox-namespace")
+}
+
+func TestRemoveClusterFile_RemovesSidecarToo(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("sun-hyve")
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+	require.NoError(t, mgr.RemoveClusterFile("sun-hyve"))
+
+	_, err := os.Stat(mgr.clusterPath("sun-hyve"))
+	assert.True(t, os.IsNotExist(err), "primary file should be removed")
+	_, err = os.Stat(mgr.sidecarPath("sun-hyve"))
+	assert.True(t, os.IsNotExist(err), "sidecar file should be removed")
+}
+
+func TestRemoveClusterFile_NoSidecarIsNotAnError(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := &types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "fresh"}}
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+	assert.NoError(t, mgr.RemoveClusterFile("fresh"))
+}
+
+func TestHasStateSidecar_TrueAndFalse(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	assert.False(t, mgr.HasStateSidecar("sun-hyve"))
+	require.NoError(t, mgr.SaveClusterDefinition(testClusterDef("sun-hyve")))
+	assert.True(t, mgr.HasStateSidecar("sun-hyve"))
+}
+
+func TestSaveThenLoad_RoundTrip(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("sun-hyve")
+	def.Spec.AppliedResources["newt"] = &types.AppliedResource{
+		SourceSHA256: "abc123",
+		Helm:         true,
+		Namespace:    "default",
+		AppliedAt:    "2026-07-12T15:49:48Z",
+		Objects: []types.AppliedObject{
+			{APIVersion: "v1", Kind: "ServiceAccount", Namespace: "default", Name: "newt-newt-sa"},
+			{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "default", Name: "newt-newt-main-tunnel"},
+		},
+	}
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	loaded, _, err := mgr.LoadClusterDefinition("sun-hyve")
+	require.NoError(t, err)
+	assert.Equal(t, def.Spec.DriverOutputs, loaded.Spec.DriverOutputs)
+	assert.Equal(t, def.Spec.AppliedResources, loaded.Spec.AppliedResources)
 }

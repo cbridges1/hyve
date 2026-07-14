@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	"github.com/cbridges1/hyve/internal/types"
 )
 
 var resourcesCmd = &cobra.Command{
@@ -31,20 +28,14 @@ func init() { Cmd.AddCommand(resourcesCmd) }
 // (spec.resources) and reconciler-tracked (spec.appliedResources) state.
 func showClusterResources(clusterName string) {
 	ctx := gocontext.Background()
-	_, clustersDir := shared.CreateStateManager(ctx)
-	filePath := filepath.Join(clustersDir, clusterName+".yaml")
+	stateMgr, _ := shared.CreateStateManager(ctx)
 
-	data, err := os.ReadFile(filePath)
+	clusterDef, _, err := stateMgr.LoadClusterDefinition(clusterName)
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Fatalf("Cluster '%s' not found. Use 'hyve cluster list' to see available clusters.", clusterName)
 		}
 		log.Fatalf("Failed to read cluster file: %v", err)
-	}
-
-	var clusterDef types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &clusterDef); err != nil {
-		log.Fatalf("Failed to parse cluster definition: %v", err)
 	}
 
 	if len(clusterDef.Spec.Resources) == 0 && len(clusterDef.Spec.AppliedResources) == 0 {
@@ -60,6 +51,16 @@ func showClusterResources(clusterName string) {
 				fmt.Printf("  %s  (marked delete: true)\n", res.Name)
 			case res.Helm != nil:
 				fmt.Printf("  %s  helm chart=%s version=%s namespace=%s\n", res.Name, res.Helm.Chart, res.Helm.Version, res.Helm.Namespace)
+			case res.Secret != nil:
+				keys := make([]string, 0, len(res.Secret.Keys))
+				for _, k := range res.Secret.Keys {
+					if k.Key != "" && k.Key != k.Env {
+						keys = append(keys, k.Env+"->"+k.Key)
+					} else {
+						keys = append(keys, k.Env)
+					}
+				}
+				fmt.Printf("  %s  secret namespace=%s keys=%v\n", res.Name, res.Secret.Namespace, keys)
 			default:
 				ns := res.Namespace
 				if ns == "" {

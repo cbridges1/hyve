@@ -4,10 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 	mod "github.com/cbridges1/hyve/internal/module"
@@ -54,18 +51,12 @@ func (h *KubeconfigHandlers) Auth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	clusterPath := filepath.Join(h.RepoPath, "clusters", name+".yaml")
-	data, err := os.ReadFile(clusterPath)
+	cluster, _, err := h.StateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, "cluster not found: "+name)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var cluster types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &cluster); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -94,7 +85,7 @@ func (h *KubeconfigHandlers) Auth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: moduleEnv(&cluster), WorkDir: h.RepoPath, AuthMethod: req.Method}
+	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: moduleEnv(cluster), WorkDir: h.RepoPath, AuthMethod: req.Method}
 	if _, err := executor.Execute(r.Context(), mod.OperationAuth); err != nil {
 		writeError(w, http.StatusInternalServerError, "auth failed: "+err.Error())
 		return

@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/repository"
@@ -69,6 +67,15 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 
 	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
 
+	gitBacked := true
+	stateMgr, stateMgrErr := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
+	if stateMgrErr != nil {
+		log.Printf("⚠️  Warning: Failed to create git-backed state manager: %v", stateMgrErr)
+		log.Println("💡 Cluster definition will be saved locally but not pushed to git")
+		stateMgr = state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
+		gitBacked = false
+	}
+
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
 	log.Printf("🚀 Creating cluster '%s' from template '%s'...\n", clusterName, templateName)
@@ -108,29 +115,13 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 		log.Printf("  Expiry Schedule: %s → %s", tmpl.Spec.Schedule, clusterDef.Spec.ExpiresAt)
 	}
 
-	clustersDir := filepath.Join(currentRepo.LocalPath, "clusters")
-	if err := os.MkdirAll(clustersDir, 0755); err != nil {
-		log.Fatalf("Failed to create clusters directory: %v", err)
+	if err := stateMgr.SaveClusterDefinition(clusterDef); err != nil {
+		log.Fatalf("Failed to write cluster definition: %v", err)
 	}
 
-	clusterPath := filepath.Join(clustersDir, clusterName+".yaml")
+	log.Printf("\n✅ Cluster definition created: %s", filepath.Join(currentRepo.LocalPath, "clusters", clusterName+".yaml"))
 
-	clusterData, err := yaml.Marshal(clusterDef)
-	if err != nil {
-		log.Fatalf("Failed to marshal cluster definition: %v", err)
-	}
-
-	if err := os.WriteFile(clusterPath, clusterData, 0644); err != nil {
-		log.Fatalf("Failed to write cluster file: %v", err)
-	}
-
-	log.Printf("\n✅ Cluster definition created: %s", clusterPath)
-
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to create state manager: %v", err)
-		log.Println("💡 Cluster definition saved locally but not pushed to git")
-	} else {
+	if gitBacked {
 		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
 	}
 

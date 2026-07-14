@@ -49,7 +49,15 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 
 	original := cluster.Spec.Resources
 	removeIdx := map[int]bool{}
-	changed := false
+	// Force one save+commit for a cluster whose driverOutputs/appliedResources
+	// still live inline in its primary file (pre state-sidecar-split format,
+	// no clusters/<name>.state.yaml yet) even if nothing else about it
+	// drifted this cycle — SaveClusterDefinition unconditionally splits on
+	// every write, so this is the entire migration mechanism: no separate
+	// migrate command or script needed, every cluster converges within one
+	// reconcile cycle it isn't paused for.
+	changed := !r.stateMgr.HasStateSidecar(name) &&
+		(len(cluster.Spec.DriverOutputs) > 0 || len(cluster.Spec.AppliedResources) > 0)
 	var loopErr error
 	driftCount, unchangedCount := 0, 0
 
@@ -98,6 +106,15 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 				loopErr = fmt.Errorf("resource %s: helm template failed: %w", res.Name, err)
 				break
 			}
+			liveManifest = rendered
+		} else if res.Secret != nil {
+			rendered, resolved, err := renderSecretManifest(res.Name, res.Secret)
+			if err != nil {
+				loopErr = fmt.Errorf("resource %s: render secret failed: %w", res.Name, err)
+				break
+			}
+			configHash = secretConfigHash(res.Secret, resolved)
+			applyNamespace = res.Secret.Namespace
 			liveManifest = rendered
 		} else {
 			resolved, err := resourceref.Resolve(res.Source, repoRoot)
@@ -270,13 +287,18 @@ func findOrphanedResources(resources []types.ResourceRef, applied map[string]*ty
 // validateResourceRef checks that exactly one of Source or Helm is set on a
 // non-delete resource entry. Pure — table-testable.
 func validateResourceRef(res types.ResourceRef) error {
-	hasSource := res.Source != ""
-	hasHelm := res.Helm != nil
-	switch {
-	case hasSource && hasHelm:
-		return fmt.Errorf("resource %s: exactly one of source or helm must be set, not both", res.Name)
-	case !hasSource && !hasHelm:
-		return fmt.Errorf("resource %s: exactly one of source or helm must be set", res.Name)
+	set := 0
+	if res.Source != "" {
+		set++
+	}
+	if res.Helm != nil {
+		set++
+	}
+	if res.Secret != nil {
+		set++
+	}
+	if set != 1 {
+		return fmt.Errorf("resource %s: exactly one of source, helm, or secret must be set", res.Name)
 	}
 	return nil
 }

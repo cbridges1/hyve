@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/cbridges1/hyve/internal/execution"
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/template"
@@ -25,10 +23,6 @@ func NewClustersHandlers(deps *Deps) *ClustersHandlers { return &ClustersHandler
 
 func (h *ClustersHandlers) clustersDir() string {
 	return filepath.Join(h.RepoPath, "clusters")
-}
-
-func (h *ClustersHandlers) clusterPath(name string) string {
-	return filepath.Join(h.clustersDir(), name+".yaml")
 }
 
 // List handles GET /clusters — mirrors `hyve cluster list`'s filtering
@@ -48,23 +42,23 @@ func (h *ClustersHandlers) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// Get handles GET /clusters/:name — reads the cluster's YAML file directly
-// (same read-only pattern as `hyve cluster show`), supporting YAML content
-// negotiation with byte-for-byte round-tripping.
+// Get handles GET /clusters/:name — reads the cluster's primary + state-sidecar
+// files (same read-only pattern as `hyve cluster show`), supporting YAML content
+// negotiation with byte-for-byte round-tripping. The YAML round-trip is
+// deliberately just the primary file's bytes (never a re-serialized merged
+// view) — reconciler-owned fields (driverOutputs/appliedResources) never
+// appear in the file a human GETs-to-edit-and-PUTs-back, reinforcing the
+// "never hand-edit" contract on those fields instead of fighting it. The
+// JSON response is the full merged definition, unaffected in shape.
 func (h *ClustersHandlers) Get(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	data, err := os.ReadFile(h.clusterPath(name))
+	def, data, err := h.StateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("cluster %q not found", name))
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var def types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &def); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to parse cluster definition: "+err.Error())
 		return
 	}
 	writeResource(w, r, http.StatusOK, def, data)
@@ -136,6 +130,11 @@ func (h *ClustersHandlers) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // Put handles PUT /clusters/:name — full replace of the cluster YAML.
+// DriverOutputs/AppliedResources are never client-writable (same "never
+// hand-edit" contract as everywhere else these fields appear): whatever the
+// request body contains for them is discarded and replaced with the
+// existing on-disk values, if any. A load-not-found error means this PUT is
+// creating a brand-new cluster, so there's nothing to carry forward.
 func (h *ClustersHandlers) Put(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var def types.ClusterDefinition
@@ -143,6 +142,11 @@ func (h *ClustersHandlers) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	def.Metadata.Name = name
+
+	if existing, _, err := h.StateMgr.LoadClusterDefinition(name); err == nil {
+		def.Spec.DriverOutputs = existing.Spec.DriverOutputs
+		def.Spec.AppliedResources = existing.Spec.AppliedResources
+	}
 
 	if err := os.MkdirAll(h.clustersDir(), 0755); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -166,19 +170,13 @@ type patchClusterRequest struct {
 // Patch handles PATCH /clusters/:name — partial update of pause/delete/params/expiresAt.
 func (h *ClustersHandlers) Patch(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	path := h.clusterPath(name)
 
-	data, err := os.ReadFile(path)
+	def, _, err := h.StateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("cluster %q not found", name))
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var def types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &def); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -203,7 +201,7 @@ func (h *ClustersHandlers) Patch(w http.ResponseWriter, r *http.Request) {
 		def.Spec.Params[k] = v
 	}
 
-	if err := h.StateMgr.SaveClusterDefinition(&def); err != nil {
+	if err := h.StateMgr.SaveClusterDefinition(def); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -215,9 +213,8 @@ func (h *ClustersHandlers) Patch(w http.ResponseWriter, r *http.Request) {
 // triggers a reconcile, mirroring `hyve cluster delete <name>`.
 func (h *ClustersHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	path := h.clusterPath(name)
 
-	data, err := os.ReadFile(path)
+	def, _, err := h.StateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("cluster %q not found", name))
@@ -226,13 +223,8 @@ func (h *ClustersHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var def types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &def); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	def.Spec.Delete = true
-	if err := h.StateMgr.SaveClusterDefinition(&def); err != nil {
+	if err := h.StateMgr.SaveClusterDefinition(def); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -250,17 +242,12 @@ func (h *ClustersHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 // cluster calls, mirrors `hyve cluster resources <name>`.
 func (h *ClustersHandlers) Resources(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	data, err := os.ReadFile(h.clusterPath(name))
+	def, _, err := h.StateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("cluster %q not found", name))
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var def types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &def); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
