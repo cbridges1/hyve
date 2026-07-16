@@ -230,7 +230,11 @@ func (m *SystemBackend) createNewRepo(ctx context.Context) error {
 	readmeContent := `# Hyve State Repository
 
 This repository contains cluster state definitions for Hyve.
-All cluster YAML files are stored in the clusters/ directory.
+All cluster YAML files are stored in the clusters/ directory — this is the
+only directory meant to be hand-edited. Reconciler-owned bookkeeping
+(driver outputs, applied-resource tracking) lives alongside each cluster's
+YAML as a generated cluster-state/<name>.state.yaml sidecar; treat it like
+a lockfile, not something to edit directly.
 `
 	if err := os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
 		return fmt.Errorf("failed to create README: %w", err)

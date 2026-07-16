@@ -51,7 +51,7 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 	removeIdx := map[int]bool{}
 	// Force one save+commit for a cluster whose driverOutputs/appliedResources
 	// still live inline in its primary file (pre state-sidecar-split format,
-	// no clusters/<name>.state.yaml yet) even if nothing else about it
+	// no cluster-state/<name>.state.yaml yet) even if nothing else about it
 	// drifted this cycle — SaveClusterDefinition unconditionally splits on
 	// every write, so this is the entire migration mechanism: no separate
 	// migrate command or script needed, every cluster converges within one

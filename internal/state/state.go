@@ -180,23 +180,34 @@ func (m *Manager) SaveRepoConfig(cfg *RepoConfig) error {
 }
 
 // stateSidecarSuffix names the reconciler-owned sidecar file that holds
-// ClusterState (DriverOutputs/AppliedResources) alongside a cluster's
-// primary desired-state file. It deliberately still ends in ".yaml" (so it
-// stays plain YAML, human-inspectable, and git-diffable) — every walk over
-// stateDir must explicitly skip files with this suffix before doing its own
-// ".yaml"/".yml" check, or it will be picked up and unmarshaled as a bogus
-// second ClusterDefinition (empty Metadata/Kind).
+// ClusterState (DriverOutputs/AppliedResources) for a cluster. It
+// deliberately still ends in ".yaml" (so it stays plain YAML,
+// human-inspectable, and git-diffable). Sidecars live in sidecarDir(), a
+// sibling of stateDir — never stateDir itself — precisely so `ls clusters/`
+// only ever shows files a person wrote; the walks over stateDir in
+// LoadClusterDefinitions/RemoveClusterFile still skip this suffix
+// defensively (a stray or pre-migration sidecar left in stateDir would
+// otherwise be unmarshaled as a bogus second ClusterDefinition with empty
+// Metadata/Kind), but nothing relies on it as the primary separation
+// mechanism anymore.
 const stateSidecarSuffix = ".state.yaml"
 
 func (m *Manager) clusterPath(name string) string {
 	return filepath.Join(m.stateDir, name+".yaml")
 }
 
-func (m *Manager) sidecarPath(name string) string {
-	return filepath.Join(m.stateDir, name+stateSidecarSuffix)
+// sidecarDir returns cluster-state/, a sibling of stateDir (clusters/) —
+// keeping reconciler-owned bookkeeping (content hashes, timestamps,
+// tracked-object lists) out of the directory a person actually edits.
+func (m *Manager) sidecarDir() string {
+	return filepath.Join(filepath.Dir(m.stateDir), "cluster-state")
 }
 
-// mergeSidecar overlays clusters/<name>.state.yaml onto cluster.Spec's
+func (m *Manager) sidecarPath(name string) string {
+	return filepath.Join(m.sidecarDir(), name+stateSidecarSuffix)
+}
+
+// mergeSidecar overlays cluster-state/<name>.state.yaml onto cluster.Spec's
 // DriverOutputs/AppliedResources, if that file exists. If it doesn't, those
 // two fields are left exactly as yaml.Unmarshal decoded them from the
 // primary file — which is what makes reading a pre-migration monolithic
@@ -220,7 +231,7 @@ func (m *Manager) mergeSidecar(cluster *types.ClusterDefinition) error {
 	return nil
 }
 
-// HasStateSidecar reports whether clusters/<name>.state.yaml exists.
+// HasStateSidecar reports whether cluster-state/<name>.state.yaml exists.
 func (m *Manager) HasStateSidecar(name string) bool {
 	_, err := os.Stat(m.sidecarPath(name))
 	return err == nil
@@ -252,9 +263,10 @@ func (m *Manager) LoadClusterDefinition(name string) (*types.ClusterDefinition, 
 
 // SaveClusterDefinition writes a cluster definition back to its primary YAML
 // file in the state directory, and its reconciler-owned DriverOutputs /
-// AppliedResources to a separate sidecar file (clusters/<name>.state.yaml) —
-// keeping machine bookkeeping (content hashes, timestamps, tracked-object
-// lists) out of the human-authored file's git diffs. def itself is left
+// AppliedResources to a separate sidecar file (cluster-state/<name>.state.yaml,
+// a sibling directory of stateDir) — keeping machine bookkeeping (content
+// hashes, timestamps, tracked-object lists) out of the human-authored
+// file's directory entirely, not just out of its git diff. def itself is left
 // untouched: the split is performed on a shallow copy (safe because
 // ClusterDefinition embeds ClusterSpec by value, not by pointer, so clearing
 // the copy's map fields doesn't affect the caller's maps). If the resulting
@@ -294,6 +306,9 @@ func (m *Manager) SaveClusterDefinition(def *types.ClusterDefinition) error {
 	sdata, err := yaml.Marshal(&state)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cluster state sidecar: %w", err)
+	}
+	if err := os.MkdirAll(m.sidecarDir(), 0755); err != nil {
+		return fmt.Errorf("failed to create cluster-state directory: %w", err)
 	}
 	if err := os.WriteFile(sidecarPath, sdata, 0644); err != nil {
 		return fmt.Errorf("failed to write cluster state sidecar: %w", err)

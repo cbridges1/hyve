@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -295,6 +296,40 @@ func TestSaveClusterDefinition_SplitsSidecarFile(t *testing.T) {
 	assert.Equal(t, "deadbeef", state.AppliedResources["toolbox-namespace"].SourceSHA256)
 }
 
+func TestSaveClusterDefinition_SidecarLivesOutsideStateDir(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	def := testClusterDef("sun-hyve")
+	require.NoError(t, mgr.SaveClusterDefinition(def))
+
+	assert.Equal(t, filepath.Join(filepath.Dir(stateDir), "cluster-state"), mgr.sidecarDir())
+
+	entries, err := os.ReadDir(stateDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasSuffix(e.Name(), stateSidecarSuffix),
+			"stateDir must not contain any *.state.yaml file, found %q", e.Name())
+	}
+
+	_, err = os.Stat(mgr.sidecarPath("sun-hyve"))
+	require.NoError(t, err, "sidecar file must exist in cluster-state/")
+}
+
+func TestSaveClusterDefinition_CreatesSidecarDirIfMissing(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "clusters")
+	mgr := newTestManager(stateDir)
+
+	_, err := os.Stat(mgr.sidecarDir())
+	require.True(t, os.IsNotExist(err), "cluster-state/ must not exist before the first save")
+
+	require.NoError(t, mgr.SaveClusterDefinition(testClusterDef("sun-hyve")))
+
+	info, err := os.Stat(mgr.sidecarDir())
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+}
+
 func TestSaveClusterDefinition_NoSidecarWhenStateEmpty(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "clusters")
 	mgr := newTestManager(stateDir)
@@ -355,6 +390,7 @@ func TestLoadClusterDefinition_MergesSidecar(t *testing.T) {
 	primary := "apiVersion: v1\nkind: Cluster\nmetadata:\n  name: sun-hyve\nspec:\n  driver:\n    source: ./custom-modules/civo\n"
 	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(primary), 0644))
 	sidecar := "driverOutputs:\n  HYVE_CLUSTER_ID: abc-123\nappliedResources:\n  toolbox-namespace:\n    sourceSHA256: deadbeef\n    appliedAt: \"2026-07-12T15:49:37Z\"\n"
+	require.NoError(t, os.MkdirAll(mgr.sidecarDir(), 0755))
 	require.NoError(t, os.WriteFile(mgr.sidecarPath("sun-hyve"), []byte(sidecar), 0644))
 
 	def, rawData, err := mgr.LoadClusterDefinition("sun-hyve")
@@ -407,6 +443,7 @@ spec:
 `
 	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(primary), 0644))
 	sidecar := "driverOutputs:\n  HYVE_CLUSTER_ID: fresh-sidecar-value\n"
+	require.NoError(t, os.MkdirAll(mgr.sidecarDir(), 0755))
 	require.NoError(t, os.WriteFile(mgr.sidecarPath("sun-hyve"), []byte(sidecar), 0644))
 
 	def, _, err := mgr.LoadClusterDefinition("sun-hyve")
@@ -425,15 +462,23 @@ func TestLoadClusterDefinition_NotFound(t *testing.T) {
 }
 
 func TestLoadClusterDefinitions_SkipsStateSidecarFiles(t *testing.T) {
+	// Sidecars normally live in cluster-state/, a sibling of stateDir — never
+	// stateDir itself (see SaveClusterDefinition). This test covers the
+	// defensive fallback: a stray *.state.yaml file sitting directly in
+	// stateDir (e.g. left over from a pre-migration repo, or dropped there by
+	// mistake) must still be skipped rather than parsed as a bogus second
+	// cluster.
 	stateDir := filepath.Join(t.TempDir(), "clusters")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
 	mgr := newTestManager(stateDir)
 
 	def := testClusterDef("alpha")
 	require.NoError(t, mgr.SaveClusterDefinition(def))
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "alpha.state.yaml"), []byte("driverOutputs:\n  STRAY: value\n"), 0644))
 
 	clusters, err := mgr.LoadClusterDefinitions()
 	require.NoError(t, err)
-	require.Len(t, clusters, 1, "the .state.yaml sidecar must not be parsed as a second cluster")
+	require.Len(t, clusters, 1, "a stray .state.yaml file in stateDir must not be parsed as a second cluster")
 	assert.Equal(t, "alpha", clusters[0].Metadata.Name)
 	assert.Contains(t, clusters[0].Spec.AppliedResources, "toolbox-namespace")
 }
