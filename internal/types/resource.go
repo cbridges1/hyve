@@ -45,11 +45,19 @@ type ResourceRef struct {
 
 // HelmSpec declares a Helm chart release to install/upgrade and drift-check.
 type HelmSpec struct {
-	Chart     string            `yaml:"chart" json:"chart"`
-	Repo      string            `yaml:"repo,omitempty" json:"repo,omitempty"`
-	Version   string            `yaml:"version,omitempty" json:"version,omitempty"`
-	Namespace string            `yaml:"namespace,omitempty" json:"namespace,omitempty"`
-	Values    map[string]string `yaml:"values,omitempty" json:"values,omitempty"`
+	Chart     string `yaml:"chart" json:"chart"`
+	Repo      string `yaml:"repo,omitempty" json:"repo,omitempty"`
+	Version   string `yaml:"version,omitempty" json:"version,omitempty"`
+	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	// Values are passed to `helm --set key=value`. A value may reference
+	// hyve's own process environment with ${VAR_NAME} (braced form only —
+	// see resolveHelmValues in internal/reconcile/helm.go); this is resolved
+	// fresh on every reconcile, so a value that legitimately differs per
+	// cluster/environment (an API endpoint, an org ID) can live in .env /
+	// CI secrets instead of being committed literally into a template
+	// that's reused across many cluster instances. A referenced but unset
+	// variable is a hard reconcile error, not a silent empty substitution.
+	Values map[string]string `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 // SecretKeyRef is one entry in SecretSpec.Keys. Accepts two YAML forms in

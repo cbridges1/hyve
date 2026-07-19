@@ -97,11 +97,18 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 		var configHash string
 		var liveManifest []byte
 		var applyNamespace string
+		var resolvedHelmValues map[string]string
 
 		if res.Helm != nil {
-			configHash = helmConfigHash(res.Helm)
+			resolved, err := resolveHelmValues(res.Helm)
+			if err != nil {
+				loopErr = fmt.Errorf("resource %s: resolve helm values failed: %w", res.Name, err)
+				break
+			}
+			resolvedHelmValues = resolved
+			configHash = helmConfigHash(res.Helm, resolvedHelmValues)
 			applyNamespace = res.Helm.Namespace
-			rendered, err := helmRenderManifest(ctx, repoRoot, res.Name, res.Helm)
+			rendered, err := helmRenderManifest(ctx, repoRoot, res.Name, res.Helm, resolvedHelmValues)
 			if err != nil {
 				loopErr = fmt.Errorf("resource %s: helm template failed: %w", res.Name, err)
 				break
@@ -151,7 +158,7 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 
 		var objects []types.AppliedObject
 		if res.Helm != nil {
-			if err := helmUpgradeInstall(ctx, repoRoot, res.Name, res.Helm); err != nil {
+			if err := helmUpgradeInstall(ctx, repoRoot, res.Name, res.Helm, resolvedHelmValues); err != nil {
 				loopErr = fmt.Errorf("resource %s: apply failed: %w", res.Name, err)
 				break
 			}
