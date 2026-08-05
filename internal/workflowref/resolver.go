@@ -143,7 +143,7 @@ func FetchRepoArchive(host, org, repo, ref string) (dir string, cleanup func(), 
 	}
 	cleanup = func() { os.RemoveAll(tmpDir) }
 
-	if err := module.DownloadAndExtract(downloadURL, tmpDir, repo, ref, ""); err != nil {
+	if err := module.DownloadAndExtract(downloadURL, tmpDir, repo, ref, "", ""); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to download workflow source from %s: %w", downloadURL, err)
 	}

@@ -27,9 +27,23 @@ type ResolvedModule struct {
 }
 
 // IsLocalSource reports whether a module source string names a local path
-// ("./..." or an absolute path) rather than a remote Git reference.
+// ("./...", "../...", or an absolute path) rather than a remote Git
+// reference. "../" is recognized alongside "./" so a module can live in a
+// sibling checkout outside the consuming repo (e.g. "../../hyve-some-
+// module") without needing to be a remote Git source at all — useful when
+// the module's real repo is private and reconcile always runs from a
+// machine that already has it checked out locally.
 func IsLocalSource(source string) bool {
-	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/")
+	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../") || strings.HasPrefix(source, "/")
+}
+
+// githubToken returns a personal access token for authenticating to
+// GitHub, read from GITHUB_TOKEN — needed to resolve a Git-sourced module
+// hosted in a private repo, since the plain archive URL resolveGit uses by
+// default only works for public ones. Empty (no token) preserves the
+// original public-only behavior exactly.
+func githubToken() string {
+	return os.Getenv("GITHUB_TOKEN")
 }
 
 // Resolve fetches and caches a module, returning its local directory.
@@ -82,15 +96,23 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
 	}
 
-	// Download archive
+	// Download archive. The plain web-facing archive URL (github.com/org/
+	// repo/archive/ref.tar.gz) 404s for a private repo regardless of
+	// credentials — it isn't part of the authenticated REST API surface —
+	// so a token switches to the real REST tarball endpoint instead, which
+	// GitHub 302-redirects to a signed codeload.github.com URL.
+	token := githubToken()
 	downloadURL := fmt.Sprintf("https://%s/%s/%s/archive/%s.tar.gz", host, org, repo, ref)
+	if token != "" && host == "github.com" {
+		downloadURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/tarball/%s", org, repo, ref)
+	}
 	tmpDir, err := os.MkdirTemp("", "hyve-module-*")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := DownloadAndExtract(downloadURL, tmpDir, repo, ref, subdir); err != nil {
+	if err := DownloadAndExtract(downloadURL, tmpDir, repo, ref, subdir, token); err != nil {
 		return nil, fmt.Errorf("failed to download module from %s: %w", downloadURL, err)
 	}
 
@@ -150,6 +172,13 @@ func parseGitSource(source string) (host, org, repo, subdir string, err error) {
 // - anything else: treated as an exact tag or commit ref.
 func ResolveRef(host, org, repo, version string) (string, error) {
 	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
+	// `git ls-remote` below has no credential prompt to fall back on in a
+	// non-interactive reconcile run — a private repo needs the token
+	// embedded directly in the URL (GitHub's documented HTTPS PAT format)
+	// rather than relying on a credential helper being configured.
+	if token := githubToken(); token != "" && host == "github.com" {
+		repoURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", token, host, org, repo)
+	}
 
 	if version == "" || version == "latest" {
 		tags, err := listRemoteTags(repoURL)
@@ -236,8 +265,29 @@ func listRemoteTags(repoURL string) ([]string, error) {
 	return tags, nil
 }
 
-func DownloadAndExtract(url, destDir, repo, ref, subdir string) error {
-	resp, err := http.Get(url)
+func DownloadAndExtract(url, destDir, repo, ref, subdir, token string) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
+	client := &http.Client{}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		// The REST tarball endpoint 302s to a different host
+		// (codeload.github.com) to actually serve the archive — Go's
+		// http.Client strips Authorization on a cross-host redirect by
+		// default (a sane default in general, but wrong here: that
+		// redirect *is* how this endpoint always works), so this
+		// re-attaches it explicitly rather than relying on codeload
+		// accepting the header on its own.
+		client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Accept", "application/vnd.github+json")
+			return nil
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
