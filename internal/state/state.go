@@ -72,10 +72,49 @@ type ServerConfig struct {
 	Auth        ServerAuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
+// EnvConfig is the env section of hyve.yaml — where to load local
+// environment variables (Infisical bootstrap creds, cloud provider
+// tokens, ...) from before any command runs.
+type EnvConfig struct {
+	// File is a path, relative to the repository root, to a dotenv-format
+	// file to load. Defaults to ".env" (godotenv's own default) if this
+	// whole section, or just this field, is left unset.
+	File string `yaml:"file,omitempty" json:"file,omitempty"`
+}
+
 // RepoConfig represents the repository-level Hyve configuration stored in hyve.yaml
 type RepoConfig struct {
 	Reconcile ReconcileConfig `yaml:"reconcile" json:"reconcile"`
 	Server    ServerConfig    `yaml:"server,omitempty" json:"server,omitempty"`
+	Env       EnvConfig       `yaml:"env,omitempty" json:"env,omitempty"`
+}
+
+// DefaultEnvFileName is what's loaded when hyve.yaml has no env.file set
+// (or doesn't exist at all yet) — matches godotenv's own built-in default,
+// preserving prior behavior for repos that never configured this.
+const DefaultEnvFileName = ".env"
+
+// ResolveEnvFile returns the dotenv file path to load for repoRoot,
+// honoring hyve.yaml's env.file if set. Called from main() before any
+// command runs and before a full Manager (which needs a resolved
+// clusters/ path, git state, etc.) can be constructed — so this does a
+// minimal, best-effort standalone read of hyve.yaml rather than going
+// through LoadRepoConfig. Never errors: a missing or unparseable
+// hyve.yaml just falls back to DefaultEnvFileName, the same as if this
+// function didn't exist at all.
+func ResolveEnvFile(repoRoot string) string {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "hyve.yaml"))
+	if err != nil {
+		return filepath.Join(repoRoot, DefaultEnvFileName)
+	}
+	var cfg RepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil || cfg.Env.File == "" {
+		return filepath.Join(repoRoot, DefaultEnvFileName)
+	}
+	if filepath.IsAbs(cfg.Env.File) {
+		return cfg.Env.File
+	}
+	return filepath.Join(repoRoot, cfg.Env.File)
 }
 
 // Manager handles state file operations using Git repositories
