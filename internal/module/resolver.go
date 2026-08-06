@@ -96,15 +96,31 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
 	}
 
-	// Download archive. The plain web-facing archive URL (github.com/org/
-	// repo/archive/ref.tar.gz) 404s for a private repo regardless of
-	// credentials — it isn't part of the authenticated REST API surface —
-	// so a token switches to the real REST tarball endpoint instead, which
-	// GitHub 302-redirects to a signed codeload.github.com URL.
-	token := githubToken()
-	downloadURL := fmt.Sprintf("https://%s/%s/%s/archive/%s.tar.gz", host, org, repo, ref)
-	if token != "" && host == "github.com" {
-		downloadURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/tarball/%s", org, repo, ref)
+	// Fetch via `git clone` + `git checkout`, not a plain archive download —
+	// this is what actually lets a private module resolve using whatever
+	// git authentication is already configured on the machine (a
+	// credential helper from `gh auth setup-git`, a cached HTTPS
+	// credential, an SSH key — the exact same mechanism ResolveRef's own
+	// `git ls-remote` above already relies on), with zero extra setup
+	// needed for the common case. A plain archive download can't do this:
+	// GitHub's web-facing archive URL (github.com/org/repo/archive/
+	// ref.tar.gz) 404s for a private repo regardless of credentials (it
+	// isn't part of the authenticated REST API surface at all), and the
+	// REST API's own tarball endpoint only accepts a bearer token, not a
+	// credential-helper-backed request — so either path would need a
+	// GITHUB_TOKEN even when git itself already works. GITHUB_TOKEN is
+	// still supported here (embedded in the clone URL the same way
+	// ResolveRef does), purely as a fallback for environments with no
+	// other git credential mechanism configured at all, e.g. a bare CI
+	// runner — not something most setups need to add.
+	// cleanRepoURL (no embedded credentials) is what gets recorded in
+	// hyve.lock's `resolved` field below — hyve.lock is a git-tracked
+	// file, so the token-bearing cloneURL must never be the thing stored
+	// there.
+	cleanRepoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
+	cloneURL := cleanRepoURL
+	if token := githubToken(); token != "" && host == "github.com" {
+		cloneURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", token, host, org, repo)
 	}
 	tmpDir, err := os.MkdirTemp("", "hyve-module-*")
 	if err != nil {
@@ -112,8 +128,8 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := DownloadAndExtract(downloadURL, tmpDir, repo, ref, subdir, token); err != nil {
-		return nil, fmt.Errorf("failed to download module from %s: %w", downloadURL, err)
+	if err := cloneAndExtract(cloneURL, ref, subdir, tmpDir); err != nil {
+		return nil, fmt.Errorf("failed to fetch module from %s@%s: %w", cleanRepoURL, ref, err)
 	}
 
 	// Compute SHA256 of directory contents
@@ -141,7 +157,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	return &ResolvedModule{
 		Dir:      cacheDir,
 		SHA256:   digest,
-		Resolved: downloadURL,
+		Resolved: fmt.Sprintf("%s@%s", cleanRepoURL, ref),
 		Runner:   runner,
 		Version:  ref,
 	}, nil
@@ -265,29 +281,87 @@ func listRemoteTags(repoURL string) ([]string, error) {
 	return tags, nil
 }
 
-func DownloadAndExtract(url, destDir, repo, ref, subdir, token string) error {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("build request for %s: %w", url, err)
+// cloneAndExtract fetches a module by shelling out to `git clone` + `git
+// checkout` rather than downloading an archive — see resolveGit's own
+// comment for why: this is what lets a private module resolve using
+// whatever git authentication the environment already has configured,
+// with no separate token needed in the common case. cloneURL may embed
+// credentials (an x-access-token@ prefix); callers must not log or persist
+// it anywhere — see resolveGit's cleanRepoURL, which is what actually gets
+// recorded in hyve.lock.
+//
+// destDir ends up containing the repo's tree at ref (or, if subdir is set,
+// just that subdirectory's contents) with .git removed — matching what
+// the archive-based DownloadAndExtract produces, so callers can't tell
+// the difference between the two fetch strategies.
+func cloneAndExtract(cloneURL, ref, subdir, destDir string) error {
+	cloneCmd := exec.Command("git", "clone", "--quiet", cloneURL, destDir)
+	cloneCmd.Stderr = os.Stderr
+	if err := cloneCmd.Run(); err != nil {
+		return fmt.Errorf("git clone: %w", err)
 	}
-	client := &http.Client{}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Accept", "application/vnd.github+json")
-		// The REST tarball endpoint 302s to a different host
-		// (codeload.github.com) to actually serve the archive — Go's
-		// http.Client strips Authorization on a cross-host redirect by
-		// default (a sane default in general, but wrong here: that
-		// redirect *is* how this endpoint always works), so this
-		// re-attaches it explicitly rather than relying on codeload
-		// accepting the header on its own.
-		client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
-			r.Header.Set("Authorization", "Bearer "+token)
-			r.Header.Set("Accept", "application/vnd.github+json")
-			return nil
+
+	if ref != "" && ref != "HEAD" {
+		checkoutCmd := exec.Command("git", "-C", destDir, "checkout", "--quiet", ref)
+		checkoutCmd.Stderr = os.Stderr
+		if err := checkoutCmd.Run(); err != nil {
+			return fmt.Errorf("git checkout %s: %w", ref, err)
 		}
 	}
-	resp, err := client.Do(req)
+
+	if err := os.RemoveAll(filepath.Join(destDir, ".git")); err != nil {
+		return fmt.Errorf("remove .git: %w", err)
+	}
+
+	if subdir == "" {
+		return nil
+	}
+
+	// Move subdir's contents up to destDir's root via a copy (not a
+	// rename): destDir is about to be wiped and replaced with exactly
+	// subdir's contents, and copying first means a failure partway
+	// through leaves the original clone intact rather than a half-deleted
+	// destDir.
+	srcDir := filepath.Join(destDir, subdir)
+	staging, err := os.MkdirTemp(filepath.Dir(destDir), "hyve-module-subdir-*")
+	if err != nil {
+		return fmt.Errorf("stage subdir extraction: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	if err := copyTree(srcDir, staging); err != nil {
+		return fmt.Errorf("copy subdir %s: %w", subdir, err)
+	}
+	if err := os.RemoveAll(destDir); err != nil {
+		return err
+	}
+	return os.Rename(staging, destDir)
+}
+
+// copyTree recursively copies src's contents into dst (both must already
+// make sense as directories; dst is created if missing).
+func copyTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
+}
+
+func DownloadAndExtract(url, destDir, repo, ref, subdir string) error {
+	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
