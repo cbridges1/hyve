@@ -26,10 +26,9 @@ type Executor struct {
 	repoName       string
 
 	// Output, when set, additionally receives every log line and step
-	// output byte produced during execution — used by hyve-server to
-	// capture live progress for polling/WebSocket streaming without
-	// affecting the CLI's normal stdout/log.Printf behavior. Left nil by
-	// the CLI, which never sets it.
+	// output byte produced during execution, without affecting the CLI's
+	// normal stdout/log.Printf behavior. Left nil by the CLI, which never
+	// sets it.
 	Output io.Writer
 }
 

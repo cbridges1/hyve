@@ -86,7 +86,7 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 	}
 
 	if tmpl.Spec.Schedule != "" {
-		next, err := shared.CronNextOccurrence(tmpl.Spec.Schedule, time.Now())
+		next, err := template.CronNextOccurrence(tmpl.Spec.Schedule, time.Now())
 		if err != nil {
 			log.Fatalf("Failed to evaluate schedule %q: %v", tmpl.Spec.Schedule, err)
 		}

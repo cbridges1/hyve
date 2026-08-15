@@ -71,7 +71,4 @@ func init() {
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
-	rootCmd.AddCommand(tuiCmd)
-	rootCmd.AddCommand(serveCmd)
-	rootCmd.AddCommand(openCmd)
 }

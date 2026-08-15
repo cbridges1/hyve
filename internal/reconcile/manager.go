@@ -27,8 +27,7 @@ type Reconciler struct {
 	stateMgr *state.Manager
 
 	// Logger, when set, additionally receives every progress line logged
-	// during a reconcile run — used by hyve-server to capture live progress
-	// for polling/WebSocket streaming without affecting the CLI's normal
+	// during a reconcile run, without affecting the CLI's normal
 	// stdout/log.Printf behavior. Left nil by the CLI, which never sets it.
 	Logger io.Writer
 }
