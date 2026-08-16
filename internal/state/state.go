@@ -1,7 +1,6 @@
 package state
 
 import (
-	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,7 +9,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/cbridges1/hyve/internal/git"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -75,58 +73,25 @@ func ResolveEnvFile(repoRoot string) string {
 	return filepath.Join(repoRoot, cfg.Env.File)
 }
 
-// Manager handles state file operations using Git repositories
+// Manager handles reading and writing cluster state to a local directory. It
+// has no awareness of git at all — git sync (pulling latest, committing and
+// pushing changes back) is not a native hyve capability; it's the caller's
+// job, done via `hyve git pull`/`hyve git push`/`hyve git sync` or an
+// equivalent workflow. See internal/reconcile.StateProvider.
 type Manager struct {
-	stateDir   string
-	gitManager *git.SystemBackend
+	stateDir string
 }
 
-// NewManagerFromPath creates a Manager backed by an existing local directory
-// (no git remote required). stateDir must be the clusters/ subdirectory path;
-// GetStateRoot() will return its parent.
+// NewManagerFromPath creates a Manager backed by an existing local directory.
+// stateDir must be the clusters/ subdirectory path; GetStateRoot() will
+// return its parent.
 func NewManagerFromPath(stateDir string) *Manager {
 	return &Manager{stateDir: stateDir}
-}
-
-// NewManager creates a new state manager with Git repository support
-func NewManager(gitRepoURL, localPath, username, token string) (*Manager, error) {
-	gitMgr, err := git.NewBackend(gitRepoURL, localPath, username, token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create git backend: %w", err)
-	}
-
-	return &Manager{
-		stateDir:   gitMgr.GetStateDir(),
-		gitManager: gitMgr,
-	}, nil
 }
 
 // LocalPath returns the root directory of the local repository checkout.
 func (m *Manager) LocalPath() string {
 	return filepath.Dir(m.stateDir)
-}
-
-// InitializeGitRepo initializes or clones the Git repository
-func (m *Manager) InitializeGitRepo(ctx context.Context) error {
-	return m.gitManager.InitializeRepo(ctx)
-}
-
-// SyncWithRemote pulls latest changes from the remote repository
-func (m *Manager) SyncWithRemote(ctx context.Context) error {
-	return m.gitManager.Pull(ctx)
-}
-
-// CommitAndPush commits changes and pushes to remote repository
-func (m *Manager) CommitAndPush(ctx context.Context, message string) error {
-	if err := m.gitManager.Commit(ctx, message); err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
-	}
-
-	if err := m.gitManager.Push(ctx); err != nil {
-		return fmt.Errorf("failed to push: %w", err)
-	}
-
-	return nil
 }
 
 // GetStateRoot returns the root directory of the state repository (the parent of the

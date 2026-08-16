@@ -14,10 +14,10 @@ import (
 // reconcileResources runs the resource drift-detection/apply/delete
 // algorithm for one ACTIVE, non-deleting cluster, mutating
 // cluster.Spec.Resources and cluster.Spec.AppliedResources in place,
-// persisting via SaveClusterDefinition + CommitAndPush (mirroring how
-// createCluster persists DriverOutputs) if anything changed, and returning a
-// non-nil error (without rollback) on the first delete/apply failure so the
-// whole reconcile cycle for this cluster is retried next cycle.
+// persisting via SaveClusterDefinition (mirroring how createCluster persists
+// DriverOutputs) if anything changed, and returning a non-nil error (without
+// rollback) on the first delete/apply failure so the whole reconcile cycle
+// for this cluster is retried next cycle.
 //
 // Called unconditionally from reconcileCluster's ACTIVE-and-not-deleting
 // case, regardless of param drift — it is the caller's responsibility to
@@ -35,10 +35,10 @@ import (
 // When dryRun is true, resolution and diffing still run for real (both
 // read-only) so drift can be reported accurately, but every mutating call
 // (kubectl apply/delete, helm upgrade/uninstall, and the final
-// SaveClusterDefinition+CommitAndPush) is skipped and logged as "would"
-// instead. cluster.Spec.Resources/AppliedResources are left untouched in
-// dry-run mode — the caller's in-memory copy is discarded either way since
-// nothing is persisted.
+// SaveClusterDefinition) is skipped and logged as "would" instead.
+// cluster.Spec.Resources/AppliedResources are left untouched in dry-run
+// mode — the caller's in-memory copy is discarded either way since nothing
+// is persisted.
 func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.ClusterDefinition, strictResourceDelete, dryRun bool) error {
 	name := cluster.Metadata.Name
 	repoRoot := r.stateMgr.LocalPath()
@@ -247,8 +247,6 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 	if changed {
 		if err := r.stateMgr.SaveClusterDefinition(cluster); err != nil {
 			log.Printf("[%s] Warning: failed to save resource state: %v", name, err)
-		} else if commitErr := r.stateMgr.CommitAndPush(ctx, "reconcile: resources "+name); commitErr != nil {
-			log.Printf("[%s] Warning: failed to commit resource state: %v", name, commitErr)
 		}
 	}
 

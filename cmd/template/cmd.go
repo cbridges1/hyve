@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -125,7 +126,6 @@ func createTemplate(
 	lockParams bool,
 ) {
 	ctx := context.Background()
-	shared.SyncRepoState(ctx)
 
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -183,14 +183,8 @@ func createTemplate(
 
 	log.Printf("✅ Template '%s' created successfully", name)
 
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to create state manager: %v", err)
-		log.Println("💡 Template saved locally but not pushed to git")
-	} else {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create template %s", name))
-	}
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create template %s", name))
 	log.Printf("Template path: %s", templateMgr.GetTemplatePath(name))
 	log.Println("\n📋 Template Details:")
 	log.Printf("  Driver: %s@%s", driverSource, driverVersion)
@@ -227,8 +221,6 @@ func createTemplate(
 }
 
 func listTemplates() {
-	shared.SyncRepoState(context.Background())
-
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -285,7 +277,6 @@ func listTemplates() {
 
 func deleteTemplate(name string) {
 	ctx := context.Background()
-	shared.SyncRepoState(ctx)
 
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -307,19 +298,11 @@ func deleteTemplate(name string) {
 
 	log.Printf("✅ Template '%s' deleted successfully", name)
 
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to create state manager: %v", err)
-		log.Println("💡 Template deleted locally but not pushed to git")
-	} else {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Delete template %s", name))
-	}
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Delete template %s", name))
 }
 
 func showTemplate(name string) {
-	shared.SyncRepoState(context.Background())
-
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)

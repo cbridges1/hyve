@@ -9,6 +9,7 @@ import (
 	"github.com/cbridges1/hyve/cmd/cluster"
 	gitpkg "github.com/cbridges1/hyve/cmd/git"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
+	statecmd "github.com/cbridges1/hyve/cmd/state"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 	"github.com/cbridges1/hyve/internal/database"
@@ -71,4 +72,6 @@ func init() {
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
+	rootCmd.AddCommand(statecmd.SetStateCmd)
+	rootCmd.AddCommand(statecmd.Cmd)
 }

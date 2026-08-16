@@ -3,52 +3,15 @@ package shared
 import (
 	gocontext "context"
 	"log"
-	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/state"
 )
 
-// SyncRepoState performs a git pull to synchronise the local repository with
-// the remote before any operation that reads or writes repository state.
-func SyncRepoState(ctx gocontext.Context) {
-	repoMgr, err := repository.NewManager()
-	if err != nil {
-		log.Printf("⚠️  Skipping git sync: failed to open repository manager: %v", err)
-		return
-	}
-	defer repoMgr.Close()
-
-	currentRepo, err := repoMgr.GetCurrentRepository()
-	if err != nil {
-		return
-	}
-
-	authUsername, authToken := GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Skipping git sync: failed to create state manager: %v", err)
-		return
-	}
-
-	if err := stateMgr.InitializeGitRepo(ctx); err != nil {
-		log.Printf("⚠️  Skipping git sync: failed to initialise git repo: %v", err)
-		return
-	}
-
-	if err := stateMgr.SyncWithRemote(ctx); err != nil {
-		log.Printf("⚠️  Skipping git sync: failed to sync with remote: %v", err)
-		return
-	}
-
-	log.Println("🔄 Repository synchronised")
-}
-
 // CreateStateManager creates state manager from current repository
-func CreateStateManager(ctx gocontext.Context) (*state.Manager, string) {
+func CreateStateManager(_ gocontext.Context) (*state.Manager, string) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -57,51 +20,24 @@ func CreateStateManager(ctx gocontext.Context) (*state.Manager, string) {
 
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatalf("❌ No Git repository configured. Hyve requires a Git repository for state management.\n\n" +
-			"Add a Git repository with: hyve git add <name> --repo-url <url>")
+		log.Fatalf("❌ No repository configured. Hyve requires a registered directory for state management.\n\n" +
+			"Register one with: hyve set-state (a plain local directory), or hyve git add <name> --repo-url <url> (git-backed)")
 	}
-	log.Printf("Using Git repository: %s", currentRepo.RepoURL)
+	logCurrentRepo(currentRepo)
 
-	authUsername, authToken := GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Fatalf("Failed to create state manager: %v", err)
-	}
-	if err := stateMgr.InitializeGitRepo(ctx); err != nil {
-		log.Fatalf("Failed to initialize Git repository: %v", err)
-	}
-	if err := stateMgr.SyncWithRemote(ctx); err != nil {
-		log.Fatalf("Failed to sync with remote repository: %v", err)
-	}
-	log.Println("Git repository synchronized")
 	stateDir := filepath.Join(currentRepo.LocalPath, "clusters")
+	stateMgr := state.NewManagerFromPath(stateDir)
 	return stateMgr, stateDir
 }
 
-// CommitStateChanges commits changes to Git repository and pushes to remote
-func CommitStateChanges(ctx gocontext.Context, stateMgr *state.Manager, message string) {
-	log.Println("📝 Committing and pushing changes to Git repository...")
-
-	if err := stateMgr.CommitAndPush(ctx, message); err != nil {
-		log.Printf("❌ Failed to commit and push: %v", err)
-
-		if strings.Contains(err.Error(), "failed to push") {
-			log.Println("💡 Changes were committed locally but push failed")
-			log.Println("💡 Check your Git credentials and network connection")
-			log.Println("💡 You can manually push with: cd <repo-path> && git push")
-		} else if strings.Contains(err.Error(), "failed to commit") {
-			log.Println("💡 Commit operation failed - changes may still be in working directory")
-		}
-		return
-	}
-
-	log.Println("✅ Changes committed and pushed to remote repository successfully")
-}
-
-// GetAuthCredentials returns the git auth token from the HYVE_GIT_TOKEN env var.
-// Username is always empty — the system git credential helper handles auth.
-func GetAuthCredentials(_ *repository.Repository) (username, token string) {
-	return "", os.Getenv("HYVE_GIT_TOKEN")
+// CommitStateChanges no longer commits or pushes anything — git sync is not
+// a native hyve capability (see internal/reconcile.StateProvider). State
+// changes were already written to disk by the caller; this just reminds the
+// user (or whatever workflow they've wired up) that persisting them to the
+// remote is now their job, e.g. `hyve git push` or a git-sync workflow.
+func CommitStateChanges(_ gocontext.Context, _ *state.Manager, message string) {
+	log.Printf("📝 State changes written locally (%q) — not pushed automatically.", message)
+	log.Println("💡 Push them yourself when ready: hyve git push, or `git add -A && git commit && git push`")
 }
 
 // GetRepoPath returns the local path of the current repository (no sync).
@@ -118,10 +54,8 @@ func GetRepoPath() string {
 	return currentRepo.LocalPath
 }
 
-// GetLocalPath syncs the repo state and returns the local path of the current repository.
+// GetLocalPath returns the local path of the current repository.
 func GetLocalPath() string {
-	SyncRepoState(gocontext.Background())
-
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -129,9 +63,20 @@ func GetLocalPath() string {
 	defer repoMgr.Close()
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatal("No Git repository configured. Use 'hyve git add' to configure a repository")
+		log.Fatal("No repository configured. Use 'hyve set-state' or 'hyve git add' to configure one")
 	}
 	return currentRepo.LocalPath
+}
+
+// logCurrentRepo prints which registered directory is in use — phrased for
+// both git-backed (has a RepoURL) and plain local (via `hyve set-state`)
+// entries, since both are equally valid sources of truth.
+func logCurrentRepo(r *repository.Repository) {
+	if r.RepoURL != "" {
+		log.Printf("Using Git repository: %s", r.RepoURL)
+	} else {
+		log.Printf("Using local state directory: %s", r.LocalPath)
+	}
 }
 
 // RunReconciliation runs reconciliation, optionally from a specific local path.
@@ -174,19 +119,10 @@ func RunReconciliation(repoPath string, dryRun bool) {
 		log.Println("Reconcile mode: cicd")
 		log.Println("Skipping local reconciliation — cluster provisioning will be handled by the CI/CD pipeline.")
 		if dryRun {
-			log.Println("DRY RUN: would push desired state to repository — skipping (this branch only pushes, nothing to preview)")
+			log.Println("DRY RUN: nothing to push — skipping (this branch doesn't reconcile locally either way)")
 			return
 		}
-		log.Println("Pushing desired state to repository...")
-		if err := stateMgr.CommitAndPush(ctx, "Update desired cluster state"); err != nil {
-			log.Printf("❌ Failed to push state: %v", err)
-			if strings.Contains(err.Error(), "failed to push") {
-				log.Println("💡 Changes were committed locally but push failed")
-				log.Println("💡 Check your Git credentials and network connection")
-			}
-		} else {
-			log.Println("✅ Desired state pushed to repository. The CI/CD pipeline will reconcile.")
-		}
+		log.Println("💡 Push the desired state yourself so the CI/CD pipeline picks it up: hyve git push, or `git add -A && git commit && git push`")
 		return
 	}
 
@@ -217,15 +153,11 @@ func RunLocalReconciliation(ctx gocontext.Context, stateMgr *state.Manager, dryR
 
 // CreateStateManagerFromPath builds a state manager from an already-checked-out local repository.
 func CreateStateManagerFromPath(absPath string) *state.Manager {
-	stateMgr, err := state.NewManager("", absPath, "", "")
-	if err != nil {
-		log.Fatalf("Failed to create state manager from path %q: %v", absPath, err)
-	}
-	return stateMgr
+	return state.NewManagerFromPath(filepath.Join(absPath, "clusters"))
 }
 
 // CreateStateManagerFromRepository creates state manager from current repository configuration
-func CreateStateManagerFromRepository(ctx gocontext.Context) (*state.Manager, string) {
+func CreateStateManagerFromRepository(_ gocontext.Context) (*state.Manager, string) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -234,25 +166,11 @@ func CreateStateManagerFromRepository(ctx gocontext.Context) (*state.Manager, st
 
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatalf("❌ No Git repository configured. Hyve requires a Git repository for state management.\n\n" +
-			"Add a Git repository with: hyve git add <name> --repo-url <url>")
+		log.Fatalf("❌ No repository configured. Hyve requires a registered directory for state management.\n\n" +
+			"Register one with: hyve set-state (a plain local directory), or hyve git add <name> --repo-url <url> (git-backed)")
 	}
-	log.Printf("Using Git repository: %s", currentRepo.RepoURL)
+	logCurrentRepo(currentRepo)
 
-	authUsername, authToken := GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Fatalf("Failed to create state manager: %v", err)
-	}
-
-	if err := stateMgr.InitializeGitRepo(ctx); err != nil {
-		log.Fatalf("Failed to initialize Git repository: %v", err)
-	}
-
-	if err := stateMgr.SyncWithRemote(ctx); err != nil {
-		log.Fatalf("Failed to sync with remote repository: %v", err)
-	}
-
-	log.Println("Git repository synchronized")
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
 	return stateMgr, currentRepo.LocalPath
 }

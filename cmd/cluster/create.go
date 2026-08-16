@@ -51,7 +51,6 @@ func init() {
 
 func createClusterFromTemplate(templateName, clusterName, region string, overrides map[string]string) {
 	ctx := context.Background()
-	shared.SyncRepoState(ctx)
 
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -65,16 +64,7 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 		return
 	}
 
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-
-	gitBacked := true
-	stateMgr, stateMgrErr := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if stateMgrErr != nil {
-		log.Printf("⚠️  Warning: Failed to create git-backed state manager: %v", stateMgrErr)
-		log.Println("💡 Cluster definition will be saved locally but not pushed to git")
-		stateMgr = state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
-		gitBacked = false
-	}
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
 
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
@@ -121,9 +111,7 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 
 	log.Printf("\n✅ Cluster definition created: %s", filepath.Join(currentRepo.LocalPath, "clusters", clusterName+".yaml"))
 
-	if gitBacked {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
-	}
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
 
 	log.Println("\n1️⃣ Reconciling cluster...")
 	shared.RunReconciliation("", false)

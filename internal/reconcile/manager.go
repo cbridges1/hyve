@@ -24,7 +24,7 @@ import (
 // Reconciler orchestrates cluster lifecycle by delegating all cloud operations
 // to the module identified by each cluster's spec.driver.
 type Reconciler struct {
-	stateMgr *state.Manager
+	stateMgr StateProvider
 
 	// Logger, when set, additionally receives every progress line logged
 	// during a reconcile run, without affecting the CLI's normal
@@ -32,7 +32,7 @@ type Reconciler struct {
 	Logger io.Writer
 }
 
-func NewReconciler(stateMgr *state.Manager) *Reconciler {
+func NewReconciler(stateMgr StateProvider) *Reconciler {
 	return &Reconciler{stateMgr: stateMgr}
 }
 
@@ -126,10 +126,6 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 			if err := r.reconcileCluster(ctx, *next, lf, dryRun); err != nil {
 				r.logf("[%s] reconcile error: %v", name, err)
 			}
-		}
-
-		if err := r.stateMgr.SyncWithRemote(ctx); err != nil {
-			r.logf("Warning: failed to sync after %s: %v", name, err)
 		}
 
 		reloaded, err := r.stateMgr.LoadClusterDefinitions()
@@ -273,10 +269,6 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 
 	if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
 		r.logf("[%s] Warning: failed to save driverOutputs: %v", name, err)
-	} else {
-		if commitErr := r.stateMgr.CommitAndPush(ctx, "reconcile: create "+name); commitErr != nil {
-			r.logf("[%s] Warning: failed to commit driverOutputs: %v", name, commitErr)
-		}
 	}
 
 	r.logf("[%s] ✅ Cluster created", name)
@@ -353,13 +345,10 @@ func (r *Reconciler) dedupeKubeconfigAfterAuth(name string) {
 	}
 }
 
-func (r *Reconciler) removeClusterFile(ctx context.Context, cluster types.ClusterDefinition) error {
+func (r *Reconciler) removeClusterFile(_ context.Context, cluster types.ClusterDefinition) error {
 	name := cluster.Metadata.Name
 	if err := r.stateMgr.RemoveClusterFile(name); err != nil {
 		return fmt.Errorf("remove cluster file: %w", err)
-	}
-	if err := r.stateMgr.CommitAndPush(ctx, "reconcile: delete "+name); err != nil {
-		r.logf("[%s] Warning: failed to commit cluster file removal: %v", name, err)
 	}
 	return nil
 }
