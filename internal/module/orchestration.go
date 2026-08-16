@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
@@ -201,7 +202,7 @@ func InstallModules(repoPath string, refs []ModuleRef) (locked []LockedModuleRef
 // (if present) a structurally valid auth.yaml. err is non-nil only for
 // infrastructure failures (can't load hyve.lock, can't resolve the module);
 // structural problems are returned as validation error strings instead.
-func ValidateModule(repoPath, source, version string) (validationErrors []string, err error) {
+func ValidateModule(repoPath, source, version string, existingClusterNames []string) (validationErrors []string, err error) {
 	lf, err := LoadLockFile(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load lock file: %w", err)
@@ -231,6 +232,17 @@ func ValidateModule(repoPath, source, version string) (validationErrors []string
 			}
 			if manifest.Metadata.Version == "" {
 				errs = append(errs, "module.yaml: metadata.version is required")
+			}
+			// existingClusterNames is the caller's current
+			// StateProvider.LoadClusterDefinitions() snapshot, passed in
+			// rather than resolved here — this package doesn't (and
+			// shouldn't) depend on internal/reconcile's StateProvider type,
+			// see cmd/module/validate.go for where the list comes from.
+			// Confirmed live: before this check existed, a missing/wrong
+			// mgmtCluster only ever surfaced as a script failure deep
+			// inside create.yaml, not here.
+			if mc := manifest.Spec.Requirements.MgmtCluster; mc != "" && !slices.Contains(existingClusterNames, mc) {
+				errs = append(errs, fmt.Sprintf("module.yaml: requirements.mgmtCluster %q does not exist in the current state — create it first, or check for a typo", mc))
 			}
 		}
 	}

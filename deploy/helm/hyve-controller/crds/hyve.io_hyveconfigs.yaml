@@ -1,0 +1,81 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: hyveconfigs.hyve.io
+spec:
+  group: hyve.io
+  names:
+    kind: HyveConfig
+    listKind: HyveConfigList
+    plural: hyveconfigs
+    shortNames:
+    - hc
+    singular: hyveconfig
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HyveConfig is the Schema for the hyveconfigs API. Treated as a singleton:
+          exactly one HyveConfig object (name and namespace chosen at controller
+          deploy time, passed via --config-name/--config-namespace) is read by
+          CRDStateProvider.LoadRepoConfig per reconcile — see internal/controller.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HyveConfigSpec is the controller-mode equivalent of file mode's hyve.yaml
+              — deliberately narrower than internal/state.RepoConfig, since several of
+              that type's fields are file-mode-only concepts with no controller-mode
+              analogue: Reconcile.Mode (local vs. cicd) doesn't apply — a controller
+              always reconciles every ClusterDefinition it watches, there's no
+              "defer to CI" branch — and Env.File doesn't apply either, since a
+              long-running controller pod gets its environment from its own
+              container/Secret mounts, not a dotenv file loaded at CLI startup. Only
+              the fields ReconcileOne's call graph actually consumes are carried over.
+            properties:
+              defaultWorkflowImage:
+                description: |-
+                  DefaultWorkflowImage is the container image KubernetesJobStepRunner
+                  falls back to for a workflow job/step that doesn't set its own
+                  container:. See internal/workflow's StepRunner design — resolution
+                  order is per-step container: -> per-job container: ->
+                  this field -> hard failure. Left unset, a workflow with no
+                  container: anywhere fails pre-flight validation with a clear error
+                  naming which of the three levels was missing, rather than silently
+                  falling back to a hyve-hardcoded image. No hyve-built or -maintained
+                  image is implied here; a real, actively-maintained image (e.g.
+                  alpine/k8s:<version>, which bundles kubectl/helm) is only a
+                  documented suggestion for operators to configure, never a
+                  code-level default.
+                type: string
+              strictResourceDelete:
+                description: |-
+                  StrictResourceDelete mirrors internal/state.ReconcileConfig.StrictResourceDelete
+                  — when true, a spec.resources entry removed without delete:true is
+                  auto-pruned instead of just logged as an orphan warning.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true

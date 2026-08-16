@@ -110,11 +110,11 @@ func helmChartArgs(h *types.HelmSpec, resolvedValues map[string]string) []string
 // client-side rendering, no cluster mutation. The output is fed straight
 // into kubectlDiff for live-drift checking, reusing the exact same
 // diff mechanism built for raw manifest resources.
-func helmRenderManifest(ctx context.Context, workDir, releaseName string, h *types.HelmSpec, resolvedValues map[string]string) ([]byte, error) {
+func helmRenderManifest(ctx context.Context, workDir string, env []string, releaseName string, h *types.HelmSpec, resolvedValues map[string]string) ([]byte, error) {
 	args := append([]string{"template", releaseName}, helmChartArgs(h, resolvedValues)...)
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -129,14 +129,14 @@ func helmRenderManifest(ctx context.Context, workDir, releaseName string, h *typ
 // widely-used ones, e.g. the official Portainer chart) don't render their own
 // Namespace object and simply assume it already exists, so without this flag
 // the very first install into a not-yet-existing namespace fails outright.
-func helmUpgradeInstall(ctx context.Context, workDir, releaseName string, h *types.HelmSpec, resolvedValues map[string]string) error {
+func helmUpgradeInstall(ctx context.Context, workDir string, env []string, releaseName string, h *types.HelmSpec, resolvedValues map[string]string) error {
 	args := append([]string{"upgrade", "--install", releaseName}, helmChartArgs(h, resolvedValues)...)
 	if h.Namespace != "" {
 		args = append(args, "--create-namespace")
 	}
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
 	if len(out) > 0 {
 		fmt.Print(string(out))
@@ -150,14 +150,14 @@ func helmUpgradeInstall(ctx context.Context, workDir, releaseName string, h *typ
 // helmUninstall runs `helm uninstall <name>`, treating "release: not found"
 // as success — idempotent, mirroring kubectl delete --ignore-not-found's
 // spirit for the raw-manifest path.
-func helmUninstall(ctx context.Context, workDir, releaseName, namespace string) error {
+func helmUninstall(ctx context.Context, workDir string, env []string, releaseName, namespace string) error {
 	args := []string{"uninstall", releaseName}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
 	if len(out) > 0 {
@@ -175,14 +175,14 @@ func helmUninstall(ctx context.Context, workDir, releaseName, namespace string) 
 // helmGetManifest runs `helm get manifest <name>` to retrieve the currently
 // deployed rendered manifest after a successful install/upgrade, so
 // parseManifestObjects (unchanged, fully reused) can build the Objects list.
-func helmGetManifest(ctx context.Context, workDir, releaseName, namespace string) ([]byte, error) {
+func helmGetManifest(ctx context.Context, workDir string, env []string, releaseName, namespace string) ([]byte, error) {
 	args := []string{"get", "manifest", releaseName}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

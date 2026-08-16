@@ -39,7 +39,7 @@ import (
 // cluster.Spec.Resources/AppliedResources are left untouched in dry-run
 // mode — the caller's in-memory copy is discarded either way since nothing
 // is persisted.
-func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.ClusterDefinition, strictResourceDelete, dryRun bool) error {
+func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.ClusterDefinition, env []string, strictResourceDelete, dryRun bool) error {
 	name := cluster.Metadata.Name
 	repoRoot := r.stateMgr.LocalPath()
 
@@ -71,13 +71,13 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 				}
 				if applied.Helm {
 					log.Printf("[%s] Resource %s: delete:true — uninstalling helm release", name, res.Name)
-					if err := helmUninstall(ctx, repoRoot, res.Name, applied.Namespace); err != nil {
+					if err := helmUninstall(ctx, repoRoot, env, res.Name, applied.Namespace); err != nil {
 						loopErr = fmt.Errorf("resource %s: helm uninstall failed: %w", res.Name, err)
 						break
 					}
 				} else {
 					log.Printf("[%s] Resource %s: delete:true — removing %d tracked object(s)", name, res.Name, len(applied.Objects))
-					if err := kubectlDeleteObjects(ctx, repoRoot, applied.Objects); err != nil {
+					if err := kubectlDeleteObjects(ctx, repoRoot, env, applied.Objects); err != nil {
 						loopErr = fmt.Errorf("resource %s: delete failed: %w", res.Name, err)
 						break
 					}
@@ -108,7 +108,7 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 			resolvedHelmValues = resolved
 			configHash = helmConfigHash(res.Helm, resolvedHelmValues)
 			applyNamespace = res.Helm.Namespace
-			rendered, err := helmRenderManifest(ctx, repoRoot, res.Name, res.Helm, resolvedHelmValues)
+			rendered, err := helmRenderManifest(ctx, repoRoot, env, res.Name, res.Helm, resolvedHelmValues)
 			if err != nil {
 				loopErr = fmt.Errorf("resource %s: helm template failed: %w", res.Name, err)
 				break
@@ -137,7 +137,7 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 		applied := cluster.Spec.AppliedResources[res.Name]
 		configChanged := applied == nil || applied.SourceSHA256 != configHash
 
-		liveDiff, err := kubectlDiff(ctx, repoRoot, liveManifest, applyNamespace)
+		liveDiff, err := kubectlDiff(ctx, repoRoot, env, liveManifest, applyNamespace)
 		if err != nil {
 			loopErr = fmt.Errorf("resource %s: kubectl diff failed: %w", res.Name, err)
 			break
@@ -158,11 +158,11 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 
 		var objects []types.AppliedObject
 		if res.Helm != nil {
-			if err := helmUpgradeInstall(ctx, repoRoot, res.Name, res.Helm, resolvedHelmValues); err != nil {
+			if err := helmUpgradeInstall(ctx, repoRoot, env, res.Name, res.Helm, resolvedHelmValues); err != nil {
 				loopErr = fmt.Errorf("resource %s: apply failed: %w", res.Name, err)
 				break
 			}
-			deployed, err := helmGetManifest(ctx, repoRoot, res.Name, res.Helm.Namespace)
+			deployed, err := helmGetManifest(ctx, repoRoot, env, res.Name, res.Helm.Namespace)
 			if err != nil {
 				loopErr = fmt.Errorf("resource %s: helm get manifest failed: %w", res.Name, err)
 				break
@@ -174,7 +174,7 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 			}
 			objects = objs
 		} else {
-			if err := kubectlApply(ctx, repoRoot, liveManifest, applyNamespace); err != nil {
+			if err := kubectlApply(ctx, repoRoot, env, liveManifest, applyNamespace); err != nil {
 				loopErr = fmt.Errorf("resource %s: apply failed: %w", res.Name, err)
 				break
 			}
@@ -226,10 +226,10 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 		var err error
 		if ar.Helm {
 			log.Printf("[%s] Resource %s: orphaned, strictResourceDelete=true — uninstalling helm release", name, orphan)
-			err = helmUninstall(ctx, repoRoot, orphan, ar.Namespace)
+			err = helmUninstall(ctx, repoRoot, env, orphan, ar.Namespace)
 		} else {
 			log.Printf("[%s] Resource %s: orphaned, strictResourceDelete=true — pruning %d tracked object(s)", name, orphan, len(ar.Objects))
-			err = kubectlDeleteObjects(ctx, repoRoot, ar.Objects)
+			err = kubectlDeleteObjects(ctx, repoRoot, env, ar.Objects)
 		}
 		if err != nil {
 			log.Printf("[%s] Warning: failed to prune orphaned resource %s: %v", name, orphan, err)

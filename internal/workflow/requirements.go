@@ -21,8 +21,13 @@ func (v *RequirementValidator) Close() error {
 	return nil
 }
 
-// ValidateRequirements validates all workflow requirements
-func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequirements) error {
+// ValidateRequirements validates all workflow requirements. extraEnv is
+// checked ahead of the process environment for secret requirements — the
+// caller's own variable set (--set flags, definition-derived vars, a
+// module's auth output), not process-global state, so this is safe to call
+// concurrently for different clusters (see MaxConcurrentReconciles). May be
+// nil.
+func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequirements, extraEnv map[string]string) error {
 	if requirements == nil {
 		return nil // No requirements to validate
 	}
@@ -38,7 +43,7 @@ func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequir
 
 	// Validate secret requirements
 	for _, secret := range requirements.Secrets {
-		if err := v.validateSecret(secret); err != nil {
+		if err := v.validateSecret(secret, extraEnv); err != nil {
 			errors = append(errors, err.Error())
 		}
 	}
@@ -78,8 +83,13 @@ func (v *RequirementValidator) validateTool(tool ToolRequirement) error {
 }
 
 // validateSecret checks if a required secret is available
-func (v *RequirementValidator) validateSecret(secret SecretRequirement) error {
-	// First check environment variable
+func (v *RequirementValidator) validateSecret(secret SecretRequirement, extraEnv map[string]string) error {
+	// Caller-provided vars (--set, definition-derived, auth output) first.
+	if value := extraEnv[secret.Name]; value != "" {
+		return nil
+	}
+
+	// Then the process environment (secrets set externally or via .env).
 	if value := os.Getenv(secret.Name); value != "" {
 		return nil // Secret available in environment
 	}

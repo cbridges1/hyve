@@ -22,6 +22,7 @@ type Executor struct {
 	currentCluster string
 	variables      map[string]string
 	injectedVars   map[string]string // extra vars provided by caller (--set flags or definition injection)
+	hookOutputVars map[string]string // HYVE_VAR=value lines captured from step output — see recordHookOutputVars
 	workingDir     string
 	repoName       string
 
@@ -30,6 +31,19 @@ type Executor struct {
 	// normal stdout/log.Printf behavior. Left nil by the CLI, which never
 	// sets it.
 	Output io.Writer
+
+	// StepRunner executes each step's command/script. Defaults to
+	// LocalStepRunner{} in NewExecutor — every existing call site (hyve
+	// workflow run, hyve reconcile's lifecycle hooks) keeps today's exact
+	// local-subprocess behavior unchanged. cmd/controller/run.go is the
+	// only caller that overrides this, to KubernetesJobStepRunner.
+	StepRunner StepRunner
+
+	// DefaultWorkflowImage is the last-resort container: fallback — see
+	// WorkflowJob.Container's doc comment for the full resolution order.
+	// Left empty by every local-mode caller (there's nothing to fall back
+	// for); cmd/controller/run.go sets it from HyveConfig.spec.defaultWorkflowImage.
+	DefaultWorkflowImage string
 }
 
 // NewExecutor creates a new workflow executor.
@@ -54,8 +68,10 @@ func NewExecutor(manager *Manager, cluster string) (*Executor, error) {
 		currentCluster: cluster,
 		variables:      make(map[string]string),
 		injectedVars:   make(map[string]string),
+		hookOutputVars: make(map[string]string),
 		workingDir:     manager.localPath,
 		repoName:       repoName,
+		StepRunner:     LocalStepRunner{},
 	}, nil
 }
 
@@ -66,6 +82,28 @@ func (e *Executor) InjectVars(vars map[string]string) {
 	for k, v := range vars {
 		e.injectedVars[k] = v
 	}
+}
+
+// recordHookOutputVars merges vars (from captureHookOutputVars) into both
+// e.hookOutputVars (retrievable by the caller via HookOutputVars once the
+// workflow completes) and e.variables (so a later step within the same
+// workflow run sees them immediately via buildStepEnv's overlay).
+func (e *Executor) recordHookOutputVars(vars map[string]string) {
+	for k, v := range vars {
+		e.hookOutputVars[k] = v
+		e.variables[k] = v
+	}
+}
+
+// HookOutputVars returns every HYVE_VAR=value the workflow's steps printed
+// to their output over the course of this Executor's run — e.g. a
+// beforeCreate step announcing HYVE_VPC_ID=vpc-123 for the driver's create
+// operation to pick up afterward. The reconciler merges these explicitly
+// into the next module.Executor.Env rather than relying on process-wide
+// env, so concurrent reconciles of different clusters can't cross-
+// contaminate each other's captured values (see MaxConcurrentReconciles).
+func (e *Executor) HookOutputVars() map[string]string {
+	return e.hookOutputVars
 }
 
 // RunWorkflowNoCluster is retained for API compatibility with the reconciler.
@@ -138,7 +176,7 @@ func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName st
 		}
 		defer validator.Close()
 
-		if err := validator.ValidateRequirements(wf.Spec.Requirements); err != nil {
+		if err := validator.ValidateRequirements(wf.Spec.Requirements, e.variables); err != nil {
 			e.execution.Status = StatusFailed
 			e.addLog("ERROR", "", "", fmt.Sprintf("Requirements validation failed: %v", err))
 			return execution, fmt.Errorf("requirements validation failed: %w", err)
@@ -196,10 +234,10 @@ func (e *Executor) setupEnvironmentVariables(workflow *Workflow) error {
 	e.variables["HYVE_REPOSITORY"] = e.repoName
 	e.variables["HYVE_REPOSITORY_PATH"] = e.manager.localPath
 
-	// Honour KUBECONFIG from the caller's environment.
-	if kc := os.Getenv("KUBECONFIG"); kc != "" {
-		e.variables["KUBECONFIG"] = kc
-	}
+	// KUBECONFIG (when the caller's auth step produced one) arrives via
+	// InjectVars/applyInjectedVars below, not process env — reading
+	// os.Getenv here would race with another cluster's concurrent reconcile
+	// mutating the same process-wide variable (see MaxConcurrentReconciles).
 
 	// Apply caller-injected variables last — highest priority, override everything above
 	e.applyInjectedVars()
@@ -208,12 +246,13 @@ func (e *Executor) setupEnvironmentVariables(workflow *Workflow) error {
 }
 
 // applyInjectedVars exports e.injectedVars (--set flags, or values the interactive
-// TUI collected for spec.inputs) into both e.variables and the process
-// environment. Idempotent — safe to call more than once per run.
+// TUI collected for spec.inputs, or KUBECONFIG/hook vars threaded explicitly
+// from the reconciler) into e.variables — not the process environment, so
+// concurrent Executors for different clusters never share mutable state (see
+// MaxConcurrentReconciles). Idempotent — safe to call more than once per run.
 func (e *Executor) applyInjectedVars() {
 	for k, v := range e.injectedVars {
 		e.variables[k] = v
-		os.Setenv(k, v)
 	}
 }
 
@@ -225,7 +264,6 @@ func (e *Executor) exportDefinitionEnvironmentVariables(clusterDef *types.Cluste
 			return
 		}
 		e.variables[key] = value
-		os.Setenv(key, value)
 	}
 
 	setEnv("HYVE_CLUSTER_NAME", clusterDef.Metadata.Name)

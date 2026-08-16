@@ -66,7 +66,7 @@ func TestValidateSecret_EnvironmentVariable(t *testing.T) {
 	os.Setenv(secretName, "test-value")
 	defer os.Unsetenv(secretName)
 
-	err = validator.validateSecret(SecretRequirement{Name: secretName, Required: true})
+	err = validator.validateSecret(SecretRequirement{Name: secretName, Required: true}, nil)
 	assert.NoError(t, err)
 }
 
@@ -80,7 +80,7 @@ func TestValidateSecret_NotFoundRequired(t *testing.T) {
 		Provider:    "nonexistent-provider",
 		Required:    true,
 		Description: "Test secret",
-	})
+	}, nil)
 	assert.Error(t, err)
 }
 
@@ -94,7 +94,7 @@ func TestValidateSecret_NotFoundOptional(t *testing.T) {
 		Provider:    "optional-provider",
 		Required:    false,
 		Description: "Optional secret",
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -103,8 +103,8 @@ func TestValidateRequirements_NoRequirements(t *testing.T) {
 	require.NoError(t, err)
 	defer validator.Close()
 
-	assert.NoError(t, validator.ValidateRequirements(nil))
-	assert.NoError(t, validator.ValidateRequirements(&WorkflowRequirements{}))
+	assert.NoError(t, validator.ValidateRequirements(nil, nil))
+	assert.NoError(t, validator.ValidateRequirements(&WorkflowRequirements{}, nil))
 }
 
 func TestValidateRequirements_ToolNotFound(t *testing.T) {
@@ -116,7 +116,7 @@ func TestValidateRequirements_ToolNotFound(t *testing.T) {
 		Tools: []ToolRequirement{
 			{Name: "nonexistent-tool-xyz123", Description: "This tool does not exist"},
 		},
-	})
+	}, nil)
 	assert.Error(t, err)
 }
 
@@ -130,7 +130,7 @@ func TestValidateRequirements_ToolFound(t *testing.T) {
 		Tools: []ToolRequirement{
 			{Name: "go", Description: "Go programming language"},
 		},
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -187,7 +187,7 @@ func TestValidateSecret_CivoProvider_Required_NoCredentials(t *testing.T) {
 		Name:     "CIVO_TOKEN",
 		Provider: "civo",
 		Required: true,
-	})
+	}, nil)
 	assert.Error(t, err)
 }
 
@@ -201,7 +201,7 @@ func TestValidateSecret_CivoProvider_Optional_NoEnvVar(t *testing.T) {
 		Name:     "CIVO_TOKEN",
 		Provider: "civo",
 		Required: false,
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -217,7 +217,7 @@ func TestValidateSecret_CivoProvider_PresentInEnv(t *testing.T) {
 		Name:     "CIVO_TOKEN",
 		Provider: "civo",
 		Required: true,
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -234,7 +234,7 @@ func TestValidateRequirements_MultipleErrors(t *testing.T) {
 		Secrets: []SecretRequirement{
 			{Name: "MISSING_SECRET_1", Provider: "provider1", Required: true, Description: "First missing secret"},
 		},
-	})
+	}, nil)
 	require.Error(t, err)
 
 	assert.ErrorContains(t, err, "nonexistent-tool-1")

@@ -30,6 +30,20 @@ type Reconciler struct {
 	// during a reconcile run, without affecting the CLI's normal
 	// stdout/log.Printf behavior. Left nil by the CLI, which never sets it.
 	Logger io.Writer
+
+	// StepRunner, when set, is propagated onto every workflow.Executor this
+	// Reconciler creates for lifecycle-hook workflows (onCreate/onDelete/
+	// etc. — see runWorkflows). Left nil by the CLI, which lets
+	// workflow.NewExecutor's own default (LocalStepRunner) apply — zero
+	// behavior change for local/CLI mode. cmd/controller/run.go is the
+	// only caller that sets this, to a *workflow.KubernetesJobStepRunner.
+	StepRunner workflow.StepRunner
+
+	// DefaultWorkflowImage is propagated the same way — see
+	// workflow.Executor.DefaultWorkflowImage's doc comment for the
+	// container: resolution order it participates in. Left empty by the
+	// CLI; cmd/controller/run.go sets it from HyveConfig.spec.defaultWorkflowImage.
+	DefaultWorkflowImage string
 }
 
 func NewReconciler(stateMgr StateProvider) *Reconciler {
@@ -105,27 +119,8 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		name := next.Metadata.Name
 		processed[name] = true
 
-		r.logf("───────────────────────────────────────────")
-		r.logf("  [%s]  driver=%s@%s  region=%s", name, next.Spec.Driver.Source, next.Spec.Driver.Version, next.Metadata.Region)
-		r.logf("───────────────────────────────────────────")
-
-		if next.Spec.Pause {
-			r.logf("[%s] Paused — skipping reconciliation", name)
-		} else {
-			if next.Spec.ExpiresAt != "" {
-				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
-					if time.Now().After(t) {
-						r.logf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, next.Spec.ExpiresAt)
-						next.Spec.Delete = true
-					}
-				} else {
-					r.logf("[%s] Warning: invalid expiresAt value '%s': %v", name, next.Spec.ExpiresAt, err)
-				}
-			}
-
-			if err := r.reconcileCluster(ctx, *next, lf, dryRun); err != nil {
-				r.logf("[%s] reconcile error: %v", name, err)
-			}
+		if err := r.ReconcileOne(ctx, *next, lf, dryRun); err != nil {
+			r.logf("[%s] reconcile error: %v", name, err)
 		}
 
 		reloaded, err := r.stateMgr.LoadClusterDefinitions()
@@ -137,6 +132,58 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 	}
 
 	return currentDefs
+}
+
+// ReconcileOne reconciles a single cluster definition — the pause check,
+// expiry-to-delete promotion, and dispatch logic ReconcileAll's convergence
+// loop runs per cluster today, extracted so a controller-mode reconcile
+// loop (one ClusterDefinition CR per Reconcile(ctx, req) call, no batch of
+// definitions to iterate) can drive the exact same engine a file-based
+// `hyve reconcile` run does — "same engine, different source of truth," not
+// a second implementation. def is taken by value and only ever mutated on
+// a local copy (matching convergenceLoop's prior in-place mutation of its
+// own loop variable, never the caller's), so lf's per-cluster lock
+// validation below runs against exactly what def's driver/workflow refs
+// name, independent of whatever ReconcileAll's own upfront batch validation
+// already checked for a file-mode run.
+func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
+	name := def.Metadata.Name
+
+	if err := validateDriverModuleLocked(def, lf); err != nil {
+		return err
+	}
+	if err := validateWorkflowRefsLocked(def, lf); err != nil {
+		return err
+	}
+
+	r.logf("───────────────────────────────────────────")
+	r.logf("  [%s]  driver=%s@%s  region=%s", name, def.Spec.Driver.Source, def.Spec.Driver.Version, def.Metadata.Region)
+	r.logf("───────────────────────────────────────────")
+
+	if def.Spec.Pause {
+		r.logf("[%s] Paused — skipping reconciliation", name)
+		return nil
+	}
+
+	if def.Spec.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, def.Spec.ExpiresAt); err == nil {
+			if time.Now().After(t) {
+				r.logf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, def.Spec.ExpiresAt)
+				def.Spec.Delete = true
+			}
+		} else {
+			r.logf("[%s] Warning: invalid expiresAt value '%s': %v", name, def.Spec.ExpiresAt, err)
+		}
+	}
+
+	if unmet, err := r.unmetDependency(ctx, def, lf); err != nil {
+		r.logf("[%s] Warning: failed to check dependsOn: %v", name, err)
+	} else if unmet != "" {
+		r.logf("[%s] Waiting on dependsOn cluster %q to become ACTIVE — skipping this cycle", name, unmet)
+		return nil
+	}
+
+	return r.reconcileCluster(ctx, def, lf, dryRun)
 }
 
 // effectiveStatus applies the authOnly default: an authOnly module's status
@@ -165,11 +212,14 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
 			return reqErr
 		}
+		if reqErr := r.validateMgmtClusterRequirement(name, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
+			return reqErr
+		}
 	}
 	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
 
 	env := buildModuleEnv(cluster, nil)
-	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath()}
+	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath(), ClusterName: name}
 
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
@@ -211,10 +261,15 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		// is read-only (credential/kubeconfig setup) so it still runs for
 		// real even in dry-run — kubectl diff needs it to reach the live
 		// cluster.
-		if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+		authResult, authErr := exec.Execute(ctx, module.OperationAuth)
+		if authErr != nil {
 			r.logf("[%s] Warning: auth failed: %v", name, authErr)
 		} else {
-			r.dedupeKubeconfigAfterAuth(name)
+			if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
+				env = append(env, "KUBECONFIG="+kc)
+				exec.Env = env
+			}
+			r.dedupeKubeconfigAfterAuth(name, authResult.Outputs["KUBECONFIG"])
 		}
 
 		if r.paramsChanged(cluster) {
@@ -236,7 +291,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 			repoCfg = &state.RepoConfig{}
 		}
-		return r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, dryRun)
+		return r.reconcileResources(ctx, &cluster, env, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 
 	case status == "CREATING" || status == "UPDATING" || status == "DELETING":
 		r.logf("[%s] Operation in progress (%s) — skipping", name, status)
@@ -252,7 +307,11 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	name := cluster.Metadata.Name
 	r.logf("[%s] Creating cluster...", name)
 
-	r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
+	hookVars := r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
+	for k, v := range hookVars {
+		env = append(env, k+"="+v)
+	}
+	exec.Env = env
 
 	result, err := exec.Execute(ctx, module.OperationCreate)
 	if err != nil {
@@ -277,10 +336,15 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	env = buildModuleEnv(cluster, nil)
 	exec.Env = env
 
-	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
+	if authErr != nil {
 		r.logf("[%s] Warning: auth failed: %v", name, authErr)
 	} else {
-		r.dedupeKubeconfigAfterAuth(name)
+		if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
+			env = append(env, "KUBECONFIG="+kc)
+			exec.Env = env
+		}
+		r.dedupeKubeconfigAfterAuth(name, authResult.Outputs["KUBECONFIG"])
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
@@ -294,7 +358,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 		r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 		repoCfg = &state.RepoConfig{}
 	}
-	if resErr := r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
+	if resErr := r.reconcileResources(ctx, &cluster, env, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
 		r.logf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
 	}
 
@@ -311,10 +375,15 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 	name := cluster.Metadata.Name
 	r.logf("[%s] Deleting cluster...", name)
 
-	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
+	if authErr != nil {
 		r.logf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
 	} else {
-		r.dedupeKubeconfigAfterAuth(name)
+		if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
+			env = append(env, "KUBECONFIG="+kc)
+			exec.Env = env
+		}
+		r.dedupeKubeconfigAfterAuth(name, authResult.Outputs["KUBECONFIG"])
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
@@ -330,14 +399,14 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 	return r.removeClusterFile(ctx, cluster)
 }
 
-// dedupeKubeconfigAfterAuth rewrites ~/.kube/config to remove duplicate
-// entries an external auth tool may have appended (e.g. civo without
-// --merge). Failures are logged as warnings, never fatal — kubeconfig
-// hygiene is best-effort, not part of the reconcile contract.
-func (r *Reconciler) dedupeKubeconfigAfterAuth(name string) {
-	kcPath, err := module.DefaultKubeconfigPath()
-	if err != nil {
-		r.logf("[%s] Warning: could not resolve kubeconfig path: %v", name, err)
+// dedupeKubeconfigAfterAuth rewrites cluster name's kubeconfig file to
+// remove duplicate entries an external auth tool may have appended across
+// reconcile cycles (e.g. civo without --merge). kcPath is empty when auth
+// didn't export a kubeconfig at all, in which case there's nothing to
+// dedupe. Failures are logged as warnings, never fatal — kubeconfig hygiene
+// is best-effort, not part of the reconcile contract.
+func (r *Reconciler) dedupeKubeconfigAfterAuth(name, kcPath string) {
+	if kcPath == "" {
 		return
 	}
 	if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
@@ -353,16 +422,23 @@ func (r *Reconciler) removeClusterFile(_ context.Context, cluster types.ClusterD
 	return nil
 }
 
-func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef, cluster types.ClusterDefinition, env []string, lf *module.LockFile) {
+// runWorkflows runs every ref in refs against one shared workflow.Executor,
+// then returns whatever HYVE_VAR=value lines those steps printed (see
+// workflow.Executor.HookOutputVars) — createCluster merges these explicitly
+// into the driver module's env before OperationCreate, replacing the old
+// os.Setenv-based hand-off so concurrent reconciles of different clusters
+// (see MaxConcurrentReconciles) can't cross-contaminate each other's
+// captured values.
+func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef, cluster types.ClusterDefinition, env []string, lf *module.LockFile) map[string]string {
 	if len(refs) == 0 {
-		return
+		return nil
 	}
 	name := cluster.Metadata.Name
 
 	wfMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
 	if err != nil {
 		r.logf("[%s] Failed to create workflow manager: %v", name, err)
-		return
+		return nil
 	}
 
 	injected := make(map[string]string, len(env))
@@ -375,10 +451,14 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 	executor, err := workflow.NewExecutor(wfMgr, "")
 	if err != nil {
 		r.logf("[%s] Failed to create workflow executor: %v", name, err)
-		return
+		return nil
 	}
 	defer executor.Close()
 	executor.Output = r.Logger
+	if r.StepRunner != nil {
+		executor.StepRunner = r.StepRunner
+	}
+	executor.DefaultWorkflowImage = r.DefaultWorkflowImage
 	executor.InjectVars(injected)
 
 	for _, ref := range refs {
@@ -402,6 +482,8 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 			r.logf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, label, execution.Status)
 		}
 	}
+
+	return executor.HookOutputVars()
 }
 
 // runRemoteWorkflowHook resolves a remote WorkflowRef using hyve.lock as a
@@ -486,6 +568,86 @@ func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) 
 		}
 	}
 	return nil
+}
+
+// checkDependencyStatus resolves depCluster's driver module and returns its
+// current status — a lighter-weight duplicate of reconcileCluster's own
+// module-resolve-then-status preamble (deliberately not shared: that
+// preamble also builds a module.Executor for the caller to run create/
+// delete against afterward, which a dependsOn check never does — reusing
+// it would mean threading an unused Executor back out for no reason).
+// Treats a resolve/execute failure as "not ACTIVE" rather than propagating
+// the error — dependsOn's whole point is "skip this cycle, don't fail
+// hard," so a dependency that's erroring out should read the same as one
+// that's simply not ready yet.
+func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types.ClusterDefinition, lf *module.LockFile) string {
+	locked := lf.GetLocked(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version)
+	resolved, err := module.Resolve(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
+	if err != nil {
+		return ""
+	}
+	manifest, _ := module.LoadManifestForSource(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
+	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
+
+	env := buildModuleEnv(depCluster, nil)
+	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath(), ClusterName: depCluster.Metadata.Name}
+	statusResult, err := exec.Execute(ctx, module.OperationStatus)
+	if err != nil {
+		return ""
+	}
+	return effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
+}
+
+// unmetDependency returns the first entry in def.Spec.DependsOn that isn't
+// currently ACTIVE, if any — see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+// "Optional dependsOn ordering" section. A named dependency that doesn't
+// exist at all counts as unmet, same as one that exists but isn't ACTIVE
+// yet — both mean "not ready," and ReconcileOne's caller treats either the
+// same way (skip this cycle, log it, don't fail hard).
+func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile) (string, error) {
+	if len(def.Spec.DependsOn) == 0 {
+		return "", nil
+	}
+	defs, err := r.stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		return "", fmt.Errorf("failed to load cluster definitions for dependsOn check: %w", err)
+	}
+	byName := make(map[string]types.ClusterDefinition, len(defs))
+	for _, d := range defs {
+		byName[d.Metadata.Name] = d
+	}
+	for _, depName := range def.Spec.DependsOn {
+		dep, ok := byName[depName]
+		if !ok || r.checkDependencyStatus(ctx, dep, lf) != "ACTIVE" {
+			return depName, nil
+		}
+	}
+	return "", nil
+}
+
+// validateMgmtClusterRequirement checks that a module's optional
+// requirements.mgmtCluster (see internal/module.ModuleRequirements) names a
+// cluster that actually exists in the current StateProvider, before
+// reconcile ever attempts one of the module's operations against it — a
+// missing/wrong mgmtCluster would otherwise only ever surface as a script
+// failure deep inside create.yaml (or wherever the module's own op files
+// try to use credentials for it). Works identically in local/CLI mode and
+// controller mode — LoadClusterDefinitions is a StateProvider method, not
+// something either mode implements specially.
+func (r *Reconciler) validateMgmtClusterRequirement(clusterName, mgmtCluster string) error {
+	if mgmtCluster == "" {
+		return nil
+	}
+	defs, err := r.stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		return fmt.Errorf("cluster %s: failed to check mgmtCluster requirement %q: %w", clusterName, mgmtCluster, err)
+	}
+	for _, d := range defs {
+		if d.Metadata.Name == mgmtCluster {
+			return nil
+		}
+	}
+	return fmt.Errorf("cluster %s: module requires mgmtCluster %q, which doesn't exist — create it first, or check for a typo", clusterName, mgmtCluster)
 }
 
 func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {

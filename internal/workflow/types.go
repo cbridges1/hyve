@@ -90,6 +90,15 @@ type WorkflowJob struct {
 	Steps       []WorkflowStep       `yaml:"steps" json:"steps"`
 	Timeout     string               `yaml:"timeout,omitempty" json:"timeout,omitempty"` // e.g., "5m", "1h"
 	Retry       *WorkflowRetryPolicy `yaml:"retry,omitempty" json:"retry,omitempty"`
+
+	// Container is the image every step in this job runs in when executed
+	// via KubernetesJobStepRunner (controller mode) — meaningless, and
+	// ignored rather than validated, under LocalStepRunner (plain CLI/local
+	// mode, or any runtime: client workflow regardless of hyve's mode — see
+	// Phase 5). A step's own Container overrides this job-level default;
+	// if neither is set, HyveConfig.spec.defaultWorkflowImage is the last
+	// fallback before a hard pre-flight failure. See StepRunner.RequiresContainer.
+	Container string `yaml:"container,omitempty" json:"container,omitempty"`
 }
 
 // WorkflowStep represents a single step in a job
@@ -105,6 +114,10 @@ type WorkflowStep struct {
 	WorkingDir      string            `yaml:"workingDir,omitempty" json:"workingDir,omitempty"`           // Working directory for this step
 	Timeout         string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`                 // Step timeout
 	ContinueOnError bool              `yaml:"continueOnError,omitempty" json:"continueOnError,omitempty"` // Continue even if step fails
+
+	// Container overrides WorkflowJob.Container for this step only. See
+	// WorkflowJob.Container's doc comment for the full resolution order.
+	Container string `yaml:"container,omitempty" json:"container,omitempty"`
 }
 
 // WorkflowRetryPolicy defines retry behavior for jobs

@@ -173,6 +173,14 @@ type ClusterSpec struct {
 	// ExpiresAt is an optional RFC 3339 timestamp. When the current time is past this
 	// value the reconciler treats the cluster as if delete: true is set.
 	ExpiresAt string `yaml:"expiresAt,omitempty" json:"expiresAt,omitempty"`
+
+	// DependsOn names other clusters this one depends on — e.g. a Cluster
+	// API-backed workload cluster that needs its CAPI management cluster
+	// ACTIVE first. Optional; see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+	// "Optional dependsOn ordering" section. ReconcileOne skips (does not
+	// fail) a reconcile cycle for this cluster while any named dependency
+	// isn't ACTIVE.
+	DependsOn []string `yaml:"dependsOn,omitempty" json:"dependsOn,omitempty"`
 }
 
 // ClusterMetadata represents cluster metadata

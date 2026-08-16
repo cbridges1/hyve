@@ -1,0 +1,52 @@
+# Default values for hyve-controller.
+
+image:
+  # Built from deploy/Dockerfile.controller — see that file's own header
+  # comment for how to build one against your own state repo. There is no
+  # generic public image: every deployment's baked-in hyve.lock/modules are
+  # specific to that deployment's own state repo.
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# namespace both the controller watches (--namespace) and deploys into.
+# Matches CRDStateProvider.Namespace / cmd/controller/run.go's --namespace
+# flag default.
+namespace: hyve-system
+
+# Name of the singleton HyveConfig object within namespace — see
+# cmd/controller/run.go's --config-name flag.
+configName: hyve-config
+
+# hyveConfig, if set, is templated into a HyveConfig object at install time
+# (spec.strictResourceDelete / spec.defaultWorkflowImage — see
+# internal/apis/hyve/v1alpha1's HyveConfigSpec). Leave unset to manage
+# HyveConfig by hand instead (kubectl apply / kubectl edit) — this chart
+# never overwrites an existing HyveConfig object it doesn't own.
+hyveConfig:
+  create: false
+  strictResourceDelete: false
+  defaultWorkflowImage: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+leaderElection: false
+
+metricsBindAddress: ":8080"
+healthProbeBindAddress: ":8081"
+
+# RBAC: the controller needs to read/write ClusterDefinition/HyveConfig
+# (both cluster-scoped-looking but actually Namespaced per their CRD specs
+# — see internal/apis/hyve/v1alpha1), and to create/manage batch/v1 Jobs +
+# read Pod logs for KubernetesJobStepRunner (see
+# internal/workflow/k8s_step_runner.go). Scoped to `namespace` only — the
+# controller never needs cluster-wide access for anything in this chart.
+serviceAccount:
+  create: true
+  name: ""

@@ -23,14 +23,14 @@ import (
 // with a conflict error and the resource silently never reconciles. Not
 // shared with internal/workflow/job_runner.go's kubectl-apply action, which
 // still writes to a file path — out of scope for this change.
-func kubectlApply(ctx context.Context, workDir string, data []byte, namespace string) error {
+func kubectlApply(ctx context.Context, workDir string, env []string, data []byte, namespace string) error {
 	args := []string{"apply", "--server-side", "--force-conflicts", "-f", "-"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(data)
 	out, err := cmd.CombinedOutput()
 	if len(out) > 0 {
@@ -46,14 +46,14 @@ func kubectlApply(ctx context.Context, workDir string, data []byte, namespace st
 // diff; exit code 1 means a diff was found (not an error — kubectl diff's
 // documented exit-code convention); any other exit code (or a non-ExitError
 // failure, e.g. kubectl not found) is a real error.
-func kubectlDiff(ctx context.Context, workDir string, data []byte, namespace string) (hasDiff bool, err error) {
+func kubectlDiff(ctx context.Context, workDir string, env []string, data []byte, namespace string) (hasDiff bool, err error) {
 	args := []string{"diff", "--server-side", "-f", "-"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(data)
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
@@ -90,7 +90,7 @@ func kubectlDiff(ctx context.Context, workDir string, data []byte, namespace str
 // manifest (which may no longer exist locally, e.g. after a source file was
 // deleted alongside delete:true). --ignore-not-found so an object someone
 // already hand-deleted doesn't fail the whole cycle.
-func kubectlDeleteObjects(ctx context.Context, workDir string, objects []types.AppliedObject) error {
+func kubectlDeleteObjects(ctx context.Context, workDir string, env []string, objects []types.AppliedObject) error {
 	for _, obj := range objects {
 		args := []string{"delete", obj.Kind, obj.Name, "--ignore-not-found"}
 		if obj.Namespace != "" {
@@ -98,7 +98,7 @@ func kubectlDeleteObjects(ctx context.Context, workDir string, objects []types.A
 		}
 		cmd := exec.CommandContext(ctx, "kubectl", args...)
 		cmd.Dir = workDir
-		cmd.Env = os.Environ()
+		cmd.Env = append(os.Environ(), env...)
 		out, err := cmd.CombinedOutput()
 		if len(out) > 0 {
 			fmt.Print(string(out))

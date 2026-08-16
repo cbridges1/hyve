@@ -1,0 +1,68 @@
+# Controller-mode image — bakes a state repo's hyve.lock and every module/
+# workflow it locks into the image at build time, so `hyve controller run`
+# never needs network access to a module registry at runtime. See
+# HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's "hyve.lock in controller mode" and
+# "Local cache root problem" sections for the full rationale.
+#
+# Build context is your STATE repo (hyve.lock + clusters/ + templates/ +
+# workflows/ — the same repo you'd otherwise `hyve set-state` and
+# `hyve reconcile` against locally), NOT this hyve source repo:
+#
+#   docker build -f path/to/hyve/deploy/Dockerfile.controller \
+#     -t your-registry/hyve-controller:v1 \
+#     /path/to/your-state-repo
+#
+# IMPORTANT — HOME must match between build and runtime: module.CacheDir()
+# (internal/module/cache.go) resolves the resolved-module cache to
+# $HOME/.hyve/module-cache, unconditionally — it does not respect
+# --home/HYVE_HOME. Both stages below fix HOME=/root explicitly and the
+# final image must keep running as root (or you must set HOME to whatever
+# this Dockerfile bakes into) so `hyve controller run` finds the cache it
+# was built with rather than an empty one, which would force an
+# (impossible, since there's no network at runtime) re-resolve.
+FROM golang:1.25-alpine AS resolver
+ENV HOME=/root
+RUN apk add --no-cache git
+
+# ARG HYVE_VERSION pins which hyve release builds/resolves the modules
+# below — go install already verifies the module against the Go checksum
+# database, the same integrity guarantee `go get` gives any other
+# dependency. Override with --build-arg HYVE_VERSION=vX.Y.Z for a specific
+# release instead of always floating to latest.
+ARG HYVE_VERSION=latest
+RUN go install github.com/cbridges1/hyve@${HYVE_VERSION}
+
+WORKDIR /state
+COPY . .
+
+# Registers /state as a plain local state directory (no git operations —
+# see `hyve set-state`) and resolves every module/workflow hyve.lock
+# already pins into $HOME/.hyve/module-cache. If hyve.lock references
+# anything not yet locked, `hyve module install` locks it now, at build
+# time — the image build is the one place a network fetch to a module's
+# source repo is expected to happen, never at controller runtime.
+RUN /root/go/bin/hyve --home /root/.hyve set-state --current /state && \
+    /root/go/bin/hyve --home /root/.hyve module install
+
+FROM alpine:3.20
+ENV HOME=/root
+
+# Same package list as the plain-CLI Dockerfile/Dockerfile.release at this
+# repo's root — module operation scripts commonly shell out to these
+# regardless of which mode hyve runs in. Cloud-provider CLIs (aws/gcloud/
+# az/civo) are intentionally not included — install whichever your modules
+# need on top of this image, the same guidance as the plain-CLI image.
+RUN apk add --no-cache ca-certificates bash git curl jq openssl \
+    kubectl helm
+
+COPY --from=resolver /root/go/bin/hyve /usr/local/bin/hyve
+COPY --from=resolver /root/.hyve/module-cache /root/.hyve/module-cache
+
+# The whole state repo (hyve.lock, workflows/, any locally-sourced module
+# under ./..., clusters/ and templates/ too, though those are unused in
+# controller mode — ClusterDefinition CRs are the source of truth, not
+# files) — this becomes --modules-dir's default target, LocalPath() for
+# module/workflow/hyve.lock resolution.
+COPY --from=resolver /state /var/lib/hyve/modules
+
+ENTRYPOINT ["hyve", "controller", "run"]

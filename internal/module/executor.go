@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,12 +21,40 @@ func DefaultKubeconfigPath() (string, error) {
 	return filepath.Join(home, ".kube", "config"), nil
 }
 
+// kubeconfigNameSanitizer replaces anything but [A-Za-z0-9_.-] so a cluster
+// name can never escape the kubeconfigs directory or collide via path
+// separators.
+var kubeconfigNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
+// KubeconfigPathForCluster returns a kubeconfig file path unique to
+// clusterName, under ~/.hyve/kubeconfigs/. Auth exports are written here
+// instead of the shared ~/.kube/config so that two clusters' auth/reconcile
+// operations can safely run concurrently (see MaxConcurrentReconciles) —
+// each cluster's context lives in its own file, never a shared mutable one.
+// Ensures the parent directory exists.
+func KubeconfigPathForCluster(clusterName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".hyve", "kubeconfigs")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create kubeconfigs directory: %w", err)
+	}
+	safe := kubeconfigNameSanitizer.ReplaceAllString(clusterName, "-")
+	return filepath.Join(dir, safe+".yaml"), nil
+}
+
 // Executor runs module operations in host mode.
 type Executor struct {
-	ModuleDir  string
-	Env        []string // HYVE_* vars as "KEY=VALUE" strings
-	WorkDir    string   // repo root
-	AuthMethod string   // optional: name of auth method to use; empty means first
+	ModuleDir string
+	Env       []string // HYVE_* vars as "KEY=VALUE" strings
+	WorkDir   string   // repo root
+	// ClusterName identifies which cluster this Executor acts on — used
+	// only to derive a per-cluster kubeconfig path in executeAuth (see
+	// KubeconfigPathForCluster). Every OperationAuth caller must set it.
+	ClusterName string
+	AuthMethod  string // optional: name of auth method to use; empty means first
 }
 
 // Execute runs a named operation and returns captured outputs.
@@ -176,33 +205,44 @@ func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec, method
 		}
 	}
 
-	if err := e.runShellScript(ctx, method.Auth.Script); err != nil {
+	// For an export-producing method, point KUBECONFIG at a path unique to
+	// this cluster (not the shared ~/.kube/config) *before* running the auth
+	// script, so tools like civo/eks/gcloud kubeconfig plugins — which all
+	// honor KUBECONFIG for --save/--merge — write their context there
+	// instead. This is what makes concurrent reconciles of different
+	// clusters safe: each has its own kubeconfig file, never a shared
+	// mutable one keyed only by "whichever context is current".
+	var authEnv []string
+	var kcPath string
+	switch method.Exports {
+	case "KUBECONFIG", "KEEPER_KUBECONFIG":
+		path, pathErr := KubeconfigPathForCluster(e.ClusterName)
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve per-cluster kubeconfig path: %w", pathErr)
+		}
+		kcPath = path
+		authEnv = []string{"KUBECONFIG=" + kcPath}
+	}
+
+	if err := e.runShellScriptWithEnv(ctx, method.Auth.Script, authEnv); err != nil {
 		return nil, fmt.Errorf("auth method %q failed: %w", method.Name, err)
 	}
 
-	// Handle exports: set env vars in the current process so that workflow
-	// subprocesses spawned after auth inherit them.
-	switch method.Exports {
-	case "KUBECONFIG", "KEEPER_KUBECONFIG":
-		// civo (and similar tools) write to ~/.kube/config via --save.
-		// Explicitly set KUBECONFIG in the process env so kubectl in any
-		// subsequent subprocess definitely picks up the right file, even
-		// if KUBECONFIG was previously unset or pointed elsewhere.
-		if kc, pathErr := DefaultKubeconfigPath(); pathErr == nil {
-			if _, statErr := os.Stat(kc); statErr == nil {
-				os.Setenv("KUBECONFIG", kc)
-			}
+	outputs := map[string]string{}
+	if kcPath != "" {
+		if _, statErr := os.Stat(kcPath); statErr == nil {
+			outputs["KUBECONFIG"] = kcPath
 		}
 	}
 
 	// Legacy verify step — only applies when using the legacy single-method shape.
 	if len(spec.Methods) == 0 && spec.Verify != nil && spec.Verify.Command != "" {
-		if err := e.runShellScript(ctx, spec.Verify.Command); err != nil {
+		if err := e.runShellScriptWithEnv(ctx, spec.Verify.Command, authEnv); err != nil {
 			return nil, fmt.Errorf("auth verify failed: %w", err)
 		}
 	}
 
-	return &OperationResult{Outputs: map[string]string{}, ExitCode: 0}, nil
+	return &OperationResult{Outputs: outputs, ExitCode: 0}, nil
 }
 
 // findMethod returns the first method with the given name, or nil if not found.
@@ -235,9 +275,13 @@ func (e *Executor) executeScript(ctx context.Context, scriptPath string) (*Opera
 	}, nil
 }
 
-func (e *Executor) runShellScript(ctx context.Context, script string) error {
+// runShellScriptWithEnv runs script with e.Env plus extraEnv layered on top
+// of the inherited process environment — extraEnv wins on key collision
+// (exec.Cmd resolves duplicate keys to the last occurrence), which is how
+// executeAuth overrides KUBECONFIG per-cluster without touching os.Environ.
+func (e *Executor) runShellScriptWithEnv(ctx context.Context, script string, extraEnv []string) error {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
-	cmd.Env = append(os.Environ(), e.Env...)
+	cmd.Env = append(append(os.Environ(), e.Env...), extraEnv...)
 	cmd.Dir = e.WorkDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

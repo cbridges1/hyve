@@ -23,7 +23,16 @@ var validateCmd = &cobra.Command{
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
 
-		errors, err := mod.ValidateModule(repoPath, source, version)
+		defs, defsErr := stateMgr.LoadClusterDefinitions()
+		if defsErr != nil {
+			log.Fatalf("Failed to load cluster definitions: %v", defsErr)
+		}
+		existingClusterNames := make([]string, len(defs))
+		for i, d := range defs {
+			existingClusterNames[i] = d.Metadata.Name
+		}
+
+		errors, err := mod.ValidateModule(repoPath, source, version, existingClusterNames)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

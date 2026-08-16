@@ -1,0 +1,7 @@
+apiVersion: v2
+name: hyve-controller
+description: hyve's controller/operator mode — reconciles ClusterDefinition/HyveConfig CRDs, the CRD-backed equivalent of running `hyve reconcile` against a git checkout.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/cbridges1/hyve

@@ -50,7 +50,7 @@ spec:
 			"module.yaml": manifestNoAuth,
 		})
 
-		errs, err := ValidateModule(repo, source, "local")
+		errs, err := ValidateModule(repo, source, "local", nil)
 		require.NoError(t, err) // infra-level error, not a validation failure
 		require.NotEmpty(t, errs)
 		joined := strings.Join(errs, "; ")
@@ -65,7 +65,7 @@ spec:
 			"auth.yaml":   authYAML,
 		})
 
-		errs, err := ValidateModule(repo, source, "local")
+		errs, err := ValidateModule(repo, source, "local", nil)
 		require.NoError(t, err)
 		assert.Empty(t, errs)
 	})
@@ -77,7 +77,7 @@ spec:
 			"auth.sh":     "#!/bin/sh\necho ok\n",
 		})
 
-		errs, err := ValidateModule(repo, source, "local")
+		errs, err := ValidateModule(repo, source, "local", nil)
 		require.NoError(t, err)
 		assert.Empty(t, errs)
 	})
@@ -94,9 +94,58 @@ metadata:
 			"create.sh": "#!/bin/sh\necho 'HYVE_CLUSTER_STATUS=ACTIVE'\n",
 		})
 
-		errs, err := ValidateModule(repo, source, "local")
+		errs, err := ValidateModule(repo, source, "local", nil)
 		require.NoError(t, err)
 		assert.Empty(t, errs, "a create-only module with no auth.yaml must still pass when it's not authOnly")
+	})
+}
+
+func TestValidateModule_MgmtCluster(t *testing.T) {
+	const manifestWithMgmtCluster = `apiVersion: v1
+kind: Module
+metadata:
+  name: capi
+  version: 0.1.0
+spec:
+  requirements:
+    mgmtCluster: mgmt
+`
+
+	t.Run("mgmtCluster naming a nonexistent cluster fails validation", func(t *testing.T) {
+		repo := t.TempDir()
+		source := writeLocalModule(t, repo, "capi", map[string]string{
+			"module.yaml": manifestWithMgmtCluster,
+			"create.sh":   "#!/bin/sh\necho 'HYVE_CLUSTER_STATUS=ACTIVE'\n",
+		})
+
+		errs, err := ValidateModule(repo, source, "local", []string{"other-cluster"})
+		require.NoError(t, err)
+		require.NotEmpty(t, errs)
+		assert.Contains(t, strings.Join(errs, "; "), `mgmtCluster "mgmt"`)
+	})
+
+	t.Run("mgmtCluster naming an existing cluster passes", func(t *testing.T) {
+		repo := t.TempDir()
+		source := writeLocalModule(t, repo, "capi", map[string]string{
+			"module.yaml": manifestWithMgmtCluster,
+			"create.sh":   "#!/bin/sh\necho 'HYVE_CLUSTER_STATUS=ACTIVE'\n",
+		})
+
+		errs, err := ValidateModule(repo, source, "local", []string{"mgmt"})
+		require.NoError(t, err)
+		assert.Empty(t, errs)
+	})
+
+	t.Run("no mgmtCluster requirement is unaffected regardless of existing clusters", func(t *testing.T) {
+		repo := t.TempDir()
+		source := writeLocalModule(t, repo, "plain", map[string]string{
+			"module.yaml": "apiVersion: v1\nkind: Module\nmetadata:\n  name: plain\n  version: 0.1.0\n",
+			"create.sh":   "#!/bin/sh\necho 'HYVE_CLUSTER_STATUS=ACTIVE'\n",
+		})
+
+		errs, err := ValidateModule(repo, source, "local", nil)
+		require.NoError(t, err)
+		assert.Empty(t, errs)
 	})
 }
 

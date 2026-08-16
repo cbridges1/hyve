@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hyve-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hyve-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hyve-controller
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default "hyve-controller" }}
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # deploy/Dockerfile.controller's ENTRYPOINT already runs `hyve
+          # controller run` — args here only override flags, never the
+          # subcommand itself.
+          args:
+            - --namespace={{ .Values.namespace }}
+            - --config-name={{ .Values.configName }}
+            - --metrics-bind-address={{ .Values.metricsBindAddress }}
+            - --health-probe-bind-address={{ .Values.healthProbeBindAddress }}
+            {{- if .Values.leaderElection }}
+            - --leader-elect
+            {{- end }}
+          # HOME must match whatever deploy/Dockerfile.controller baked the
+          # module cache under (see that file's own comment) — left
+          # unset here deliberately so the image's own Dockerfile-set HOME
+          # applies; do not override HOME via extra env unless you also
+          # rebuilt the image with a matching one.
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: probes
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

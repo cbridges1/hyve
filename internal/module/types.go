@@ -40,6 +40,16 @@ type ParamSpec struct {
 type ModuleRequirements struct {
 	Env   []EnvRequirement  `yaml:"env,omitempty" json:"env,omitempty"`
 	Tools []ToolRequirement `yaml:"tools,omitempty" json:"tools,omitempty"`
+
+	// MgmtCluster names another hyve-managed ClusterDefinition this module
+	// depends on for credentials — e.g. a module wrapping Cluster API,
+	// which needs a kubeconfig for a separate CAPI management cluster
+	// that's itself just another cluster hyve already knows about. Optional;
+	// see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's "A typed mgmtCluster
+	// module requirement" section. Checked at reconcile pre-flight (see
+	// internal/reconcile) — a missing/wrong mgmtCluster otherwise only ever
+	// surfaces as a script failure deep inside create.yaml.
+	MgmtCluster string `yaml:"mgmtCluster,omitempty" json:"mgmtCluster,omitempty"`
 }
 
 type EnvRequirement struct {
