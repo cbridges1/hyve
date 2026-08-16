@@ -66,3 +66,11 @@ tasks:
   check:
     desc: Run vet and tests
     deps: [vet, test]
+
+  test:concurrency:
+    desc: Live smoke test proving --max-concurrent-reconciles is safe (needs a working kubectl context + reachable cluster; installs/removes hyve's CRDs and a scratch namespace)
+    cmds:
+      - cmd: bash ./scripts/test-concurrency.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "test:concurrency needs bash — run scripts/test-concurrency.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
