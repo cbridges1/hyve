@@ -76,8 +76,8 @@ func ResolveEnvFile(repoRoot string) string {
 // Manager handles reading and writing cluster state to a local directory. It
 // has no awareness of git at all — git sync (pulling latest, committing and
 // pushing changes back) is not a native hyve capability; it's the caller's
-// job, done via `hyve git pull`/`hyve git push`/`hyve git sync` or an
-// equivalent workflow. See internal/reconcile.StateProvider.
+// job, done via the plain `git` CLI directly or an equivalent workflow. See
+// internal/reconcile.StateProvider.
 type Manager struct {
 	stateDir string
 }

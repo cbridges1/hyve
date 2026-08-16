@@ -8,11 +8,13 @@ import (
 
 var reconcileCmd = &cobra.Command{
 	Use:   "reconcile",
-	Short: "Reconcile clusters based on YAML files in Git repository",
-	Long: `Reconcile clusters by reading cluster definitions from YAML files in the current Git repository
-and ensuring the actual infrastructure matches the desired state.
+	Short: "Reconcile clusters based on YAML files in the active state directory",
+	Long: `Reconcile clusters by reading cluster definitions from YAML files in the active
+state directory (see 'hyve set-state') and ensuring the actual infrastructure
+matches the desired state. No git repository is required — a plain local
+directory works the same as a git checkout.
 
-When --path is provided, the given local repository path is used directly and all
+When --path is provided, the given local directory is used directly and all
 reconciliation runs locally, bypassing the cicd mode check in hyve.yaml. This is
 intended for use inside CI/CD pipelines that have already checked out the repository.`,
 	Run: func(cmd *cobra.Command, args []string) {

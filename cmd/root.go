@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/cluster"
-	gitpkg "github.com/cbridges1/hyve/cmd/git"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
 	statecmd "github.com/cbridges1/hyve/cmd/state"
 	"github.com/cbridges1/hyve/cmd/template"
@@ -61,14 +60,10 @@ func Execute() {
 }
 
 func init() {
-	// Inject HyveHome into the git package to avoid circular imports
-	gitpkg.SetHyveHomeFunc(HyveHome)
-
 	rootCmd.PersistentFlags().StringVar(&hyveHomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
 
 	rootCmd.AddCommand(reconcileCmd)
 	rootCmd.AddCommand(cluster.Cmd)
-	rootCmd.AddCommand(gitpkg.Cmd)
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)

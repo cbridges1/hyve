@@ -21,7 +21,7 @@ func CreateStateManager(_ gocontext.Context) (*state.Manager, string) {
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
 		log.Fatalf("❌ No repository configured. Hyve requires a registered directory for state management.\n\n" +
-			"Register one with: hyve set-state (a plain local directory), or hyve git add <name> --repo-url <url> (git-backed)")
+			"Register one with: hyve set-state [path]")
 	}
 	logCurrentRepo(currentRepo)
 
@@ -34,10 +34,10 @@ func CreateStateManager(_ gocontext.Context) (*state.Manager, string) {
 // a native hyve capability (see internal/reconcile.StateProvider). State
 // changes were already written to disk by the caller; this just reminds the
 // user (or whatever workflow they've wired up) that persisting them to the
-// remote is now their job, e.g. `hyve git push` or a git-sync workflow.
+// remote is now their job, e.g. `git push` or a git-sync workflow.
 func CommitStateChanges(_ gocontext.Context, _ *state.Manager, message string) {
 	log.Printf("📝 State changes written locally (%q) — not pushed automatically.", message)
-	log.Println("💡 Push them yourself when ready: hyve git push, or `git add -A && git commit && git push`")
+	log.Println("💡 Push them yourself when ready: git add -A && git commit -m ... && git push")
 }
 
 // GetRepoPath returns the local path of the current repository (no sync).
@@ -63,7 +63,7 @@ func GetLocalPath() string {
 	defer repoMgr.Close()
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatal("No repository configured. Use 'hyve set-state' or 'hyve git add' to configure one")
+		log.Fatal("No repository configured. Use 'hyve set-state' to configure one")
 	}
 	return currentRepo.LocalPath
 }
@@ -122,7 +122,7 @@ func RunReconciliation(repoPath string, dryRun bool) {
 			log.Println("DRY RUN: nothing to push — skipping (this branch doesn't reconcile locally either way)")
 			return
 		}
-		log.Println("💡 Push the desired state yourself so the CI/CD pipeline picks it up: hyve git push, or `git add -A && git commit && git push`")
+		log.Println("💡 Push the desired state yourself so the CI/CD pipeline picks it up: git add -A && git commit -m ... && git push")
 		return
 	}
 
@@ -167,7 +167,7 @@ func CreateStateManagerFromRepository(_ gocontext.Context) (*state.Manager, stri
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
 		log.Fatalf("❌ No repository configured. Hyve requires a registered directory for state management.\n\n" +
-			"Register one with: hyve set-state (a plain local directory), or hyve git add <name> --repo-url <url> (git-backed)")
+			"Register one with: hyve set-state [path]")
 	}
 	logCurrentRepo(currentRepo)
 

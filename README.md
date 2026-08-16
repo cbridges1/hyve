@@ -97,8 +97,10 @@ sudo mv hyve /usr/local/bin/
 # 1. Add a module
 hyve module add github.com/hyve-modules/civo@v1.0.0
 
-# 2. Point Hyve at a Git repository for state
-hyve git add production --repo-url https://github.com/company/hyve-state.git
+# 2. Point Hyve at a directory for state (a plain local directory works too —
+#    git is entirely optional and, if used, is just your own 'git' CLI)
+git clone https://github.com/company/hyve-state.git && cd hyve-state
+hyve set-state --current
 
 # 3. Create a template
 hyve template create my-civo-template \
@@ -108,7 +110,7 @@ hyve template create my-civo-template \
   --set node_size=g4s.kube.medium \
   --set node_count=3
 
-# 4. Create a cluster from the template — generates a cluster YAML and commits it
+# 4. Create a cluster from the template — writes a cluster YAML to your state directory
 hyve cluster create my-cluster --template my-civo-template
 
 # 5. Reconcile — provisions the cluster and runs any lifecycle hooks
@@ -117,9 +119,13 @@ hyve reconcile
 # 6. Configure kubectl
 hyve cluster auth my-cluster
 kubectl get nodes
+
+# 7. If your state directory is a git checkout, commit and push when you're ready —
+#    Hyve writes files locally but never commits or pushes on its own
+git add -A && git commit -m "add my-cluster" && git push
 ```
 
-The resulting cluster YAML committed to your state repository:
+The resulting cluster YAML, written to your state directory:
 
 ```yaml
 apiVersion: v1

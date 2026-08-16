@@ -1,9 +1,10 @@
-// Package state implements `hyve set-state` and `hyve state` — local-dev
-// convenience commands for pointing hyve at a plain local directory without
-// any git ceremony. Git sync is not a native hyve capability (see
-// internal/reconcile.StateProvider); these commands only ever register a
-// directory in the same repository registry `hyve git add` uses, they never
-// clone, pull, commit, or push anything.
+// Package state implements `hyve set-state` and `hyve state` — the sole
+// mechanism for registering and managing local directories hyve reads and
+// writes cluster definitions from. Git sync is not a native hyve capability
+// (see internal/reconcile.StateProvider): these commands only ever manage
+// entries in internal/repository's registry, they never clone, pull, commit,
+// or push anything. If a directory happens to be a git checkout, that's
+// between the user and their own `git` binary — hyve doesn't care either way.
 package state
 
 import (
@@ -29,9 +30,9 @@ Defaults to the current working directory when no path is given (or when
 project directory and run this to make it active immediately.
 
 Registration only — this never clones, pulls, commits, or pushes anything.
-If you also want the directory kept in sync with a git remote, that's a
-separate step: use 'hyve git add' instead, or 'hyve git pull'/'hyve git push'
-around your own workflow.`,
+If you want the directory kept in sync with a git remote, that's entirely
+your own 'git' CLI: 'git clone' it yourself before registering it, then
+'git pull'/'git add'/'git commit'/'git push' around your workflow as usual.`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		useCurrent, _ := cmd.Flags().GetBool("current")
@@ -97,11 +98,12 @@ func uniqueName(repoMgr *repository.Manager, base string) string {
 }
 
 // Cmd prints the currently-active state directory. Also reachable as
-// `hyve state current` for clarity/scriptability.
+// `hyve state current` for clarity/scriptability, and is the parent for the
+// registry-management subcommands (`list`/`use`/`remove`/`path`).
 var Cmd = &cobra.Command{
 	Use:   "state",
-	Short: "Show the currently-active state directory",
-	Long:  "Prints the registered name and local path of the currently-active state directory.",
+	Short: "Show or manage registered state directories",
+	Long:  "Prints the registered name and local path of the currently-active state directory. See subcommands to list, switch, or remove registered directories.",
 	Run: func(cmd *cobra.Command, args []string) {
 		showCurrent()
 	},
@@ -115,8 +117,62 @@ var stateCurrentCmd = &cobra.Command{
 	},
 }
 
+var stateListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all registered state directories",
+	Long:  "Display every directory registered via 'hyve set-state' and which one is currently active.",
+	Run: func(cmd *cobra.Command, args []string) {
+		listStateDirectories()
+	},
+}
+
+var stateUseCmd = &cobra.Command{
+	Use:   "use <name>",
+	Short: "Switch the active state directory",
+	Long:  "Set the specified registered directory as the current active one.",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		switchState(args[0])
+	},
+}
+
+var stateRemoveCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "Remove a registered state directory",
+	Long: `Remove the specified directory from hyve's registry. This only drops the
+registration — the directory itself and everything in it is left untouched
+on disk, since hyve never owned it in the first place.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		removeState(args[0])
+	},
+}
+
+var statePathCmd = &cobra.Command{
+	Use:   "path [name]",
+	Short: "Print a registered directory's local filesystem path",
+	Long: `Print the absolute local path for the current state directory (or a named
+one, given as an argument). Nothing else is written to stdout, so it
+composes with shell substitution:
+
+  cd "$(hyve state path)"
+  cd "$(hyve state path my-other-dir)"`,
+	Args: cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		name := ""
+		if len(args) > 0 {
+			name = args[0]
+		}
+		printStatePath(name)
+	},
+}
+
 func init() {
 	Cmd.AddCommand(stateCurrentCmd)
+	Cmd.AddCommand(stateListCmd)
+	Cmd.AddCommand(stateUseCmd)
+	Cmd.AddCommand(stateRemoveCmd)
+	Cmd.AddCommand(statePathCmd)
 }
 
 func showCurrent() {
@@ -128,11 +184,115 @@ func showCurrent() {
 
 	current, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatal("No active state directory. Use 'hyve set-state' or 'hyve git add' to configure one.")
+		log.Fatal("No active state directory. Use 'hyve set-state' to register one.")
 	}
 
 	fmt.Printf("%s\n  %s\n", current.Name, current.LocalPath)
 	if current.RepoURL != "" {
 		fmt.Printf("  (git: %s)\n", current.RepoURL)
 	}
+}
+
+func listStateDirectories() {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to create repository manager: %v", err)
+	}
+	defer repoMgr.Close()
+
+	dirs, err := repoMgr.ListRepositories()
+	if err != nil {
+		log.Fatalf("Failed to list state directories: %v", err)
+	}
+
+	if len(dirs) == 0 {
+		log.Println("❌ No state directories registered")
+		log.Println("\nRegister one with: hyve set-state [path]")
+		return
+	}
+
+	log.Printf("📁 Registered state directories (%d):\n", len(dirs))
+
+	for _, d := range dirs {
+		status := ""
+		if d.IsCurrent {
+			status = " (current) ⭐"
+		}
+
+		log.Printf("  %s%s", d.Name, status)
+		log.Printf("    Local: %s", d.LocalPath)
+		if d.RepoURL != "" {
+			log.Printf("    Git remote: %s", d.RepoURL)
+		}
+		log.Printf("    Registered: %s", d.CreatedAt.Format("2006-01-02 15:04"))
+		log.Println()
+	}
+}
+
+func switchState(name string) {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to create repository manager: %v", err)
+	}
+	defer repoMgr.Close()
+
+	if err := repoMgr.SetCurrentRepository(name); err != nil {
+		log.Fatalf("Failed to switch state directory: %v", err)
+	}
+
+	log.Printf("✅ Switched to '%s'", name)
+
+	repo, err := repoMgr.GetRepositoryByName(name)
+	if err != nil {
+		log.Fatalf("Failed to get directory details: %v", err)
+	}
+
+	log.Printf("Local path: %s", repo.LocalPath)
+}
+
+func removeState(name string) {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to create repository manager: %v", err)
+	}
+	defer repoMgr.Close()
+
+	if _, err := repoMgr.GetRepositoryByName(name); err != nil {
+		log.Fatalf("Failed to look up '%s': %v", name, err)
+	}
+
+	if err := repoMgr.DeleteRepository(name); err != nil {
+		log.Fatalf("Failed to remove '%s': %v", name, err)
+	}
+
+	log.Printf("✅ '%s' removed from the registry (directory on disk left untouched)", name)
+
+	dirs, err := repoMgr.ListRepositories()
+	if err == nil && len(dirs) > 0 {
+		if current, err := repoMgr.GetCurrentRepository(); err == nil {
+			log.Printf("Current state directory is now: %s", current.Name)
+		}
+	} else {
+		log.Println("No state directories remaining. Register one with: hyve set-state [path]")
+	}
+}
+
+func printStatePath(name string) {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to create repository manager: %v", err)
+	}
+	defer repoMgr.Close()
+
+	var repo *repository.Repository
+	if name != "" {
+		repo, err = repoMgr.GetRepositoryByName(name)
+	} else {
+		repo, err = repoMgr.GetCurrentRepository()
+	}
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	fmt.Println(repo.LocalPath)
 }
