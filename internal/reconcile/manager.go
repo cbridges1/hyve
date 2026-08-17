@@ -459,6 +459,13 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 		executor.StepRunner = r.StepRunner
 	}
 	executor.DefaultWorkflowImage = r.DefaultWorkflowImage
+	// Lifecycle hooks (onCreate/onDelete/etc.) are triggered by an
+	// automated reconcile, never a human — a runtime: client workflow
+	// referenced here would have no "invoking machine" to run on in
+	// controller mode, so refuse it explicitly rather than silently running
+	// it on whichever process happens to host the reconcile loop.
+	executor.AllowClientRuntime = false
+	executor.KubeconfigLocator = module.KubeconfigPathForCluster
 	executor.InjectVars(injected)
 
 	for _, ref := range refs {

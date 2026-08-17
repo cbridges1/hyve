@@ -95,6 +95,19 @@ func Validate(wf *Workflow) (errors, warnings []string) {
 		errors = append(errors, "Circular dependency detected in job dependencies")
 	}
 
+	if wf.Spec.Runtime == RuntimeClient {
+		for _, job := range wf.Spec.Jobs {
+			if job.Container != "" {
+				warnings = append(warnings, fmt.Sprintf("Job '%s': container has no effect on this runtime: client workflow", job.Name))
+			}
+			for _, step := range job.Steps {
+				if step.Container != "" {
+					warnings = append(warnings, fmt.Sprintf("Job '%s', step '%s': container has no effect on this runtime: client workflow", job.Name, step.Name))
+				}
+			}
+		}
+	}
+
 	return errors, warnings
 }
 

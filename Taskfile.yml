@@ -74,3 +74,11 @@ tasks:
         platforms: [linux, darwin]
       - cmd: echo "test:concurrency needs bash — run scripts/test-concurrency.sh via WSL or Git Bash on Windows"
         platforms: [windows]
+
+  test:secretsfrom:
+    desc: Live smoke test for Phase 5's runtime:client workflows + secretsFrom (needs a working kubectl context + reachable cluster; fully isolated via a scratch HYVE_HOME, plus a scratch namespace it removes on exit)
+    cmds:
+      - cmd: bash ./scripts/test-secretsfrom.sh
+        platforms: [linux, darwin]
+      - cmd: echo "test:secretsfrom needs bash — run scripts/test-secretsfrom.sh via WSL or Git Bash on Windows"
+        platforms: [windows]

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/secretsfrom"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 )
@@ -44,6 +45,30 @@ type Executor struct {
 	// Left empty by every local-mode caller (there's nothing to fall back
 	// for); cmd/controller/run.go sets it from HyveConfig.spec.defaultWorkflowImage.
 	DefaultWorkflowImage string
+
+	// AllowClientRuntime gates whether this Executor will run a
+	// runtime: client workflow at all — see WorkflowSpec.Runtime. Defaults
+	// to true in NewExecutor, so every direct `hyve workflow run` call site
+	// (cmd/workflow) behaves as documented with no changes needed there.
+	// internal/reconcile/manager.go's runWorkflows (lifecycle hooks —
+	// onCreate/onDelete/etc., triggered by an automated reconcile, not a
+	// human) explicitly sets this to false: a runtime: client workflow is
+	// meant to run on the invoking human's machine, which doesn't exist for
+	// a reconcile loop (especially in controller mode, where there's no
+	// "client machine" for a controller pod to hand off to).
+	AllowClientRuntime bool
+
+	// KubeconfigLocator resolves a secretsFrom entry's Cluster name to a
+	// kubeconfig file path — see secretsfrom.KubeconfigLocator. Left nil by
+	// NewExecutor (internal/workflow deliberately has no dependency on
+	// internal/module, to avoid an import cycle: internal/template already
+	// imports internal/workflow for local-workflow-ref validation, and
+	// internal/module imports internal/template). Every caller that expects
+	// secretsFrom to work sets this explicitly, in practice always to
+	// module.KubeconfigPathForCluster — cmd/workflow's run commands and
+	// internal/reconcile/manager.go's runWorkflows both do. A workflow with
+	// no secretsFrom entries never touches this field at all.
+	KubeconfigLocator secretsfrom.KubeconfigLocator
 }
 
 // NewExecutor creates a new workflow executor.
@@ -64,14 +89,15 @@ func NewExecutor(manager *Manager, cluster string) (*Executor, error) {
 	}
 
 	return &Executor{
-		manager:        manager,
-		currentCluster: cluster,
-		variables:      make(map[string]string),
-		injectedVars:   make(map[string]string),
-		hookOutputVars: make(map[string]string),
-		workingDir:     manager.localPath,
-		repoName:       repoName,
-		StepRunner:     LocalStepRunner{},
+		manager:            manager,
+		currentCluster:     cluster,
+		variables:          make(map[string]string),
+		injectedVars:       make(map[string]string),
+		hookOutputVars:     make(map[string]string),
+		workingDir:         manager.localPath,
+		repoName:           repoName,
+		StepRunner:         LocalStepRunner{},
+		AllowClientRuntime: true,
 	}, nil
 }
 
@@ -156,6 +182,13 @@ func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName st
 	e.execution = execution
 	e.addLog("INFO", "", "", fmt.Sprintf("Starting workflow '%s'", displayName))
 
+	if wf.Spec.Runtime == RuntimeClient && !e.AllowClientRuntime {
+		e.execution.Status = StatusFailed
+		msg := fmt.Sprintf("workflow '%s' has runtime: client, which only `hyve workflow run` may execute — an automated reconcile (lifecycle hook or controller loop) cannot run it", displayName)
+		e.addLog("ERROR", "", "", msg)
+		return execution, fmt.Errorf("%s", msg)
+	}
+
 	// Apply caller-injected variables (--set flags, or values the interactive TUI
 	// collected for spec.inputs) before requirements validation, so a --set/prompted
 	// value can satisfy a spec.requirements.secrets entry of the same name.
@@ -207,6 +240,12 @@ func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName st
 		return execution, fmt.Errorf("failed to setup environment variables: %w", err)
 	}
 
+	if err := e.resolveSecretsFrom(ctx, wf); err != nil {
+		e.execution.Status = StatusFailed
+		e.addLog("ERROR", "", "", fmt.Sprintf("Failed to resolve secretsFrom: %v", err))
+		return execution, fmt.Errorf("failed to resolve secretsFrom: %w", err)
+	}
+
 	if err := e.validateInputs(wf); err != nil {
 		e.execution.Status = StatusFailed
 		e.addLog("ERROR", "", "", err.Error())
@@ -242,6 +281,34 @@ func (e *Executor) setupEnvironmentVariables(workflow *Workflow) error {
 	// Apply caller-injected variables last — highest priority, override everything above
 	e.applyInjectedVars()
 
+	return nil
+}
+
+// resolveSecretsFrom fetches every wf.Spec.SecretsFrom entry and merges the
+// results into e.variables — the same "explicit per-Executor state, never
+// process-wide os.Setenv" pattern applyInjectedVars/exportDefinitionEnvironmentVariables
+// use, so concurrent Executors (different clusters, or a human's `hyve
+// workflow run` alongside a concurrent reconcile) never share a resolved
+// secret's value. Runs after setupEnvironmentVariables so a resolved
+// secret's value takes priority over anything setupEnvironmentVariables
+// already set for the same key — declaring secretsFrom is an explicit,
+// authoritative request for that value.
+func (e *Executor) resolveSecretsFrom(ctx context.Context, wf *Workflow) error {
+	if len(wf.Spec.SecretsFrom) == 0 {
+		return nil
+	}
+	if e.KubeconfigLocator == nil {
+		return fmt.Errorf("workflow declares secretsFrom but this Executor has no KubeconfigLocator configured")
+	}
+	for _, src := range wf.Spec.SecretsFrom {
+		resolved, err := secretsfrom.Resolve(ctx, e.KubeconfigLocator, src)
+		if err != nil {
+			return err
+		}
+		for k, v := range resolved {
+			e.variables[k] = v
+		}
+	}
 	return nil
 }
 

@@ -168,10 +168,23 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 	resolvedStep.Command = e.expandVariables(step.Command)
 	resolvedStep.Script = e.expandVariables(step.Script)
 
+	// A runtime: client workflow always runs as a local subprocess,
+	// regardless of e.StepRunner — the second of two independent paths to
+	// LocalStepRunner (the other being plain CLI/local mode). This is also
+	// what makes container: naturally a no-op rather than a validation
+	// error for this runtime: LocalStepRunner.RequiresContainer() is always
+	// false, so the pre-flight check below never fires here even if
+	// container: is set — same "informational, ignored" treatment it
+	// already gets under plain CLI/local mode, no special-casing needed.
+	runner := e.StepRunner
+	if workflow.Spec.Runtime == RuntimeClient {
+		runner = LocalStepRunner{}
+	}
+
 	// Resolution order: per-step container: -> per-job container: ->
 	// HyveConfig.spec.defaultWorkflowImage (Executor.DefaultWorkflowImage,
 	// empty for every local-mode caller) -> hard failure, but ONLY when
-	// the selected StepRunner actually needs one — container: is
+	// the selected runner actually needs one — container: is
 	// meaningless, and ignored rather than validated, under LocalStepRunner.
 	resolvedStep.Container = step.Container
 	if resolvedStep.Container == "" {
@@ -180,7 +193,7 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 	if resolvedStep.Container == "" {
 		resolvedStep.Container = e.DefaultWorkflowImage
 	}
-	if e.StepRunner.RequiresContainer() && resolvedStep.Container == "" {
+	if runner.RequiresContainer() && resolvedStep.Container == "" {
 		result.Status = JobStatusFailed
 		result.Error = fmt.Sprintf("step %q resolved to no container image — set container: on the step, its job, or configure HyveConfig.spec.defaultWorkflowImage", step.Name)
 		return result, fmt.Errorf("%s", result.Error)
@@ -193,7 +206,7 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 
 	env := e.buildStepEnv(workflow, job, step)
 
-	stdout, _, exitCode, runErr := e.StepRunner.RunStep(ctx, resolvedStep, env, workingDir, e.Output)
+	stdout, _, exitCode, runErr := runner.RunStep(ctx, resolvedStep, env, workingDir, e.Output)
 	result.Output = stdout
 	result.ExitCode = exitCode
 

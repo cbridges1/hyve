@@ -107,6 +107,7 @@ func runRemoteWorkflowSource(source, pathFlag, cluster string, showLogs, showOut
 		log.Fatalf("Failed to create workflow executor: %v", err)
 	}
 	defer executor.Close()
+	executor.KubeconfigLocator = mod.KubeconfigPathForCluster
 	if len(setVars) > 0 {
 		executor.InjectVars(setVars)
 	}

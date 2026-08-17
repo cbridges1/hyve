@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/cbridges1/hyve/internal/secretsfrom"
 )
 
 // DefaultKubeconfigPath returns the path kubectl uses when KUBECONFIG is unset.
@@ -117,6 +119,15 @@ func (e *Executor) executeYAML(ctx context.Context, path string) (*OperationResu
 // executeWorkflow runs a kind:Workflow YAML by concatenating each step's
 // run/script/command into a single shell script. This keeps the module
 // system decoupled from the workflow executor.
+//
+// spec.secretsFrom (see internal/secretsfrom and HYVE-IMPLEMENTATION-PLAN.md's
+// Phase 5 "extend secretsFrom to module operations") is resolved before
+// running the combined script — module operations always execute as a
+// direct subprocess of whichever process (CLI or controller) is running the
+// reconcile, never as a scheduled Kubernetes Job the way a workflow step
+// under KubernetesJobStepRunner can, so there is only ever this one
+// resolution path here (a live kubeconfig-backed fetch), unlike
+// internal/workflow's runtime: client case which branches on StepRunner.
 func (e *Executor) executeWorkflow(ctx context.Context, data []byte) (*OperationResult, error) {
 	type step struct {
 		Run     string `yaml:"run"`
@@ -129,16 +140,19 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte) (*Operation
 	// Support both single-job (map[string]job) and list-of-jobs ([]WorkflowJob) forms.
 	var asMap struct {
 		Spec struct {
-			Jobs map[string]job `yaml:"jobs"`
+			Jobs        map[string]job             `yaml:"jobs"`
+			SecretsFrom []secretsfrom.SecretSource `yaml:"secretsFrom"`
 		} `yaml:"spec"`
 	}
 	var asList struct {
 		Spec struct {
-			Jobs []job `yaml:"jobs"`
+			Jobs        []job                      `yaml:"jobs"`
+			SecretsFrom []secretsfrom.SecretSource `yaml:"secretsFrom"`
 		} `yaml:"spec"`
 	}
 
 	var scripts []string
+	var secretSources []secretsfrom.SecretSource
 	if err := yaml.Unmarshal(data, &asMap); err == nil && len(asMap.Spec.Jobs) > 0 {
 		for _, j := range asMap.Spec.Jobs {
 			for _, s := range j.Steps {
@@ -147,6 +161,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte) (*Operation
 				}
 			}
 		}
+		secretSources = asMap.Spec.SecretsFrom
 	} else if err := yaml.Unmarshal(data, &asList); err == nil && len(asList.Spec.Jobs) > 0 {
 		for _, j := range asList.Spec.Jobs {
 			for _, s := range j.Steps {
@@ -155,15 +170,27 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte) (*Operation
 				}
 			}
 		}
+		secretSources = asList.Spec.SecretsFrom
 	}
 
 	if len(scripts) == 0 {
 		return &OperationResult{Outputs: map[string]string{}, ExitCode: 0}, nil
 	}
 
+	var secretEnv []string
+	for _, src := range secretSources {
+		resolved, err := secretsfrom.Resolve(ctx, KubeconfigPathForCluster, src)
+		if err != nil {
+			return nil, fmt.Errorf("resolve secretsFrom: %w", err)
+		}
+		for k, v := range resolved {
+			secretEnv = append(secretEnv, k+"="+v)
+		}
+	}
+
 	combined := "set -e\n" + strings.Join(scripts, "\n")
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", combined)
-	cmd.Env = append(os.Environ(), e.Env...)
+	cmd.Env = append(append(os.Environ(), e.Env...), secretEnv...)
 	cmd.Dir = e.WorkDir
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()

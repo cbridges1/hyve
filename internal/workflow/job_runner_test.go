@@ -1,11 +1,25 @@
 package workflow
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// markerStepRunner is a StepRunner test double that requires a container
+// and, if actually invoked, returns a distinctive error — used as a marker
+// to prove whether e.StepRunner was consulted at all for a given step.
+type markerStepRunner struct{}
+
+func (markerStepRunner) RequiresContainer() bool { return true }
+func (markerStepRunner) RunStep(context.Context, WorkflowStep, []string, string, io.Writer) (string, string, int, error) {
+	return "", "", 0, fmt.Errorf("markerStepRunner was invoked")
+}
 
 // envHas returns true if env (a "KEY=VALUE" slice, as built by buildStepEnv)
 // contains key=value exactly.
@@ -127,4 +141,39 @@ func TestTwoExecutors_ConcurrentEnv_NeverCrossContaminate(t *testing.T) {
 	assert.True(t, envHas(envB, "KUBECONFIG", "/b/kubeconfig.yaml"))
 	assert.True(t, envHas(envB, "HYVE_CLUSTER_NAME", "cluster-b"))
 	assert.False(t, envHas(envB, "KUBECONFIG", "/a/kubeconfig.yaml"))
+}
+
+// TestExecuteStep_RuntimeClient_BypassesConfiguredStepRunner is the direct
+// regression test for job_runner.go's executeStep runner-selection change:
+// a runtime: client workflow must run via LocalStepRunner even when
+// e.StepRunner is set to something else (e.g. KubernetesJobStepRunner, the
+// case that matters in controller mode).
+func TestExecuteStep_RuntimeClient_BypassesConfiguredStepRunner(t *testing.T) {
+	exec, _ := setupExecutor(t)
+	exec.StepRunner = markerStepRunner{}
+
+	wf := &Workflow{Spec: WorkflowSpec{Runtime: RuntimeClient}}
+	job := &WorkflowJob{Name: "j"}
+	step := &WorkflowStep{Name: "s", Command: "echo hello-from-local"}
+
+	result, err := exec.executeStep(context.Background(), step, job, wf, "")
+	require.NoError(t, err)
+	assert.Equal(t, JobStatusCompleted, result.Status)
+	assert.Contains(t, result.Output, "hello-from-local")
+}
+
+// TestExecuteStep_NonClientRuntime_UsesConfiguredStepRunner is the inverse
+// case: without runtime: client, e.StepRunner is used exactly as before —
+// this change must not affect the existing (non-client) code path at all.
+func TestExecuteStep_NonClientRuntime_UsesConfiguredStepRunner(t *testing.T) {
+	exec, _ := setupExecutor(t)
+	exec.StepRunner = markerStepRunner{}
+
+	wf := &Workflow{Spec: WorkflowSpec{}} // Runtime left unset ("cluster")
+	job := &WorkflowJob{Name: "j"}
+	step := &WorkflowStep{Name: "s", Command: "echo hi", Container: "alpine:3"}
+
+	_, err := exec.executeStep(context.Background(), step, job, wf, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "markerStepRunner was invoked")
 }

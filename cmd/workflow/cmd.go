@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/workflow"
 )
 
@@ -327,6 +328,7 @@ func runWorkflow(name, cluster string, showLogs, showOutput bool, setVars map[st
 		log.Fatalf("Failed to create workflow executor: %v", err)
 	}
 	defer executor.Close()
+	executor.KubeconfigLocator = module.KubeconfigPathForCluster
 
 	if len(setVars) > 0 {
 		executor.InjectVars(setVars)

@@ -2,6 +2,15 @@ package workflow
 
 import (
 	"time"
+
+	"github.com/cbridges1/hyve/internal/secretsfrom"
+)
+
+// Runtime values for WorkflowSpec.Runtime — see WorkflowSpec.Runtime's doc
+// comment.
+const (
+	RuntimeClient  = "client"
+	RuntimeCluster = "cluster" // also the default when Runtime is unset
 )
 
 // Workflow represents a workflow definition
@@ -50,6 +59,25 @@ type WorkflowSpec struct {
 	Triggers     []WorkflowTrigger     `yaml:"triggers,omitempty" json:"triggers,omitempty"`
 	Jobs         []WorkflowJob         `yaml:"jobs" json:"jobs"`
 	Env          map[string]string     `yaml:"env,omitempty" json:"env,omitempty"`
+
+	// Runtime is either "client" (this workflow always runs as a local
+	// subprocess on the invoking machine, never scheduled as a Job — see
+	// Executor.AllowClientRuntime) or unset/"cluster" (today's behavior:
+	// local in CLI mode, a container Job in controller mode). container:
+	// has no effect on a runtime: client workflow — same "informational,
+	// ignored" treatment it already gets in plain CLI/local mode, not a
+	// validation error (see internal/workflow/job_runner.go's executeStep
+	// and Validate's lint warning for this combination).
+	Runtime string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+
+	// SecretsFrom declares Kubernetes Secrets to resolve into env vars
+	// before this workflow's steps run — e.g. Harbor registry credentials
+	// already sitting in a cluster the user has legitimate access to. Each
+	// entry's Cluster is resolved via whatever kubeconfig the caller
+	// already has for it (see secretsfrom.KubeconfigLocator); the fetch
+	// grants no access beyond what that kubeconfig's own credentials
+	// already have.
+	SecretsFrom []secretsfrom.SecretSource `yaml:"secretsFrom,omitempty" json:"secretsFrom,omitempty"`
 }
 
 // WorkflowRequirements defines prerequisites for workflow execution
