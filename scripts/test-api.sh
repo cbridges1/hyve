@@ -2,9 +2,10 @@
 set -euo pipefail
 
 # Live smoke test for Phase 6's API + auth layer (see
-# HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.1-6.5a). Runs `hyve api
-# run` as a local process against a real Kubernetes cluster (whatever your
-# current kubectl context points at) and proves:
+# HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.1-6.5a). Runs
+# `hyve cluster-config api run` as a local process against a real
+# Kubernetes cluster (whatever your current kubectl context points at) and
+# proves:
 #
 #   1. Local (username/password) login works: wrong password and unknown
 #      username are both rejected identically, correct credentials issue a
@@ -70,9 +71,9 @@ kubectl -n "$NAMESPACE" create secret generic hyve-api-credentials \
   --from-literal=session-signing-key="$(openssl rand -hex 32)" >/dev/null
 
 log "Creating admin + read-only test users"
-"$BIN" api create-user admin-user --role admin --namespace "$NAMESPACE" \
+"$BIN" cluster-config api create-user admin-user --role admin --namespace "$NAMESPACE" \
   --binding-name admin-test-binding --password 'admin-pass-123' | kubectl apply -f - >/dev/null
-"$BIN" api create-user readonly-user --role read-only --namespace "$NAMESPACE" \
+"$BIN" cluster-config api create-user readonly-user --role read-only --namespace "$NAMESPACE" \
   --binding-name readonly-test-binding --password 'readonly-pass-123' | kubectl apply -f - >/dev/null
 
 log "Writing fake authOnly driver module for the kubeconfig test"
@@ -98,8 +99,8 @@ spec:
       exports: KUBECONFIG
 EOF
 
-log "Starting hyve api run"
-"$BIN" api run --namespace "$NAMESPACE" --modules-dir "$MODULES_DIR" --bind-address ":18090" \
+log "Starting hyve cluster-config api run"
+"$BIN" cluster-config api run --namespace "$NAMESPACE" --modules-dir "$MODULES_DIR" --bind-address ":18090" \
   > "$API_LOG" 2>&1 &
 API_PID=$!
 for i in $(seq 1 15); do
@@ -156,7 +157,13 @@ fi
 
 echo ""
 echo "=== 4. Cluster CRUD (admin) ==="
-create_body="{\"name\":\"$MODULE_CLUSTER\",\"spec\":{\"driver\":{\"source\":\"./modules/fake-driver\",\"version\":\"local\"}}}"
+# access.method: module-auth is required here, not decorative — GET
+# /api/kubeconfig only serves clusters explicitly opted into server-side
+# auth (see internal/apis/hyve/v1alpha1's AccessMethodModuleAuth doc
+# comment); the default (unset) is client-side auth, served by
+# GET /api/clusters/<name>/auth-context instead, which section 5 below
+# isn't exercising.
+create_body="{\"name\":\"$MODULE_CLUSTER\",\"spec\":{\"driver\":{\"source\":\"./modules/fake-driver\",\"version\":\"local\"},\"access\":{\"method\":\"module-auth\"}}}"
 create_resp=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/clusters" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -d "$create_body")
 if [ "$create_resp" = "201" ]; then

@@ -21,11 +21,13 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # The image's own ENTRYPOINT is just ["hyve"] (unlike
-          # deploy/Dockerfile.controller's fixed "controller run") —
-          # command+args here select the api subcommand, so the same image
-          # backs both this Deployment and hyve-controller's.
+          # deploy/Dockerfile.controller's fixed "cluster-config controller
+          # run") — command+args here select the cluster-config api
+          # subcommand, so the same image backs both this Deployment and
+          # hyve-controller's.
           command: ["hyve"]
           args:
+            - cluster-config
             - api
             - run
             - --namespace={{ .Values.namespace }}

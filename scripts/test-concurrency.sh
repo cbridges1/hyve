@@ -4,9 +4,9 @@ set -euo pipefail
 # Live smoke test for the MaxConcurrentReconciles fix (see
 # internal/controller/reconciler.go, internal/module/executor.go,
 # internal/workflow/executor.go, internal/workflow/job_runner.go,
-# internal/reconcile/manager.go). Runs `hyve controller run` against a real
-# Kubernetes cluster (whatever your current kubectl context points at) and
-# proves two things:
+# internal/reconcile/manager.go). Runs `hyve cluster-config controller run`
+# against a real Kubernetes cluster (whatever your current kubectl context
+# points at) and proves two things:
 #
 #   1. Concurrency actually happens: N ClusterDefinitions, each with an
 #      auth step artificially slowed by SLEEP_SECONDS, complete far faster
@@ -150,7 +150,7 @@ run_pass() {
 
   log "[$label] Starting controller (--max-concurrent-reconciles=$concurrency)"
   SECONDS=0
-  "$BIN" controller run \
+  "$BIN" cluster-config controller run \
     --modules-dir "$MODULES_DIR" \
     --namespace "$NAMESPACE" \
     --max-concurrent-reconciles "$concurrency" \

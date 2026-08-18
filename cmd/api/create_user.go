@@ -38,7 +38,7 @@ provisioning kubectl-manageable and GitOps-friendly like every other piece
 of static config in this plan.
 
 Example:
-  hyve api create-user cedric --role admin | kubectl apply -f -`,
+  hyve cluster-config api create-user cedric --role admin | kubectl apply -f -`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		runCreateUser(args[0])

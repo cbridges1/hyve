@@ -1,5 +1,7 @@
-// Package controller implements `hyve controller run` — the long-running
-// reconcile loop against ClusterDefinition/HyveConfig CRDs described in
+// Package controller implements `hyve cluster-config controller run` —
+// nested under cmd/clusterconfig, see that package's own doc comment for
+// why — the long-running reconcile loop against ClusterDefinition/
+// HyveConfig CRDs described in
 // HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 4. A reconcile loop against
 // the Kubernetes API, not an HTTP server — no REST/WebSocket surface here,
 // so this doesn't reopen the hyve-serve removal decision.

@@ -5,9 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	apicmd "github.com/cbridges1/hyve/cmd/api"
 	"github.com/cbridges1/hyve/cmd/cluster"
-	controllercmd "github.com/cbridges1/hyve/cmd/controller"
+	"github.com/cbridges1/hyve/cmd/clusterconfig"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
 	"github.com/cbridges1/hyve/cmd/shared"
 	statecmd "github.com/cbridges1/hyve/cmd/state"
@@ -54,6 +53,5 @@ func init() {
 	rootCmd.AddCommand(modcmd.Cmd)
 	rootCmd.AddCommand(statecmd.SetStateCmd)
 	rootCmd.AddCommand(statecmd.Cmd)
-	rootCmd.AddCommand(controllercmd.Cmd)
-	rootCmd.AddCommand(apicmd.Cmd)
+	rootCmd.AddCommand(clusterconfig.Cmd)
 }

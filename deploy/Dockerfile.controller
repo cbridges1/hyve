@@ -1,6 +1,7 @@
 # Controller-mode image — bakes a state repo's hyve.lock and every module/
-# workflow it locks into the image at build time, so `hyve controller run`
-# never needs network access to a module registry at runtime. See
+# workflow it locks into the image at build time, so
+# `hyve cluster-config controller run` never needs network access to a
+# module registry at runtime. See
 # HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's "hyve.lock in controller mode" and
 # "Local cache root problem" sections for the full rationale.
 #
@@ -17,8 +18,8 @@
 # $HOME/.hyve/module-cache, unconditionally — it does not respect
 # --home/HYVE_HOME. Both stages below fix HOME=/root explicitly and the
 # final image must keep running as root (or you must set HOME to whatever
-# this Dockerfile bakes into) so `hyve controller run` finds the cache it
-# was built with rather than an empty one, which would force an
+# this Dockerfile bakes into) so `hyve cluster-config controller run` finds
+# the cache it was built with rather than an empty one, which would force an
 # (impossible, since there's no network at runtime) re-resolve.
 FROM golang:1.25-alpine AS resolver
 ENV HOME=/root
@@ -65,4 +66,4 @@ COPY --from=resolver /root/.hyve/module-cache /root/.hyve/module-cache
 # module/workflow/hyve.lock resolution.
 COPY --from=resolver /state /var/lib/hyve/modules
 
-ENTRYPOINT ["hyve", "controller", "run"]
+ENTRYPOINT ["hyve", "cluster-config", "controller", "run"]

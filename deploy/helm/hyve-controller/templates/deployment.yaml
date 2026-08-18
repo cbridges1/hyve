@@ -22,13 +22,14 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # command+args are set explicitly (rather than relying on
           # deploy/Dockerfile.controller's own fixed
-          # ENTRYPOINT ["hyve", "controller", "run"]) so this chart also
-          # works unchanged against deploy/Dockerfile.dev's image, whose
-          # ENTRYPOINT is just ["hyve"] — see that Dockerfile's header
-          # comment. Kubernetes' command+args fully override whatever
+          # ENTRYPOINT ["hyve", "cluster-config", "controller", "run"]) so
+          # this chart also works unchanged against deploy/Dockerfile.dev's
+          # image, whose ENTRYPOINT is just ["hyve"] — see that Dockerfile's
+          # header comment. Kubernetes' command+args fully override whatever
           # ENTRYPOINT/CMD either image sets, so this is safe either way.
           command: ["hyve"]
           args:
+            - cluster-config
             - controller
             - run
             - --namespace={{ .Values.namespace }}

@@ -1,5 +1,7 @@
-// Package api implements `hyve api run` — the HTTP API + auth layer
-// described in HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6. Not a
+// Package api implements `hyve cluster-config api run` — nested under
+// cmd/clusterconfig, see that package's own doc comment for why — the HTTP
+// API + auth layer described in HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+// Phase 6. Not a
 // resurrection of the removed hyve serve: real, independent authz
 // (HyveAccessBinding-based) drives it, and it's a thin front door onto the
 // ClusterDefinition/HyveAccessBinding CRDs the controller already

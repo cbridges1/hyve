@@ -39,7 +39,8 @@ COPY --from=builder /out/hyve /usr/local/bin/hyve
 RUN mkdir -p /var/lib/hyve/modules
 
 # No fixed subcommand — unlike Dockerfile.controller's hardcoded
-# `ENTRYPOINT ["hyve", "controller", "run"]`, deploy/helm/hyve-controller
-# and deploy/helm/hyve-api both set their own full command+args against
-# this same image, so one image backs both Deployments.
+# `ENTRYPOINT ["hyve", "cluster-config", "controller", "run"]`,
+# deploy/helm/hyve-controller and deploy/helm/hyve-api both set their own
+# full command+args against this same image, so one image backs both
+# Deployments.
 ENTRYPOINT ["hyve"]
