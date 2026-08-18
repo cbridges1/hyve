@@ -1,0 +1,78 @@
+# Default values for hyve-api.
+
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# namespace this chart deploys into — shared with hyve-controller's own
+# namespace (hyve-system by convention). This chart does NOT template a
+# Namespace object itself (avoids two Helm releases both claiming
+# ownership of the same resource) — install hyve-controller first, or
+# otherwise ensure the namespace exists before this chart.
+namespace: hyve-system
+
+bindAddress: ":8090"
+
+# modulesDir must match whatever hyve-controller's own image bakes its
+# state/modules under — ModuleAuthProvider (internal/api/access.go)
+# resolves driver modules the same way internal/reconcile does.
+modulesDir: /var/lib/hyve/modules
+
+# publicBaseURL is this API's own public address, e.g.
+# https://hyve-api.example.com — required for the primary-cluster
+# kubeconfig path's server: field. Left empty, that path stays disabled
+# (see primaryClusterName below and cmd/api/run.go's own startup check).
+publicBaseURL: ""
+
+# primaryClusterName, when set, is the name GET /api/kubeconfig?cluster=<name>
+# matches to serve a self-service kubeconfig for the cluster this API
+# itself runs on (via TokenRequest + /proxy) rather than looking up a
+# ClusterDefinition. No ClusterDefinition object needs to exist for this
+# name — it's a pure dispatch sentinel. Leave empty to disable this path
+# entirely (safe default; every other /api/kubeconfig request still works).
+primaryClusterName: ""
+
+proxyTarget: "https://kubernetes.default.svc"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  port: 80
+  # type/nodePort default to a plain ClusterIP for a real install (reached
+  # via port-forward, ingress.* below, or your own Pangolin-style exposure
+  # — see HYVE-IMPLEMENTATION-PLAN.md's Phase 6.8 status note). A NodePort
+  # override only makes sense on a cluster whose node ports are actually
+  # mapped to the host (e.g. a kind/k3d dev cluster created with
+  # extraPortMappings) — Docker Desktop's own built-in Kubernetes does not
+  # do this for any port, confirmed live.
+  type: ClusterIP
+  nodePort: ""
+
+# ingress is disabled by default — a real install should make its own
+# exposure decision (see HYVE-IMPLEMENTATION-PLAN.md's Phase 6.8 status
+# note); scripts/create-local-cluster.sh + install-local.sh enable it for
+# local dev only, routed through k3d's default Traefik ingress controller.
+ingress:
+  enabled: false
+  host: ""
+  className: traefik
+
+# accessRoles controls whether this chart also creates the two default
+# roles' backing ServiceAccounts + ClusterRoleBindings
+# (hyve-access-admin -> cluster-admin, hyve-access-readonly -> view) that
+# HyveAccessBinding.spec.serviceAccountRef points at by default — see
+# HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.1. Disable if you'd
+# rather define your own custom roles and reference those instead.
+accessRoles:
+  create: true

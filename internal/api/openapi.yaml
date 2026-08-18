@@ -1,0 +1,334 @@
+openapi: 3.0.3
+info:
+  title: hyve API
+  description: |
+    hyve's HTTP API + auth layer — see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+    Phase 6. A thin, authorized front door onto the ClusterDefinition/
+    HyveAccessBinding CRDs the controller already reconciles — cluster mode
+    never requires this API, plain kubectl against the CRDs always works.
+
+    Everything under /api/* requires a session: log in via /auth/login,
+    then send the returned token as `Authorization: Bearer <token>` on
+    every subsequent request.
+  version: "0.1.0"
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: auth
+  - name: clusters
+  - name: kubeconfig
+paths:
+  /healthz:
+    get:
+      tags: [auth]
+      summary: Liveness/readiness probe
+      security: []
+      responses:
+        "200":
+          description: OK
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Authenticate with a local (username/password) identity and receive a session token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Missing username/password or malformed body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid username or password (the same error either way — login never reveals which usernames exist)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Discard a session
+      security: []
+      description: |
+        A stateless no-op — session tokens are signed and self-verifying,
+        with no server-side session store to invalidate. Always returns 200;
+        the caller is responsible for discarding its own stored token.
+      responses:
+        "200":
+          description: OK
+
+  /api/whoami:
+    get:
+      tags: [auth]
+      summary: Confirm the caller's session and resolved role
+      description: Reaching this handler at all already proves the session is valid — used by `hyve whoami` to verify a locally-stored session against the server rather than trusting the local record alone.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username: { type: string }
+                  role: { type: string }
+                required: [username, role]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/clusters:
+    get:
+      tags: [clusters]
+      summary: List ClusterDefinitions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClusterDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [clusters]
+      summary: Create a ClusterDefinition
+      description: Requires the `admin` role. Request body's `spec` is validated by the same Kubernetes CRD schema `kubectl apply` would enforce.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClusterRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDTO"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A cluster with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/clusters/{name}:
+    get:
+      tags: [clusters]
+      summary: Get a ClusterDefinition by name
+      parameters:
+        - $ref: "#/components/parameters/ClusterName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [clusters]
+      summary: Delete a ClusterDefinition
+      description: |
+        Requires the `admin` role. Real cleanup is finalizer-driven (module
+        delete op, onDelete/afterDelete workflows) — this just marks the
+        object for deletion, the same as `kubectl delete`.
+      parameters:
+        - $ref: "#/components/parameters/ClusterName"
+      responses:
+        "204":
+          description: Deletion initiated
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/kubeconfig:
+    get:
+      tags: [kubeconfig]
+      summary: Mint a kubeconfig for a managed cluster
+      description: |
+        Dispatches to one of three access strategies depending on `cluster`:
+          - the API's own configured primary-cluster-name: mints a scoped
+            ServiceAccount token via TokenRequest and returns a kubeconfig
+            whose server: points back at this API's own /proxy path.
+          - any other cluster left at the `module-auth` default: runs that
+            cluster's driver module's auth.yaml live and returns the
+            resulting kubeconfig, no stored Secret involved.
+          - a cluster with spec.access.method: tunnel: reads a pre-minted
+            kubeconfig from a stored Secret, no live provider call.
+      parameters:
+        - name: cluster
+          in: query
+          required: true
+          description: Cluster name — either the primary-cluster-name sentinel, or a ClusterDefinition's name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A kubeconfig YAML document, ready to use with `kubectl --kubeconfig`
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "400":
+          description: Missing cluster query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: The access provider (module auth.yaml, TokenRequest, or stored Secret read) failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Token returned by POST /auth/login
+  parameters:
+    ClusterName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing, malformed, or expired session token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Authenticated but no matching HyveAccessBinding (or insufficient role)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such cluster
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    LoginRequest:
+      type: object
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+      required: [username, password]
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expiresAt: { type: string, format: date-time }
+      required: [token, expiresAt]
+    ClusterDTO:
+      type: object
+      description: Deliberately excludes driverOutputs and any kubeconfig/credential data.
+      properties:
+        name: { type: string }
+        driver: { type: string, description: "spec.driver.source" }
+        conditions:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              status: { type: string }
+              reason: { type: string }
+              message: { type: string }
+        observedGeneration: { type: integer, format: int64 }
+        accessMethod: { type: string, enum: ["", "module-auth", "tunnel"] }
+        accessLastMinted: { type: string, format: date-time }
+      required: [name, driver, observedGeneration]
+    DriverRef:
+      type: object
+      properties:
+        source: { type: string, example: "./modules/civo" }
+        version: { type: string, example: "latest" }
+    ClusterDefinitionSpec:
+      type: object
+      description: Same schema `kubectl apply` on a ClusterDefinition would enforce.
+      properties:
+        region: { type: string }
+        driver:
+          $ref: "#/components/schemas/DriverRef"
+        params:
+          type: object
+          additionalProperties: { type: string }
+        delete: { type: boolean }
+        pause: { type: boolean }
+        expiresAt: { type: string, format: date-time }
+        dependsOn:
+          type: array
+          items: { type: string }
+        access:
+          type: object
+          properties:
+            method: { type: string, enum: ["", "module-auth", "tunnel"] }
+            tunnel:
+              type: object
+              properties:
+                provider: { type: string, enum: ["rancher", "teleport"] }
+    CreateClusterRequest:
+      type: object
+      properties:
+        name: { type: string }
+        spec:
+          $ref: "#/components/schemas/ClusterDefinitionSpec"
+      required: [name]

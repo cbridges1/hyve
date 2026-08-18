@@ -60,6 +60,24 @@ spec:
               internal/types.ClusterMetadata.Region; the object's own metadata.name
               replaces internal/types.ClusterMetadata.Name.
             properties:
+              access:
+                description: |-
+                  Access controls how internal/api's AccessProvider mints a kubeconfig
+                  for this cluster via GET /api/kubeconfig — see
+                  HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5. Left unset, this
+                  cluster uses the "module-auth" default: no stored credential needed.
+                properties:
+                  method:
+                    type: string
+                  tunnel:
+                    description: |-
+                      TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml
+                      dispatches to for this cluster.
+                    properties:
+                      provider:
+                        type: string
+                    type: object
+                type: object
               delete:
                 description: |-
                   Delete marks this cluster for deletion — same semantics as file
@@ -342,6 +360,21 @@ spec:
               external, user-owned input exactly like the Kubernetes convention for
               any other controller.
             properties:
+              access:
+                description: |-
+                  Access records which access method is currently active for this
+                  cluster — useful for GET /api/clusters to give an honest signal
+                  about how a caller's kubeconfig request will be served.
+                properties:
+                  lastMinted:
+                    description: |-
+                      LastMinted is an RFC 3339 timestamp, set only for tunnel-mode
+                      clusters (module-auth mints fresh on every request, so there's
+                      nothing meaningful to record here for it).
+                    type: string
+                  method:
+                    type: string
+                type: object
               appliedResources:
                 additionalProperties:
                   description: |-

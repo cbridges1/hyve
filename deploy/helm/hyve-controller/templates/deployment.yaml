@@ -20,10 +20,17 @@ spec:
         - name: controller
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # deploy/Dockerfile.controller's ENTRYPOINT already runs `hyve
-          # controller run` — args here only override flags, never the
-          # subcommand itself.
+          # command+args are set explicitly (rather than relying on
+          # deploy/Dockerfile.controller's own fixed
+          # ENTRYPOINT ["hyve", "controller", "run"]) so this chart also
+          # works unchanged against deploy/Dockerfile.dev's image, whose
+          # ENTRYPOINT is just ["hyve"] — see that Dockerfile's header
+          # comment. Kubernetes' command+args fully override whatever
+          # ENTRYPOINT/CMD either image sets, so this is safe either way.
+          command: ["hyve"]
           args:
+            - controller
+            - run
             - --namespace={{ .Values.namespace }}
             - --config-name={{ .Values.configName }}
             - --metrics-bind-address={{ .Values.metricsBindAddress }}

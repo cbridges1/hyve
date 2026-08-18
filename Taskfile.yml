@@ -82,3 +82,27 @@ tasks:
         platforms: [linux, darwin]
       - cmd: echo "test:secretsfrom needs bash — run scripts/test-secretsfrom.sh via WSL or Git Bash on Windows"
         platforms: [windows]
+
+  test:api:
+    desc: Live smoke test for Phase 6's API + auth layer — login, authn/authz, cluster CRUD, module-auth kubeconfig (needs kubectl + reachable cluster + curl/jq/openssl; runs the API as a local process, primary-cluster/proxy paths need a real in-cluster deployment and aren't covered here)
+    cmds:
+      - cmd: bash ./scripts/test-api.sh
+        platforms: [linux, darwin]
+      - cmd: echo "test:api needs bash — run scripts/test-api.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  cluster:local:
+    desc: Create (idempotently) a standalone k3d cluster for local hyve dev, with host 80/443 mapped to k3d's Traefik ingress — run this once before install:local. Sets your kubectl context to it. Needs k3d.
+    cmds:
+      - cmd: bash ./scripts/create-local-cluster.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "cluster:local needs bash — run scripts/create-local-cluster.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  install:local:
+    desc: Build hyve from local source and install controller + API onto whatever cluster your kubectl context points at — run `task cluster:local` first. Exposes the API via Ingress (hyve-api.localhost), no port-forward needed. Persistent, not a self-cleaning smoke test. Needs docker/kubectl/helm/openssl.
+    cmds:
+      - cmd: bash ./scripts/install-local.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "install:local needs bash — run scripts/install-local.sh via WSL or Git Bash on Windows"
+        platforms: [windows]

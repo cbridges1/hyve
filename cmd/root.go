@@ -2,20 +2,19 @@ package cmd
 
 import (
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	apicmd "github.com/cbridges1/hyve/cmd/api"
 	"github.com/cbridges1/hyve/cmd/cluster"
 	controllercmd "github.com/cbridges1/hyve/cmd/controller"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
+	"github.com/cbridges1/hyve/cmd/shared"
 	statecmd "github.com/cbridges1/hyve/cmd/state"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 	"github.com/cbridges1/hyve/internal/database"
 )
-
-var hyveHomeFlagValue string
 
 var rootCmd = &cobra.Command{
 	Use:   "hyve",
@@ -24,7 +23,7 @@ var rootCmd = &cobra.Command{
 Supports cluster creation, modification, deletion, and reconciliation.`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		home := resolvedHyveHome()
+		home := shared.HyveHome()
 		if home != "" {
 			database.SetConfigDir(home)
 		}
@@ -32,26 +31,11 @@ Supports cluster creation, modification, deletion, and reconciliation.`,
 	},
 }
 
-// HyveHome returns the effective Hyve home directory. It respects (in order):
-//  1. --home flag
-//  2. HYVE_HOME environment variable
-//  3. ~/.hyve (default)
+// HyveHome returns the effective Hyve home directory — see
+// shared.HyveHome's doc comment for the resolution order. Kept as a thin
+// re-export so existing callers in this package don't need to change.
 func HyveHome() string {
-	if home := resolvedHyveHome(); home != "" {
-		return home
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	return filepath.Join(homeDir, ".hyve")
-}
-
-func resolvedHyveHome() string {
-	if hyveHomeFlagValue != "" {
-		return hyveHomeFlagValue
-	}
-	return os.Getenv("HYVE_HOME")
+	return shared.HyveHome()
 }
 
 func Execute() {
@@ -61,7 +45,7 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&hyveHomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
+	rootCmd.PersistentFlags().StringVar(&shared.HomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
 
 	rootCmd.AddCommand(reconcileCmd)
 	rootCmd.AddCommand(cluster.Cmd)
@@ -71,4 +55,5 @@ func init() {
 	rootCmd.AddCommand(statecmd.SetStateCmd)
 	rootCmd.AddCommand(statecmd.Cmd)
 	rootCmd.AddCommand(controllercmd.Cmd)
+	rootCmd.AddCommand(apicmd.Cmd)
 }

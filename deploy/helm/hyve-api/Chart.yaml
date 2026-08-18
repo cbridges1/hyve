@@ -1,0 +1,7 @@
+apiVersion: v2
+name: hyve-api
+description: hyve's HTTP API + auth layer — login, role-gated ClusterDefinition CRUD, and GET /api/kubeconfig kubeconfig minting for any managed cluster. See HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/cbridges1/hyve

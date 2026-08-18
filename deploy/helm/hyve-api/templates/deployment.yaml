@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hyve-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hyve-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hyve-api
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default "hyve-api" }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The image's own ENTRYPOINT is just ["hyve"] (unlike
+          # deploy/Dockerfile.controller's fixed "controller run") —
+          # command+args here select the api subcommand, so the same image
+          # backs both this Deployment and hyve-controller's.
+          command: ["hyve"]
+          args:
+            - api
+            - run
+            - --namespace={{ .Values.namespace }}
+            - --modules-dir={{ .Values.modulesDir }}
+            - --bind-address={{ .Values.bindAddress }}
+            {{- if .Values.publicBaseURL }}
+            - --public-base-url={{ .Values.publicBaseURL }}
+            {{- end }}
+            {{- if .Values.primaryClusterName }}
+            - --primary-cluster-name={{ .Values.primaryClusterName }}
+            {{- end }}
+            - --proxy-target={{ .Values.proxyTarget }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.bindAddress | trimPrefix ":" }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -86,7 +87,22 @@ func runController() {
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme.Scheme,
+		Scheme: scheme.Scheme,
+		// ClusterDefinition/HyveConfig are both namespaced resources and
+		// this controller only ever cares about one namespace (--namespace)
+		// — scoping the cache's watch/list to just that namespace matches
+		// deploy/helm/hyve-controller's own RBAC, which grants a namespaced
+		// Role, not a ClusterRole. Left unscoped (the controller-runtime
+		// default), the manager's cache tries to list/watch
+		// ClusterDefinition cluster-wide and fails outright when run with
+		// that Role's real, least-privilege permissions — confirmed live:
+		// this exact mismatch crash-looped the controller pod
+		// ("cannot list resource \"clusterdefinitions\" ... at the cluster
+		// scope") the first time this ran in-cluster with real RBAC rather
+		// than a local process's full-access kubeconfig.
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{namespace: {}},
+		},
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,

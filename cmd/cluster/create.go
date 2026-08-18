@@ -18,13 +18,30 @@ import (
 
 var createCmd = &cobra.Command{
 	Use:   "create [cluster-name]",
-	Short: "Create a cluster from a template",
-	Args:  cobra.ExactArgs(1),
+	Short: "Create a cluster from a template (local mode) or a file (cluster mode)",
+	Long: `Local mode (no 'hyve login' session active): creates from a template via
+--template, exactly as before.
+
+Cluster mode (a valid 'hyve login' session exists): --template isn't
+supported — the API has no server-side template rendering — use --file
+pointing at an already-fully-specified cluster definition instead (the
+same apiVersion/kind/metadata/spec YAML shape a local clusters/<name>.yaml
+already uses).`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterName := args[0]
 		templateName, _ := cmd.Flags().GetString("template")
 		region, _ := cmd.Flags().GetString("region")
 		setVals, _ := cmd.Flags().GetStringArray("set")
+		file, _ := cmd.Flags().GetString("file")
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			if file == "" {
+				log.Fatal("--file is required in cluster mode (a 'hyve login' session is active) — templates aren't supported over the API yet")
+			}
+			createClusterFromFileAPI(shared.NewAPIClient(sess), file)
+			return
+		}
 
 		if templateName == "" {
 			log.Fatal("--template is required")
@@ -44,9 +61,10 @@ var createCmd = &cobra.Command{
 }
 
 func init() {
-	createCmd.Flags().StringP("template", "t", "", "Template to create the cluster from (required)")
-	createCmd.Flags().StringP("region", "r", "", "Override the template's default region")
-	createCmd.Flags().StringArray("set", nil, "Override driver params (repeatable): KEY=VALUE")
+	createCmd.Flags().StringP("template", "t", "", "Template to create the cluster from (local mode; required unless --file is given)")
+	createCmd.Flags().StringP("region", "r", "", "Override the template's default region (local mode)")
+	createCmd.Flags().StringArray("set", nil, "Override driver params (repeatable): KEY=VALUE (local mode)")
+	createCmd.Flags().StringP("file", "f", "", "Path to a cluster definition YAML file (cluster mode; required instead of --template)")
 }
 
 func createClusterFromTemplate(templateName, clusterName, region string, overrides map[string]string) {

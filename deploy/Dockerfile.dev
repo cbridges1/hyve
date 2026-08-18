@@ -1,0 +1,45 @@
+# Local-dev image — builds the hyve binary from THIS repo's own local
+# source tree, not `go install <module>@version` like deploy/Dockerfile.controller
+# does. That matters because Dockerfile.controller always resolves the
+# published module, so any uncommitted work-in-progress in this checkout
+# would silently be left out of the image. Use this one instead whenever
+# you want to run what's actually on disk right now — e.g. `task
+# install:local` against Docker Desktop Kubernetes.
+#
+# NOT for a real deployment: it bakes in no state/modules at all (empty
+# /var/lib/hyve/modules) — see Dockerfile.controller's own header comment
+# for the baked-in-state-repo approach a real deployment should use
+# instead.
+#
+# Build context is THIS hyve source repo:
+#   docker build -f deploy/Dockerfile.dev -t hyve:dev .
+FROM golang:1.26-alpine AS builder
+RUN apk add --no-cache git
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/hyve .
+
+FROM alpine:3.20
+ENV HOME=/root
+
+# Same package list as the plain-CLI Dockerfile/Dockerfile.release and
+# Dockerfile.controller — module operation scripts commonly shell out to
+# these regardless of mode.
+RUN apk add --no-cache ca-certificates bash git curl jq openssl \
+    kubectl helm
+
+COPY --from=builder /out/hyve /usr/local/bin/hyve
+
+# No baked-in state — a from-scratch dev install starts with nothing
+# configured. Reconciling a real ClusterDefinition needs a driver module
+# reachable under this path; how you get one there (baked into a custom
+# image, mounted volume, etc.) is up to you for local testing.
+RUN mkdir -p /var/lib/hyve/modules
+
+# No fixed subcommand — unlike Dockerfile.controller's hardcoded
+# `ENTRYPOINT ["hyve", "controller", "run"]`, deploy/helm/hyve-controller
+# and deploy/helm/hyve-api both set their own full command+args against
+# this same image, so one image backs both Deployments.
+ENTRYPOINT ["hyve"]

@@ -1,0 +1,79 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name | default "hyve-api" }}
+  namespace: {{ .Values.namespace }}
+{{- end }}
+---
+# Namespace-scoped: ClusterDefinition CRUD, Secrets (credentials + tunnel
+# kubeconfigs), TokenRequest (minting on behalf of a caller's matched
+# HyveAccessBinding — see internal/api/access.go's PrimaryClusterProvider),
+# and read access to Jobs/Pods/pod logs for the future log-streaming
+# endpoint (Phase 6.7, not yet implemented — granted now so a later rollout
+# of that feature needs no RBAC change).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hyve-api
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterdefinitions"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterdefinitions/status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyve-api
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name | default "hyve-api" }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: hyve-api
+  apiGroup: rbac.authorization.k8s.io
+---
+# HyveAccessBinding is cluster-scoped (identity -> role mapping isn't tied
+# to a namespace) — needs a ClusterRole, not the namespaced Role above.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hyve-api-accessbindings
+rules:
+  - apiGroups: ["hyve.io"]
+    resources: ["hyveaccessbindings"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyve-api-accessbindings
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name | default "hyve-api" }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: hyve-api-accessbindings
+  apiGroup: rbac.authorization.k8s.io
