@@ -84,7 +84,7 @@ log "Ensuring namespace $NAMESPACE exists"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 log "Applying CRDs"
-kubectl apply -f "$ROOT_DIR/deploy/crds/" >/dev/null
+kubectl apply -f "$ROOT_DIR/deploy/helm/hyve-controller/crds/" -f "$ROOT_DIR/deploy/helm/hyve-api/crds/" >/dev/null
 
 log "Ensuring hyve-api-credentials Secret exists (never rotated on re-run)"
 if ! kubectl -n "$NAMESPACE" get secret hyve-api-credentials >/dev/null 2>&1; then

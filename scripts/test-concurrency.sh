@@ -102,8 +102,8 @@ spec:
 EOF
 
 log "Applying CRDs"
-kubectl apply -f "$ROOT_DIR/deploy/crds/hyve.io_clusterdefinitions.yaml" >/dev/null
-kubectl apply -f "$ROOT_DIR/deploy/crds/hyve.io_hyveconfigs.yaml" >/dev/null
+kubectl apply -f "$ROOT_DIR/deploy/helm/hyve-controller/crds/hyve.io_clusterdefinitions.yaml" >/dev/null
+kubectl apply -f "$ROOT_DIR/deploy/helm/hyve-controller/crds/hyve.io_hyveconfigs.yaml" >/dev/null
 
 kubectl create namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
