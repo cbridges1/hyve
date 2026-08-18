@@ -55,19 +55,33 @@ type ClusterDefinitionSpec struct {
 	// this cluster while any named dependency isn't ACTIVE.
 	DependsOn []string `json:"dependsOn,omitempty"`
 
-	// Access controls how internal/api's AccessProvider mints a kubeconfig
-	// for this cluster via GET /api/kubeconfig — see
-	// HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5. Left unset, this
-	// cluster uses the "module-auth" default: no stored credential needed.
+	// Access controls how a kubeconfig is minted for this cluster — see
+	// HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5. Left unset (the
+	// default), GET /api/kubeconfig doesn't serve this cluster at all: a
+	// module's auth.yaml is written assuming it runs with the caller's own
+	// local credentials/tools (cloud CLI configs, SSH keys, etc.), so the
+	// API instead exposes driver info via
+	// GET /api/clusters/<name>/auth-context and the CLI runs the module
+	// client-side (see cmd/cluster/auth.go) — the same as local mode,
+	// just sourcing the ClusterDefinition from the API instead of git.
+	// Set Method: module-auth to override that and run the module
+	// server-side instead, inside the API pod, on every /api/kubeconfig
+	// request — only appropriate for a module whose auth.yaml is written
+	// to run there and itself enforces proper authorization using the
+	// caller identity hyve injects (HYVE_CALLER_USERNAME/HYVE_CALLER_ROLE
+	// — see moduleEnvForClusterDefinition), since the pod's own ambient
+	// credentials mint the result, not the caller's.
 	Access AccessSpec `json:"access,omitempty"`
 }
 
 // AccessMethod values for AccessSpec.Method.
 const (
-	// AccessMethodModuleAuth runs the cluster's own driver module's
-	// auth.yaml live on every /api/kubeconfig request — the default when
-	// Method is unset. No stored Secret, no tunnel technology; works for
-	// any cloud-managed cluster reachable via its provider's own API.
+	// AccessMethodModuleAuth is an explicit opt-in override: runs the
+	// cluster's own driver module's auth.yaml live, server-side inside the
+	// API pod, on every /api/kubeconfig request. The default (Method
+	// unset) instead runs the module client-side — see
+	// ClusterDefinitionSpec.Access's doc comment for why, and for what
+	// this override assumes the module's auth.yaml itself takes care of.
 	AccessMethodModuleAuth = "module-auth"
 
 	// AccessMethodTunnel reads a pre-minted kubeconfig from a stored

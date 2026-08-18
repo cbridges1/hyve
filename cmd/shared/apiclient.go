@@ -3,11 +3,20 @@ package shared
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
+
+// ErrClientSideAuthUnavailable is returned by GetAuthContext when the
+// target cluster doesn't use the default client-side auth method (see
+// internal/api's handleAuthContext) — it's opted into the server-side
+// module-auth override or tunnel access instead. Callers should fall back
+// to GetKubeconfig.
+var ErrClientSideAuthUnavailable = errors.New("cluster does not use client-side auth")
 
 // APIClient is a minimal HTTP client for hyve's cluster-mode API (see
 // internal/api) — cmd/cluster's commands use this instead of constructing
@@ -100,6 +109,90 @@ func (c *APIClient) CreateCluster(name string, spec json.RawMessage) (*ClusterDT
 
 func (c *APIClient) DeleteCluster(name string) error {
 	return c.do(http.MethodDelete, "/api/clusters/"+name, nil, nil)
+}
+
+// AuthContextDTO mirrors internal/api's authContextDTO — the driver info
+// needed to resolve and run a module's auth operation client-side.
+type AuthContextDTO struct {
+	DriverSource  string            `json:"driverSource"`
+	DriverVersion string            `json:"driverVersion"`
+	Region        string            `json:"region,omitempty"`
+	Params        map[string]string `json:"params,omitempty"`
+	DriverOutputs map[string]string `json:"driverOutputs,omitempty"`
+}
+
+// GetAuthContext calls GET /api/clusters/<name>/auth-context. A 409
+// response (the cluster doesn't use client-side auth) is reported as
+// ErrClientSideAuthUnavailable rather than a generic error, so callers can
+// distinguish "fall back to GetKubeconfig" from a real failure.
+func (c *APIClient) GetAuthContext(clusterName string) (*AuthContextDTO, error) {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/api/clusters/"+url.PathEscape(clusterName)+"/auth-context", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("reach %s: %w", c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, ErrClientSideAuthUnavailable
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiErr struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &apiErr) == nil && apiErr.Error != "" {
+			return nil, fmt.Errorf("%s (%s)", apiErr.Error, resp.Status)
+		}
+		return nil, fmt.Errorf("unexpected response: %s", resp.Status)
+	}
+	var out AuthContextDTO
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	return &out, nil
+}
+
+// GetKubeconfig calls GET /api/kubeconfig?cluster=<name> and returns the raw
+// kubeconfig YAML document. Unlike every other APIClient method, the
+// response isn't JSON (see internal/api's handleKubeconfig — it writes
+// application/yaml directly), so this bypasses do()'s JSON decoding rather
+// than trying to force it through the same path.
+func (c *APIClient) GetKubeconfig(clusterName string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/api/kubeconfig?cluster="+url.QueryEscape(clusterName), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("reach %s: %w", c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiErr struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &apiErr) == nil && apiErr.Error != "" {
+			return nil, fmt.Errorf("%s (%s)", apiErr.Error, resp.Status)
+		}
+		return nil, fmt.Errorf("unexpected response: %s", resp.Status)
+	}
+	return body, nil
 }
 
 // do sends the request and, on a non-2xx response, returns an error

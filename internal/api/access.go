@@ -91,13 +91,19 @@ func (p *PrimaryClusterProvider) Kubeconfig(ctx context.Context, _ *hyvev1alpha1
 	return buildKubeconfig(strings.TrimRight(p.PublicBaseURL, "/")+"/proxy", p.CA, tr.Status.Token)
 }
 
-// ModuleAuthProvider is the default for any cluster not explicitly opted
-// into tunnel access (AccessMethodTunnel) — runs the target
-// ClusterDefinition's driver module's existing auth.yaml (the same hook
-// `hyve cluster auth <name>` already triggers locally) and returns the
-// resulting kubeconfig as-is. No cloud-provider SDK code lives here or
-// anywhere in internal/api — all cloud-specific logic stays inside the
-// module's own auth.yaml, per "no cloud SDKs embedded in hyve".
+// ModuleAuthProvider backs the explicit AccessMethodModuleAuth override
+// (see ClusterDefinitionSpec.Access's doc comment — the default instead
+// runs the same auth.yaml client-side, via GET /api/clusters/<name>/auth-context)
+// — runs the target ClusterDefinition's driver module's existing auth.yaml
+// live, inside this API pod, and returns the resulting kubeconfig as-is. No
+// cloud-provider SDK code lives here or anywhere in internal/api — all
+// cloud-specific logic stays inside the module's own auth.yaml, per "no
+// cloud SDKs embedded in hyve". Because this runs with the pod's own
+// ambient credentials rather than the caller's, the caller's resolved
+// identity is injected as HYVE_CALLER_USERNAME/HYVE_CALLER_ROLE (see
+// moduleEnvForClusterDefinition) so the module's auth.yaml can itself
+// enforce whatever authorization it needs — this provider does not check
+// authorization on the module's behalf.
 type ModuleAuthProvider struct {
 	// ModulesDir is the same baked-in modules root
 	// internal/controller.CRDStateProvider.ModulesDirPath uses.
@@ -117,7 +123,7 @@ func (p *ModuleAuthProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cl
 
 	exec := &module.Executor{
 		ModuleDir:   resolved.Dir,
-		Env:         moduleEnvForClusterDefinition(cd),
+		Env:         moduleEnvForClusterDefinition(ctx, cd),
 		WorkDir:     p.ModulesDir,
 		ClusterName: cd.Name,
 	}
@@ -142,10 +148,22 @@ func (p *ModuleAuthProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cl
 // which this package has no reason to depend on internal/reconcile just to
 // reuse; duplicated deliberately, same precedent as
 // internal/apis/hyve/v1alpha1's own duplication of internal/types shapes).
-func moduleEnvForClusterDefinition(cd *hyvev1alpha1.ClusterDefinition) []string {
+// Also injects the caller's resolved identity (HYVE_CALLER_USERNAME/
+// HYVE_CALLER_ROLE, from ctx — see requireAuth/requireRole) since this path
+// runs the module server-side, with this pod's own ambient credentials
+// rather than the caller's: the module's auth.yaml is the only place left
+// that can enforce authorization for what it's about to mint, and it needs
+// to know who's actually asking.
+func moduleEnvForClusterDefinition(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) []string {
 	env := []string{
 		"HYVE_CLUSTER_NAME=" + cd.Name,
 		"HYVE_CLUSTER_REGION=" + cd.Spec.Region,
+	}
+	if username, ok := UsernameFromContext(ctx); ok {
+		env = append(env, "HYVE_CALLER_USERNAME="+username)
+	}
+	if role, ok := RoleFromContext(ctx); ok {
+		env = append(env, "HYVE_CALLER_ROLE="+role)
 	}
 	for k, v := range cd.Spec.Params {
 		env = append(env, "HYVE_PARAM_"+strings.ToUpper(k)+"="+v)

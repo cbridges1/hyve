@@ -17,10 +17,11 @@ var authSyncDryRun bool
 
 var authSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Remove stale local kubeconfig entries for clusters no longer in the repo",
-	Long: "Diffs context names in ~/.kube/config against known cluster definitions " +
-		"(clusters/*.yaml in the repo) and removes any context — plus its cluster " +
-		"and user entries — that no longer corresponds to a known cluster.",
+	Short: "Remove stale local kubeconfig entries for clusters that no longer exist",
+	Long: "Diffs context names in ~/.kube/config against known clusters — fetched from " +
+		"the API in cluster mode (a 'hyve login' session is active), or from local " +
+		"clusters/*.yaml files otherwise — and removes any context, plus its cluster " +
+		"and user entries, that no longer corresponds to a known cluster.",
 	Run: func(cmd *cobra.Command, args []string) {
 		runClusterAuthSync(authSyncDryRun)
 	},
@@ -33,16 +34,9 @@ func init() {
 }
 
 func runClusterAuthSync(dryRun bool) {
-	ctx := context.Background()
-	stateMgr, _ := shared.CreateStateManager(ctx)
-
-	clusterDefs, err := stateMgr.LoadClusterDefinitions()
+	known, err := knownClusterNames()
 	if err != nil {
-		log.Fatalf("Failed to load cluster definitions: %v", err)
-	}
-	known := make(map[string]bool, len(clusterDefs))
-	for _, c := range clusterDefs {
-		known[c.Metadata.Name] = true
+		log.Fatalf("Failed to load known clusters: %v", err)
 	}
 
 	kcPath, err := mod.DefaultKubeconfigPath()
@@ -96,4 +90,35 @@ func runClusterAuthSync(dryRun bool) {
 			log.Fatalf("Failed to re-read kubeconfig after removal: %v", err)
 		}
 	}
+}
+
+// knownClusterNames returns the set of cluster names `sync` should treat as
+// known. In cluster mode this asks the API — the single gateway for
+// cluster-mode state — rather than a local git checkout, which wouldn't
+// reflect server-side reality and would hard-fail anyway with no repo
+// configured. Otherwise it reads local clusters/*.yaml files, unchanged.
+func knownClusterNames() (map[string]bool, error) {
+	if sess, ok := shared.UseClusterMode(); ok {
+		clusters, err := shared.NewAPIClient(sess).ListClusters()
+		if err != nil {
+			return nil, err
+		}
+		known := make(map[string]bool, len(clusters))
+		for _, c := range clusters {
+			known[c.Name] = true
+		}
+		return known, nil
+	}
+
+	ctx := context.Background()
+	stateMgr, _ := shared.CreateStateManager(ctx)
+	clusterDefs, err := stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]bool, len(clusterDefs))
+	for _, c := range clusterDefs {
+		known[c.Metadata.Name] = true
+	}
+	return known, nil
 }

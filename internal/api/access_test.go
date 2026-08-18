@@ -184,11 +184,32 @@ func TestHandleKubeconfig_DispatchesToPrimaryProvider(t *testing.T) {
 	assert.Equal(t, "primary-kubeconfig", rec.Body.String())
 }
 
-func TestHandleKubeconfig_DispatchesToModuleAuthByDefault(t *testing.T) {
+func TestHandleKubeconfig_DefaultIsClientSideAuthNotServed(t *testing.T) {
 	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
 	tunnel := &recordingProvider{kc: []byte("tunnel-kubeconfig")}
 	s := &Server{
 		Client:             newFakeClient(t, newClusterDef("prod")),
+		Namespace:          testNamespace,
+		ModuleAuthProvider: moduleAuth,
+		TunnelProvider:     tunnel,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=prod", nil)
+	rec := httptest.NewRecorder()
+	s.handleKubeconfig(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	assert.False(t, moduleAuth.called)
+	assert.False(t, tunnel.called)
+}
+
+func TestHandleKubeconfig_DispatchesToModuleAuthWhenExplicitlyOverridden(t *testing.T) {
+	cd := newClusterDef("prod")
+	cd.Spec.Access.Method = hyvev1alpha1.AccessMethodModuleAuth
+	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
+	tunnel := &recordingProvider{kc: []byte("tunnel-kubeconfig")}
+	s := &Server{
+		Client:             newFakeClient(t, cd),
 		Namespace:          testNamespace,
 		ModuleAuthProvider: moduleAuth,
 		TunnelProvider:     tunnel,
@@ -225,9 +246,11 @@ func TestHandleKubeconfig_DispatchesToTunnelWhenConfigured(t *testing.T) {
 }
 
 func TestHandleKubeconfig_ProviderErrorSurfacesAsBadGateway(t *testing.T) {
+	cd := newClusterDef("prod")
+	cd.Spec.Access.Method = hyvev1alpha1.AccessMethodModuleAuth
 	moduleAuth := &recordingProvider{err: fmt.Errorf("boom")}
 	s := &Server{
-		Client:             newFakeClient(t, newClusterDef("prod")),
+		Client:             newFakeClient(t, cd),
 		Namespace:          testNamespace,
 		ModuleAuthProvider: moduleAuth,
 	}

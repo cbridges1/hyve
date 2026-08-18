@@ -3,6 +3,7 @@ package kubeconfig
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -138,6 +139,74 @@ func keepLastByName(items []map[string]interface{}) []map[string]interface{} {
 		}
 	}
 	return result
+}
+
+// MergeKubeconfigEntry merges a single-cluster kubeconfig document (as
+// returned by GET /api/kubeconfig, e.g. via `hyve cluster auth` in cluster
+// mode) into the kubeconfig file at configPath. Its cluster/context/user
+// entries are renamed to entryName regardless of what the source called
+// them — every minted kubeconfig has exactly one of each, so this sidesteps
+// any collision with whatever server-side name was used (e.g.
+// PrimaryClusterProvider hardcodes "hyve") and instead keys everything by
+// the real cluster name, matching how multiple clusters coexist in one
+// local kubeconfig today. Any existing entries already named entryName are
+// replaced. Sets current-context to entryName. Creates configPath (and its
+// parent directory) if it doesn't exist yet.
+func MergeKubeconfigEntry(configPath string, newConfigContent []byte, entryName string) error {
+	var incoming KubeConfigStructure
+	if err := yaml.Unmarshal(newConfigContent, &incoming); err != nil {
+		return fmt.Errorf("failed to parse fetched kubeconfig: %w", err)
+	}
+	if len(incoming.Clusters) == 0 || len(incoming.Contexts) == 0 || len(incoming.Users) == 0 {
+		return fmt.Errorf("fetched kubeconfig has no cluster/context/user entries to merge")
+	}
+
+	renamedCluster := renameEntry(incoming.Clusters[0], entryName)
+	renamedUser := renameEntry(incoming.Users[0], entryName)
+	renamedContext := renameEntry(incoming.Contexts[0], entryName)
+	if ctxBody, ok := renamedContext["context"].(map[string]interface{}); ok {
+		ctxBody["cluster"] = entryName
+		ctxBody["user"] = entryName
+	}
+
+	var existing KubeConfigStructure
+	data, err := os.ReadFile(configPath)
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(data, &existing); err != nil {
+			return fmt.Errorf("failed to parse existing kubeconfig: %w", err)
+		}
+	case os.IsNotExist(err):
+		existing = KubeConfigStructure{APIVersion: "v1", Kind: "Config"}
+	default:
+		return fmt.Errorf("failed to read existing kubeconfig: %w", err)
+	}
+
+	existing.Clusters = append(removeItemByName(existing.Clusters, entryName), renamedCluster)
+	existing.Users = append(removeItemByName(existing.Users, entryName), renamedUser)
+	existing.Contexts = append(removeItemByName(existing.Contexts, entryName), renamedContext)
+	existing.CurrentContext = entryName
+
+	result, err := yaml.Marshal(&existing)
+	if err != nil {
+		return fmt.Errorf("failed to marshal merged kubeconfig: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return fmt.Errorf("failed to create kubeconfig directory: %w", err)
+	}
+	return os.WriteFile(configPath, result, 0600)
+}
+
+// renameEntry returns a shallow copy of item with its "name" field replaced
+// — the source map isn't mutated in place since it's shared with the parsed
+// incoming document.
+func renameEntry(item map[string]interface{}, name string) map[string]interface{} {
+	out := make(map[string]interface{}, len(item))
+	for k, v := range item {
+		out[k] = v
+	}
+	out["name"] = name
+	return out
 }
 
 // ContextNames returns the name of every context entry in configContent —

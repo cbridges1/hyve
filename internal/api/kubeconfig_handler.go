@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
@@ -20,8 +21,11 @@ func (s *Server) registerKubeconfigRoutes(mux *http.ServeMux) {
 // handleKubeconfig resolves ?cluster=<name> and dispatches to the right
 // AccessProvider — PrimaryProvider when <name> is this API's own cluster
 // (s.PrimaryClusterName), otherwise TunnelProvider or ModuleAuthProvider
-// per the target ClusterDefinition's spec.access.method (module-auth when
-// unset). See HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5.
+// per the target ClusterDefinition's spec.access.method. Unset (the
+// default) isn't served here at all — see ClusterDefinitionSpec.Access's
+// doc comment: that case is client-side auth, served by
+// GET /api/clusters/<name>/auth-context instead. See
+// HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5.
 func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("cluster")
 	if name == "" {
@@ -45,9 +49,17 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider := s.ModuleAuthProvider
-	if cd.Spec.Access.Method == hyvev1alpha1.AccessMethodTunnel {
+	var provider AccessProvider
+	switch cd.Spec.Access.Method {
+	case hyvev1alpha1.AccessMethodTunnel:
 		provider = s.TunnelProvider
+	case hyvev1alpha1.AccessMethodModuleAuth:
+		provider = s.ModuleAuthProvider
+	default:
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"cluster %q uses client-side auth (the default) — run `hyve cluster auth %s` to fetch driver info via GET /api/clusters/%s/auth-context and run the module locally, or set spec.access.method: module-auth to override to server-side auth",
+			name, name, name))
+		return
 	}
 	if provider == nil {
 		writeError(w, http.StatusInternalServerError, "no access provider configured for this cluster's access method")
