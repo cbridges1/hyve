@@ -62,7 +62,7 @@ mkdir -p "$REPO_DIR/workflows"
 
 OUT_FILE="$WORK_DIR/step-output.txt"
 cat > "$REPO_DIR/workflows/secrets-test.yaml" <<EOF
-apiVersion: v1
+apiVersion: hyve.io/v1alpha1
 kind: Workflow
 metadata:
   name: secrets-test

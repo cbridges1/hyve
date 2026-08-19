@@ -67,6 +67,8 @@ func (s *Server) Routes() http.Handler {
 	s.registerClusterRoutes(apiMux)
 	s.registerKubeconfigRoutes(apiMux)
 	s.registerAuthContextRoutes(apiMux)
+	s.registerTemplateRoutes(apiMux)
+	s.registerWorkflowRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))

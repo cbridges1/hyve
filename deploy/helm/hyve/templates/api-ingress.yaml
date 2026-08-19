@@ -1,13 +1,13 @@
-{{- if .Values.ingress.enabled }}
+{{- if .Values.api.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: hyve-api
   namespace: {{ .Values.namespace }}
 spec:
-  ingressClassName: {{ .Values.ingress.className }}
+  ingressClassName: {{ .Values.api.ingress.className }}
   rules:
-    - host: {{ required "ingress.host is required when ingress.enabled=true" .Values.ingress.host }}
+    - host: {{ required "api.ingress.host is required when api.ingress.enabled=true" .Values.api.ingress.host }}
       http:
         paths:
           - path: /
@@ -16,5 +16,5 @@ spec:
               service:
                 name: hyve-api
                 port:
-                  number: {{ .Values.service.port }}
+                  number: {{ .Values.api.service.port }}
 {{- end }}

@@ -1,17 +1,17 @@
-{{- if .Values.serviceAccount.create }}
+{{- if .Values.api.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Values.serviceAccount.name | default "hyve-api" }}
+  name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
   namespace: {{ .Values.namespace }}
 {{- end }}
 ---
-# Namespace-scoped: ClusterDefinition CRUD, Secrets (credentials + tunnel
-# kubeconfigs), TokenRequest (minting on behalf of a caller's matched
-# HyveAccessBinding — see internal/api/access.go's PrimaryClusterProvider),
-# and read access to Jobs/Pods/pod logs for the future log-streaming
-# endpoint (Phase 6.7, not yet implemented — granted now so a later rollout
-# of that feature needs no RBAC change).
+# Namespace-scoped: ClusterDefinition/Template/Workflow CRUD, Secrets
+# (credentials + tunnel kubeconfigs), TokenRequest (minting on behalf of a
+# caller's matched HyveAccessBinding — see internal/api/access.go's
+# PrimaryClusterProvider), and read access to Jobs/Pods/pod logs for the
+# future log-streaming endpoint (Phase 6.7, not yet implemented — granted
+# now so a later rollout of that feature needs no RBAC change).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -24,6 +24,9 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions/status"]
     verbs: ["get"]
+  - apiGroups: ["hyve.io"]
+    resources: ["templates", "workflows"]
+    verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
@@ -47,7 +50,7 @@ metadata:
   namespace: {{ .Values.namespace }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name | default "hyve-api" }}
+    name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
     namespace: {{ .Values.namespace }}
 roleRef:
   kind: Role
@@ -71,7 +74,7 @@ metadata:
   name: hyve-api-accessbindings
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name | default "hyve-api" }}
+    name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
     namespace: {{ .Values.namespace }}
 roleRef:
   kind: ClusterRole

@@ -33,6 +33,15 @@ var templateCreateCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		templateName := args[0]
+		file, _ := cmd.Flags().GetString("file")
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			if file != "" {
+				createTemplateFromFileAPI(shared.NewAPIClient(sess), file)
+				return
+			}
+		}
+
 		description, _ := cmd.Flags().GetString("description")
 		driverSource, _ := cmd.Flags().GetString("driver")
 		driverVersion, _ := cmd.Flags().GetString("driver-version")
@@ -58,6 +67,12 @@ var templateCreateCmd = &cobra.Command{
 			params[parts[0]] = parts[1]
 		}
 
+		if sess, ok := shared.UseClusterMode(); ok {
+			createTemplateAPI(shared.NewAPIClient(sess), templateName, description, driverSource, driverVersion, region, params,
+				beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
+			return
+		}
+
 		createTemplate(templateName, description, driverSource, driverVersion, region, params,
 			beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
 	},
@@ -67,6 +82,10 @@ var templateListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all cluster templates",
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			listTemplatesAPI(shared.NewAPIClient(sess))
+			return
+		}
 		listTemplates()
 	},
 }
@@ -76,6 +95,10 @@ var templateDeleteCmd = &cobra.Command{
 	Short: "Delete a cluster template",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			deleteTemplateAPI(shared.NewAPIClient(sess), args[0])
+			return
+		}
 		deleteTemplate(args[0])
 	},
 }
@@ -85,6 +108,10 @@ var templateShowCmd = &cobra.Command{
 	Short: "Show template details",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			showTemplateAPI(shared.NewAPIClient(sess), args[0])
+			return
+		}
 		showTemplate(args[0])
 	},
 }
@@ -110,6 +137,7 @@ func init() {
 	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5')")
 	templateCreateCmd.Flags().Bool("lock-params", false, "Prevent users from overriding default params when creating a cluster from this template")
+	templateCreateCmd.Flags().StringP("file", "f", "", "Create from an existing Template YAML file instead of flags (cluster mode only)")
 
 	templateCmd.AddCommand(templateCreateCmd)
 	templateCmd.AddCommand(templateListCmd)
@@ -156,17 +184,17 @@ func createTemplate(
 	}
 
 	tmpl := &template.Template{
-		APIVersion: "v1",
-		Kind:       "Template",
+		APIVersion: template.APIVersion,
+		Kind:       template.Kind,
 		Metadata: template.TemplateMetadata{
 			Name:        name,
 			Description: description,
 		},
 		Spec: template.TemplateSpec{
-			Driver: template.TemplateDriverRef{Source: driverSource, Version: driverVersion},
+			Driver: types.DriverRef{Source: driverSource, Version: driverVersion},
 			Region: region,
 			Params: params,
-			Workflows: template.TemplateWorkflowsSpec{
+			Workflows: types.WorkflowsSpec{
 				BeforeCreate: parseWorkflows(beforeCreateStr),
 				OnCreate:     parseWorkflows(onCreateStr),
 				OnDelete:     parseWorkflows(onDeleteStr),

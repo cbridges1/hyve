@@ -1,0 +1,7 @@
+apiVersion: v2
+name: hyve
+description: hyve's server-side components — the controller/operator reconcile loop and the HTTP API + auth layer, deployed together as one release (they're always used together, and always run from the same binary — see cmd/clusterconfig).
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/cbridges1/hyve

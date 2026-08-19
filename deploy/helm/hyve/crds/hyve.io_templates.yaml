@@ -4,24 +4,21 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: clusterdefinitions.hyve.io
+  name: templates.hyve.io
 spec:
   group: hyve.io
   names:
-    kind: ClusterDefinition
-    listKind: ClusterDefinitionList
-    plural: clusterdefinitions
+    kind: Template
+    listKind: TemplateList
+    plural: templates
     shortNames:
-    - cd
-    singular: clusterdefinition
+    - tpl
+    singular: template
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.driver.source
       name: Driver
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -30,9 +27,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ClusterDefinition is the Schema for the clusterdefinitions API — the
-          controller-mode source of truth for one cluster, equivalent to a
-          clusters/<name>.yaml + cluster-state/<name>.state.yaml pair in file mode.
+          Template is the Schema for the templates API — a reusable
+          ClusterDefinition scaffold. No status: purely declarative config, read
+          on demand when rendering a cluster, never itself reconciled.
         properties:
           apiVersion:
             description: |-
@@ -53,80 +50,43 @@ spec:
             type: object
           spec:
             description: |-
-              ClusterDefinitionSpec is the desired state — the CRD equivalent of a
-              human-authored clusters/<name>.yaml in file mode. Region lives here
-              (rather than on ObjectMeta, which is reserved for Kubernetes' own
-              bookkeeping) as the CRD-mode replacement for
-              internal/types.ClusterMetadata.Region; the object's own metadata.name
-              replaces internal/types.ClusterMetadata.Name.
+              TemplateSpec is what a ClusterDefinition looks like before its
+              name/params/region are filled in — see RenderClusterDefinitionSpec, which
+              both local mode (`hyve cluster create --template`) and cluster mode
+              (POST /api/templates/{name}/render, POST /api/clusters with a template
+              field) call to turn one of these into a real ClusterDefinitionSpec.
+              Mirrors internal/template.TemplateSpec; Description moved off ObjectMeta
+              onto Spec, the same pattern ClusterDefinitionSpec.Region already uses —
+              a real Kubernetes object's metadata can only hold standard ObjectMeta
+              fields, not arbitrary custom ones.
             properties:
-              access:
-                description: |-
-                  Access controls how internal/api's AccessProvider mints a kubeconfig
-                  for this cluster via GET /api/kubeconfig — see
-                  HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5. Left unset, this
-                  cluster uses the "module-auth" default: no stored credential needed.
-                properties:
-                  method:
-                    type: string
-                  tunnel:
-                    description: |-
-                      TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml
-                      dispatches to for this cluster.
-                    properties:
-                      provider:
-                        type: string
-                    type: object
-                type: object
-              delete:
-                description: |-
-                  Delete marks this cluster for deletion — same semantics as file
-                  mode's spec.delete:true. In CRD mode a `kubectl delete
-                  clusterdefinition <name>` is the more natural trigger (see
-                  ClusterDefinitionFinalizer); this field exists for parity and for
-                  automated set-then-apply flows that mirror the file-mode pattern.
-                type: boolean
-              dependsOn:
-                description: |-
-                  DependsOn names other ClusterDefinitions this one depends on — see
-                  HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's "Optional dependsOn ordering"
-                  section. ReconcileOne skips (does not fail) a reconcile cycle for
-                  this cluster while any named dependency isn't ACTIVE.
-                items:
-                  type: string
-                type: array
+              description:
+                type: string
               driver:
-                description: Driver identifies the module that manages this cluster.
+                description: |-
+                  DriverRef identifies the module (driver) that manages a cluster. Mirrors
+                  internal/types.DriverRef.
                 properties:
                   source:
                     type: string
                   version:
                     type: string
                 type: object
-              expiresAt:
+              lockParams:
                 description: |-
-                  ExpiresAt is an optional RFC 3339 timestamp. When the current time is
-                  past this value the reconciler treats the cluster as if delete:true
-                  is set.
-                type: string
+                  LockParams prevents overriding default param values when creating a
+                  cluster from this template — the --set flag (local mode) or a
+                  render request's params (cluster mode) are rejected rather than
+                  silently ignored. Intended for admins enforcing standard
+                  configurations.
+                type: boolean
               params:
                 additionalProperties:
                   type: string
-                description: |-
-                  Params are arbitrary key/value pairs passed to the driver as
-                  HYVE_PARAM_<KEY> environment variables.
                 type: object
-              pause:
-                description: |-
-                  Pause skips reconciliation for this cluster while keeping its
-                  definition in the cluster.
-                type: boolean
               region:
                 type: string
               resources:
-                description: |-
-                  Resources declares Kubernetes manifests hyve should own, drift-check,
-                  and re-apply on every reconcile cycle for an ACTIVE cluster.
                 items:
                   description: |-
                     ResourceRef declares one Kubernetes resource hyve should own, drift-check,
@@ -191,6 +151,20 @@ spec:
                   - name
                   type: object
                 type: array
+              runner:
+                description: |-
+                  RunnerSpec configures how a Template's driver module should be executed
+                  when a cluster is created from it. Mirrors internal/template.TemplateRunnerConfig.
+                properties:
+                  image:
+                    type: string
+                type: object
+              schedule:
+                description: |-
+                  Schedule is a 5-field cron expression (e.g. "0 20 * * 5"). When a
+                  cluster is created from this template, the next occurrence is
+                  calculated and written to the generated cluster's spec.expiresAt.
+                type: string
               workflows:
                 description: |-
                   WorkflowsSpec defines workflows to run on cluster lifecycle events.
@@ -350,157 +324,7 @@ spec:
                     type: array
                 type: object
             type: object
-          status:
-            description: |-
-              ClusterDefinitionStatus is reconciler-owned observed state — the CRD
-              equivalent of file mode's cluster-state/<name>.state.yaml sidecar, plus
-              the two fields standard for any controller-runtime-managed resource
-              (Conditions, ObservedGeneration). Written only via the status
-              subresource: the reconciler never modifies .spec, treating it as
-              external, user-owned input exactly like the Kubernetes convention for
-              any other controller.
-            properties:
-              access:
-                description: |-
-                  Access records which access method is currently active for this
-                  cluster — useful for GET /api/clusters to give an honest signal
-                  about how a caller's kubeconfig request will be served.
-                properties:
-                  lastMinted:
-                    description: |-
-                      LastMinted is an RFC 3339 timestamp, set only for tunnel-mode
-                      clusters (module-auth mints fresh on every request, so there's
-                      nothing meaningful to record here for it).
-                    type: string
-                  method:
-                    type: string
-                type: object
-              appliedResources:
-                additionalProperties:
-                  description: |-
-                    AppliedResource is the reconciler-owned record of what hyve currently
-                    believes it applied for one Resources entry. Mirrors
-                    internal/types.AppliedResource.
-                  properties:
-                    appliedAt:
-                      type: string
-                    helm:
-                      type: boolean
-                    namespace:
-                      type: string
-                    objects:
-                      items:
-                        description: |-
-                          AppliedObject is enough identity to `kubectl delete <kind> <name> [-n ns]`
-                          later without needing the original manifest bytes. Mirrors
-                          internal/types.AppliedObject.
-                        properties:
-                          apiVersion:
-                            type: string
-                          kind:
-                            type: string
-                          name:
-                            type: string
-                          namespace:
-                            type: string
-                        required:
-                        - apiVersion
-                        - kind
-                        - name
-                        type: object
-                      type: array
-                    sourceSHA256:
-                      type: string
-                  required:
-                  - appliedAt
-                  - sourceSHA256
-                  type: object
-                description: |-
-                  AppliedResources is reconciler-owned state tracking what Resources
-                  entries are currently applied, keyed by ResourceRef.Name.
-                type: object
-              conditions:
-                description: |-
-                  Conditions follow the standard Kubernetes Condition[] convention.
-                  hyve sets "Ready" (True once the module reports ACTIVE),
-                  "Reconciling" (True while a reconcile is in progress for this
-                  generation), and "Error" (True with Message set when the last
-                  reconcile attempt failed).
-                items:
-                  description: Condition contains details for one aspect of the current
-                    state of this API Resource.
-                  properties:
-                    lastTransitionTime:
-                      description: |-
-                        lastTransitionTime is the last time the condition transitioned from one status to another.
-                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
-                      format: date-time
-                      type: string
-                    message:
-                      description: |-
-                        message is a human readable message indicating details about the transition.
-                        This may be an empty string.
-                      maxLength: 32768
-                      type: string
-                    observedGeneration:
-                      description: |-
-                        observedGeneration represents the .metadata.generation that the condition was set based upon.
-                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
-                        with respect to the current state of the instance.
-                      format: int64
-                      minimum: 0
-                      type: integer
-                    reason:
-                      description: |-
-                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
-                        Producers of specific condition types may define expected values and meanings for this field,
-                        and whether the values are considered a guaranteed API.
-                        The value should be a CamelCase string.
-                        This field may not be empty.
-                      maxLength: 1024
-                      minLength: 1
-                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
-                      type: string
-                    status:
-                      description: status of the condition, one of True, False, Unknown.
-                      enum:
-                      - "True"
-                      - "False"
-                      - Unknown
-                      type: string
-                    type:
-                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                      maxLength: 316
-                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
-                      type: string
-                  required:
-                  - lastTransitionTime
-                  - message
-                  - reason
-                  - status
-                  - type
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - type
-                x-kubernetes-list-type: map
-              driverOutputs:
-                additionalProperties:
-                  type: string
-                description: |-
-                  DriverOutputs captures HYVE_* outputs produced by the driver's
-                  create/status operations.
-                type: object
-              observedGeneration:
-                description: |-
-                  ObservedGeneration is the .metadata.generation last processed by the
-                  controller — the standard controller-runtime pattern for a caller to
-                  tell whether status reflects the most recent spec change.
-                format: int64
-                type: integer
-            type: object
         type: object
     served: true
     storage: true
-    subresources:
-      status: {}
+    subresources: {}

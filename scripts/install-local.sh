@@ -7,8 +7,8 @@ set -euo pipefail
 # dev cluster sharing your local Docker image store, so no registry push is
 # needed. Builds deploy/Dockerfile.dev (from THIS repo's local source, not
 # a published release — see that file's header comment), applies CRDs, and
-# helm upgrade --installs both deploy/helm/hyve-controller and
-# deploy/helm/hyve-api.
+# helm upgrade --installs the merged deploy/helm/hyve chart (controller +
+# API together).
 #
 # Exposes hyve-api via Ingress (host: hyve-api.127.0.0.1.nip.io by
 # default), not NodePort — Docker Desktop's own built-in Kubernetes doesn't
@@ -84,7 +84,7 @@ log "Ensuring namespace $NAMESPACE exists"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 log "Applying CRDs"
-kubectl apply -f "$ROOT_DIR/deploy/helm/hyve-controller/crds/" -f "$ROOT_DIR/deploy/helm/hyve-api/crds/" >/dev/null
+kubectl apply -f "$ROOT_DIR/deploy/helm/hyve/crds/" >/dev/null
 
 log "Ensuring hyve-api-credentials Secret exists (never rotated on re-run)"
 if ! kubectl -n "$NAMESPACE" get secret hyve-api-credentials >/dev/null 2>&1; then
@@ -114,21 +114,15 @@ else
   PULL_POLICY="Always"
 fi
 
-log "Installing hyve-controller (image.pullPolicy=$PULL_POLICY)"
-helm upgrade --install hyve-controller "$ROOT_DIR/deploy/helm/hyve-controller" \
-  --namespace "$NAMESPACE" \
-  --set image.repository=hyve --set image.tag=dev --set image.pullPolicy="$PULL_POLICY" \
-  --set namespace="$NAMESPACE" >/dev/null
-
-log "Installing hyve-api (primary-cluster-name=$PRIMARY_CLUSTER_NAME, public-base-url=$PUBLIC_BASE_URL)"
-helm upgrade --install hyve-api "$ROOT_DIR/deploy/helm/hyve-api" \
+log "Installing hyve (controller + api, image.pullPolicy=$PULL_POLICY, primary-cluster-name=$PRIMARY_CLUSTER_NAME, public-base-url=$PUBLIC_BASE_URL)"
+helm upgrade --install hyve "$ROOT_DIR/deploy/helm/hyve" \
   --namespace "$NAMESPACE" \
   --set image.repository=hyve --set image.tag=dev --set image.pullPolicy="$PULL_POLICY" \
   --set namespace="$NAMESPACE" \
-  --set primaryClusterName="$PRIMARY_CLUSTER_NAME" \
-  --set publicBaseURL="$PUBLIC_BASE_URL" \
-  --set ingress.enabled=true \
-  --set ingress.host="$INGRESS_HOST" >/dev/null
+  --set api.primaryClusterName="$PRIMARY_CLUSTER_NAME" \
+  --set api.publicBaseURL="$PUBLIC_BASE_URL" \
+  --set api.ingress.enabled=true \
+  --set api.ingress.host="$INGRESS_HOST" >/dev/null
 
 log "Restarting both Deployments so the freshly-built image is actually used"
 kubectl -n "$NAMESPACE" rollout restart deployment/hyve-controller deployment/hyve-api

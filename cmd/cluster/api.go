@@ -80,12 +80,24 @@ func deleteClusterAPI(client *shared.APIClient, name string) {
 	log.Printf("   The controller will run onDelete workflows, delete via the module, and remove the object.")
 }
 
+// createClusterFromTemplateAPI is cluster mode's counterpart to
+// createClusterFromTemplate — the named Template CR is rendered server-side
+// (POST /api/clusters with a template field, via the same
+// hyvev1alpha1.RenderClusterDefinitionSpec function local mode's own
+// GenerateClusterDefinition uses), so no separate render round-trip is
+// needed for the common case.
+func createClusterFromTemplateAPI(client *shared.APIClient, clusterName, templateName, region string, overrides map[string]string) {
+	log.Printf("🚀 Creating cluster '%s' from template '%s' via the API...", clusterName, templateName)
+	c, err := client.CreateClusterFromTemplate(clusterName, templateName, region, overrides)
+	if err != nil {
+		log.Fatalf("Failed to create cluster: %v", err)
+	}
+	log.Printf("✅ Cluster '%s' created (driver: %s)", c.Name, c.Driver)
+}
+
 // createClusterFromFileAPI reads path as the same apiVersion/kind/metadata/
 // spec YAML shape a local clusters/<name>.yaml already uses, extracts
-// metadata.name and spec, and POSTs them to the API — cluster mode has no
-// server-side template rendering (see createClusterFromTemplate's local-
-// only design), so unlike local mode's --template flow, this expects an
-// already-fully-specified cluster definition.
+// metadata.name and spec, and POSTs them to the API.
 func createClusterFromFileAPI(client *shared.APIClient, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {

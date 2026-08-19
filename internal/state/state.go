@@ -8,8 +8,14 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	k8syaml "sigs.k8s.io/yaml"
 
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflow"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ReconcileMode represents how reconciliation should be executed
@@ -39,7 +45,9 @@ type EnvConfig struct {
 	File string `yaml:"file,omitempty" json:"file,omitempty"`
 }
 
-// RepoConfig represents the repository-level Hyve configuration stored in hyve.yaml
+// RepoConfig represents the repository-level Hyve configuration stored in
+// hyve.yaml — not a CRD-shaped resource, so this stays on gopkg.in/yaml.v3
+// and its own hand-written shape, unlike ClusterDefinition below.
 type RepoConfig struct {
 	Reconcile ReconcileConfig `yaml:"reconcile" json:"reconcile"`
 	Env       EnvConfig       `yaml:"env,omitempty" json:"env,omitempty"`
@@ -140,18 +148,41 @@ func (m *Manager) SaveRepoConfig(cfg *RepoConfig) error {
 	return nil
 }
 
-// stateSidecarSuffix names the reconciler-owned sidecar file that holds
-// ClusterState (DriverOutputs/AppliedResources) for a cluster. It
-// deliberately still ends in ".yaml" (so it stays plain YAML,
+// stateSidecarSuffix names the reconciler-owned sidecar file that holds a
+// ClusterDefinitionStatus (DriverOutputs/AppliedResources) for a cluster —
+// the file-mode analogue of a real ClusterDefinition's status subresource.
+// It deliberately still ends in ".yaml" (so it stays plain YAML,
 // human-inspectable, and git-diffable). Sidecars live in sidecarDir(), a
 // sibling of stateDir — never stateDir itself — precisely so `ls clusters/`
 // only ever shows files a person wrote; the walks over stateDir in
 // LoadClusterDefinitions/RemoveClusterFile still skip this suffix
-// defensively (a stray or pre-migration sidecar left in stateDir would
-// otherwise be unmarshaled as a bogus second ClusterDefinition with empty
-// Metadata/Kind), but nothing relies on it as the primary separation
-// mechanism anymore.
+// defensively (a stray sidecar left in stateDir would otherwise be
+// unmarshaled as a bogus second ClusterDefinition with empty metadata), but
+// nothing relies on it as the primary separation mechanism anymore.
 const stateSidecarSuffix = ".state.yaml"
+
+// clusterGroupVersion/clusterKind are the required apiVersion/kind for a
+// primary clusters/<name>.yaml file — matching the real ClusterDefinition
+// CRD exactly (group hyve.io/v1alpha1) is the whole point of this file
+// format: the same YAML you author here is `kubectl apply -f`-able against
+// a real cluster with zero transformation. No other apiVersion/kind is
+// accepted — this project doesn't carry forward a legacy file format.
+var clusterGroupVersion = hyvev1alpha1.GroupVersion.String()
+
+const clusterKind = "ClusterDefinition"
+
+// localClusterDefinition is a primary clusters/<name>.yaml file's on-disk
+// shape: the real CRD's TypeMeta/ObjectMeta/Spec, but deliberately no
+// Status field — status is reconciler-owned and lives in the separate
+// cluster-state/<name>.state.yaml sidecar instead (see
+// FromTypesClusterDefinitionStatus), exactly mirroring how a real
+// ClusterDefinition CR's status lives in a separate subresource rather than
+// inline in what a human edits.
+type localClusterDefinition struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              hyvev1alpha1.ClusterDefinitionSpec `json:"spec,omitempty"`
+}
 
 func (m *Manager) clusterPath(name string) string {
 	return filepath.Join(m.stateDir, name+".yaml")
@@ -168,13 +199,34 @@ func (m *Manager) sidecarPath(name string) string {
 	return filepath.Join(m.sidecarDir(), name+stateSidecarSuffix)
 }
 
+// decodeClusterDefinition parses a primary file's bytes, validates its
+// apiVersion/kind against the real CRD's, and converts it into the shared
+// in-memory types.ClusterDefinition shape internal/reconcile's engine uses
+// — with DriverOutputs/AppliedResources left empty; mergeSidecar overlays
+// those from the separate sidecar file.
+func decodeClusterDefinition(path string, data []byte) (types.ClusterDefinition, error) {
+	var local localClusterDefinition
+	if err := k8syaml.Unmarshal(data, &local); err != nil {
+		return types.ClusterDefinition{}, fmt.Errorf("failed to parse %s: %w", path, err)
+	}
+	if local.APIVersion != clusterGroupVersion || local.Kind != clusterKind {
+		return types.ClusterDefinition{}, fmt.Errorf(
+			"%s: apiVersion/kind must be %q/%q, got %q/%q",
+			path, clusterGroupVersion, clusterKind, local.APIVersion, local.Kind)
+	}
+	cr := hyvev1alpha1.ClusterDefinition{
+		TypeMeta:   local.TypeMeta,
+		ObjectMeta: local.ObjectMeta,
+		Spec:       local.Spec,
+	}
+	return crdconv.ToTypesClusterDefinition(&cr), nil
+}
+
 // mergeSidecar overlays cluster-state/<name>.state.yaml onto cluster.Spec's
 // DriverOutputs/AppliedResources, if that file exists. If it doesn't, those
-// two fields are left exactly as yaml.Unmarshal decoded them from the
-// primary file — which is what makes reading a pre-migration monolithic
-// cluster file (inline appliedResources/driverOutputs, no sidecar yet) just
-// work with no special-case migration code. Once a sidecar exists, it is
-// authoritative and overwrites whatever came from the primary file.
+// two fields are left as decodeClusterDefinition's zero values. Once a
+// sidecar exists, it is authoritative and overwrites whatever came from the
+// primary file.
 func (m *Manager) mergeSidecar(cluster *types.ClusterDefinition) error {
 	data, err := os.ReadFile(m.sidecarPath(cluster.Metadata.Name))
 	if err != nil {
@@ -183,12 +235,12 @@ func (m *Manager) mergeSidecar(cluster *types.ClusterDefinition) error {
 		}
 		return err
 	}
-	var st types.ClusterState
-	if err := yaml.Unmarshal(data, &st); err != nil {
+	var status hyvev1alpha1.ClusterDefinitionStatus
+	if err := k8syaml.Unmarshal(data, &status); err != nil {
 		return err
 	}
-	cluster.Spec.DriverOutputs = st.DriverOutputs
-	cluster.Spec.AppliedResources = st.AppliedResources
+	cluster.Spec.DriverOutputs = status.DriverOutputs
+	cluster.Spec.AppliedResources = crdconv.ToTypesAppliedResources(status.AppliedResources)
 	return nil
 }
 
@@ -196,6 +248,19 @@ func (m *Manager) mergeSidecar(cluster *types.ClusterDefinition) error {
 func (m *Manager) HasStateSidecar(name string) bool {
 	_, err := os.Stat(m.sidecarPath(name))
 	return err == nil
+}
+
+// WorkflowSource resolves a local-name WorkflowRef against workflows/ under
+// this repository — file mode's only ever source, unchanged behavior.
+func (m *Manager) WorkflowSource() workflow.Source {
+	return workflow.FileSource{Dir: filepath.Join(m.LocalPath(), workflow.WorkflowsDir)}
+}
+
+// statusIsEmpty reports whether there is nothing worth persisting to a
+// sidecar file (e.g. a brand-new cluster before its first create/apply
+// cycle) — the ClusterDefinitionStatus analogue of the old ClusterState.IsEmpty.
+func statusIsEmpty(s hyvev1alpha1.ClusterDefinitionStatus) bool {
+	return len(s.DriverOutputs) == 0 && len(s.AppliedResources) == 0
 }
 
 // LoadClusterDefinition loads one cluster by name, merging its primary
@@ -212,9 +277,9 @@ func (m *Manager) LoadClusterDefinition(name string) (*types.ClusterDefinition, 
 	if err != nil {
 		return nil, nil, err
 	}
-	var def types.ClusterDefinition
-	if err := yaml.Unmarshal(data, &def); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse cluster definition %s: %w", name, err)
+	def, err := decodeClusterDefinition(m.clusterPath(name), data)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := m.mergeSidecar(&def); err != nil {
 		return nil, nil, fmt.Errorf("failed to merge state sidecar for %s: %w", name, err)
@@ -227,29 +292,24 @@ func (m *Manager) LoadClusterDefinition(name string) (*types.ClusterDefinition, 
 // AppliedResources to a separate sidecar file (cluster-state/<name>.state.yaml,
 // a sibling directory of stateDir) — keeping machine bookkeeping (content
 // hashes, timestamps, tracked-object lists) out of the human-authored
-// file's directory entirely, not just out of its git diff. def itself is left
-// untouched: the split is performed on a shallow copy (safe because
-// ClusterDefinition embeds ClusterSpec by value, not by pointer, so clearing
-// the copy's map fields doesn't affect the caller's maps). If the resulting
-// state is empty (e.g. a cluster with no resources yet), any existing
-// sidecar file is removed rather than left as an empty file. The caller is
-// responsible for committing the change if it should be pushed to the
-// remote.
+// file's directory entirely, not just out of its git diff. The primary file
+// is exactly what a real ClusterDefinition CR's spec looks like
+// (apiVersion: hyve.io/v1alpha1, kind: ClusterDefinition) — `kubectl apply
+// -f` against it works unmodified. If the resulting status is empty (e.g. a
+// cluster with no resources yet), any existing sidecar file is removed
+// rather than left as an empty file. The caller is responsible for
+// committing the change if it should be pushed to the remote.
 func (m *Manager) SaveClusterDefinition(def *types.ClusterDefinition) error {
 	if err := os.MkdirAll(m.stateDir, 0755); err != nil {
 		return fmt.Errorf("failed to create clusters directory: %w", err)
 	}
 
-	state := types.ClusterState{
-		DriverOutputs:    def.Spec.DriverOutputs,
-		AppliedResources: def.Spec.AppliedResources,
+	local := localClusterDefinition{
+		TypeMeta:   metav1.TypeMeta{APIVersion: clusterGroupVersion, Kind: clusterKind},
+		ObjectMeta: metav1.ObjectMeta{Name: def.Metadata.Name},
+		Spec:       crdconv.FromTypesClusterDefinitionSpec(def),
 	}
-
-	primary := *def
-	primary.Spec.DriverOutputs = nil
-	primary.Spec.AppliedResources = nil
-
-	data, err := yaml.Marshal(&primary)
+	data, err := k8syaml.Marshal(&local)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cluster definition: %w", err)
 	}
@@ -257,14 +317,15 @@ func (m *Manager) SaveClusterDefinition(def *types.ClusterDefinition) error {
 		return fmt.Errorf("failed to write cluster definition: %w", err)
 	}
 
+	status := crdconv.FromTypesClusterDefinitionStatus(def)
 	sidecarPath := m.sidecarPath(def.Metadata.Name)
-	if state.IsEmpty() {
+	if statusIsEmpty(status) {
 		if err := os.Remove(sidecarPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove empty state sidecar: %w", err)
 		}
 		return nil
 	}
-	sdata, err := yaml.Marshal(&state)
+	sdata, err := k8syaml.Marshal(&status)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cluster state sidecar: %w", err)
 	}
@@ -298,11 +359,11 @@ func (m *Manager) RemoveClusterFile(clusterName string) error {
 		if err != nil {
 			return nil
 		}
-		var cluster types.ClusterDefinition
-		if err := yaml.Unmarshal(data, &cluster); err != nil {
+		def, err := decodeClusterDefinition(path, data)
+		if err != nil {
 			return nil
 		}
-		if cluster.Metadata.Name == clusterName {
+		if def.Metadata.Name == clusterName {
 			found = path
 			return filepath.SkipAll
 		}
@@ -350,9 +411,9 @@ func (m *Manager) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
 			return fmt.Errorf("failed to read file %s: %w", path, err)
 		}
 
-		var cluster types.ClusterDefinition
-		if err := yaml.Unmarshal(data, &cluster); err != nil {
-			return fmt.Errorf("failed to unmarshal YAML file %s: %w", path, err)
+		cluster, err := decodeClusterDefinition(path, data)
+		if err != nil {
+			return err
 		}
 		if err := m.mergeSidecar(&cluster); err != nil {
 			return fmt.Errorf("failed to merge state sidecar for %s: %w", cluster.Metadata.Name, err)

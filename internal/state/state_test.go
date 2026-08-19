@@ -133,12 +133,12 @@ func TestLoadClusterDefinitions_SingleCluster(t *testing.T) {
 	stateDir := filepath.Join(tmpDir, "clusters")
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
 
-	yaml := `apiVersion: hyve/v1
-kind: Cluster
+	yaml := `apiVersion: hyve.io/v1alpha1
+kind: ClusterDefinition
 metadata:
   name: my-cluster
-  region: PHX1
 spec:
+  region: PHX1
   driver:
     source: github.com/example/civo-k3s
     version: 1.0.0
@@ -161,8 +161,8 @@ func TestLoadClusterDefinitions_MultipleClusters(t *testing.T) {
 	stateDir := filepath.Join(tmpDir, "clusters")
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
 
-	cluster1 := "metadata:\n  name: alpha\nspec:\n  provider: civo\n"
-	cluster2 := "metadata:\n  name: beta\nspec:\n  provider: aws\n"
+	cluster1 := "apiVersion: hyve.io/v1alpha1\nkind: ClusterDefinition\nmetadata:\n  name: alpha\nspec:\n  region: civo\n"
+	cluster2 := "apiVersion: hyve.io/v1alpha1\nkind: ClusterDefinition\nmetadata:\n  name: beta\nspec:\n  region: aws\n"
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "alpha.yaml"), []byte(cluster1), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "beta.yml"), []byte(cluster2), 0644))
 
@@ -177,7 +177,7 @@ func TestLoadClusterDefinitions_IgnoresNonYAMLFiles(t *testing.T) {
 	stateDir := filepath.Join(tmpDir, "clusters")
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
 
-	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "cluster.yaml"), []byte("metadata:\n  name: real\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "cluster.yaml"), []byte("apiVersion: hyve.io/v1alpha1\nkind: ClusterDefinition\nmetadata:\n  name: real\n"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "README.md"), []byte("# docs"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "notes.txt"), []byte("notes"), 0644))
 
@@ -248,8 +248,8 @@ func TestReconcileModeConstants(t *testing.T) {
 
 func testClusterDef(name string) *types.ClusterDefinition {
 	return &types.ClusterDefinition{
-		APIVersion: "v1",
-		Kind:       "Cluster",
+		APIVersion: "hyve.io/v1alpha1",
+		Kind:       "ClusterDefinition",
 		Metadata:   types.ClusterMetadata{Name: name, Region: "NYC1"},
 		Spec: types.ClusterSpec{
 			Driver: types.DriverRef{Source: "./custom-modules/civo", Version: "latest"},
@@ -387,7 +387,7 @@ func TestLoadClusterDefinition_MergesSidecar(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
 	mgr := newTestManager(stateDir)
 
-	primary := "apiVersion: v1\nkind: Cluster\nmetadata:\n  name: sun-hyve\nspec:\n  driver:\n    source: ./custom-modules/civo\n"
+	primary := "apiVersion: hyve.io/v1alpha1\nkind: ClusterDefinition\nmetadata:\n  name: sun-hyve\nspec:\n  driver:\n    source: ./custom-modules/civo\n"
 	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(primary), 0644))
 	sidecar := "driverOutputs:\n  HYVE_CLUSTER_ID: abc-123\nappliedResources:\n  toolbox-namespace:\n    sourceSHA256: deadbeef\n    appliedAt: \"2026-07-12T15:49:37Z\"\n"
 	require.NoError(t, os.MkdirAll(mgr.sidecarDir(), 0755))
@@ -400,13 +400,14 @@ func TestLoadClusterDefinition_MergesSidecar(t *testing.T) {
 	assert.Equal(t, primary, string(rawData), "raw bytes must be exactly the primary file's contents")
 }
 
-func TestLoadClusterDefinition_LegacyInlineFallback(t *testing.T) {
+func TestLoadClusterDefinition_RejectsLegacyFormat(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "clusters")
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
 	mgr := newTestManager(stateDir)
 
-	// A pre-migration monolithic file: appliedResources/driverOutputs inline,
-	// no sidecar file at all.
+	// The pre-unification file format (apiVersion: v1 / kind: Cluster) is no
+	// longer accepted — local files must be real ClusterDefinition CR YAML
+	// (hyve.io/v1alpha1) so `kubectl apply -f` works against them unmodified.
 	legacy := `apiVersion: v1
 kind: Cluster
 metadata:
@@ -414,20 +415,12 @@ metadata:
 spec:
   driver:
     source: ./custom-modules/civo
-  driverOutputs:
-    HYVE_CLUSTER_ID: abc-123
-  appliedResources:
-    toolbox-namespace:
-      sourceSHA256: deadbeef
-      appliedAt: "2026-07-12T15:49:37Z"
 `
 	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(legacy), 0644))
 
-	def, _, err := mgr.LoadClusterDefinition("sun-hyve")
-	require.NoError(t, err)
-	assert.Equal(t, "abc-123", def.Spec.DriverOutputs["HYVE_CLUSTER_ID"])
-	require.Contains(t, def.Spec.AppliedResources, "toolbox-namespace")
-	assert.Equal(t, "deadbeef", def.Spec.AppliedResources["toolbox-namespace"].SourceSHA256)
+	_, _, err := mgr.LoadClusterDefinition("sun-hyve")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hyve.io/v1alpha1")
 }
 
 func TestLoadClusterDefinition_SidecarWinsOverInlineData(t *testing.T) {
@@ -435,11 +428,10 @@ func TestLoadClusterDefinition_SidecarWinsOverInlineData(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
 	mgr := newTestManager(stateDir)
 
-	primary := `metadata:
+	primary := `apiVersion: hyve.io/v1alpha1
+kind: ClusterDefinition
+metadata:
   name: sun-hyve
-spec:
-  driverOutputs:
-    HYVE_CLUSTER_ID: stale-inline-value
 `
 	require.NoError(t, os.WriteFile(mgr.clusterPath("sun-hyve"), []byte(primary), 0644))
 	sidecar := "driverOutputs:\n  HYVE_CLUSTER_ID: fresh-sidecar-value\n"

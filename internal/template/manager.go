@@ -7,10 +7,29 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	k8syaml "sigs.k8s.io/yaml"
 
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/types"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// decodeTemplate parses a template file's bytes, validates its apiVersion/
+// kind against the real Template CRD, and converts it into the in-memory
+// Template shape.
+func decodeTemplate(path string, data []byte) (*Template, error) {
+	var cr hyvev1alpha1.Template
+	if err := k8syaml.Unmarshal(data, &cr); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
+	}
+	if cr.APIVersion != APIVersion || cr.Kind != Kind {
+		return nil, fmt.Errorf("%s: apiVersion/kind must be %q/%q, got %q/%q",
+			path, APIVersion, Kind, cr.APIVersion, cr.Kind)
+	}
+	return toTemplate(&cr), nil
+}
 
 // Manager handles cluster template operations
 type Manager struct {
@@ -49,14 +68,10 @@ func (m *Manager) CreateTemplate(template *Template) error {
 		return fmt.Errorf("template '%s' already exists", template.Metadata.Name)
 	}
 
-	if template.APIVersion == "" {
-		template.APIVersion = "v1"
-	}
-	if template.Kind == "" {
-		template.Kind = "Template"
-	}
+	template.APIVersion = APIVersion
+	template.Kind = Kind
 
-	data, err := yaml.Marshal(template)
+	data, err := k8syaml.Marshal(fromTemplate(template))
 	if err != nil {
 		return fmt.Errorf("failed to marshal template: %w", err)
 	}
@@ -88,8 +103,8 @@ func (m *Manager) findTemplateFile(name string) (string, error) {
 		if err != nil {
 			continue
 		}
-		var t Template
-		if err := yaml.Unmarshal(data, &t); err != nil {
+		t, err := decodeTemplate(path, data)
+		if err != nil {
 			continue
 		}
 		if t.Metadata.Name == name {
@@ -111,12 +126,7 @@ func (m *Manager) GetTemplate(name string) (*Template, error) {
 		return nil, fmt.Errorf("failed to read template: %w", err)
 	}
 
-	var template Template
-	if err := yaml.Unmarshal(data, &template); err != nil {
-		return nil, fmt.Errorf("failed to parse template: %w", err)
-	}
-
-	return &template, nil
+	return decodeTemplate(path, data)
 }
 
 // ListTemplates lists all available templates
@@ -136,16 +146,17 @@ func (m *Manager) ListTemplates() ([]*Template, error) {
 			continue
 		}
 
-		data, err := os.ReadFile(filepath.Join(m.templatesDir, entry.Name()))
+		path := filepath.Join(m.templatesDir, entry.Name())
+		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		var t Template
-		if err := yaml.Unmarshal(data, &t); err != nil {
+		t, err := decodeTemplate(path, data)
+		if err != nil {
 			continue
 		}
 		t.Filename = entry.Name()
-		templates = append(templates, &t)
+		templates = append(templates, t)
 	}
 
 	return templates, nil
@@ -166,38 +177,17 @@ func (m *Manager) DeleteTemplate(name string) error {
 }
 
 // GenerateClusterDefinition produces a ClusterDefinition from a template,
-// optionally overriding region and any params via the overrides map.
+// optionally overriding region and any params via the overrides map — via
+// hyvev1alpha1.RenderClusterDefinitionSpec, the one place this rendering
+// logic lives, shared with cluster mode's template-render API endpoints.
 func (t *Template) GenerateClusterDefinition(name, region string, overrides map[string]string) types.ClusterDefinition {
-	params := make(map[string]string, len(t.Spec.Params))
-	for k, v := range t.Spec.Params {
-		params[k] = v
+	spec := hyvev1alpha1.RenderClusterDefinitionSpec(fromTemplate(t).Spec, region, overrides)
+	cr := hyvev1alpha1.ClusterDefinition{
+		TypeMeta:   metav1.TypeMeta{APIVersion: hyvev1alpha1.GroupVersion.String(), Kind: "ClusterDefinition"},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       spec,
 	}
-	for k, v := range overrides {
-		params[k] = v
-	}
-	if region == "" {
-		region = t.Spec.Region
-	}
-	return types.ClusterDefinition{
-		APIVersion: "v1",
-		Kind:       "Cluster",
-		Metadata:   types.ClusterMetadata{Name: name, Region: region},
-		Spec: types.ClusterSpec{
-			Driver: types.DriverRef{
-				Source:  t.Spec.Driver.Source,
-				Version: t.Spec.Driver.Version,
-			},
-			Params: params,
-			Workflows: types.WorkflowsSpec{
-				BeforeCreate: t.Spec.Workflows.BeforeCreate,
-				OnCreate:     t.Spec.Workflows.OnCreate,
-				AfterCreate:  t.Spec.Workflows.AfterCreate,
-				OnDelete:     t.Spec.Workflows.OnDelete,
-				AfterDelete:  t.Spec.Workflows.AfterDelete,
-			},
-			Resources: t.Spec.Resources,
-		},
-	}
+	return crdconv.ToTypesClusterDefinition(&cr)
 }
 
 // ExecuteTemplate creates a cluster definition from a template

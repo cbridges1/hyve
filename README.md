@@ -128,12 +128,12 @@ git add -A && git commit -m "add my-cluster" && git push
 The resulting cluster YAML, written to your state directory:
 
 ```yaml
-apiVersion: v1
-kind: Cluster
+apiVersion: hyve.io/v1alpha1
+kind: ClusterDefinition
 metadata:
   name: my-cluster
-  region: PHX1
 spec:
+  region: PHX1
   driver:
     source: github.com/hyve-modules/civo
     version: v1.0.0
@@ -142,12 +142,23 @@ spec:
     node_count: "3"
   workflows:
     onCreate:
-      - deploy-monitoring
+      - name: deploy-monitoring
     onDelete:
-      - drain-workloads
+      - name: drain-workloads
 ```
 
+This is real `ClusterDefinition` custom resource YAML — the same shape a Kubernetes cluster running hyve's controller uses, group `hyve.io/v1alpha1`. `kubectl apply -f clusters/my-cluster.yaml` works unmodified once that cluster's CRDs are installed; there's no separate "cluster mode" file format to convert to. Templates (`templates/*.yaml`, kind `Template`) and Workflows (`workflows/*.yaml`, kind `Workflow`) are the same story — every YAML file under your state directory is a real CR, usable locally or on-cluster without translation.
+
 Cloud credentials are read directly from your environment — the same way the underlying CLI tools (`civo`, `aws`, `gcloud`, `az`) read them. Hyve never stores credentials.
+
+## Local State vs. a Live Cluster
+
+Hyve works two ways, sharing the exact same YAML:
+
+- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from your state directory directly and drives everything from your machine or CI.
+- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster, `hyve login` against it, and every `hyve cluster`/`template`/`workflow` command talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
+
+`hyve state migrate` bulk-imports an existing local state directory into a live cluster (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success. Individual resources can also be pushed one at a time with `hyve cluster create --file`, `hyve template create --file`, and `hyve workflow create --file`. Either way, the same file works: `kubectl apply -f` it directly, or hand it to the CLI.
 
 ## Module System
 

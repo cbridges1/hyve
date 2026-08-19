@@ -1,13 +1,12 @@
-{{- if .Values.accessRoles.create }}
+{{- if .Values.api.accessRoles.create }}
 # The two default roles HyveAccessBinding.spec.serviceAccountRef points at
-# — see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.1. A caller matched
-# to an "admin" binding gets a token minted against hyve-access-admin
-# (bound to the built-in cluster-admin ClusterRole — this cluster's own
-# real RBAC is the actual authority once a caller reaches it via /proxy,
-# not a second hyve-side check); "read-only" gets hyve-access-readonly
-# (bound to the built-in view ClusterRole). A custom role can point
-# serviceAccountRef at any other ServiceAccount instead, without touching
-# this chart.
+# — a caller matched to an "admin" binding gets a token minted against
+# hyve-access-admin (bound to the built-in cluster-admin ClusterRole — this
+# cluster's own real RBAC is the actual authority once a caller reaches it
+# via /proxy, not a second hyve-side check); "read-only" gets
+# hyve-access-readonly (bound to the built-in view ClusterRole). A custom
+# role can point serviceAccountRef at any other ServiceAccount instead,
+# without touching this chart.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

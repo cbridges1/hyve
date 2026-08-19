@@ -83,7 +83,7 @@ func listClusters() {
 
 	var clusters []types.ClusterDefinition
 	for _, clusterDef := range defs {
-		if clusterDef.Kind == "Cluster" && !clusterDef.Spec.Delete {
+		if clusterDef.Kind == "ClusterDefinition" && !clusterDef.Spec.Delete {
 			clusters = append(clusters, clusterDef)
 		}
 	}

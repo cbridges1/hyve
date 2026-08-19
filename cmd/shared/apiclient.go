@@ -111,6 +111,140 @@ func (c *APIClient) DeleteCluster(name string) error {
 	return c.do(http.MethodDelete, "/api/clusters/"+name, nil, nil)
 }
 
+// CreateClusterFromTemplate posts {name, template: {name, region, params}}
+// to POST /api/clusters — the cluster-mode counterpart to local mode's
+// --template flow, rendered server-side via the same
+// hyvev1alpha1.RenderClusterDefinitionSpec function.
+func (c *APIClient) CreateClusterFromTemplate(name, templateName, region string, params map[string]string) (*ClusterDTO, error) {
+	body, err := json.Marshal(struct {
+		Name     string `json:"name"`
+		Template struct {
+			Name   string            `json:"name"`
+			Region string            `json:"region,omitempty"`
+			Params map[string]string `json:"params,omitempty"`
+		} `json:"template"`
+	}{
+		Name: name,
+		Template: struct {
+			Name   string            `json:"name"`
+			Region string            `json:"region,omitempty"`
+			Params map[string]string `json:"params,omitempty"`
+		}{Name: templateName, Region: region, Params: params},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out ClusterDTO
+	if err := c.do(http.MethodPost, "/api/clusters", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// TemplateDTO mirrors internal/api's templateDTO — Spec is kept as raw JSON
+// rather than a fully duplicated hyvev1alpha1.TemplateSpec mirror (unlike
+// ClusterDTO, nothing in a Template is sensitive, so there's no narrowing
+// to justify hand-typing every nested field here too).
+type TemplateDTO struct {
+	Name string          `json:"name"`
+	Spec json.RawMessage `json:"spec"`
+}
+
+func (c *APIClient) ListTemplates() ([]TemplateDTO, error) {
+	var out []TemplateDTO
+	if err := c.do(http.MethodGet, "/api/templates", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *APIClient) GetTemplate(name string) (*TemplateDTO, error) {
+	var out TemplateDTO
+	if err := c.do(http.MethodGet, "/api/templates/"+name, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) CreateTemplate(name string, spec json.RawMessage) (*TemplateDTO, error) {
+	body, err := json.Marshal(struct {
+		Name string          `json:"name"`
+		Spec json.RawMessage `json:"spec"`
+	}{Name: name, Spec: spec})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out TemplateDTO
+	if err := c.do(http.MethodPost, "/api/templates", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) DeleteTemplate(name string) error {
+	return c.do(http.MethodDelete, "/api/templates/"+name, nil, nil)
+}
+
+// RenderTemplate calls POST /api/templates/<name>/render and returns the
+// rendered ClusterDefinitionSpec as raw JSON — a preview, no cluster
+// created.
+func (c *APIClient) RenderTemplate(name, region string, params map[string]string) (json.RawMessage, error) {
+	body, err := json.Marshal(struct {
+		Region string            `json:"region,omitempty"`
+		Params map[string]string `json:"params,omitempty"`
+	}{Region: region, Params: params})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out json.RawMessage
+	if err := c.do(http.MethodPost, "/api/templates/"+name+"/render", body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// WorkflowDTO mirrors internal/api's workflowDTO — same raw-Spec rationale
+// as TemplateDTO.
+type WorkflowDTO struct {
+	Name string          `json:"name"`
+	Spec json.RawMessage `json:"spec"`
+}
+
+func (c *APIClient) ListWorkflows() ([]WorkflowDTO, error) {
+	var out []WorkflowDTO
+	if err := c.do(http.MethodGet, "/api/workflows", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *APIClient) GetWorkflow(name string) (*WorkflowDTO, error) {
+	var out WorkflowDTO
+	if err := c.do(http.MethodGet, "/api/workflows/"+name, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) CreateWorkflow(name string, spec json.RawMessage) (*WorkflowDTO, error) {
+	body, err := json.Marshal(struct {
+		Name string          `json:"name"`
+		Spec json.RawMessage `json:"spec"`
+	}{Name: name, Spec: spec})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out WorkflowDTO
+	if err := c.do(http.MethodPost, "/api/workflows", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) DeleteWorkflow(name string) error {
+	return c.do(http.MethodDelete, "/api/workflows/"+name, nil, nil)
+}
+
 // AuthContextDTO mirrors internal/api's authContextDTO — the driver info
 // needed to resolve and run a module's auth operation client-side.
 type AuthContextDTO struct {

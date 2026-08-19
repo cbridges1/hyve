@@ -63,9 +63,10 @@ func GatherWorkflowRefs(stateMgr *state.Manager, repoPath string) ([]types.Workf
 	for _, t := range templates {
 		add(t.Spec.Workflows.BeforeCreate)
 		add(t.Spec.Workflows.OnCreate)
+		add(t.Spec.Workflows.AfterCreate)
 		add(t.Spec.Workflows.OnDelete)
 		add(t.Spec.Workflows.AfterDelete)
-		// TemplateWorkflowsSpec has no PreReconcile — nothing to add here.
+		add(t.Spec.Workflows.PreReconcile)
 	}
 	for _, c := range clusterDefs {
 		add(c.Spec.Workflows.PreReconcile)

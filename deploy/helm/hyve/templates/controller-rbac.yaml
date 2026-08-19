@@ -1,8 +1,8 @@
-{{- if .Values.serviceAccount.create }}
+{{- if .Values.controller.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Values.serviceAccount.name | default "hyve-controller" }}
+  name: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
   namespace: {{ .Values.namespace }}
 {{- end }}
 ---
@@ -25,6 +25,15 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["hyveconfigs"]
     verbs: ["get", "list", "watch"]
+  # watch is required, not decorative, even though the controller never
+  # registers a Watches()/For() builder for this kind — a controller-runtime
+  # cached client needs watch permission to populate its informer cache for
+  # ANY Get/List against a scheme-registered type, or every lookup silently
+  # fails. Same failure class that already bit
+  # internal/api/clusters.go's namespace-scoped List once this session.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflows"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
@@ -34,7 +43,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-{{- if .Values.leaderElection }}
+{{- if .Values.controller.leaderElection }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -47,7 +56,7 @@ metadata:
   namespace: {{ .Values.namespace }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name | default "hyve-controller" }}
+    name: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
     namespace: {{ .Values.namespace }}
 roleRef:
   kind: Role

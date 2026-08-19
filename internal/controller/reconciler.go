@@ -7,6 +7,7 @@ import (
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/reconcile"
 
@@ -79,7 +80,7 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	def := toTypesClusterDefinition(&cr)
+	def := crdconv.ToTypesClusterDefinition(&cr)
 
 	lf, err := module.LoadLockFile(r.StateProvider.LocalPath())
 	if err != nil {
@@ -124,7 +125,7 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // deletionTimestamp set (a real `kubectl delete` was issued) and, once
 // ReconcileOne's delete path completes without error, removes
 // ClusterDefinitionFinalizer so Kubernetes' already-pending deletion can
-// finish. toTypesClusterDefinition already sets the converted def's
+// finish. crdconv.ToTypesClusterDefinition already sets the converted def's
 // Spec.Delete to true whenever DeletionTimestamp is non-nil, so
 // ReconcileOne needs no special-casing to know this is a delete — it's
 // dispatched through exactly the same case cluster.Spec.Delete branch a
@@ -134,7 +135,7 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 		return ctrl.Result{}, nil
 	}
 
-	def := toTypesClusterDefinition(cr)
+	def := crdconv.ToTypesClusterDefinition(cr)
 
 	lf, err := module.LoadLockFile(r.StateProvider.LocalPath())
 	if err != nil {

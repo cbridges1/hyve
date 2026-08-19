@@ -6,13 +6,13 @@ metadata:
   labels:
     app.kubernetes.io/name: hyve-api
 spec:
-  type: {{ .Values.service.type | default "ClusterIP" }}
+  type: {{ .Values.api.service.type | default "ClusterIP" }}
   selector:
     app.kubernetes.io/name: hyve-api
   ports:
     - name: http
-      port: {{ .Values.service.port }}
+      port: {{ .Values.api.service.port }}
       targetPort: http
-      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
-      nodePort: {{ .Values.service.nodePort }}
+      {{- if and (eq .Values.api.service.type "NodePort") .Values.api.service.nodePort }}
+      nodePort: {{ .Values.api.service.nodePort }}
       {{- end }}

@@ -1,0 +1,108 @@
+# Default values for hyve — one chart deploying both hyve-controller and
+# hyve-api (see Chart.yaml for why they're one release).
+
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# namespace both components watch/deploy into.
+namespace: hyve-system
+
+controller:
+  # Name of the singleton HyveConfig object within namespace — see
+  # cmd/controller/run.go's --config-name flag.
+  configName: hyve-config
+
+  # hyveConfig, if set, is templated into a HyveConfig object at install
+  # time. Leave unset to manage HyveConfig by hand instead (kubectl apply /
+  # kubectl edit) — this chart never overwrites an existing HyveConfig
+  # object it doesn't own.
+  hyveConfig:
+    create: false
+    strictResourceDelete: false
+    defaultWorkflowImage: ""
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  leaderElection: false
+
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+
+  # RBAC: the controller needs to read/write ClusterDefinition/HyveConfig,
+  # read Workflow (see internal/controller's CR-first WorkflowRef
+  # resolution), and to create/manage batch/v1 Jobs + read Pod logs for
+  # KubernetesJobStepRunner. Scoped to `namespace` only.
+  serviceAccount:
+    create: true
+    name: ""
+
+api:
+  bindAddress: ":8090"
+
+  # modulesDir must match whatever the controller's own image bakes its
+  # state/modules under — ModuleAuthProvider (internal/api/access.go)
+  # resolves driver modules the same way internal/reconcile does.
+  modulesDir: /var/lib/hyve/modules
+
+  # publicBaseURL is this API's own public address, e.g.
+  # https://hyve-api.example.com — required for the primary-cluster
+  # kubeconfig path's server: field. Left empty, that path stays disabled
+  # (see primaryClusterName below).
+  publicBaseURL: ""
+
+  # primaryClusterName, when set, is the name GET /api/kubeconfig?cluster=<name>
+  # matches to serve a self-service kubeconfig for the cluster this API
+  # itself runs on (via TokenRequest + /proxy) rather than looking up a
+  # ClusterDefinition. Leave empty to disable this path entirely (safe
+  # default; every other /api/kubeconfig request still works).
+  primaryClusterName: ""
+
+  proxyTarget: "https://kubernetes.default.svc"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  serviceAccount:
+    create: true
+    name: ""
+
+  service:
+    port: 80
+    # type/nodePort default to a plain ClusterIP for a real install (reached
+    # via port-forward, ingress.* below, or your own exposure mechanism). A
+    # NodePort override only makes sense on a cluster whose node ports are
+    # actually mapped to the host (e.g. a kind/k3d dev cluster created with
+    # extraPortMappings).
+    type: ClusterIP
+    nodePort: ""
+
+  # ingress is disabled by default — a real install should make its own
+  # exposure decision; scripts/create-local-cluster.sh + install-local.sh
+  # enable it for local dev only, routed through k3d's default Traefik
+  # ingress controller.
+  ingress:
+    enabled: false
+    host: ""
+    className: traefik
+
+  # accessRoles controls whether this chart also creates the two default
+  # roles' backing ServiceAccounts + ClusterRoleBindings
+  # (hyve-access-admin -> cluster-admin, hyve-access-readonly -> view) that
+  # HyveAccessBinding.spec.serviceAccountRef points at by default. Disable
+  # if you'd rather define your own custom roles and reference those
+  # instead.
+  accessRoles:
+    create: true

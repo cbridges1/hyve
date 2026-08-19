@@ -8,7 +8,7 @@ import (
 
 func validWorkflow() *Workflow {
 	return &Workflow{
-		APIVersion: "v1",
+		APIVersion: WorkflowAPIVersion,
 		Kind:       "Workflow",
 		Metadata:   WorkflowMetadata{Name: "test"},
 		Spec: WorkflowSpec{

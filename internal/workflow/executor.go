@@ -10,10 +10,13 @@ import (
 	"strings"
 	"time"
 
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/secretsfrom"
-	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
+
+	k8syaml "sigs.k8s.io/yaml"
 )
 
 // Executor handles workflow execution
@@ -375,25 +378,51 @@ func (e *Executor) validateInputs(wf *Workflow) error {
 }
 
 // loadClusterDefinition loads a cluster definition by name, merging its
-// state sidecar (driverOutputs/appliedResources) if present — delegates to
-// state.Manager rather than hand-rolling a directory walk, so a workflow run
-// against a target cluster sees exactly the same merged definition every
-// other consumer does. NewManagerFromPath is a read-only, git-agnostic
-// construction (no credentials, no remote) — exactly what's needed here.
+// state sidecar (driverOutputs/appliedResources) if present. Deliberately
+// duplicates internal/state.Manager's read logic (read primary file,
+// validate apiVersion/kind, overlay cluster-state/<name>.state.yaml)
+// instead of importing internal/state directly — internal/state needs to
+// import this package too (for WorkflowSource's default FileSource — see
+// reconcile.StateProvider), and Go doesn't allow that cycle. Read-only,
+// git-agnostic — exactly what an ad-hoc `hyve workflow run --cluster`
+// lookup needs, same small cross-boundary duplication precedent used
+// elsewhere in this codebase (e.g. internal/apis/hyve/v1alpha1 mirroring
+// internal/types).
 func (e *Executor) loadClusterDefinition(clusterName string) (*types.ClusterDefinition, error) {
 	clustersDir := filepath.Join(e.manager.localPath, "clusters")
-	if _, err := os.Stat(clustersDir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("clusters directory not found at %s", clustersDir)
-	}
-	stateMgr := state.NewManagerFromPath(clustersDir)
-	def, _, err := stateMgr.LoadClusterDefinition(clusterName)
+	primaryPath := filepath.Join(clustersDir, clusterName+".yaml")
+
+	data, err := os.ReadFile(primaryPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("cluster %s not found in clusters directory", clusterName)
 		}
 		return nil, err
 	}
-	return def, nil
+
+	var local struct {
+		hyvev1alpha1.ClusterDefinition `json:",inline"`
+	}
+	if err := k8syaml.Unmarshal(data, &local); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", primaryPath, err)
+	}
+	def := crdconv.ToTypesClusterDefinition(&local.ClusterDefinition)
+
+	sidecarPath := filepath.Join(filepath.Dir(clustersDir), "cluster-state", clusterName+".state.yaml")
+	sdata, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &def, nil
+		}
+		return nil, err
+	}
+	var status hyvev1alpha1.ClusterDefinitionStatus
+	if err := k8syaml.Unmarshal(sdata, &status); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", sidecarPath, err)
+	}
+	def.Spec.DriverOutputs = status.DriverOutputs
+	def.Spec.AppliedResources = crdconv.ToTypesAppliedResources(status.AppliedResources)
+	return &def, nil
 }
 
 // expandVariables expands variables in a string

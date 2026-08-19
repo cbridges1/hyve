@@ -1,0 +1,12 @@
+{{- if .Values.controller.hyveConfig.create }}
+apiVersion: hyve.io/v1alpha1
+kind: HyveConfig
+metadata:
+  name: {{ .Values.controller.configName }}
+  namespace: {{ .Values.namespace }}
+spec:
+  strictResourceDelete: {{ .Values.controller.hyveConfig.strictResourceDelete }}
+  {{- if .Values.controller.hyveConfig.defaultWorkflowImage }}
+  defaultWorkflowImage: {{ .Values.controller.hyveConfig.defaultWorkflowImage }}
+  {{- end }}
+{{- end }}

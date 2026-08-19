@@ -137,8 +137,7 @@ func TestUpdateWorkflow(t *testing.T) {
 	err := manager.CreateWorkflow(workflow)
 	require.NoError(t, err)
 
-	originalUpdated := workflow.Metadata.Updated
-	time.Sleep(10 * time.Millisecond) // Ensure timestamp difference
+	originalCreated := workflow.Metadata.Created
 
 	workflow.Metadata.Description = "Updated description"
 	err = manager.UpdateWorkflow(workflow)
@@ -148,7 +147,7 @@ func TestUpdateWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Updated description", updated.Metadata.Description)
-	assert.True(t, updated.Metadata.Updated.After(originalUpdated), "Expected Updated timestamp to be newer")
+	assert.WithinDuration(t, originalCreated, updated.Metadata.Created, time.Second, "Created timestamp must survive an update")
 }
 
 func TestDeleteWorkflow(t *testing.T) {

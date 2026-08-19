@@ -3,11 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflow"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -101,7 +104,7 @@ func (p *CRDStateProvider) LoadClusterDefinitions() ([]types.ClusterDefinition, 
 	}
 	defs := make([]types.ClusterDefinition, len(list.Items))
 	for i := range list.Items {
-		defs[i] = toTypesClusterDefinition(&list.Items[i])
+		defs[i] = crdconv.ToTypesClusterDefinition(&list.Items[i])
 	}
 	return defs, nil
 }
@@ -116,7 +119,7 @@ func (p *CRDStateProvider) LoadClusterDefinition(ctx context.Context, name strin
 	if err := p.Client.Get(ctx, k8stypes.NamespacedName{Namespace: p.Namespace, Name: name}, &cr); err != nil {
 		return nil, err
 	}
-	def := toTypesClusterDefinition(&cr)
+	def := crdconv.ToTypesClusterDefinition(&cr)
 	return &def, nil
 }
 
@@ -141,7 +144,7 @@ func (p *CRDStateProvider) SaveClusterDefinition(def *types.ClusterDefinition) e
 	if err := p.Client.Get(ctx, k8stypes.NamespacedName{Namespace: p.Namespace, Name: def.Metadata.Name}, &cr); err != nil {
 		return fmt.Errorf("get ClusterDefinition %s/%s: %w", p.Namespace, def.Metadata.Name, err)
 	}
-	driverOutputs, applied := fromTypesStatus(def)
+	driverOutputs, applied := crdconv.FromTypesStatus(def)
 	cr.Status.DriverOutputs = driverOutputs
 	cr.Status.AppliedResources = applied
 	if err := p.Client.Status().Update(ctx, &cr); err != nil {
@@ -184,4 +187,17 @@ func (p *CRDStateProvider) HasStateSidecar(name string) bool {
 		return false
 	}
 	return len(cr.Status.DriverOutputs) > 0 || len(cr.Status.AppliedResources) > 0
+}
+
+// WorkflowSource resolves a local-name WorkflowRef against a live Workflow
+// CR first — the CRD-mode default: workflows should be cluster-native
+// resources, not files baked into the controller's image — falling back to
+// the baked-in ModulesDirPath only when no such CR exists, so an existing
+// deployment relying entirely on baked-in workflows/ keeps working
+// unmodified after this change.
+func (p *CRDStateProvider) WorkflowSource() workflow.Source {
+	return workflow.ChainSource{
+		Primary:  workflow.CRDSource{Client: p.Client, Namespace: p.Namespace},
+		Fallback: workflow.FileSource{Dir: filepath.Join(p.ModulesDirPath, workflow.WorkflowsDir)},
+	}
 }

@@ -14,6 +14,9 @@ var workflowVerifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Verify that every locked workflow's cached content still matches its sha256",
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve workflow verify` is not supported in cluster mode yet — hyve.lock-based remote-ref resolution is a local-checkout concept only.")
+		}
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 

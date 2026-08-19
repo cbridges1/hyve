@@ -10,6 +10,7 @@ import (
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
 
 // fakeStateProvider is a minimal in-memory StateProvider for tests that
@@ -30,6 +31,9 @@ func (f *fakeStateProvider) LoadClusterDefinitions() ([]types.ClusterDefinition,
 func (f *fakeStateProvider) SaveClusterDefinition(def *types.ClusterDefinition) error { return nil }
 func (f *fakeStateProvider) RemoveClusterFile(name string) error                      { return nil }
 func (f *fakeStateProvider) HasStateSidecar(name string) bool                         { return false }
+func (f *fakeStateProvider) WorkflowSource() workflow.Source {
+	return workflow.FileSource{Dir: f.LocalPath()}
+}
 
 func TestValidateDriverModuleLocked(t *testing.T) {
 	t.Run("no driver source errors", func(t *testing.T) {

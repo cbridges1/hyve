@@ -86,9 +86,24 @@ func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
 // as the request body's spec shape — the Kubernetes API server's own CRD
 // schema validation on the Create call below is "the CRD's own OpenAPI"
 // validation the plan asks for; no second hand-rolled validator needed.
+// Template is mutually exclusive with Spec: when set, the named Template CR
+// is fetched and rendered into a spec via the same
+// hyvev1alpha1.RenderClusterDefinitionSpec function
+// POST /templates/{name}/render uses standalone — this is the one-round-trip
+// path for the common "create a cluster from a template" case; Spec set
+// directly (today's only option) still works unchanged.
 type createClusterRequest struct {
-	Name string                             `json:"name"`
-	Spec hyvev1alpha1.ClusterDefinitionSpec `json:"spec"`
+	Name     string                             `json:"name"`
+	Spec     hyvev1alpha1.ClusterDefinitionSpec `json:"spec,omitempty"`
+	Template *createClusterFromTemplateRef      `json:"template,omitempty"`
+}
+
+// createClusterFromTemplateRef names a Template CR plus the same
+// region/param overrides renderTemplateRequest accepts.
+type createClusterFromTemplateRef struct {
+	Name   string            `json:"name"`
+	Region string            `json:"region,omitempty"`
+	Params map[string]string `json:"params,omitempty"`
 }
 
 func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
@@ -105,9 +120,24 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	spec := req.Spec
+	if req.Template != nil {
+		var tpl hyvev1alpha1.Template
+		if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: req.Template.Name}, &tpl); err != nil {
+			if apierrors.IsNotFound(err) {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("template %q not found", req.Template.Name))
+				return
+			}
+			log.Printf("api: failed to get template %q: %v", req.Template.Name, err)
+			writeError(w, http.StatusInternalServerError, "failed to get template")
+			return
+		}
+		spec = hyvev1alpha1.RenderClusterDefinitionSpec(tpl.Spec, req.Template.Region, req.Template.Params)
+	}
+
 	cd := &hyvev1alpha1.ClusterDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.Namespace},
-		Spec:       req.Spec,
+		Spec:       spec,
 	}
 	if err := s.Client.Create(r.Context(), cd); err != nil {
 		if apierrors.IsAlreadyExists(err) {

@@ -8,8 +8,8 @@ import "fmt"
 func Validate(wf *Workflow) (errors, warnings []string) {
 	if wf.APIVersion == "" {
 		errors = append(errors, "Missing apiVersion")
-	} else if wf.APIVersion != "v1" {
-		warnings = append(warnings, fmt.Sprintf("Unexpected apiVersion '%s', expected 'v1'", wf.APIVersion))
+	} else if wf.APIVersion != WorkflowAPIVersion {
+		warnings = append(warnings, fmt.Sprintf("Unexpected apiVersion '%s', expected '%s'", wf.APIVersion, WorkflowAPIVersion))
 	}
 
 	if wf.Kind == "" {

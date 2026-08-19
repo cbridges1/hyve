@@ -38,6 +38,22 @@ If no name is provided, you'll be prompted for workflow details.`,
 		description, _ := cmd.Flags().GetString("description")
 		file, _ := cmd.Flags().GetString("file")
 
+		if sess, ok := shared.UseClusterMode(); ok {
+			client := shared.NewAPIClient(sess)
+			if file != "" {
+				createWorkflowFromFileAPI(client, file)
+			} else if template || len(args) > 0 {
+				name := ""
+				if len(args) > 0 {
+					name = args[0]
+				}
+				createWorkflowTemplateAPI(client, name, description)
+			} else {
+				log.Fatal("Must specify either workflow name with --template, or use --file to create from existing file")
+			}
+			return
+		}
+
 		if file != "" {
 			createWorkflowFromFile(file)
 		} else if template || len(args) > 0 {
@@ -57,6 +73,10 @@ var workflowListCmd = &cobra.Command{
 	Short: "List all workflows",
 	Long:  "List all available workflows in the current repository.",
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			listWorkflowsAPI(shared.NewAPIClient(sess))
+			return
+		}
 		listWorkflows()
 	},
 }
@@ -67,6 +87,10 @@ var workflowShowCmd = &cobra.Command{
 	Long:  "Display detailed information about a specific workflow.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			showWorkflowAPI(shared.NewAPIClient(sess), args[0])
+			return
+		}
 		showWorkflow(args[0])
 	},
 }
@@ -82,6 +106,10 @@ Required workflow inputs that are not already in the environment must be supplie
   hyve workflow run provision-network --set HYVE_CLUSTER_NAME=my-cluster --set HYVE_CLUSTER_REGION=eastus`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve workflow run` is not supported in cluster mode yet — workflow *execution* (job dispatch, log streaming) isn't wired up over the API, only workflow definition CRUD is. Run it against a local checkout, or trigger it as a ClusterDefinition lifecycle hook instead.")
+		}
+
 		cluster, _ := cmd.Flags().GetString("cluster")
 		showLogs, _ := cmd.Flags().GetBool("logs")
 		showOutput, _ := cmd.Flags().GetBool("output")
@@ -104,6 +132,10 @@ var workflowDeleteCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		force, _ := cmd.Flags().GetBool("force")
+		if sess, ok := shared.UseClusterMode(); ok {
+			deleteWorkflowAPI(shared.NewAPIClient(sess), args[0], force)
+			return
+		}
 		deleteWorkflow(args[0], force)
 	},
 }
@@ -252,7 +284,6 @@ func showWorkflow(name string) {
 		log.Printf("📝 Description: %s", wf.Metadata.Description)
 	}
 	log.Printf("📅 Created: %s", wf.Metadata.Created.Format("2006-01-02 15:04:05"))
-	log.Printf("📅 Updated: %s", wf.Metadata.Updated.Format("2006-01-02 15:04:05"))
 
 	if len(wf.Metadata.Labels) > 0 {
 		log.Printf("🏷️  Labels:")

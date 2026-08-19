@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func newClusterDef(name string) *hyvev1alpha1.ClusterDefinition {
@@ -126,6 +127,40 @@ func TestHandleCreateCluster_AdminAllowed(t *testing.T) {
 
 	rec2 := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/clusters/new-cluster", nil)
 	assert.Equal(t, http.StatusOK, rec2.Code)
+}
+
+func TestHandleCreateCluster_FromTemplate(t *testing.T) {
+	tpl := newTemplateDef("t1")
+	s := &Server{Client: newFakeClient(t, tpl), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{
+		Name: "from-tpl",
+		Template: &createClusterFromTemplateRef{
+			Name:   "t1",
+			Region: "NYC1",
+			Params: map[string]string{"node_size": "large"},
+		},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var dto clusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "from-tpl", dto.Name)
+	assert.Equal(t, tpl.Spec.Driver.Source, dto.Driver)
+
+	var created hyvev1alpha1.ClusterDefinition
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: "from-tpl"}, &created))
+	assert.Equal(t, "NYC1", created.Spec.Region)
+	assert.Equal(t, "large", created.Spec.Params["node_size"])
+}
+
+func TestHandleCreateCluster_FromTemplate_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{
+		Name:     "from-tpl",
+		Template: &createClusterFromTemplateRef{Name: "missing"},
+	})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestHandleCreateCluster_MissingName(t *testing.T) {

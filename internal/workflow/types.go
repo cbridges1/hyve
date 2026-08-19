@@ -21,13 +21,16 @@ type Workflow struct {
 	Spec       WorkflowSpec     `yaml:"spec" json:"spec"`
 }
 
-// WorkflowMetadata contains workflow metadata
+// WorkflowMetadata contains workflow metadata. Created maps to the real
+// Workflow CR's ObjectMeta.CreationTimestamp (server/manager-set once, at
+// creation) — there's no clean CRD equivalent for a separate "Updated"
+// field (closest is resourceVersion/generation, different semantics), so
+// unlike the pre-unification file format this no longer tracks it.
 type WorkflowMetadata struct {
 	Name        string            `yaml:"name" json:"name"`
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Created     time.Time         `yaml:"created,omitempty" json:"created,omitempty"`
-	Updated     time.Time         `yaml:"updated,omitempty" json:"updated,omitempty"`
 }
 
 // WorkflowInput declares a variable that must be present before the workflow runs.

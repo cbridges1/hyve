@@ -15,7 +15,7 @@ spec:
       labels:
         app.kubernetes.io/name: hyve-api
     spec:
-      serviceAccountName: {{ .Values.serviceAccount.name | default "hyve-api" }}
+      serviceAccountName: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -31,18 +31,18 @@ spec:
             - api
             - run
             - --namespace={{ .Values.namespace }}
-            - --modules-dir={{ .Values.modulesDir }}
-            - --bind-address={{ .Values.bindAddress }}
-            {{- if .Values.publicBaseURL }}
-            - --public-base-url={{ .Values.publicBaseURL }}
+            - --modules-dir={{ .Values.api.modulesDir }}
+            - --bind-address={{ .Values.api.bindAddress }}
+            {{- if .Values.api.publicBaseURL }}
+            - --public-base-url={{ .Values.api.publicBaseURL }}
             {{- end }}
-            {{- if .Values.primaryClusterName }}
-            - --primary-cluster-name={{ .Values.primaryClusterName }}
+            {{- if .Values.api.primaryClusterName }}
+            - --primary-cluster-name={{ .Values.api.primaryClusterName }}
             {{- end }}
-            - --proxy-target={{ .Values.proxyTarget }}
+            - --proxy-target={{ .Values.api.proxyTarget }}
           ports:
             - name: http
-              containerPort: {{ .Values.bindAddress | trimPrefix ":" }}
+              containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -56,4 +56,4 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.api.resources | nindent 12 }}

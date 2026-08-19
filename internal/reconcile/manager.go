@@ -435,7 +435,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 	}
 	name := cluster.Metadata.Name
 
-	wfMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
+	wfMgr, err := workflow.NewManagerWithSource(r.stateMgr.LocalPath(), r.stateMgr.WorkflowSource())
 	if err != nil {
 		r.logf("[%s] Failed to create workflow manager: %v", name, err)
 		return nil

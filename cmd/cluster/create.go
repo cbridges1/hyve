@@ -20,13 +20,13 @@ var createCmd = &cobra.Command{
 	Use:   "create [cluster-name]",
 	Short: "Create a cluster from a template (local mode) or a file (cluster mode)",
 	Long: `Local mode (no 'hyve login' session active): creates from a template via
---template, exactly as before.
+--template, or from an already-fully-specified file via --file.
 
-Cluster mode (a valid 'hyve login' session exists): --template isn't
-supported — the API has no server-side template rendering — use --file
-pointing at an already-fully-specified cluster definition instead (the
-same apiVersion/kind/metadata/spec YAML shape a local clusters/<name>.yaml
-already uses).`,
+Cluster mode (a valid 'hyve login' session exists): same choice — --template
+renders the named Template CR server-side (via the same rendering function
+local mode uses), or --file points at an already-fully-specified cluster
+definition (the same apiVersion/kind/metadata/spec YAML shape a local
+clusters/<name>.yaml already uses).`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterName := args[0]
@@ -35,18 +35,6 @@ already uses).`,
 		setVals, _ := cmd.Flags().GetStringArray("set")
 		file, _ := cmd.Flags().GetString("file")
 
-		if sess, ok := shared.UseClusterMode(); ok {
-			if file == "" {
-				log.Fatal("--file is required in cluster mode (a 'hyve login' session is active) — templates aren't supported over the API yet")
-			}
-			createClusterFromFileAPI(shared.NewAPIClient(sess), file)
-			return
-		}
-
-		if templateName == "" {
-			log.Fatal("--template is required")
-		}
-
 		overrides := map[string]string{}
 		for _, kv := range setVals {
 			parts := strings.SplitN(kv, "=", 2)
@@ -54,6 +42,23 @@ already uses).`,
 				log.Fatalf("Invalid --set value %q (expected KEY=VALUE)", kv)
 			}
 			overrides[parts[0]] = parts[1]
+		}
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			client := shared.NewAPIClient(sess)
+			if file != "" {
+				createClusterFromFileAPI(client, file)
+				return
+			}
+			if templateName == "" {
+				log.Fatal("--file or --template is required in cluster mode")
+			}
+			createClusterFromTemplateAPI(client, clusterName, templateName, region, overrides)
+			return
+		}
+
+		if templateName == "" {
+			log.Fatal("--template is required")
 		}
 
 		createClusterFromTemplate(templateName, clusterName, region, overrides)

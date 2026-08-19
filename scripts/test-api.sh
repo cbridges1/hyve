@@ -60,8 +60,7 @@ log "Building hyve"
 go build -o "$BIN" "$ROOT_DIR"
 
 log "Applying CRDs"
-kubectl apply -f "$ROOT_DIR/deploy/helm/hyve-controller/crds/hyve.io_clusterdefinitions.yaml" >/dev/null
-kubectl apply -f "$ROOT_DIR/deploy/helm/hyve-api/crds/hyve.io_hyveaccessbindings.yaml" >/dev/null
+kubectl apply -f "$ROOT_DIR/deploy/helm/hyve/crds/" >/dev/null
 
 kubectl create namespace "$NAMESPACE" >/dev/null 2>&1 || true
 

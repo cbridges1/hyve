@@ -8,20 +8,52 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	k8syaml "sigs.k8s.io/yaml"
+
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 )
 
 const (
-	WorkflowsDir       = "workflows"
-	WorkflowFileExt    = ".yaml"
-	WorkflowAPIVersion = "v1"
+	WorkflowsDir    = "workflows"
+	WorkflowFileExt = ".yaml"
+
+	// WorkflowAPIVersion/WorkflowKind must match the real Workflow CRD
+	// exactly (group hyve.io/v1alpha1) — a local workflows/<name>.yaml
+	// file is real Workflow CR YAML, `kubectl apply -f`-able unmodified
+	// once the CRD is installed.
+	WorkflowAPIVersion = "hyve.io/v1alpha1"
 	WorkflowKind       = "Workflow"
 )
+
+// decodeWorkflow parses a workflow file's bytes, validates its apiVersion/
+// kind against the real Workflow CRD, and converts it into the in-memory
+// Workflow shape the execution engine uses.
+func decodeWorkflow(path string, data []byte) (*Workflow, error) {
+	var cr hyvev1alpha1.Workflow
+	if err := k8syaml.Unmarshal(data, &cr); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
+	}
+	if cr.APIVersion != WorkflowAPIVersion || cr.Kind != WorkflowKind {
+		return nil, fmt.Errorf("%s: apiVersion/kind must be %q/%q, got %q/%q",
+			path, WorkflowAPIVersion, WorkflowKind, cr.APIVersion, cr.Kind)
+	}
+	return toWorkflow(&cr), nil
+}
 
 // Manager handles workflow operations
 type Manager struct {
 	workflowsPath string
 	localPath     string
+
+	// source is what GetWorkflow actually reads from — always FileSource
+	// for a plain NewManager (identical to this package's original,
+	// filesystem-only behavior); NewManagerWithSource lets a caller (see
+	// internal/reconcile's runWorkflows) plug in a different one, e.g. a
+	// ChainSource preferring a live Workflow CR. Every other Manager
+	// method (Create/Update/Delete/ListWorkflows, and localPath's other
+	// uses in Executor) is untouched by this — only local-name workflow
+	// *resolution* is source-pluggable.
+	source Source
 }
 
 // NewManager creates a new workflow manager with the given repository local path
@@ -29,12 +61,21 @@ func NewManager(localPath string) (*Manager, error) {
 	if localPath == "" {
 		return nil, fmt.Errorf("local path is required")
 	}
-
 	workflowsPath := filepath.Join(localPath, WorkflowsDir)
+	return NewManagerWithSource(localPath, FileSource{Dir: workflowsPath})
+}
 
+// NewManagerWithSource is NewManager, but with GetWorkflow's backing store
+// (source) set explicitly instead of always defaulting to a plain
+// FileSource — see internal/reconcile.StateProvider.WorkflowSource.
+func NewManagerWithSource(localPath string, source Source) (*Manager, error) {
+	if localPath == "" {
+		return nil, fmt.Errorf("local path is required")
+	}
 	return &Manager{
-		workflowsPath: workflowsPath,
+		workflowsPath: filepath.Join(localPath, WorkflowsDir),
 		localPath:     localPath,
+		source:        source,
 	}, nil
 }
 
@@ -44,7 +85,6 @@ func (m *Manager) CreateWorkflow(workflow *Workflow) error {
 	workflow.APIVersion = WorkflowAPIVersion
 	workflow.Kind = WorkflowKind
 	workflow.Metadata.Created = time.Now()
-	workflow.Metadata.Updated = time.Now()
 
 	// Validate workflow
 	if err := m.validateWorkflow(workflow); err != nil {
@@ -64,7 +104,7 @@ func (m *Manager) CreateWorkflow(workflow *Workflow) error {
 		return fmt.Errorf("workflow '%s' already exists", workflow.Metadata.Name)
 	}
 
-	data, err := yaml.Marshal(workflow)
+	data, err := k8syaml.Marshal(fromWorkflow(workflow))
 	if err != nil {
 		return fmt.Errorf("failed to marshal workflow: %w", err)
 	}
@@ -76,25 +116,10 @@ func (m *Manager) CreateWorkflow(workflow *Workflow) error {
 	return nil
 }
 
-// GetWorkflow retrieves a workflow by name
+// GetWorkflow retrieves a workflow by name via m.source — see Manager.source's
+// doc comment.
 func (m *Manager) GetWorkflow(name string) (*Workflow, error) {
-	filename := name + WorkflowFileExt
-	filePath := filepath.Join(m.workflowsPath, filename)
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("workflow '%s' not found", name)
-		}
-		return nil, fmt.Errorf("failed to read workflow file: %w", err)
-	}
-
-	var workflow Workflow
-	if err := yaml.Unmarshal(data, &workflow); err != nil {
-		return nil, fmt.Errorf("failed to parse workflow file: %w", err)
-	}
-
-	return &workflow, nil
+	return m.source.GetWorkflow(name)
 }
 
 // UpdateWorkflow updates an existing workflow
@@ -111,10 +136,7 @@ func (m *Manager) UpdateWorkflow(workflow *Workflow) error {
 		return fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Update metadata
-	workflow.Metadata.Updated = time.Now()
-
-	data, err := yaml.Marshal(workflow)
+	data, err := k8syaml.Marshal(fromWorkflow(workflow))
 	if err != nil {
 		return fmt.Errorf("failed to marshal workflow: %w", err)
 	}
@@ -164,12 +186,12 @@ func (m *Manager) ListWorkflows() ([]*Workflow, error) {
 			return fmt.Errorf("failed to read workflow file %s: %w", path, err)
 		}
 
-		var workflow Workflow
-		if err := yaml.Unmarshal(data, &workflow); err != nil {
-			return fmt.Errorf("failed to parse workflow file %s: %w", path, err)
+		workflow, err := decodeWorkflow(path, data)
+		if err != nil {
+			return err
 		}
 
-		workflows = append(workflows, &workflow)
+		workflows = append(workflows, workflow)
 		return nil
 	})
 

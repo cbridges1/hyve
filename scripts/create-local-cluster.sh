@@ -14,8 +14,8 @@ set -euo pipefail
 # Everything AFTER this one-time setup is pure `kubectl apply`: k3d ships
 # Traefik as its default ingress controller already listening behind that
 # load balancer, so exposing a new service later is just an Ingress
-# resource routing a hostname to it — see deploy/helm/hyve-api's optional
-# ingress.enabled template. No new port to pick, no cluster change, ever
+# resource routing a hostname to it — see deploy/helm/hyve's optional
+# api.ingress.enabled template. No new port to pick, no cluster change, ever
 # again.
 #
 # Sets your kubectl context to this cluster when done. Your Docker Desktop
