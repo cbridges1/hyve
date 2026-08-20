@@ -81,6 +81,18 @@ func newDB(configDir string) (*DB, error) {
 		return nil, err
 	}
 
+	// Additive column migration for pre-existing databases created before
+	// the repositories table grew its api_url/session_token/
+	// session_expires_at columns — CREATE TABLE IF NOT EXISTS above is a
+	// no-op against an already-existing table, so a real ALTER TABLE step
+	// is needed for anyone upgrading from an older hyve.db. No-op against a
+	// freshly-created database, since the CREATE TABLE above already
+	// includes these columns.
+	if err := d.ensureRepositoryCredentialColumns(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	// Run migrations from old databases
 	if err := d.migrateFromOldDatabases(); err != nil {
 		// Log but don't fail - migration is best-effort
@@ -99,7 +111,10 @@ func (d *DB) initialize() error {
 	}
 	defer tx.Rollback()
 
-	// Repositories table
+	// Repositories table — each row is a "environment": a local directory
+	// (see internal/repository, cmd/env) plus, optionally, cluster-mode
+	// login credentials (api_url/session_token/session_expires_at) attached
+	// by `hyve login`. One is_current flag switches both halves together.
 	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS repositories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +122,9 @@ func (d *DB) initialize() error {
 			repo_url TEXT NOT NULL,
 			local_path TEXT NOT NULL,
 			is_current BOOLEAN DEFAULT FALSE,
+			api_url TEXT,
+			session_token TEXT,
+			session_expires_at TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -137,6 +155,40 @@ func (d *DB) initialize() error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// ensureRepositoryCredentialColumns adds any of api_url/session_token/
+// session_expires_at missing from an existing repositories table — see the
+// call site in newDB for why this can't just live in the CREATE TABLE
+// statement alone.
+func (d *DB) ensureRepositoryCredentialColumns() error {
+	rows, err := d.db.Query(`PRAGMA table_info(repositories)`)
+	if err != nil {
+		return fmt.Errorf("failed to inspect repositories table: %w", err)
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to read repositories column info: %w", err)
+		}
+		existing[name] = true
+	}
+	rows.Close()
+
+	for _, col := range []string{"api_url", "session_token", "session_expires_at"} {
+		if existing[col] {
+			continue
+		}
+		if _, err := d.db.Exec(fmt.Sprintf(`ALTER TABLE repositories ADD COLUMN %s TEXT`, col)); err != nil {
+			return fmt.Errorf("failed to add %s column to repositories: %w", col, err)
+		}
+	}
 	return nil
 }
 

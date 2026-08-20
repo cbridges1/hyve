@@ -21,7 +21,7 @@ func CreateStateManager(_ gocontext.Context) (*state.Manager, string) {
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
 		log.Fatalf("❌ No repository configured. Hyve requires a registered directory for state management.\n\n" +
-			"Register one with: hyve set-state [path]")
+			"Register one with: hyve env create [--path <dir>]")
 	}
 	logCurrentRepo(currentRepo)
 
@@ -63,13 +63,13 @@ func GetLocalPath() string {
 	defer repoMgr.Close()
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatal("No repository configured. Use 'hyve set-state' to configure one")
+		log.Fatal("No repository configured. Use 'hyve env create' to configure one")
 	}
 	return currentRepo.LocalPath
 }
 
 // logCurrentRepo prints which registered directory is in use — phrased for
-// both git-backed (has a RepoURL) and plain local (via `hyve set-state`)
+// both git-backed (has a RepoURL) and plain local (via `hyve env create`)
 // entries, since both are equally valid sources of truth.
 func logCurrentRepo(r *repository.Repository) {
 	if r.RepoURL != "" {
@@ -167,7 +167,7 @@ func CreateStateManagerFromRepository(_ gocontext.Context) (*state.Manager, stri
 	currentRepo, err := repoMgr.GetCurrentRepository()
 	if err != nil {
 		log.Fatalf("❌ No repository configured. Hyve requires a registered directory for state management.\n\n" +
-			"Register one with: hyve set-state [path]")
+			"Register one with: hyve env create [--path <dir>]")
 	}
 	logCurrentRepo(currentRepo)
 

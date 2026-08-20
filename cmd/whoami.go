@@ -16,10 +16,10 @@ import (
 var whoamiCmd = &cobra.Command{
 	Use:   "whoami",
 	Short: "Show whether you're currently authenticated to a hyve API server, and as whom",
-	Long: `Reports the locally-stored cluster-mode session (see 'hyve login'), if any,
-and confirms it directly against the API server rather than trusting the
-local record alone — a session can be locally present but already expired
-or rejected server-side (e.g. after a signing-key rotation).
+	Long: `Reports the active environment's cluster-mode session (see 'hyve login',
+'hyve env'), if any, and confirms it directly against the API server rather
+than trusting the local record alone — a session can be locally present but
+already expired or rejected server-side (e.g. after a signing-key rotation).
 
 Exits non-zero when not authenticated, so it's scriptable:
   hyve whoami >/dev/null || hyve login --api-url ...`,
@@ -39,7 +39,7 @@ func runWhoami() {
 		os.Exit(1)
 	}
 	if sess == nil {
-		fmt.Println("Not logged in (no local session — run 'hyve login --api-url ...')")
+		fmt.Println("Not logged in (no active environment session — run 'hyve login --api-url ...')")
 		os.Exit(1)
 	}
 
@@ -77,6 +77,6 @@ func runWhoami() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Logged in as %s (role: %s) against %s\n", who.Username, who.Role, sess.APIURL)
+	fmt.Printf("✅ Logged in as %s (role: %s) against '%s' (%s)\n", who.Username, who.Role, sess.EnvironmentName, sess.APIURL)
 	fmt.Printf("   Session expires %s\n", sess.ExpiresAt)
 }

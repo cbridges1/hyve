@@ -184,6 +184,60 @@ func TestRepositoryTimestamps(t *testing.T) {
 	assert.False(t, repo.UpdatedAt.IsZero(), "Expected UpdatedAt to be set")
 }
 
+func TestSetSession(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	err = mgr.SetSession("test-repo", "https://hyve-api.example.com", "tok123", "2099-01-01T00:00:00Z")
+	require.NoError(t, err)
+
+	repo, err := mgr.GetRepositoryByName("test-repo")
+	require.NoError(t, err)
+	assert.Equal(t, "https://hyve-api.example.com", repo.APIURL)
+	assert.Equal(t, "tok123", repo.SessionToken)
+	assert.Equal(t, "2099-01-01T00:00:00Z", repo.SessionExpiresAt)
+	assert.True(t, repo.LoggedIn())
+}
+
+func TestSetSessionNotFound(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	err := mgr.SetSession("nonexistent", "https://hyve-api.example.com", "tok123", "2099-01-01T00:00:00Z")
+	assert.Error(t, err)
+}
+
+func TestClearSession(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+	require.NoError(t, mgr.SetSession("test-repo", "https://hyve-api.example.com", "tok123", "2099-01-01T00:00:00Z"))
+
+	err = mgr.ClearSession("test-repo")
+	require.NoError(t, err)
+
+	repo, err := mgr.GetRepositoryByName("test-repo")
+	require.NoError(t, err)
+	assert.Empty(t, repo.APIURL)
+	assert.Empty(t, repo.SessionToken)
+	assert.Empty(t, repo.SessionExpiresAt)
+	assert.False(t, repo.LoggedIn())
+	// The directory registration itself must survive a logout.
+	assert.Equal(t, "/tmp/test", repo.LocalPath)
+}
+
+func TestRepositoryWithoutSessionHasEmptyCredentialFields(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+	assert.Empty(t, repo.APIURL)
+	assert.Empty(t, repo.SessionToken)
+	assert.False(t, repo.LoggedIn())
+}
+
 func TestDatabasePersistence(t *testing.T) {
 	tempDir := t.TempDir()
 

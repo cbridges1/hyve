@@ -1,9 +1,10 @@
-package state
+package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,54 +16,127 @@ import (
 	"github.com/cbridges1/hyve/internal/workflow"
 )
 
-var migrateWrite bool
-var migrateSkipExisting bool
+var (
+	migrateDir          string
+	migrateFile         string
+	migrateWrite        bool
+	migrateSkipExisting bool
+)
 
 var migrateCmd = &cobra.Command{
-	Use:   "migrate",
-	Short: "Migrate the active local state directory's templates/workflows/clusters into the cluster",
-	Long: `Walks templates/, workflows/, then clusters/ in the active local state
-directory (see 'hyve state') and creates each as a CR via the API —
-requires an active 'hyve login' session (see 'hyve login'). Order matters:
-templates and workflows are migrated first, so a migrated cluster's
-lifecycle-hook refs resolve against the just-created Workflow CRs (see
-internal/controller's CR-first WorkflowRef resolution) instead of a stale
-fallback.
+	Use:   "migrate [path]",
+	Short: "Push local templates/workflows/clusters into the active environment's cluster",
+	Long: `Reads CR-shaped YAML — a single file (--file, or a file given as [path]) or a
+directory tree (--dir, or a directory given as [path], walking its
+templates/, workflows/, then clusters/ subdirectories in that order so a
+migrated cluster's lifecycle-hook refs resolve against the just-created
+Workflow CRs instead of a stale fallback) — and creates each as a CR via
+the API.
+
+Requires an active environment with cluster-mode credentials (see 'hyve
+login'). The destination is always whichever cluster that environment is
+logged into — independent of the source path, which is never implicitly
+tied to any environment's registered directory.
+
+Defaults to the current working directory (directory mode) when no path,
+--dir, or --file is given.
 
 Defaults to a dry run (prints what would be created, writes nothing). Pass
 --write to actually create resources. Safe to re-run: --skip-existing
 (the default) treats "already exists" as success, not a failure, so a
 partial migration can just be re-run.`,
+	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		runMigrate()
+		path := ""
+		if len(args) > 0 {
+			path = args[0]
+		}
+		runMigrate(path)
 	},
 }
 
 func init() {
+	migrateCmd.Flags().StringVar(&migrateDir, "dir", "", "Directory to migrate (walks templates/, workflows/, clusters/ subdirectories)")
+	migrateCmd.Flags().StringVar(&migrateFile, "file", "", "Single CR-shaped YAML file to migrate")
 	migrateCmd.Flags().BoolVar(&migrateWrite, "write", false, "Actually create resources (default is a dry run)")
 	migrateCmd.Flags().BoolVar(&migrateSkipExisting, "skip-existing", true, "Treat an already-exists response as success, not a failure — safe to re-run")
-	Cmd.AddCommand(migrateCmd)
+	rootCmd.AddCommand(migrateCmd)
 }
 
-func runMigrate() {
+func runMigrate(posPath string) {
 	sess, ok := shared.UseClusterMode()
 	if !ok {
-		log.Fatal("`hyve state migrate` requires an active cluster-mode session — run `hyve login` first")
+		log.Fatal("`hyve migrate` requires an active environment with cluster-mode credentials — run `hyve login` first")
 	}
 	client := shared.NewAPIClient(sess)
-
-	ctx := context.Background()
-	stateMgr, _ := shared.CreateStateManager(ctx)
-	localPath := stateMgr.LocalPath()
 
 	dryRun := !migrateWrite
 	if dryRun {
 		log.Println("🔍 Dry run — nothing will be written. Pass --write to actually migrate.")
 	}
 
-	workflowCount := migrateWorkflows(client, localPath, dryRun)
-	templateCount := migrateTemplates(client, localPath, dryRun)
-	clusterCount := migrateClusters(client, stateMgr, dryRun)
+	switch {
+	case migrateFile != "" && migrateDir != "":
+		log.Fatal("--file and --dir are mutually exclusive")
+	case migrateFile != "":
+		migrateSingleFile(client, migrateFile, dryRun)
+	case migrateDir != "":
+		migrateDirectory(client, migrateDir, dryRun)
+	case posPath != "":
+		info, err := os.Stat(posPath)
+		if err != nil {
+			log.Fatalf("Failed to stat %s: %v", posPath, err)
+		}
+		if info.IsDir() {
+			migrateDirectory(client, posPath, dryRun)
+		} else {
+			migrateSingleFile(client, posPath, dryRun)
+		}
+	default:
+		cwd, err := os.Getwd()
+		if err != nil {
+			log.Fatalf("Failed to resolve current directory: %v", err)
+		}
+		migrateDirectory(client, cwd, dryRun)
+	}
+}
+
+// migrateSingleFile pushes exactly one CR-shaped YAML file — the same
+// parse/dispatch `hyve apply` uses, just routed through --skip-existing
+// instead of hard-failing on 409, and respecting the dry-run default.
+func migrateSingleFile(client *shared.APIClient, path string, dryRun bool) {
+	kind, name, spec, err := parseCRFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if dryRun {
+		log.Printf("  [%s] %s", strings.ToLower(kind), name)
+		log.Println("\nWould migrate: 1 resource")
+		log.Println("Re-run with --write to actually create it.")
+		return
+	}
+
+	desc, err := createByKind(client, kind, name, spec)
+	if err != nil {
+		if migrateSkipExisting && isAlreadyExists(err) {
+			log.Printf("  %s '%s' — already exists, skipped", kind, name)
+			return
+		}
+		log.Fatalf("%s: %v", path, err)
+	}
+	log.Printf("✅ %s '%s' created", desc, name)
+}
+
+func migrateDirectory(client *shared.APIClient, dirPath string, dryRun bool) {
+	absPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		log.Fatalf("Invalid path %q: %v", dirPath, err)
+	}
+
+	workflowCount := migrateWorkflows(client, absPath, dryRun)
+	templateCount := migrateTemplates(client, absPath, dryRun)
+	clusterCount := migrateClusters(client, shared.CreateStateManagerFromPath(absPath), dryRun)
 
 	verb := "Migrated"
 	if dryRun {

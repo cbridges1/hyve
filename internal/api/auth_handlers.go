@@ -67,8 +67,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // handleLogout is a stateless no-op success response — session tokens are
 // signed and self-verifying with no server-side session store, so there is
 // nothing to invalidate here. The caller is responsible for discarding its
-// stored token; `hyve login`'s companion logout command removes the local
-// ~/.hyve/session.json.
+// stored token; `hyve login`'s companion logout command clears it from the
+// active environment's registry entry (see internal/repository).
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }

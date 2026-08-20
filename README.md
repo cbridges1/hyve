@@ -100,7 +100,7 @@ hyve module add github.com/hyve-modules/civo@v1.0.0
 # 2. Point Hyve at a directory for state (a plain local directory works too —
 #    git is entirely optional and, if used, is just your own 'git' CLI)
 git clone https://github.com/company/hyve-state.git && cd hyve-state
-hyve set-state --current
+hyve env create --path .
 
 # 3. Create a template
 hyve template create my-civo-template \
@@ -151,14 +151,23 @@ This is real `ClusterDefinition` custom resource YAML — the same shape a Kuber
 
 Cloud credentials are read directly from your environment — the same way the underlying CLI tools (`civo`, `aws`, `gcloud`, `az`) read them. Hyve never stores credentials.
 
-## Local State vs. a Live Cluster
+## Environments: Local State vs. a Live Cluster
 
-Hyve works two ways, sharing the exact same YAML:
+Hyve works two ways, sharing the exact same YAML. An **environment** (`hyve env`) is a named local directory, optionally paired with cluster-mode login credentials — switch between them with `hyve env use <name>`, and both halves (which directory `reconcile` reads, which cluster `cluster`/`template`/`workflow` commands talk to) switch together:
 
-- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from your state directory directly and drives everything from your machine or CI.
-- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster, `hyve login` against it, and every `hyve cluster`/`template`/`workflow` command talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
+- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from the active environment's directory and drives everything from your machine or CI.
+- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster, `hyve login` against it (attaching credentials to the active environment, or creating one automatically), and every `hyve cluster`/`template`/`workflow` command talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
 
-`hyve state migrate` bulk-imports an existing local state directory into a live cluster (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success. Individual resources can also be pushed one at a time with `hyve cluster create --file`, `hyve template create --file`, and `hyve workflow create --file`. Either way, the same file works: `kubectl apply -f` it directly, or hand it to the CLI.
+```bash
+hyve env create prod --path ~/repos/prod-config --api-url https://hyve-api.example.com --username me
+hyve env create staging --path ~/repos/staging-config --api-url https://hyve-api-staging.example.com --username me
+hyve env use prod       # switches both the directory and which cluster you're talking to
+hyve env list           # see every registered environment, and which is active
+```
+
+`hyve migrate` bulk-imports a directory into whichever cluster the active environment is logged into (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). Its source is always explicit — a positional path, or `--dir`/`--file` — defaulting to the current working directory, never implicitly the active environment's own directory (you might migrate a one-off directory into whatever cluster you're logged into). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success.
+
+`hyve apply -f <file>` creates a single resource, auto-detecting `kind` (ClusterDefinition/Template/Workflow) from the file — the single-file equivalent of `hyve cluster create --file`, `hyve template create --file`, or `hyve workflow create --file`, without needing to know which one matches a given file. Either way — `apply`, `migrate`, or the per-resource `--file` flags — the same file works: `kubectl apply -f` it directly, or hand it to the CLI.
 
 ## Module System
 

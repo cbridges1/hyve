@@ -8,16 +8,62 @@ import (
 	"github.com/cbridges1/hyve/internal/database"
 )
 
-// Repository represents a Git repository configuration
+// Repository represents one registered environment: a local directory,
+// optionally paired with cluster-mode login credentials attached by `hyve
+// login` (see cmd/shared/session.go, cmd/env). APIURL/SessionToken/
+// SessionExpiresAt are empty for an environment that's never logged in —
+// pure local/GitOps usage never needs them.
 type Repository struct {
-	ID        int       `json:"id"`
-	Name      string    `json:"name"`
-	RepoURL   string    `json:"repo_url"`
-	LocalPath string    `json:"local_path"`
-	Token     string    `json:"-"` // Not serialized for security (legacy)
-	IsCurrent bool      `json:"is_current"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID               int       `json:"id"`
+	Name             string    `json:"name"`
+	RepoURL          string    `json:"repo_url"`
+	LocalPath        string    `json:"local_path"`
+	IsCurrent        bool      `json:"is_current"`
+	APIURL           string    `json:"api_url,omitempty"`
+	SessionToken     string    `json:"-"` // never serialized
+	SessionExpiresAt string    `json:"session_expires_at,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// LoggedIn reports whether this environment has cluster-mode credentials
+// attached, independent of whether they've since expired — see
+// cmd/shared.Session.Valid() for the expiry check.
+func (r *Repository) LoggedIn() bool {
+	return r.APIURL != "" && r.SessionToken != ""
+}
+
+const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, session_token, session_expires_at, created_at, updated_at`
+
+// scanner is satisfied by both *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// scanRepository reads one row in repositoryColumns' exact order.
+func scanRepository(s scanner) (*Repository, error) {
+	repo := &Repository{}
+	var createdAt, updatedAt string
+	var apiURL, sessionToken, sessionExpiresAt sql.NullString
+
+	if err := s.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath, &repo.IsCurrent,
+		&apiURL, &sessionToken, &sessionExpiresAt, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+
+	repo.APIURL = apiURL.String
+	repo.SessionToken = sessionToken.String
+	repo.SessionExpiresAt = sessionExpiresAt.String
+
+	var err error
+	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
+		repo.CreatedAt = time.Now()
+	}
+	if repo.UpdatedAt, err = time.Parse("2006-01-02 15:04:05", updatedAt); err != nil {
+		repo.UpdatedAt = time.Now()
+	}
+
+	return repo, nil
 }
 
 // Manager handles repository configurations using the unified database
@@ -118,6 +164,57 @@ func (m *Manager) UpdateRepository(name, repoURL, localPath string) (*Repository
 	return m.GetRepositoryByName(name)
 }
 
+// SetSession attaches (or refreshes) cluster-mode login credentials on the
+// named environment — called by `hyve login`.
+func (m *Manager) SetSession(name, apiURL, token, expiresAt string) error {
+	updateSQL := `
+	UPDATE repositories
+	SET api_url = ?, session_token = ?, session_expires_at = ?, updated_at = CURRENT_TIMESTAMP
+	WHERE name = ?
+	`
+
+	result, err := m.db.Conn().Exec(updateSQL, apiURL, token, expiresAt, name)
+	if err != nil {
+		return fmt.Errorf("failed to attach session to '%s': %w", name, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("repository '%s' not found", name)
+	}
+
+	return nil
+}
+
+// ClearSession removes cluster-mode login credentials from the named
+// environment, leaving its directory registration untouched — called by
+// `hyve logout`.
+func (m *Manager) ClearSession(name string) error {
+	updateSQL := `
+	UPDATE repositories
+	SET api_url = NULL, session_token = NULL, session_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+	WHERE name = ?
+	`
+
+	result, err := m.db.Conn().Exec(updateSQL, name)
+	if err != nil {
+		return fmt.Errorf("failed to clear session on '%s': %w", name, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("repository '%s' not found", name)
+	}
+
+	return nil
+}
+
 // DeleteRepository removes a repository configuration
 func (m *Manager) DeleteRepository(name string) error {
 	// Check if this is the current repository
@@ -160,7 +257,7 @@ func (m *Manager) DeleteRepository(name string) error {
 // ListRepositories returns all repository configurations
 func (m *Manager) ListRepositories() ([]*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
+	SELECT ` + repositoryColumns + `
 	FROM repositories
 	ORDER BY is_current DESC, name ASC
 	`
@@ -173,23 +270,10 @@ func (m *Manager) ListRepositories() ([]*Repository, error) {
 
 	var repositories []*Repository
 	for rows.Next() {
-		repo := &Repository{}
-		var createdAt, updatedAt string
-
-		err := rows.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath,
-			&repo.IsCurrent, &createdAt, &updatedAt)
+		repo, err := scanRepository(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan repository: %w", err)
 		}
-
-		// Parse timestamps
-		if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
-			repo.CreatedAt = time.Now()
-		}
-		if repo.UpdatedAt, err = time.Parse("2006-01-02 15:04:05", updatedAt); err != nil {
-			repo.UpdatedAt = time.Now()
-		}
-
 		repositories = append(repositories, repo)
 	}
 
@@ -199,94 +283,55 @@ func (m *Manager) ListRepositories() ([]*Repository, error) {
 // GetRepositoryByName returns a repository by name
 func (m *Manager) GetRepositoryByName(name string) (*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
+	SELECT ` + repositoryColumns + `
 	FROM repositories
 	WHERE name = ?
 	`
 
-	repo := &Repository{}
-	var createdAt, updatedAt string
-
-	err := m.db.Conn().QueryRow(selectSQL, name).Scan(&repo.ID, &repo.Name, &repo.RepoURL,
-		&repo.LocalPath, &repo.IsCurrent, &createdAt, &updatedAt)
+	repo, err := scanRepository(m.db.Conn().QueryRow(selectSQL, name))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("repository '%s' not found", name)
 		}
 		return nil, fmt.Errorf("failed to get repository: %w", err)
 	}
-
-	// Parse timestamps
-	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
-		repo.CreatedAt = time.Now()
-	}
-	if repo.UpdatedAt, err = time.Parse("2006-01-02 15:04:05", updatedAt); err != nil {
-		repo.UpdatedAt = time.Now()
-	}
-
 	return repo, nil
 }
 
 // GetRepositoryByID returns a repository by ID
 func (m *Manager) GetRepositoryByID(id int) (*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
+	SELECT ` + repositoryColumns + `
 	FROM repositories
 	WHERE id = ?
 	`
 
-	repo := &Repository{}
-	var createdAt, updatedAt string
-
-	err := m.db.Conn().QueryRow(selectSQL, id).Scan(&repo.ID, &repo.Name, &repo.RepoURL,
-		&repo.LocalPath, &repo.IsCurrent, &createdAt, &updatedAt)
+	repo, err := scanRepository(m.db.Conn().QueryRow(selectSQL, id))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("repository with ID %d not found", id)
 		}
 		return nil, fmt.Errorf("failed to get repository: %w", err)
 	}
-
-	// Parse timestamps
-	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
-		repo.CreatedAt = time.Now()
-	}
-	if repo.UpdatedAt, err = time.Parse("2006-01-02 15:04:05", updatedAt); err != nil {
-		repo.UpdatedAt = time.Now()
-	}
-
 	return repo, nil
 }
 
 // GetCurrentRepository returns the currently selected repository
 func (m *Manager) GetCurrentRepository() (*Repository, error) {
 	selectSQL := `
-	SELECT id, name, repo_url, local_path, is_current, created_at, updated_at
+	SELECT ` + repositoryColumns + `
 	FROM repositories
 	WHERE is_current = TRUE
 	LIMIT 1
 	`
 
-	repo := &Repository{}
-	var createdAt, updatedAt string
-
-	err := m.db.Conn().QueryRow(selectSQL).Scan(&repo.ID, &repo.Name, &repo.RepoURL,
-		&repo.LocalPath, &repo.IsCurrent, &createdAt, &updatedAt)
+	repo, err := scanRepository(m.db.Conn().QueryRow(selectSQL))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("no current repository configured")
 		}
 		return nil, fmt.Errorf("failed to get current repository: %w", err)
 	}
-
-	// Parse timestamps
-	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
-		repo.CreatedAt = time.Now()
-	}
-	if repo.UpdatedAt, err = time.Parse("2006-01-02 15:04:05", updatedAt); err != nil {
-		repo.UpdatedAt = time.Now()
-	}
-
 	return repo, nil
 }
 

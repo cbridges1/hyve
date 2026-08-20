@@ -7,9 +7,9 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/cluster"
 	"github.com/cbridges1/hyve/cmd/clusterconfig"
+	"github.com/cbridges1/hyve/cmd/env"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
 	"github.com/cbridges1/hyve/cmd/shared"
-	statecmd "github.com/cbridges1/hyve/cmd/state"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 	"github.com/cbridges1/hyve/internal/database"
@@ -46,12 +46,23 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&shared.HomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
 
+	// Verbs that do something, first (login/logout/whoami/apply/migrate
+	// self-register via their own file's init()).
 	rootCmd.AddCommand(reconcileCmd)
+
+	// Identity/environment selection — almost everything below depends on
+	// which environment is active.
+	rootCmd.AddCommand(env.Cmd)
+
+	// Resource-type command groups, in dependency order: a cluster is the
+	// thing you ultimately want, templates/workflows support it, modules
+	// are the driver layer underneath.
 	rootCmd.AddCommand(cluster.Cmd)
-	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
+	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
-	rootCmd.AddCommand(statecmd.SetStateCmd)
-	rootCmd.AddCommand(statecmd.Cmd)
+
+	// Ops-only — runs inside Helm-deployed pods, not an interactive
+	// end-user surface.
 	rootCmd.AddCommand(clusterconfig.Cmd)
 }

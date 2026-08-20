@@ -84,7 +84,12 @@ func (m *Manager) CreateTemplate(template *Template) error {
 }
 
 // findTemplateFile scans the templates directory and returns the file path
-// of the template whose metadata.name matches the given name.
+// of the template whose metadata.name matches the given name. A file that
+// fails to decode (e.g. a leftover pre-hyve.io/v1alpha1 file — see
+// decodeTemplate) doesn't abort the scan, since it might just be an
+// unrelated file — but if the target name is never found, its decode
+// errors are surfaced rather than silently dropped, so a real "not found"
+// isn't confused with "found, but unreadable."
 func (m *Manager) findTemplateFile(name string) (string, error) {
 	entries, err := os.ReadDir(m.templatesDir)
 	if err != nil {
@@ -94,6 +99,7 @@ func (m *Manager) findTemplateFile(name string) (string, error) {
 		return "", fmt.Errorf("failed to read templates directory: %w", err)
 	}
 
+	var decodeErrs []error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -101,15 +107,26 @@ func (m *Manager) findTemplateFile(name string) (string, error) {
 		path := filepath.Join(m.templatesDir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
+			decodeErrs = append(decodeErrs, err)
 			continue
 		}
 		t, err := decodeTemplate(path, data)
 		if err != nil {
+			decodeErrs = append(decodeErrs, err)
 			continue
 		}
 		if t.Metadata.Name == name {
 			return path, nil
 		}
+	}
+
+	if len(decodeErrs) > 0 {
+		msgs := make([]string, len(decodeErrs))
+		for i, e := range decodeErrs {
+			msgs[i] = "  " + e.Error()
+		}
+		return "", fmt.Errorf("template '%s' not found; %d file(s) in %s could not be read:\n%s",
+			name, len(decodeErrs), m.templatesDir, strings.Join(msgs, "\n"))
 	}
 	return "", fmt.Errorf("template '%s' not found", name)
 }

@@ -58,7 +58,7 @@ kubectl config view --minify --raw > "$HOME/.hyve/kubeconfigs/$TEST_CLUSTER.yaml
 
 log "Registering a scratch repo (HYVE_HOME=$HYVE_HOME, isolated from your real hyve state)"
 mkdir -p "$REPO_DIR/workflows"
-"$BIN" set-state "$REPO_DIR" >/dev/null
+"$BIN" env create --path "$REPO_DIR" >/dev/null
 
 OUT_FILE="$WORK_DIR/step-output.txt"
 cat > "$REPO_DIR/workflows/secrets-test.yaml" <<EOF
