@@ -80,6 +80,21 @@ func kubectlDiff(ctx context.Context, workDir string, env []string, data []byte,
 		if strings.Contains(combined.String(), "keeps changing, diffing without lock") {
 			return true, nil
 		}
+		// A manifest that creates its own Namespace alongside namespaced
+		// objects in the same file (e.g. resource-files/pod-info/
+		// podinfo.yaml) legitimately can't be diffed on its first run: diff
+		// never persists anything, so by the time it evaluates the
+		// namespaced objects the Namespace document earlier in the same
+		// stream was never actually created, and the API server correctly
+		// reports it missing — confirmed live. A real `kubectl apply -f -`
+		// doesn't have this problem (it commits each document before
+		// processing the next), so the same "assume changed, let the
+		// caller apply for real" treatment as the case above applies here
+		// too, rather than permanently wedging the resource on every
+		// reconcile.
+		if strings.Contains(combined.String(), "(NotFound): namespaces \"") {
+			return true, nil
+		}
 		return false, fmt.Errorf("kubectl diff: exit %d: %s", exitErr.ExitCode(), combined.String())
 	}
 	return false, fmt.Errorf("kubectl diff: %w", runErr)

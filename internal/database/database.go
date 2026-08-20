@@ -135,6 +135,27 @@ func (d *DB) initialize() error {
 		return fmt.Errorf("failed to create repositories table: %w", err)
 	}
 
+	// Environment secrets table — KEY=VALUE pairs attached to one
+	// environment (a repositories row), loaded into the process
+	// environment before every command (see cmd/shared.
+	// LoadEnvironmentSecrets) and deleted alongside their environment when
+	// it's removed (see internal/repository.Manager.DeleteRepository).
+	_, err = tx.Exec(`
+		CREATE TABLE IF NOT EXISTS environment_secrets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			repository_id INTEGER NOT NULL,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(repository_id, key)
+		);
+		CREATE INDEX IF NOT EXISTS idx_environment_secrets_repo ON environment_secrets(repository_id)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create environment_secrets table: %w", err)
+	}
+
 	// Kubeconfigs table
 	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS kubeconfigs (

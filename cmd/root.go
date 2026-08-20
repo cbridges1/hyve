@@ -26,6 +26,8 @@ Supports cluster creation, modification, deletion, and reconciliation.`,
 		if home != "" {
 			database.SetConfigDir(home)
 		}
+		shared.LoadEnvironmentSecrets() // higher precedence — see 'hyve env secrets'
+		shared.LoadLegacyRepoEnvFile()  // lower precedence, relocated from main.go
 		return nil
 	},
 }

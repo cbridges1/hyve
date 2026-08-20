@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/cbridges1/hyve/internal/database"
@@ -236,6 +237,15 @@ func (m *Manager) DeleteRepository(name string) error {
 		}
 	}
 
+	// No FK cascade in this schema — delete the environment's secrets
+	// explicitly before the repositories row itself, so removing an
+	// environment doesn't leave orphaned secrets behind.
+	if repo, err := m.GetRepositoryByName(name); err == nil {
+		if _, err := m.db.Conn().Exec(`DELETE FROM environment_secrets WHERE repository_id = ?`, repo.ID); err != nil {
+			return fmt.Errorf("failed to remove secrets for '%s': %w", name, err)
+		}
+	}
+
 	deleteSQL := `DELETE FROM repositories WHERE name = ?`
 	result, err := m.db.Conn().Exec(deleteSQL, name)
 	if err != nil {
@@ -403,6 +413,68 @@ func (m *Manager) unsetCurrentRepository() error {
 	_, err := m.db.Conn().Exec(updateSQL)
 	if err != nil {
 		return fmt.Errorf("failed to unset current repository: %w", err)
+	}
+	return nil
+}
+
+// secretKeyPattern matches valid environment variable names — checked up
+// front in SetSecret so a bad key fails clearly here rather than silently
+// producing something os.Setenv/downstream tooling can't use.
+var secretKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ListSecrets returns every KEY=VALUE pair attached to repositoryID.
+func (m *Manager) ListSecrets(repositoryID int) (map[string]string, error) {
+	rows, err := m.db.Conn().Query(`SELECT key, value FROM environment_secrets WHERE repository_id = ? ORDER BY key`, repositoryID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query secrets: %w", err)
+	}
+	defer rows.Close()
+
+	vars := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("failed to scan secret: %w", err)
+		}
+		vars[key] = value
+	}
+	return vars, nil
+}
+
+// GetSecret returns a single key's value, and whether it was set at all.
+func (m *Manager) GetSecret(repositoryID int, key string) (string, bool, error) {
+	var value string
+	err := m.db.Conn().QueryRow(`SELECT value FROM environment_secrets WHERE repository_id = ? AND key = ?`, repositoryID, key).Scan(&value)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to get secret: %w", err)
+	}
+	return value, true, nil
+}
+
+// SetSecret adds or updates a single key on repositoryID.
+func (m *Manager) SetSecret(repositoryID int, key, value string) error {
+	if !secretKeyPattern.MatchString(key) {
+		return fmt.Errorf("invalid variable name %q: must match %s", key, secretKeyPattern.String())
+	}
+	upsertSQL := `
+	INSERT INTO environment_secrets (repository_id, key, value)
+	VALUES (?, ?, ?)
+	ON CONFLICT(repository_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+	`
+	if _, err := m.db.Conn().Exec(upsertSQL, repositoryID, key, value); err != nil {
+		return fmt.Errorf("failed to set secret: %w", err)
+	}
+	return nil
+}
+
+// UnsetSecret removes a single key from repositoryID. Idempotent — removing
+// a key that isn't present is not an error.
+func (m *Manager) UnsetSecret(repositoryID int, key string) error {
+	if _, err := m.db.Conn().Exec(`DELETE FROM environment_secrets WHERE repository_id = ? AND key = ?`, repositoryID, key); err != nil {
+		return fmt.Errorf("failed to unset secret: %w", err)
 	}
 	return nil
 }

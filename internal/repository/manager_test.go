@@ -238,6 +238,114 @@ func TestRepositoryWithoutSessionHasEmptyCredentialFields(t *testing.T) {
 	assert.False(t, repo.LoggedIn())
 }
 
+func TestSetAndGetSecret(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
+
+	value, ok, err := mgr.GetSecret(repo.ID, "FOO")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "bar", value)
+}
+
+func TestGetSecretNotSet(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	_, ok, err := mgr.GetSecret(repo.ID, "MISSING")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestSetSecretInvalidKey(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	err = mgr.SetSecret(repo.ID, "not a valid key", "bar")
+	assert.Error(t, err)
+}
+
+func TestSetSecretOverwritesExisting(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
+	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "baz"))
+
+	value, ok, err := mgr.GetSecret(repo.ID, "FOO")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "baz", value)
+}
+
+func TestListSecrets(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "1"))
+	require.NoError(t, mgr.SetSecret(repo.ID, "BAR", "2"))
+
+	vars, err := mgr.ListSecrets(repo.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"FOO": "1", "BAR": "2"}, vars)
+}
+
+func TestUnsetSecret(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
+	require.NoError(t, mgr.UnsetSecret(repo.ID, "FOO"))
+
+	_, ok, err := mgr.GetSecret(repo.ID, "FOO")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestUnsetSecretMissingIsNoOp(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+
+	assert.NoError(t, mgr.UnsetSecret(repo.ID, "NEVER_SET"))
+}
+
+func TestDeleteRepositoryCascadesSecrets(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
+
+	require.NoError(t, mgr.DeleteRepository("test-repo"))
+
+	// Re-create a repository — SQLite AUTOINCREMENT guarantees a fresh ID
+	// is never reused, so this also proves the delete wasn't just an
+	// orphaned-but-still-queryable row under the old ID.
+	repo2, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	require.NoError(t, err)
+	assert.NotEqual(t, repo.ID, repo2.ID)
+
+	vars, err := mgr.ListSecrets(repo2.ID)
+	require.NoError(t, err)
+	assert.Empty(t, vars)
+}
+
 func TestDatabasePersistence(t *testing.T) {
 	tempDir := t.TempDir()
 
