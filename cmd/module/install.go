@@ -14,6 +14,9 @@ var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install all modules referenced by templates and clusters into hyve.lock",
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve module install` is local-mode only — modules resolve automatically when referenced by a cluster/template in cluster mode; see `hyve module list` to inspect what's been resolved.")
+		}
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()

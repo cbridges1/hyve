@@ -16,6 +16,32 @@ spec:
         app.kubernetes.io/name: hyve-controller
     spec:
       serviceAccountName: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
+      # Seeds the PVC (mounted at /data below) from whatever
+      # deploy/Dockerfile.controller baked into /opt/hyve-seed at build time
+      # — only if /data is still empty, so upgrading the controller image
+      # never clobbers modules it already resolved at runtime onto the PVC.
+      # Gracefully does nothing if the image baked in no seed at all (e.g.
+      # deploy/Dockerfile.dev, which bakes in none by design).
+      initContainers:
+        - name: seed-modules
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /data/state /data/.hyve/module-cache
+              if [ -d /opt/hyve-seed/state ] && [ -z "$(ls -A /data/state 2>/dev/null)" ]; then
+                echo "Seeding /data/state from /opt/hyve-seed/state"
+                cp -a /opt/hyve-seed/state/. /data/state/
+              fi
+              if [ -d /opt/hyve-seed/module-cache ] && [ -z "$(ls -A /data/.hyve/module-cache 2>/dev/null)" ]; then
+                echo "Seeding /data/.hyve/module-cache from /opt/hyve-seed/module-cache"
+                cp -a /opt/hyve-seed/module-cache/. /data/.hyve/module-cache/
+              fi
+          volumeMounts:
+            - name: modules
+              mountPath: /data
       containers:
         - name: controller
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -34,16 +60,36 @@ spec:
             - run
             - --namespace={{ .Values.namespace }}
             - --config-name={{ .Values.controller.configName }}
+            - --modules-dir=/data/state
             - --metrics-bind-address={{ .Values.controller.metricsBindAddress }}
             - --health-probe-bind-address={{ .Values.controller.healthProbeBindAddress }}
             {{- if .Values.controller.leaderElection }}
             - --leader-elect
             {{- end }}
-          # HOME must match whatever deploy/Dockerfile.controller baked the
-          # module cache under (see that file's own comment) — left
-          # unset here deliberately so the image's own Dockerfile-set HOME
-          # applies; do not override HOME via extra env unless you also
-          # rebuilt the image with a matching one.
+          # HOME=/data redirects module.CacheDir()'s hardcoded
+          # $HOME/.hyve/module-cache (internal/module/cache.go — it doesn't
+          # respect --home/HYVE_HOME) onto the same PVC --modules-dir lives
+          # on, so a module resolved at runtime (see
+          # internal/controller/reconciler.go's resolveModuleIfNeeded)
+          # actually persists across pod restarts instead of just within
+          # one pod's lifetime.
+          env:
+            - name: HOME
+              value: /data
+            # optional: true means a deployment where this Secret doesn't
+            # exist (the common case — public modules need no token at
+            # all) starts up completely unaffected, GITHUB_TOKEN simply
+            # unset — see internal/module/resolver.go's githubToken() and
+            # values.yaml's own comment on controller.githubTokenSecret.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.githubTokenSecret.name }}
+                  key: {{ .Values.controller.githubTokenSecret.key }}
+                  optional: true
+          volumeMounts:
+            - name: modules
+              mountPath: /data
           ports:
             - name: metrics
               containerPort: 8080
@@ -63,3 +109,7 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
+      volumes:
+        - name: modules
+          persistentVolumeClaim:
+            claimName: hyve-controller-modules

@@ -34,6 +34,18 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["workflows"]
     verbs: ["get", "list", "watch"]
+  # modules is the controller's own write target — see
+  # internal/controller/reconciler.go's resolveModuleIfNeeded, which
+  # creates/updates one Module CR per auto-resolved driver module as a
+  # visibility record (not a second watch loop — no separate Watches()/
+  # For() builder exists for this kind, so the same cached-client watch
+  # requirement noted above for workflows applies here too).
+  - apiGroups: ["hyve.io"]
+    resources: ["modules"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["modules/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]

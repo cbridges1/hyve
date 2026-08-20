@@ -86,6 +86,7 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("load hyve.lock: %w", err)
 	}
+	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version)
 
 	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false)
 
@@ -141,6 +142,7 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("load hyve.lock: %w", err)
 	}
+	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version)
 
 	if err := r.Reconciler.ReconcileOne(ctx, def, lf, false); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete cleanup: %w", err)
@@ -187,6 +189,86 @@ func (r *ClusterDefinitionReconciler) setCondition(ctx context.Context, cr *hyve
 	}
 	cr.Status.ObservedGeneration = generation
 	return r.Client.Status().Update(ctx, cr)
+}
+
+// resolveModuleIfNeeded calls module.EnsureResolved when source@version
+// isn't already locked in lf, and records the outcome on a Module CR
+// either way — a plain write from this same reconcile pass, not a second
+// watch loop (see this session's design discussion on why: no separate
+// human-run install step exists in cluster mode, so the controller has to
+// be self-sufficient, but the Module CR still gives the same visibility
+// local mode's hyve.lock gives on disk). Never returns an error: a
+// resolution failure here is intentionally left to surface through the
+// existing shared validateDriverModuleLocked check inside ReconcileOne, so
+// the ClusterDefinition's own condition message is unchanged — this just
+// adds a second, richer place to look. Returns the (possibly reloaded)
+// lock file for the caller to pass into ReconcileOne.
+func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context, lf *module.LockFile, source, version string) *module.LockFile {
+	if source == "" || lf.GetLocked(source, version) != nil {
+		return lf
+	}
+
+	mod := &hyvev1alpha1.Module{ObjectMeta: metav1.ObjectMeta{Name: module.CRName(source, version), Namespace: r.Namespace}}
+	mod.Spec = hyvev1alpha1.ModuleSpec{Source: source, Version: version}
+
+	if _, err := module.EnsureResolved(r.StateProvider.LocalPath(), source, version); err != nil {
+		mod.Status = hyvev1alpha1.ModuleStatus{Resolved: false, Error: err.Error()}
+		r.upsertModuleCR(ctx, mod)
+		return lf // unchanged — the shared check below will still fail, as today
+	}
+
+	reloaded, err := module.LoadLockFile(r.StateProvider.LocalPath())
+	if err != nil {
+		log.Printf("Warning: module %s@%s resolved but failed to reload hyve.lock: %v", source, version, err)
+		return lf
+	}
+	mod.Status = hyvev1alpha1.ModuleStatus{Resolved: true, ResolvedAt: metav1.Now()}
+	if locked := reloaded.GetLocked(source, version); locked != nil {
+		mod.Status.SHA256 = locked.SHA256
+	}
+	r.upsertModuleCR(ctx, mod)
+	return reloaded
+}
+
+// upsertModuleCR creates want, or updates an existing Module CR of the same
+// name to match it — spec and status both. desiredStatus is saved and
+// re-applied immediately before each Status().Update() call rather than
+// trusted to survive on want/existing themselves: both Create() and
+// Update() unmarshal the API server's full response back into the passed
+// object (status subresource enabled means that response's status is
+// whatever the server already had — zero on a fresh Create, the pre-update
+// value on a plain Update), silently clobbering whatever status was set
+// beforehand — confirmed live, this was the actual first-cut bug (every
+// Module CR's status came back completely empty).
+func (r *ClusterDefinitionReconciler) upsertModuleCR(ctx context.Context, want *hyvev1alpha1.Module) {
+	desiredStatus := want.Status
+
+	var existing hyvev1alpha1.Module
+	err := r.Client.Get(ctx, client.ObjectKeyFromObject(want), &existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Client.Create(ctx, want); err != nil {
+			log.Printf("Warning: failed to create Module CR %s: %v", want.Name, err)
+			return
+		}
+		want.Status = desiredStatus
+		if err := r.Client.Status().Update(ctx, want); err != nil {
+			log.Printf("Warning: failed to set Module CR %s status: %v", want.Name, err)
+		}
+		return
+	}
+	if err != nil {
+		log.Printf("Warning: failed to get Module CR %s: %v", want.Name, err)
+		return
+	}
+	existing.Spec = want.Spec
+	if err := r.Client.Update(ctx, &existing); err != nil {
+		log.Printf("Warning: failed to update Module CR %s: %v", want.Name, err)
+		return
+	}
+	existing.Status = desiredStatus
+	if err := r.Client.Status().Update(ctx, &existing); err != nil {
+		log.Printf("Warning: failed to update Module CR %s status: %v", want.Name, err)
+	}
 }
 
 // SetupWithManager wires this reconciler into mgr, watching ClusterDefinition.

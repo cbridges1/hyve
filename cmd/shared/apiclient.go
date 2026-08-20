@@ -315,6 +315,32 @@ func (c *APIClient) UnsetSecret(key string) error {
 	return c.do(http.MethodDelete, "/api/secrets/"+key, nil, nil)
 }
 
+// ModuleDTO mirrors internal/api's moduleDTO — read-only, since the API
+// never writes Module CRs (only the controller does, auto-resolving as it
+// reconciles a ClusterDefinition — see
+// internal/controller/reconciler.go's resolveModuleIfNeeded).
+type ModuleDTO struct {
+	Name   string                    `json:"name"`
+	Spec   hyvev1alpha1.ModuleSpec   `json:"spec"`
+	Status hyvev1alpha1.ModuleStatus `json:"status"`
+}
+
+func (c *APIClient) ListModules() ([]ModuleDTO, error) {
+	var out []ModuleDTO
+	if err := c.do(http.MethodGet, "/api/modules", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *APIClient) GetModule(name string) (*ModuleDTO, error) {
+	var out ModuleDTO
+	if err := c.do(http.MethodGet, "/api/modules/"+name, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // AuthContextDTO mirrors internal/api's authContextDTO — the driver info
 // needed to resolve and run a module's auth operation client-side.
 type AuthContextDTO struct {

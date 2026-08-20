@@ -15,6 +15,9 @@ var removeCmd = &cobra.Command{
 	Short: "Remove a module from hyve.lock",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve module remove` is local-mode only — modules resolve automatically when referenced by a cluster/template in cluster mode; there's no local hyve.lock entry to remove.")
+		}
 		source := args[0]
 		version := args[1]
 		ctx := context.Background()

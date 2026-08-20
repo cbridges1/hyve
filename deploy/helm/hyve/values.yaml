@@ -36,6 +36,35 @@ controller:
   metricsBindAddress: ":8080"
   healthProbeBindAddress: ":8081"
 
+  # PersistentVolumeClaim backing the controller's --modules-dir + resolved-
+  # module cache (mounted at /data, HOME redirected there — see
+  # controller-deployment.yaml and internal/module/cache.go's own comment on
+  # why HOME must point inside it). Without this, a module the controller
+  # auto-resolves at runtime (see internal/controller/reconciler.go's
+  # resolveModuleIfNeeded) would be re-fetched from scratch on every pod
+  # restart instead of actually being cached. ReadWriteOnce only — this
+  # design deliberately never needs ReadWriteMany (confirmed against k3d's
+  # own default local-path StorageClass, which is RWO-only).
+  moduleStorage:
+    size: 1Gi
+    storageClassName: "" # empty = cluster default
+
+  # GitHub token for resolving private git-sourced modules (see
+  # internal/module/resolver.go's githubToken(), which reads it from the
+  # GITHUB_TOKEN env var) — needed only if a ClusterDefinition/Template
+  # references a private repo; auto-resolve for public modules works with
+  # no token at all. Never put a real token in values.yaml/git — create the
+  # Secret yourself once:
+  #   kubectl create secret generic hyve-github-token -n hyve-system \
+  #     --from-literal=token=ghp_...
+  # Referenced with optional: true (see controller-deployment.yaml), so a
+  # deployment where this Secret doesn't exist is entirely unaffected —
+  # private-module resolution just fails with a clear error on that
+  # module's Module CR instead (see resolveModuleIfNeeded), same as today.
+  githubTokenSecret:
+    name: hyve-github-token
+    key: token
+
   # RBAC: the controller needs to read/write ClusterDefinition/HyveConfig,
   # read Workflow (see internal/controller's CR-first WorkflowRef
   # resolution), and to create/manage batch/v1 Jobs + read Pod logs for

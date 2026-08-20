@@ -94,6 +94,62 @@ func splitLockKey(key string) (source, version string) {
 	return key[:idx], key[idx+1:]
 }
 
+// CRName derives a deterministic, valid Kubernetes object name from a
+// module ref — same source+version always produces the same name, so
+// recording a resolve outcome on a Module CR (see
+// internal/controller/reconciler.go) is a plain upsert, never a growing
+// pile of near-duplicate objects.
+func CRName(source, version string) string {
+	raw := strings.ToLower(source + "-" + version)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			b.WriteRune('-')
+			lastDash = true
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) > 253 {
+		name = strings.TrimRight(name[:253], "-")
+	}
+	if name == "" {
+		name = "module"
+	}
+	return name
+}
+
+// EnsureResolved returns source@version's locked entry, resolving and
+// persisting it first if it isn't already locked — the mechanism cluster
+// mode's controller uses in place of a human running `hyve module install`
+// first (see internal/controller/reconciler.go's resolveModuleIfNeeded).
+// Local mode does not call this; it keeps requiring an explicit install
+// step (see cmd/module/install.go) — see this session's design discussion
+// on why the two modes deliberately differ here.
+func EnsureResolved(repoPath, source, version string) (*LockedModule, error) {
+	lf, err := LoadLockFile(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if locked := lf.GetLocked(source, version); locked != nil {
+		return locked, nil
+	}
+	resolved, err := Resolve(source, version, nil, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	entry := &LockedModule{Source: source, Resolved: resolved.Resolved, SHA256: resolved.SHA256, Runner: resolved.Runner}
+	lf.SetLocked(source, version, entry)
+	if err := SaveLockFile(repoPath, lf); err != nil {
+		return nil, err
+	}
+	return entry, nil
+}
+
 // LockedWorkflowMatch pairs a LockedWorkflow with the (source, version) pair
 // needed to re-resolve it via workflowref.Resolve.
 type LockedWorkflowMatch struct {

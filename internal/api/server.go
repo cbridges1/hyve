@@ -70,6 +70,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerTemplateRoutes(apiMux)
 	s.registerWorkflowRoutes(apiMux)
 	s.registerSecretsRoutes(apiMux)
+	s.registerModuleRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))

@@ -16,6 +16,10 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List locked modules from hyve.lock",
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			listModulesAPI(shared.NewAPIClient(sess))
+			return
+		}
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()

@@ -1,9 +1,16 @@
 # Controller-mode image — bakes a state repo's hyve.lock and every module/
-# workflow it locks into the image at build time, so
-# `hyve cluster-config controller run` never needs network access to a
-# module registry at runtime. See
-# HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's "hyve.lock in controller mode" and
-# "Local cache root problem" sections for the full rationale.
+# workflow it locks into the image at build time, as a SEED for the
+# PersistentVolumeClaim deploy/helm/hyve/templates/controller-pvc.yaml
+# mounts at runtime (see controller-deployment.yaml's initContainer, which
+# copies this seed into the PVC only if it's still empty). The controller
+# no longer strictly needs a pre-baked module — since this session's
+# module-auto-resolve fix (see internal/controller/reconciler.go's
+# resolveModuleIfNeeded), a ClusterDefinition referencing an unresolved
+# module gets it fetched over the network automatically, once, on first
+# use, then cached on the PVC for every reconcile after. Baking a state
+# repo in here at build time is still supported and still avoids that
+# first-use network fetch/delay for whatever it locks — just no longer
+# required for the controller to function at all.
 #
 # Build context is your STATE repo (hyve.lock + clusters/ + templates/ +
 # workflows/ — the same repo you'd otherwise `hyve set-state` and
@@ -16,11 +23,12 @@
 # IMPORTANT — HOME must match between build and runtime: module.CacheDir()
 # (internal/module/cache.go) resolves the resolved-module cache to
 # $HOME/.hyve/module-cache, unconditionally — it does not respect
-# --home/HYVE_HOME. Both stages below fix HOME=/root explicitly and the
-# final image must keep running as root (or you must set HOME to whatever
-# this Dockerfile bakes into) so `hyve cluster-config controller run` finds
-# the cache it was built with rather than an empty one, which would force an
-# (impossible, since there's no network at runtime) re-resolve.
+# --home/HYVE_HOME. The build stages below fix HOME=/root; at runtime,
+# controller-deployment.yaml sets HOME=/data (the PVC mount point) instead
+# — the seed paths below are deliberately NOT at /root/.hyve or
+# /var/lib/hyve/modules, since a volume mounted at either of those at
+# runtime would otherwise shadow (hide) whatever this build baked in,
+# making the seed step below unable to see it.
 FROM golang:1.25-alpine AS resolver
 ENV HOME=/root
 RUN apk add --no-cache git
@@ -57,13 +65,14 @@ RUN apk add --no-cache ca-certificates bash git curl jq openssl \
     kubectl helm
 
 COPY --from=resolver /root/go/bin/hyve /usr/local/bin/hyve
-COPY --from=resolver /root/.hyve/module-cache /root/.hyve/module-cache
+COPY --from=resolver /root/.hyve/module-cache /opt/hyve-seed/module-cache
 
 # The whole state repo (hyve.lock, workflows/, any locally-sourced module
 # under ./..., clusters/ and templates/ too, though those are unused in
 # controller mode — ClusterDefinition CRs are the source of truth, not
-# files) — this becomes --modules-dir's default target, LocalPath() for
-# module/workflow/hyve.lock resolution.
-COPY --from=resolver /state /var/lib/hyve/modules
+# files) — seeds the PVC-backed --modules-dir target (LocalPath() for
+# module/workflow/hyve.lock resolution) on first boot; see this file's
+# header comment.
+COPY --from=resolver /state /opt/hyve-seed/state
 
 ENTRYPOINT ["hyve", "cluster-config", "controller", "run"]

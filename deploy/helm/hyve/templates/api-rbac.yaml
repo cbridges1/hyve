@@ -27,6 +27,12 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["templates", "workflows"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # Read-only: the API never writes Module CRs (only the controller does,
+  # via resolveModuleIfNeeded) — this is purely for `hyve module list`/
+  # `info` in cluster mode to have something to read.
+  - apiGroups: ["hyve.io"]
+    resources: ["modules"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]

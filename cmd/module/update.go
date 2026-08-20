@@ -15,6 +15,9 @@ var updateCmd = &cobra.Command{
 	Short: "Re-resolve a locked module to refresh its SHA256",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve module update` is local-mode only — modules resolve automatically when referenced by a cluster/template in cluster mode; see `hyve module list` to inspect what's been resolved.")
+		}
 		source := args[0]
 		version := args[1]
 		ctx := context.Background()

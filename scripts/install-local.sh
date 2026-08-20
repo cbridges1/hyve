@@ -95,6 +95,21 @@ else
   log "  already exists, left untouched"
 fi
 
+# Optional: only relevant if you're testing private-module resolution (see
+# internal/controller/reconciler.go's resolveModuleIfNeeded and
+# deploy/helm/hyve/values.yaml's controller.githubTokenSecret comment).
+# Set HYVE_INSTALL_GITHUB_TOKEN in your own shell before running this
+# script if you want it — never hardcoded here. Re-running with a new
+# token value DOES update the Secret (unlike hyve-api-credentials above,
+# which is deliberately never rotated) since there's no signing-key-style
+# reason to pin this one across runs.
+if [ -n "${HYVE_INSTALL_GITHUB_TOKEN:-}" ]; then
+  log "Setting hyve-github-token Secret from \$HYVE_INSTALL_GITHUB_TOKEN"
+  kubectl -n "$NAMESPACE" create secret generic hyve-github-token \
+    --from-literal=token="$HYVE_INSTALL_GITHUB_TOKEN" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+fi
+
 # :dev is a floating tag this script overwrites on every run, so
 # IfNotPresent + a rollout restart alone wouldn't guarantee the freshest
 # content gets used. The right fix differs by cluster type though:

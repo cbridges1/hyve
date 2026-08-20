@@ -17,6 +17,9 @@ var validateCmd = &cobra.Command{
 	Short: "Validate that a locked module has the expected structure",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve module validate` is local-mode only — it checks a locked module's structure against your local hyve.lock, which has no equivalent in cluster mode.")
+		}
 		source := args[0]
 		version := args[1]
 		ctx := context.Background()
