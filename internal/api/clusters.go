@@ -44,6 +44,7 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /clusters/{name}", s.handleGetCluster)
 	mux.HandleFunc("POST /clusters", s.handleCreateCluster)
 	mux.HandleFunc("DELETE /clusters/{name}", s.handleDeleteCluster)
+	mux.HandleFunc("GET /clusters/{name}/resources", s.handleGetClusterResources)
 }
 
 func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +81,30 @@ func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toClusterDTO(&cd))
+}
+
+// clusterResourcesDTO is a separate endpoint (not folded into clusterDTO)
+// specifically so GET /clusters and the base GET /clusters/<name> stay
+// lean — a cluster can declare/track an arbitrary number of resources, and
+// most callers of those two endpoints don't need them.
+type clusterResourcesDTO struct {
+	Resources        []hyvev1alpha1.ResourceRef               `json:"resources,omitempty"`
+	AppliedResources map[string]*hyvev1alpha1.AppliedResource `json:"appliedResources,omitempty"`
+}
+
+func (s *Server) handleGetClusterResources(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var cd hyvev1alpha1.ClusterDefinition
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cd); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		log.Printf("api: failed to get cluster %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
+	writeJSON(w, http.StatusOK, clusterResourcesDTO{Resources: cd.Spec.Resources, AppliedResources: cd.Status.AppliedResources})
 }
 
 // createClusterRequest reuses hyvev1alpha1.ClusterDefinitionSpec directly

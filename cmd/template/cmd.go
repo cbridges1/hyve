@@ -119,8 +119,15 @@ var templateShowCmd = &cobra.Command{
 var templateValidateCmd = &cobra.Command{
 	Use:   "validate [template-name]",
 	Short: "Validate a template",
-	Args:  cobra.ExactArgs(1),
+	Long: `Local mode only. Validation checks resource-file paths and module
+resolution against your local checkout — there's no equivalent server-side
+context for a Template CR (no repo checkout, no hyve.lock) to validate
+against in cluster mode.`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve template validate` is local-mode only — it checks resource-file paths and module resolution against your local checkout, which has no equivalent in cluster mode (no repo checkout or hyve.lock server-side). Run it against a local checkout instead.")
+		}
 		validateTemplate(args[0])
 	},
 }

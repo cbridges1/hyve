@@ -200,3 +200,41 @@ func TestHandleDeleteCluster_NotFound(t *testing.T) {
 	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/clusters/missing", nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
+
+func TestHandleGetClusterResources_ReadOnlyAllowed(t *testing.T) {
+	def := newClusterDef("c1")
+	def.Spec.Resources = []hyvev1alpha1.ResourceRef{{Name: "podinfo", Source: "./resource-files/podinfo.yaml"}}
+	def.Status.AppliedResources = map[string]*hyvev1alpha1.AppliedResource{
+		"podinfo": {SourceSHA256: "abc123", AppliedAt: "2026-01-01T00:00:00Z"},
+	}
+	s := &Server{Client: newFakeClient(t, def), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/clusters/c1/resources", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterResourcesDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	require.Len(t, dto.Resources, 1)
+	assert.Equal(t, "podinfo", dto.Resources[0].Name)
+	require.Contains(t, dto.AppliedResources, "podinfo")
+	assert.Equal(t, "abc123", dto.AppliedResources["podinfo"].SourceSHA256)
+}
+
+func TestHandleGetClusterResources_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/missing/resources", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleGetClusterResources_Empty(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/c1/resources", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterResourcesDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Empty(t, dto.Resources)
+	assert.Empty(t, dto.AppliedResources)
+}

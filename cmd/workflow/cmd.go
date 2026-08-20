@@ -143,9 +143,12 @@ var workflowDeleteCmd = &cobra.Command{
 var workflowValidateCmd = &cobra.Command{
 	Use:   "validate [workflow-name]",
 	Short: "Validate a workflow",
-	Long:  "Validate the syntax and structure of a workflow definition.",
+	Long:  "Validate the syntax and structure of a workflow definition. Local mode only — same reasoning as `hyve workflow run`.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve workflow validate` is local-mode only — it checks the definition against your local checkout, which has no equivalent in cluster mode. Run it against a local checkout instead.")
+		}
 		validateWorkflow(args[0])
 	},
 }

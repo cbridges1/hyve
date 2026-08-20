@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 )
 
 // ErrClientSideAuthUnavailable is returned by GetAuthContext when the
@@ -109,6 +111,26 @@ func (c *APIClient) CreateCluster(name string, spec json.RawMessage) (*ClusterDT
 
 func (c *APIClient) DeleteCluster(name string) error {
 	return c.do(http.MethodDelete, "/api/clusters/"+name, nil, nil)
+}
+
+// ClusterResourcesDTO mirrors internal/api's clusterResourcesDTO — a
+// separate endpoint from ClusterDTO so the base cluster list/get responses
+// stay lean. Uses the real hyvev1alpha1 types directly rather than a hand
+// duplicated mirror (unlike ClusterDTO/TemplateDTO/WorkflowDTO) — resources
+// are a deeply nested shape (Helm/Secret variants, applied-object lists)
+// where duplicating the whole tree just for display isn't worth it, and
+// nothing here is sensitive enough to need narrowing.
+type ClusterResourcesDTO struct {
+	Resources        []hyvev1alpha1.ResourceRef               `json:"resources,omitempty"`
+	AppliedResources map[string]*hyvev1alpha1.AppliedResource `json:"appliedResources,omitempty"`
+}
+
+func (c *APIClient) GetClusterResources(name string) (*ClusterResourcesDTO, error) {
+	var out ClusterResourcesDTO
+	if err := c.do(http.MethodGet, "/api/clusters/"+name+"/resources", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // CreateClusterFromTemplate posts {name, template: {name, region, params}}
@@ -243,6 +265,54 @@ func (c *APIClient) CreateWorkflow(name string, spec json.RawMessage) (*Workflow
 
 func (c *APIClient) DeleteWorkflow(name string) error {
 	return c.do(http.MethodDelete, "/api/workflows/"+name, nil, nil)
+}
+
+// ListSecretKeys returns every secret key name — readable by any
+// authenticated role, since names alone aren't sensitive (see
+// internal/api/secrets.go's handleListSecrets).
+func (c *APIClient) ListSecretKeys() ([]string, error) {
+	var out []string
+	if err := c.do(http.MethodGet, "/api/secrets", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListSecretValues returns every secret key/value pair in one round trip —
+// requires RoleAdmin server-side.
+func (c *APIClient) ListSecretValues() (map[string]string, error) {
+	var out map[string]string
+	if err := c.do(http.MethodGet, "/api/secrets?values=true", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetSecret returns a single key's value — requires RoleAdmin server-side.
+func (c *APIClient) GetSecret(key string) (string, error) {
+	var out struct {
+		Value string `json:"value"`
+	}
+	if err := c.do(http.MethodGet, "/api/secrets/"+key, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Value, nil
+}
+
+// SetSecret adds or updates a single key — requires RoleAdmin server-side.
+func (c *APIClient) SetSecret(key, value string) error {
+	body, err := json.Marshal(struct {
+		Value string `json:"value"`
+	}{Value: value})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	return c.do(http.MethodPut, "/api/secrets/"+key, body, nil)
+}
+
+// UnsetSecret removes a single key — requires RoleAdmin server-side.
+func (c *APIClient) UnsetSecret(key string) error {
+	return c.do(http.MethodDelete, "/api/secrets/"+key, nil, nil)
 }
 
 // AuthContextDTO mirrors internal/api's authContextDTO — the driver info

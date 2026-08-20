@@ -30,6 +30,21 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+  # hyve-cli-secrets backs `hyve env secrets` in cluster mode (see
+  # internal/api/secrets.go). Kubernetes RBAC can't scope "create" by
+  # resourceNames at all — a rule with resourceNames simply never matches a
+  # create request (confirmed live: combining create with resourceNames
+  # made every create 403, not "unscoped" as might be assumed), so create
+  # needs its own unscoped rule; the handler code itself never attempts to
+  # create any secret other than hyve-cli-secrets. update/patch/delete CAN
+  # be scoped by resourceNames and are.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["update", "patch", "delete"]
+    resourceNames: ["hyve-cli-secrets"]
   - apiGroups: [""]
     resources: ["serviceaccounts/token"]
     verbs: ["create"]
