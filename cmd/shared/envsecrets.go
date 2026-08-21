@@ -6,6 +6,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/session"
 	"github.com/cbridges1/hyve/internal/state"
 )
 
@@ -16,11 +17,20 @@ import (
 // actual same-key collision. Highest to lowest precedence: cluster-mode
 // secrets (if logged in) → the active local environment's DB-backed
 // secrets → the legacy repo-relative hyve.yaml env.file. Every layer is
-// best-effort: not logged in, no active environment, a DB read failure, or
-// an unreachable API server is silently a no-op rather than aborting the
-// CLI invocation.
+// best-effort: not logged in, a DB read failure, an unreachable API
+// server, or a session that can't be refreshed is silently a no-op rather
+// than aborting the CLI invocation — this runs unconditionally from
+// rootCmd's PersistentPreRunE, before every single command, including ones
+// with nothing to do with cluster mode at all (`hyve whoami`, `hyve env
+// list`...). Deliberately calls EnsureValidSession (which attempts a
+// silent refresh) rather than UseClusterMode: that function intentionally
+// hard-fails when a session can't be made to work (see its own doc
+// comment) for the real mode-dispatch decision points (cmd/cluster,
+// cmd/workflow, etc.) — this call site is not one of those, and must never
+// abort a command that doesn't even touch cluster mode just because the
+// session happens to be unrefreshable.
 func LoadEnvironmentSecrets() {
-	if sess, ok := UseClusterMode(); ok {
+	if sess, err := EnsureValidSession(); err == nil && sess != nil {
 		loadClusterSecrets(sess)
 	}
 	loadLocalEnvironmentSecrets()
@@ -31,7 +41,7 @@ func LoadEnvironmentSecrets() {
 // environment. A read-only session gets a 403 from the values endpoint —
 // swallowed here just like every other failure mode, so a read-only caller
 // can still run commands that don't happen to need a cluster secret.
-func loadClusterSecrets(sess *Session) {
+func loadClusterSecrets(sess *session.Session) {
 	vars, err := NewAPIClient(sess).ListSecretValues()
 	if err != nil {
 		return

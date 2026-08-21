@@ -153,17 +153,39 @@ Cloud credentials are read directly from your environment — the same way the u
 
 ## Environments: Local State vs. a Live Cluster
 
-Hyve works two ways, sharing the exact same YAML. An **environment** (`hyve env`) is a named local directory, optionally paired with cluster-mode login credentials — switch between them with `hyve env use <name>`, and both halves (which directory `reconcile` reads, which cluster `cluster`/`template`/`workflow` commands talk to) switch together:
+Hyve works two ways, sharing the exact same YAML:
 
-- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from the active environment's directory and drives everything from your machine or CI.
-- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster, `hyve login` against it (attaching credentials to the active environment, or creating one automatically), and every `hyve cluster`/`template`/`workflow` command talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
+- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from the active **environment**'s directory and drives everything from your machine or CI. An environment (`hyve env`) is purely a named local directory, registered and switched with `hyve env create`/`hyve env use <name>`/`hyve env list` — nothing more.
+- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster and run `hyve login --api-url https://hyve-api.example.com`. Every `hyve cluster`/`template`/`workflow` command then talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
+
+**Environments and login are two completely independent concepts.** `hyve env` only ever picks which local directory `reconcile` reads from (and/or which cluster API URL is "active" — see below); `hyve login` is a single, global, machine-wide credential — like `gh auth login` or `docker login` — that isn't scoped to whichever environment happens to be active. Switching environments never touches your login, and logging in/out never touches which environment is active:
 
 ```bash
-hyve env create prod --path ~/repos/prod-config --api-url https://hyve-api.example.com --username me
-hyve env create staging --path ~/repos/staging-config --api-url https://hyve-api-staging.example.com --username me
-hyve env use prod       # switches both the directory and which cluster you're talking to
-hyve env list           # see every registered environment, and which is active
+hyve env create prod --path ~/repos/prod-config
+hyve env create staging --path ~/repos/staging-config
+hyve env use prod              # only switches which directory 'hyve reconcile' reads
+
+hyve login --api-url https://hyve-api.example.com   # one login for the whole machine
+hyve whoami                    # confirm who you're authenticated as, and where
+hyve logout                    # revoke it
 ```
+
+An environment can also just be a cluster API URL, with no local directory at all — `hyve env create` registers where to log in later, without authenticating on the spot or requiring you already be logged in:
+
+```bash
+hyve env create prod-cluster --api-url https://hyve-api.example.com
+hyve env create staging-cluster --api-url https://hyve-api-staging.example.com
+hyve env list                  # both show up as separate, first-class entries
+
+hyve env use prod-cluster
+hyve login                     # --api-url defaults to the active environment's, no need to repeat it
+```
+
+`--api-url` here only remembers the URL — it stores no credential and doesn't authenticate anything by itself. The actual login is still the one global session described above; registering a cluster environment and logging into it are two independently-timed steps.
+
+`hyve login --api-url ...` also registers the environment for you automatically if that URL isn't already known — so a single `hyve login --api-url https://hyve-api.example.com` is enough on its own; a separate `hyve env create --api-url` step is only needed if you want to pre-register a cluster before authenticating against it. The auto-registered name is derived from the URL's host (deduplicated on collision), and it's only made the active environment if you had none registered yet — otherwise whatever local directory you're already working in stays active.
+
+`hyve login` returns two credentials: a short-lived **access token** (30 minutes, used on every API call) and a long-lived **session token** (30 days, kept only to silently mint fresh access tokens via `POST /auth/refresh` — no password re-entry, which is what makes unattended use, e.g. a cron job, practical). The session itself is a real, revocable Kubernetes object (`HyveSession`, group `hyve.io`) on the cluster you logged into — `kubectl get hyvesessions -n hyve-system` lists every active login, and `hyve logout` (or deleting the object directly) revokes it immediately.
 
 `hyve migrate` bulk-imports a directory into whichever cluster the active environment is logged into (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). Its source is always explicit — a positional path, or `--dir`/`--file` — defaulting to the current working directory, never implicitly the active environment's own directory (you might migrate a one-off directory into whatever cluster you're logged into). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success.
 
@@ -181,7 +203,7 @@ Modules are directories containing operation files that Hyve executes during rec
 | `auth.yaml` | Configure `~/.kube/config` for the cluster |
 | `scale.sh` / `scale.yaml` | Adjust node count (optional) |
 
-Operations emit outputs by printing `HYVE_KEY=value` lines to stdout. Hyve captures these and writes them back to `spec.driverOutputs` in the cluster YAML, making them available on every subsequent reconcile.
+Operations emit outputs by printing `HYVE_KEY=value` lines to stdout. Hyve captures these and writes them back to `spec.driverOutputs` in the cluster YAML, making them available on every subsequent reconcile. `auth.sh`/`auth.yaml` follows the same contract but for kubeconfig: it prints `HYVE_KUBECONFIG_B64=<base64-encoded kubeconfig>`, which hyve decodes and writes locally — the script itself never touches the filesystem directly.
 
 ```bash
 # Validate all modules in use are locked and cached
@@ -193,6 +215,8 @@ hyve module list
 # Scaffold a new module
 hyve module init my-provider
 ```
+
+**Local mode** runs every module operation as an inline child process on your machine, using whatever cloud CLI tools (`civo`, `aws`, `gcloud`, `az`, ...) and credentials are already on your `PATH`/in your environment. **Cluster mode** instead dispatches each operation to a fresh, single-use Kubernetes `Job` — the image comes from the cluster's own `spec.runner.image` (inherited from its Template) or `HyveConfig.spec.defaultModuleImage` as a fallback — so the controller pod itself never needs those cloud CLIs installed. Either way, secrets set via `hyve env secrets set` (cluster mode) are fetched live on every reconcile and injected as env vars — no controller restart needed to pick up a changed or newly-set credential.
 
 ## Development
 
@@ -212,5 +236,10 @@ hyve module init my-provider
 | `task check` | Run vet and tests |
 | `task tidy` | Tidy go modules |
 | `task clean` | Remove binary and report artifacts |
+| `task cluster:local` | Create a local k3d cluster for hyve dev (run once) |
+| `task install:local` | Build from source and install the controller + API onto it |
+| `task test:concurrency` | Live smoke test for `--max-concurrent-reconciles` safety |
+| `task test:secretsfrom` | Live smoke test for `runtime: client` workflows + `secretsFrom` |
+| `task test:api` | Live smoke test for the API/auth layer (login, authz, CRUD) |
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the codebase fits together, and [docs/TESTING.md](docs/TESTING.md) for the full testing guide, including the live cluster smoke tests above.

@@ -13,39 +13,58 @@ import (
 	"golang.org/x/term"
 
 	"github.com/cbridges1/hyve/internal/repository"
+	"github.com/cbridges1/hyve/internal/session"
 )
 
 // PerformLogin authenticates against apiURL's local (username/password)
-// auth and returns the resulting token/expiry — shared by `hyve login` and
-// `hyve env create --api-url`, since both need to make the exact same
-// request.
-func PerformLogin(apiURL, username, password string) (token, expiresAt string, err error) {
+// auth and returns the resulting session — both the short-lived access
+// token (used on every /api/* request) and the longer-lived session token
+// (used to silently refresh it — see internal/api's HyveSession/
+// AccessTokenTTL/SessionTTL doc comments). Username is carried onto the
+// returned Session purely for display (e.g. `hyve whoami`'s local-only
+// summary before its own server round trip).
+func PerformLogin(apiURL, username, password string) (*session.Session, error) {
 	body, err := json.Marshal(map[string]string{"username": username, "password": password})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to build request: %w", err)
+		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
 
 	trimmedURL := strings.TrimRight(apiURL, "/")
 	resp, err := http.Post(trimmedURL+"/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to reach %s: %w", trimmedURL, err)
+		return nil, fmt.Errorf("failed to reach %s: %w", trimmedURL, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("login failed (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
+		return nil, fmt.Errorf("login failed (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
 	}
 
 	var loginResp struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expiresAt"`
+		AccessToken          string `json:"accessToken"`
+		AccessTokenExpiresAt string `json:"accessTokenExpiresAt"`
+		SessionToken         string `json:"sessionToken"`
+		SessionExpiresAt     string `json:"sessionExpiresAt"`
 	}
 	if err := json.Unmarshal(respBody, &loginResp); err != nil {
-		return "", "", fmt.Errorf("failed to parse login response: %w", err)
+		return nil, fmt.Errorf("failed to parse login response: %w", err)
 	}
 
-	return loginResp.Token, loginResp.ExpiresAt, nil
+	sessionID, sessionSecret, ok := strings.Cut(loginResp.SessionToken, ".")
+	if !ok {
+		return nil, fmt.Errorf("malformed session token in login response")
+	}
+
+	return &session.Session{
+		Username:             username,
+		APIURL:               trimmedURL,
+		SessionID:            sessionID,
+		SessionSecret:        sessionSecret,
+		SessionExpiresAt:     loginResp.SessionExpiresAt,
+		AccessToken:          loginResp.AccessToken,
+		AccessTokenExpiresAt: loginResp.AccessTokenExpiresAt,
+	}, nil
 }
 
 // PromptLine prompts on stderr and reads one line from stdin.

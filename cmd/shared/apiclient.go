@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/session"
 )
 
 // ErrClientSideAuthUnavailable is returned by GetAuthContext when the
@@ -34,21 +36,46 @@ type APIClient struct {
 	Token   string
 }
 
-// NewAPIClient builds a client from the current local session — callers
-// should already have confirmed sess.Valid() (see UseClusterMode).
-func NewAPIClient(sess *Session) *APIClient {
-	return &APIClient{BaseURL: strings.TrimRight(sess.APIURL, "/"), Token: sess.Token}
+// NewAPIClient builds a client from the current session — callers should
+// already have gone through UseClusterMode/EnsureValidSession, which
+// guarantee AccessToken is current.
+func NewAPIClient(sess *session.Session) *APIClient {
+	return &APIClient{BaseURL: strings.TrimRight(sess.APIURL, "/"), Token: sess.AccessToken}
 }
 
-// UseClusterMode reports whether cmd/cluster's commands should talk to the
-// API instead of local files: a valid (unexpired, per local record) Session
-// exists. Session presence deliberately wins over any other signal — no
-// separate flag needed, and `hyve logout` cleanly reverts to local mode.
-// Returns the session as well so callers don't need to reload it.
-func UseClusterMode() (*Session, bool) {
-	sess, err := LoadSession()
-	if err != nil || sess == nil || !sess.Valid() {
+// UseClusterMode reports whether the current command should talk to the API
+// instead of local files: a usable session exists (see EnsureValidSession,
+// which silently refreshes an expired access token before this ever has to
+// decide anything). Session presence deliberately wins over any other
+// signal — no separate flag needed, and `hyve logout` cleanly reverts to
+// local mode. Returns the session as well so callers don't need to reload
+// it.
+//
+// Never having logged in returns (nil, false) — local mode is correct
+// there, no different from before. Having logged in but ending up with
+// nothing usable (the session itself expired, or the server rejected a
+// refresh — e.g. revoked by `hyve logout` elsewhere) is deliberately NOT
+// treated the same way: every caller of this function is a "which backend
+// do I talk to" dispatch point (cluster API vs. local clusters/*.yaml),
+// and for a cluster-mode environment, its local clusters/ directory is not
+// a second source of truth — it's frequently empty or stale, since the
+// real state lives in the cluster's CRDs. Silently falling through to the
+// local branch there would let a command like `hyve cluster delete`
+// operate on stale local files and run reconciliation directly against a
+// cloud provider from this machine, bypassing the controller entirely —
+// with no indication to the user that anything unusual happened. So this
+// hard-fails instead, forcing an explicit `hyve login` before any command
+// proceeds down either branch. (`hyve whoami`/`hyve env list`/`hyve env
+// current` do not call this — they read the session directly and report
+// expiry as information, not a fatal error, since they're the tools meant
+// for diagnosing exactly this situation.)
+func UseClusterMode() (*session.Session, bool) {
+	sess, err := EnsureValidSession()
+	if sess == nil {
 		return nil, false
+	}
+	if err != nil {
+		log.Fatalf("❌ %v — this is a cluster-mode environment (API: %s), not a local one. Refusing to silently fall back to local file operations, which could target stale or missing state instead of the live cluster.\n\nRun 'hyve login --api-url %s' to re-authenticate.", err, sess.APIURL, sess.APIURL)
 	}
 	return sess, true
 }

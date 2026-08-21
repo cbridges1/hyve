@@ -9,32 +9,34 @@ import (
 	"github.com/cbridges1/hyve/internal/database"
 )
 
-// Repository represents one registered environment: a local directory,
-// optionally paired with cluster-mode login credentials attached by `hyve
-// login` (see cmd/shared/session.go, cmd/env). APIURL/SessionToken/
-// SessionExpiresAt are empty for an environment that's never logged in —
-// pure local/GitOps usage never needs them.
+// Repository represents one registered environment. An environment is
+// either a local directory (LocalPath set) hyve reads/writes cluster
+// definitions from, or a cluster-mode API URL (APIURL set) pre-registered
+// for `hyve login` to target later — the two are independent kinds of
+// entry in the same registry, not the same row wearing two hats. A local
+// directory and a cluster-mode *session* (the actual credential, as
+// opposed to just the URL) used to be the same row here — that conflation
+// is what made an expired/logged-out session silently fall back to
+// whatever local files happened to be sitting in the current directory.
+// APIURL only ever remembers where to point `hyve login` at; it carries no
+// credential of its own — see internal/session for `hyve login`'s
+// separate, machine-wide session storage, which is what actually
+// authenticates. The repositories table's own legacy
+// session_token/session_expires_at columns still physically exist
+// (dropping columns is an awkward SQLite migration for zero benefit) but
+// nothing in this package reads or writes them — only api_url is reused.
 type Repository struct {
-	ID               int       `json:"id"`
-	Name             string    `json:"name"`
-	RepoURL          string    `json:"repo_url"`
-	LocalPath        string    `json:"local_path"`
-	IsCurrent        bool      `json:"is_current"`
-	APIURL           string    `json:"api_url,omitempty"`
-	SessionToken     string    `json:"-"` // never serialized
-	SessionExpiresAt string    `json:"session_expires_at,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID        int       `json:"id"`
+	Name      string    `json:"name"`
+	RepoURL   string    `json:"repo_url"`
+	LocalPath string    `json:"local_path"`
+	APIURL    string    `json:"api_url,omitempty"`
+	IsCurrent bool      `json:"is_current"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// LoggedIn reports whether this environment has cluster-mode credentials
-// attached, independent of whether they've since expired — see
-// cmd/shared.Session.Valid() for the expiry check.
-func (r *Repository) LoggedIn() bool {
-	return r.APIURL != "" && r.SessionToken != ""
-}
-
-const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, session_token, session_expires_at, created_at, updated_at`
+const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, created_at, updated_at`
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -45,16 +47,13 @@ type scanner interface {
 func scanRepository(s scanner) (*Repository, error) {
 	repo := &Repository{}
 	var createdAt, updatedAt string
-	var apiURL, sessionToken, sessionExpiresAt sql.NullString
+	var apiURL sql.NullString
 
 	if err := s.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath, &repo.IsCurrent,
-		&apiURL, &sessionToken, &sessionExpiresAt, &createdAt, &updatedAt); err != nil {
+		&apiURL, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
-
 	repo.APIURL = apiURL.String
-	repo.SessionToken = sessionToken.String
-	repo.SessionExpiresAt = sessionExpiresAt.String
 
 	var err error
 	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
@@ -100,8 +99,10 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// AddRepository adds a new repository configuration
-func (m *Manager) AddRepository(name, repoURL, localPath string) (*Repository, error) {
+// AddRepository adds a new repository configuration. apiURL may be empty
+// (a plain local-directory environment) — pass it non-empty to register a
+// cluster environment instead, optionally alongside a local directory too.
+func (m *Manager) AddRepository(name, repoURL, localPath, apiURL string) (*Repository, error) {
 	// Check if repository with this name already exists
 	if exists, err := m.repositoryExists(name); err != nil {
 		return nil, err
@@ -123,11 +124,11 @@ func (m *Manager) AddRepository(name, repoURL, localPath string) (*Repository, e
 	}
 
 	insertSQL := `
-	INSERT INTO repositories (name, repo_url, local_path, is_current)
-	VALUES (?, ?, ?, ?)
+	INSERT INTO repositories (name, repo_url, local_path, is_current, api_url)
+	VALUES (?, ?, ?, ?, ?)
 	`
 
-	result, err := m.db.Conn().Exec(insertSQL, name, repoURL, localPath, isFirst)
+	result, err := m.db.Conn().Exec(insertSQL, name, repoURL, localPath, isFirst, nullableString(apiURL))
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert repository: %w", err)
 	}
@@ -140,15 +141,25 @@ func (m *Manager) AddRepository(name, repoURL, localPath string) (*Repository, e
 	return m.GetRepositoryByID(int(id))
 }
 
+// nullableString converts "" to a SQL NULL so api_url round-trips through
+// sql.NullString the same way whether it was never set or explicitly
+// cleared — an empty string and "not registered" should read identically.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // UpdateRepository updates an existing repository configuration
-func (m *Manager) UpdateRepository(name, repoURL, localPath string) (*Repository, error) {
+func (m *Manager) UpdateRepository(name, repoURL, localPath, apiURL string) (*Repository, error) {
 	updateSQL := `
 	UPDATE repositories
-	SET repo_url = ?, local_path = ?, updated_at = CURRENT_TIMESTAMP
+	SET repo_url = ?, local_path = ?, api_url = ?, updated_at = CURRENT_TIMESTAMP
 	WHERE name = ?
 	`
 
-	result, err := m.db.Conn().Exec(updateSQL, repoURL, localPath, name)
+	result, err := m.db.Conn().Exec(updateSQL, repoURL, localPath, nullableString(apiURL), name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update repository: %w", err)
 	}
@@ -163,57 +174,6 @@ func (m *Manager) UpdateRepository(name, repoURL, localPath string) (*Repository
 	}
 
 	return m.GetRepositoryByName(name)
-}
-
-// SetSession attaches (or refreshes) cluster-mode login credentials on the
-// named environment — called by `hyve login`.
-func (m *Manager) SetSession(name, apiURL, token, expiresAt string) error {
-	updateSQL := `
-	UPDATE repositories
-	SET api_url = ?, session_token = ?, session_expires_at = ?, updated_at = CURRENT_TIMESTAMP
-	WHERE name = ?
-	`
-
-	result, err := m.db.Conn().Exec(updateSQL, apiURL, token, expiresAt, name)
-	if err != nil {
-		return fmt.Errorf("failed to attach session to '%s': %w", name, err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("repository '%s' not found", name)
-	}
-
-	return nil
-}
-
-// ClearSession removes cluster-mode login credentials from the named
-// environment, leaving its directory registration untouched — called by
-// `hyve logout`.
-func (m *Manager) ClearSession(name string) error {
-	updateSQL := `
-	UPDATE repositories
-	SET api_url = NULL, session_token = NULL, session_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
-	WHERE name = ?
-	`
-
-	result, err := m.db.Conn().Exec(updateSQL, name)
-	if err != nil {
-		return fmt.Errorf("failed to clear session on '%s': %w", name, err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("repository '%s' not found", name)
-	}
-
-	return nil
 }
 
 // DeleteRepository removes a repository configuration

@@ -16,10 +16,14 @@ import (
 var whoamiCmd = &cobra.Command{
 	Use:   "whoami",
 	Short: "Show whether you're currently authenticated to a hyve API server, and as whom",
-	Long: `Reports the active environment's cluster-mode session (see 'hyve login',
-'hyve env'), if any, and confirms it directly against the API server rather
-than trusting the local record alone — a session can be locally present but
-already expired or rejected server-side (e.g. after a signing-key rotation).
+	Long: `Reports the current cluster-mode session (see 'hyve login' — one global,
+machine-wide credential, independent of 'hyve env'), if any, and confirms it
+directly against the API server rather than trusting the local record
+alone — a session can be locally present but already expired or rejected
+server-side (e.g. after 'hyve logout' revoked it from elsewhere). Attempts
+a silent refresh first if the cached access token has expired but the
+underlying session hasn't — the same thing every other command does before
+deciding whether it's authenticated.
 
 Exits non-zero when not authenticated, so it's scriptable:
   hyve whoami >/dev/null || hyve login --api-url ...`,
@@ -33,18 +37,17 @@ func init() {
 }
 
 func runWhoami() {
-	sess, err := shared.LoadSession()
+	sess, err := shared.EnsureValidSession()
+	if sess == nil && err == nil {
+		fmt.Println("Not logged in (run 'hyve login --api-url ...')")
+		os.Exit(1)
+	}
 	if err != nil {
-		fmt.Printf("Failed to read local session: %v\n", err)
-		os.Exit(1)
-	}
-	if sess == nil {
-		fmt.Println("Not logged in (no active environment session — run 'hyve login --api-url ...')")
-		os.Exit(1)
-	}
-
-	if !sess.Valid() {
-		fmt.Printf("Session expired at %s (local record) — run 'hyve login --api-url %s'\n", sess.ExpiresAt, sess.APIURL)
+		if sess != nil {
+			fmt.Printf("Session expired (%v) — run 'hyve login --api-url %s'\n", err, sess.APIURL)
+		} else {
+			fmt.Printf("Failed to read local session: %v\n", err)
+		}
 		os.Exit(1)
 	}
 
@@ -53,7 +56,7 @@ func runWhoami() {
 		fmt.Printf("Failed to build request: %v\n", err)
 		os.Exit(1)
 	}
-	req.Header.Set("Authorization", "Bearer "+sess.Token)
+	req.Header.Set("Authorization", "Bearer "+sess.AccessToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -77,6 +80,6 @@ func runWhoami() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Logged in as %s (role: %s) against '%s' (%s)\n", who.Username, who.Role, sess.EnvironmentName, sess.APIURL)
-	fmt.Printf("   Session expires %s\n", sess.ExpiresAt)
+	fmt.Printf("✅ Logged in as %s (role: %s) against %s\n", who.Username, who.Role, sess.APIURL)
+	fmt.Printf("   Session expires %s\n", sess.SessionExpiresAt)
 }

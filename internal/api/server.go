@@ -42,10 +42,11 @@ type Server struct {
 }
 
 // Routes returns the API's full handler: /auth/*, /healthz, /docs, and
-// /openapi.yaml are all unauthenticated (login is itself the auth
-// mechanism; logout is a stateless no-op — see handleLogout; docs are a
-// development aid with no sensitive data), everything under /api/
-// requires a valid hyve session (requireAuth) resolved to a role
+// /openapi.yaml are all unauthenticated (login/refresh/logout are
+// themselves the auth mechanism — none can require a currently-valid
+// access token, refresh's whole point is to work after one's expired; docs
+// are a development aid with no sensitive data), everything under /api/
+// requires a valid access token (requireAuth) resolved to a role
 // (requireRole).
 //
 // /proxy/* deliberately does NOT require a hyve session: a client using it
@@ -61,6 +62,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /auth/refresh", s.handleRefresh)
 	s.registerDocsRoutes(mux)
 
 	apiMux := http.NewServeMux()

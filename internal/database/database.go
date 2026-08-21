@@ -172,6 +172,32 @@ func (d *DB) initialize() error {
 		return fmt.Errorf("failed to create kubeconfigs table: %w", err)
 	}
 
+	// Session table — see internal/session. A single row (id is always 1),
+	// deliberately independent of the repositories table: `hyve login` is
+	// one global, machine-wide credential, not an attribute of whichever
+	// local directory happens to be the current environment (see
+	// cmd/env/cmd.go's own doc comment on why local directories and
+	// cluster-mode sessions are two unrelated concepts, not one). Holds
+	// both halves of the credential a login issues: the long-lived session
+	// (id/secret/expiry, presented to POST /auth/refresh) and the current
+	// cached short-lived access token (presented on every /api/* request).
+	_, err = tx.Exec(`
+		CREATE TABLE IF NOT EXISTS session (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			username TEXT NOT NULL,
+			api_url TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			session_secret TEXT NOT NULL,
+			session_expires_at TEXT NOT NULL,
+			access_token TEXT NOT NULL,
+			access_token_expires_at TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create session table: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}

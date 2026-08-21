@@ -27,6 +27,19 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["templates", "workflows"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # HyveSession backs POST /auth/login, /auth/refresh, /auth/logout (see
+  # internal/api/auth_handlers.go) — the durable, revocable record behind
+  # every session. No list/watch here unlike the resources above: this
+  # API's own client is built via client.New (cmd/api/run.go), an
+  # uncached, direct-to-API-server client, not a controller-runtime
+  # manager's cached client — so there's no informer to populate, and
+  # Get/Create/Delete alone are both necessary and sufficient (confirmed
+  # against the exact same cached-vs-uncached distinction that governs
+  # hyve-controller's own RBAC — see controller-rbac.yaml's hyve-cli-secrets
+  # comment for the cached-client version of this same gotcha).
+  - apiGroups: ["hyve.io"]
+    resources: ["hyvesessions"]
+    verbs: ["get", "create", "delete"]
   # Read-only: the API never writes Module CRs (only the controller does,
   # via resolveModuleIfNeeded) — this is purely for `hyve module list`/
   # `info` in cluster mode to have something to read.

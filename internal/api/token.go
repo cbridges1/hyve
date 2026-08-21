@@ -2,28 +2,42 @@ package api
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// TokenTTL is how long a session token is valid for after login. No refresh
-// endpoint exists yet (v1, matching Phase 6's own "no refresh endpoint yet"
-// note for the primary-cluster TokenRequest path) — a caller re-runs
-// `hyve login` once it expires.
-const TokenTTL = 24 * time.Hour
+// AccessTokenTTL is how long an access token (the "Authorization: Bearer"
+// value sent on every /api/* request) is valid for. Short and stateless by
+// design — requireAuth verifies it locally (HMAC signature + expiry, no
+// Kubernetes round trip), so every request stays cheap. A client silently
+// exchanges an expiring access token for a fresh one via POST /auth/refresh
+// as long as its underlying HyveSession (see SessionTTL) is still valid —
+// see cmd/shared's UseClusterMode for the CLI side of that.
+const AccessTokenTTL = 30 * time.Minute
 
-// tokenPayload is the signed portion of a session token.
+// SessionTTL is how long a HyveSession (created by POST /auth/login,
+// re-validated by every POST /auth/refresh) stays valid before a real
+// `hyve login` is required again. Long relative to AccessTokenTTL — this
+// is the credential that makes unattended/automated use practical without
+// storing a raw password: a cron job holds this instead, silently
+// refreshing its short-lived access token for up to SessionTTL without
+// human involvement.
+const SessionTTL = 30 * 24 * time.Hour
+
+// tokenPayload is the signed portion of an access token.
 type tokenPayload struct {
 	Subject string `json:"sub"`
 	Expires int64  `json:"exp"`
 }
 
-// IssueToken returns a signed session token for subject (a username),
-// valid for TokenTTL from now. The token is intentionally not a
+// IssueAccessToken returns a signed access token for subject (a username),
+// valid for AccessTokenTTL from now. The token is intentionally not a
 // standards-compliant JWT — just a minimal signed-payload scheme
 // (base64url(payload) + "." + base64url(HMAC-SHA256(payload, key))) hyve
 // issues and verifies itself, avoiding a JWT library dependency for a
@@ -31,13 +45,16 @@ type tokenPayload struct {
 // role — internal/api's authz middleware re-resolves the caller's role
 // from HyveAccessBindings on every request (see internal/api/authz.go), so
 // a role change on a binding takes effect immediately without needing a
-// new token.
-func IssueToken(signingKey []byte, subject string) (string, error) {
-	payload := tokenPayload{Subject: subject, Expires: time.Now().Add(TokenTTL).Unix()}
+// new token. Deliberately stateless: unlike the HyveSession it's issued
+// from, an individual access token can't be revoked early — that's the
+// trade for not needing a Kubernetes round trip on every request. Keeping
+// AccessTokenTTL short is what bounds that window.
+func IssueAccessToken(signingKey []byte, subject string) (string, error) {
+	payload := tokenPayload{Subject: subject, Expires: time.Now().Add(AccessTokenTTL).Unix()}
 	return signPayload(signingKey, payload)
 }
 
-// VerifyToken checks a session token's signature and expiry and returns
+// VerifyToken checks an access token's signature and expiry and returns
 // its subject (username). A tampered, expired, or malformed token returns
 // an error — callers must treat any error as "unauthenticated," never fall
 // back to a default identity.
@@ -88,4 +105,29 @@ func sign(signingKey, data []byte) []byte {
 	mac := hmac.New(sha256.New, signingKey)
 	mac.Write(data)
 	return mac.Sum(nil)
+}
+
+// GenerateSessionSecret returns a fresh, high-entropy random secret for a
+// new HyveSession — the long-lived credential POST /auth/refresh consumes.
+// Only its hash (see HashSessionSecret) is ever persisted; this raw value
+// is returned to the client exactly once, at login, the same way a
+// password is only ever known to its owner.
+func GenerateSessionSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate session secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// HashSessionSecret returns hex(SHA-256(raw)) — what's actually stored on a
+// HyveSession's spec.tokenHash, and what POST /auth/refresh recomputes from
+// a presented secret to compare against. A plain fast hash (not bcrypt) is
+// appropriate here, unlike password.go's login-password hashing: this
+// input is already a 32-byte random secret, not a human-memorable password
+// an attacker could dictionary/brute-force offline — the thing protecting
+// it is its own entropy, not the hash function's slowness.
+func HashSessionSecret(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }

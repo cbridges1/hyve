@@ -10,7 +10,7 @@ import (
 
 func TestIssueAndVerifyToken_RoundTrip(t *testing.T) {
 	key := []byte("test-signing-key")
-	token, err := IssueToken(key, "cedric")
+	token, err := IssueAccessToken(key, "cedric")
 	require.NoError(t, err)
 
 	subject, err := VerifyToken(key, token)
@@ -19,7 +19,7 @@ func TestIssueAndVerifyToken_RoundTrip(t *testing.T) {
 }
 
 func TestVerifyToken_WrongKeyRejected(t *testing.T) {
-	token, err := IssueToken([]byte("key-a"), "cedric")
+	token, err := IssueAccessToken([]byte("key-a"), "cedric")
 	require.NoError(t, err)
 
 	_, err = VerifyToken([]byte("key-b"), token)
@@ -28,13 +28,13 @@ func TestVerifyToken_WrongKeyRejected(t *testing.T) {
 
 func TestVerifyToken_TamperedPayloadRejected(t *testing.T) {
 	key := []byte("test-signing-key")
-	token, err := IssueToken(key, "cedric")
+	token, err := IssueAccessToken(key, "cedric")
 	require.NoError(t, err)
 
 	// Flip the token's subject by swapping in another valid-looking
 	// payload segment (still base64-decodable, just re-signed under a
 	// *different* key so it fails signature verification against key).
-	forged, err := IssueToken([]byte("attacker-key"), "admin")
+	forged, err := IssueAccessToken([]byte("attacker-key"), "admin")
 	require.NoError(t, err)
 	parts := splitToken(t, forged)
 	original := splitToken(t, token)
@@ -60,6 +60,23 @@ func TestVerifyToken_ExpiredRejected(t *testing.T) {
 
 	_, err = VerifyToken(key, token)
 	assert.ErrorContains(t, err, "expired")
+}
+
+func TestGenerateSessionSecret_UniqueAndHighEntropy(t *testing.T) {
+	a, err := GenerateSessionSecret()
+	require.NoError(t, err)
+	b, err := GenerateSessionSecret()
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, a)
+	assert.NotEqual(t, a, b, "two generated secrets must never collide")
+	assert.GreaterOrEqual(t, len(a), 32, "should be long enough to resist guessing")
+}
+
+func TestHashSessionSecret_DeterministicAndDistinguishing(t *testing.T) {
+	assert.Equal(t, HashSessionSecret("same-input"), HashSessionSecret("same-input"), "hashing must be deterministic to be compared against later")
+	assert.NotEqual(t, HashSessionSecret("input-a"), HashSessionSecret("input-b"))
+	assert.NotEqual(t, "input-a", HashSessionSecret("input-a"), "the hash must not just be the raw input")
 }
 
 func splitToken(t *testing.T, token string) []string {

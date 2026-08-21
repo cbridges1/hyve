@@ -20,7 +20,7 @@ func setupTestDB(t *testing.T) *database.DB {
 func TestAddRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "test-repo", repo.Name)
@@ -32,17 +32,17 @@ func TestAddRepository(t *testing.T) {
 func TestAddDuplicateRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
-	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test2.git", "/tmp/test2")
+	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test2.git", "/tmp/test2", "")
 	assert.Error(t, err)
 }
 
 func TestGetRepositoryByName(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	repo, err := mgr.GetRepositoryByName("test-repo")
@@ -60,10 +60,10 @@ func TestGetRepositoryByNameNotFound(t *testing.T) {
 func TestUpdateRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
-	updated, err := mgr.UpdateRepository("test-repo", "https://github.com/test/updated.git", "/tmp/updated")
+	updated, err := mgr.UpdateRepository("test-repo", "https://github.com/test/updated.git", "/tmp/updated", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://github.com/test/updated.git", updated.RepoURL)
@@ -73,7 +73,7 @@ func TestUpdateRepository(t *testing.T) {
 func TestDeleteRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	err = mgr.DeleteRepository("test-repo")
@@ -86,9 +86,9 @@ func TestDeleteRepository(t *testing.T) {
 func TestListRepositories(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1")
+	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1", "")
 	require.NoError(t, err)
-	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2")
+	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2", "")
 	require.NoError(t, err)
 
 	repos, err := mgr.ListRepositories()
@@ -99,9 +99,9 @@ func TestListRepositories(t *testing.T) {
 func TestSetCurrentRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1")
+	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1", "")
 	require.NoError(t, err)
-	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2")
+	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2", "")
 	require.NoError(t, err)
 
 	err = mgr.SetCurrentRepository("repo2")
@@ -115,7 +115,7 @@ func TestSetCurrentRepository(t *testing.T) {
 func TestGetCurrentRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	current, err := mgr.GetCurrentRepository()
@@ -137,7 +137,7 @@ func TestHasRepositories(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, has)
 
-	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err = mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	has, err = mgr.HasRepositories()
@@ -148,9 +148,9 @@ func TestHasRepositories(t *testing.T) {
 func TestDeleteCurrentRepository(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1")
+	_, err := mgr.AddRepository("repo1", "https://github.com/test/repo1.git", "/tmp/repo1", "")
 	require.NoError(t, err)
-	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2")
+	_, err = mgr.AddRepository("repo2", "https://github.com/test/repo2.git", "/tmp/repo2", "")
 	require.NoError(t, err)
 
 	// repo1 should be current (first added)
@@ -166,7 +166,7 @@ func TestDeleteCurrentRepository(t *testing.T) {
 func TestGetRepositoryByID(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	retrieved, err := mgr.GetRepositoryByID(repo.ID)
@@ -177,71 +177,17 @@ func TestGetRepositoryByID(t *testing.T) {
 func TestRepositoryTimestamps(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 
 	assert.False(t, repo.CreatedAt.IsZero(), "Expected CreatedAt to be set")
 	assert.False(t, repo.UpdatedAt.IsZero(), "Expected UpdatedAt to be set")
 }
 
-func TestSetSession(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	_, err := mgr.AddRepository("test-repo", "", "/tmp/test")
-	require.NoError(t, err)
-
-	err = mgr.SetSession("test-repo", "https://hyve-api.example.com", "tok123", "2099-01-01T00:00:00Z")
-	require.NoError(t, err)
-
-	repo, err := mgr.GetRepositoryByName("test-repo")
-	require.NoError(t, err)
-	assert.Equal(t, "https://hyve-api.example.com", repo.APIURL)
-	assert.Equal(t, "tok123", repo.SessionToken)
-	assert.Equal(t, "2099-01-01T00:00:00Z", repo.SessionExpiresAt)
-	assert.True(t, repo.LoggedIn())
-}
-
-func TestSetSessionNotFound(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	err := mgr.SetSession("nonexistent", "https://hyve-api.example.com", "tok123", "2099-01-01T00:00:00Z")
-	assert.Error(t, err)
-}
-
-func TestClearSession(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	_, err := mgr.AddRepository("test-repo", "", "/tmp/test")
-	require.NoError(t, err)
-	require.NoError(t, mgr.SetSession("test-repo", "https://hyve-api.example.com", "tok123", "2099-01-01T00:00:00Z"))
-
-	err = mgr.ClearSession("test-repo")
-	require.NoError(t, err)
-
-	repo, err := mgr.GetRepositoryByName("test-repo")
-	require.NoError(t, err)
-	assert.Empty(t, repo.APIURL)
-	assert.Empty(t, repo.SessionToken)
-	assert.Empty(t, repo.SessionExpiresAt)
-	assert.False(t, repo.LoggedIn())
-	// The directory registration itself must survive a logout.
-	assert.Equal(t, "/tmp/test", repo.LocalPath)
-}
-
-func TestRepositoryWithoutSessionHasEmptyCredentialFields(t *testing.T) {
-	mgr := NewManagerWithDB(setupTestDB(t))
-
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
-	require.NoError(t, err)
-	assert.Empty(t, repo.APIURL)
-	assert.Empty(t, repo.SessionToken)
-	assert.False(t, repo.LoggedIn())
-}
-
 func TestSetAndGetSecret(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
@@ -255,7 +201,7 @@ func TestSetAndGetSecret(t *testing.T) {
 func TestGetSecretNotSet(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	_, ok, err := mgr.GetSecret(repo.ID, "MISSING")
@@ -266,7 +212,7 @@ func TestGetSecretNotSet(t *testing.T) {
 func TestSetSecretInvalidKey(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	err = mgr.SetSecret(repo.ID, "not a valid key", "bar")
@@ -276,7 +222,7 @@ func TestSetSecretInvalidKey(t *testing.T) {
 func TestSetSecretOverwritesExisting(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
@@ -291,7 +237,7 @@ func TestSetSecretOverwritesExisting(t *testing.T) {
 func TestListSecrets(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "1"))
@@ -305,7 +251,7 @@ func TestListSecrets(t *testing.T) {
 func TestUnsetSecret(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
@@ -319,7 +265,7 @@ func TestUnsetSecret(t *testing.T) {
 func TestUnsetSecretMissingIsNoOp(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 
 	assert.NoError(t, mgr.UnsetSecret(repo.ID, "NEVER_SET"))
@@ -328,7 +274,7 @@ func TestUnsetSecretMissingIsNoOp(t *testing.T) {
 func TestDeleteRepositoryCascadesSecrets(t *testing.T) {
 	mgr := NewManagerWithDB(setupTestDB(t))
 
-	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 	require.NoError(t, mgr.SetSecret(repo.ID, "FOO", "bar"))
 
@@ -337,7 +283,7 @@ func TestDeleteRepositoryCascadesSecrets(t *testing.T) {
 	// Re-create a repository — SQLite AUTOINCREMENT guarantees a fresh ID
 	// is never reused, so this also proves the delete wasn't just an
 	// orphaned-but-still-queryable row under the old ID.
-	repo2, err := mgr.AddRepository("test-repo", "", "/tmp/test")
+	repo2, err := mgr.AddRepository("test-repo", "", "/tmp/test", "")
 	require.NoError(t, err)
 	assert.NotEqual(t, repo.ID, repo2.ID)
 
@@ -353,7 +299,7 @@ func TestDatabasePersistence(t *testing.T) {
 	require.NoError(t, err, "Failed to create first database")
 
 	mgr1 := NewManagerWithDB(db1)
-	_, err = mgr1.AddRepository("persistent-repo", "https://github.com/test/test.git", "/tmp/test")
+	_, err = mgr1.AddRepository("persistent-repo", "https://github.com/test/test.git", "/tmp/test", "")
 	require.NoError(t, err)
 	db1.Close()
 
@@ -365,4 +311,76 @@ func TestDatabasePersistence(t *testing.T) {
 	repo, err := mgr2.GetRepositoryByName("persistent-repo")
 	require.NoError(t, err)
 	assert.Equal(t, "persistent-repo", repo.Name)
+}
+
+func TestAddRepository_ClusterEnvironment_NoLocalPathRequired(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("prod", "", "", "https://hyve-api.example.com")
+	require.NoError(t, err)
+
+	assert.Equal(t, "prod", repo.Name)
+	assert.Empty(t, repo.LocalPath)
+	assert.Equal(t, "https://hyve-api.example.com", repo.APIURL)
+}
+
+func TestAddRepository_APIURLPersistsAndListsSeparately(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("local-env", "", "/tmp/local", "")
+	require.NoError(t, err)
+	_, err = mgr.AddRepository("prod", "", "", "https://hyve-api.example.com")
+	require.NoError(t, err)
+	_, err = mgr.AddRepository("staging", "", "", "https://hyve-api-staging.example.com")
+	require.NoError(t, err)
+
+	envs, err := mgr.ListRepositories()
+	require.NoError(t, err)
+	require.Len(t, envs, 3)
+
+	byName := map[string]*Repository{}
+	for _, e := range envs {
+		byName[e.Name] = e
+	}
+	assert.Empty(t, byName["local-env"].APIURL)
+	assert.Equal(t, "https://hyve-api.example.com", byName["prod"].APIURL)
+	assert.Equal(t, "https://hyve-api-staging.example.com", byName["staging"].APIURL)
+}
+
+func TestAddRepository_EmptyAPIURLStoresAsEmptyNotNull(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	repo, err := mgr.AddRepository("local-only", "", "/tmp/local", "")
+	require.NoError(t, err)
+	assert.Equal(t, "", repo.APIURL)
+
+	fetched, err := mgr.GetRepositoryByName("local-only")
+	require.NoError(t, err)
+	assert.Equal(t, "", fetched.APIURL)
+}
+
+func TestUpdateRepository_SetsAndClearsAPIURL(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("env1", "", "/tmp/env1", "")
+	require.NoError(t, err)
+
+	updated, err := mgr.UpdateRepository("env1", "", "/tmp/env1", "https://hyve-api.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "https://hyve-api.example.com", updated.APIURL)
+
+	cleared, err := mgr.UpdateRepository("env1", "", "/tmp/env1", "")
+	require.NoError(t, err)
+	assert.Equal(t, "", cleared.APIURL)
+}
+
+func TestGetCurrentRepository_ReturnsAPIURL(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("prod", "", "", "https://hyve-api.example.com")
+	require.NoError(t, err)
+
+	current, err := mgr.GetCurrentRepository()
+	require.NoError(t, err)
+	assert.Equal(t, "https://hyve-api.example.com", current.APIURL)
 }

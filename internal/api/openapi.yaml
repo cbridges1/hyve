@@ -9,8 +9,13 @@ info:
     against the CRDs always works.
 
     Everything under /api/* requires a session: log in via /auth/login,
-    then send the returned token as `Authorization: Bearer <token>` on
-    every subsequent request.
+    then send the returned accessToken as `Authorization: Bearer
+    <accessToken>` on every subsequent request. accessToken is short-lived
+    (see AccessTokenTTL) — exchange sessionToken for a new one via
+    /auth/refresh as needed, without re-authenticating with a
+    username/password. A session is revocable server-side (backed by a
+    HyveSession object) via /auth/logout — unlike accessToken, which is a
+    stateless signed value that can't be invalidated early.
   version: "0.1.0"
 servers:
   - url: /
@@ -37,7 +42,11 @@ paths:
   /auth/login:
     post:
       tags: [auth]
-      summary: Authenticate with a local (username/password) identity and receive a session token
+      summary: Authenticate with a local (username/password) identity and receive a new session
+      description: |
+        Creates a HyveSession object (the revocable record /auth/logout
+        deletes and /auth/refresh checks) and returns both halves of the
+        resulting credential — see LoginResponse.
       security: []
       requestBody:
         required: true
@@ -65,15 +74,63 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Exchange a still-valid session token for a new access token
+      description: |
+        Does not require the Authorization header — that's the whole
+        point, it must still work once the access token it's replacing has
+        already expired. Looks up the HyveSession named by sessionToken's
+        id half and checks the presented secret half against its stored
+        hash. The session token itself is never reissued by this call —
+        only a fresh access token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionTokenRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshResponse"
+        "400":
+          description: Malformed session token or request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Session not found, expired, or the presented secret didn't match
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /auth/logout:
     post:
       tags: [auth]
-      summary: Discard a session
+      summary: Revoke a session
       security: []
       description: |
-        A stateless no-op — session tokens are signed and self-verifying,
-        with no server-side session store to invalidate. Always returns 200;
-        the caller is responsible for discarding its own stored token.
+        Deletes the HyveSession named by the presented session token — real,
+        immediate revocation: the very next /auth/refresh against it fails.
+        Any access token already cached from it keeps working until its own
+        short TTL lapses regardless (see AccessTokenTTL) — there's no
+        cheaper way to invalidate an already-issued one. Best-effort and
+        always returns 200: a missing/malformed session token or an
+        already-gone session isn't an error from the caller's perspective,
+        since the end state is identical either way.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionTokenRequest"
       responses:
         "200":
           description: OK
@@ -633,7 +690,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: Token returned by POST /auth/login
+      description: accessToken returned by POST /auth/login or /auth/refresh
   parameters:
     ClusterName:
       name: name
@@ -705,10 +762,33 @@ components:
       required: [username, password]
     LoginResponse:
       type: object
+      description: |
+        Two distinct credentials, not one — see HyveSession's own design
+        rationale for why. accessToken is what's sent on every /api/*
+        request (stateless, short-lived, verified locally by the server).
+        sessionToken is the longer-lived, revocable credential — shaped
+        "<id>.<secret>" — POST /auth/refresh consumes to mint a new
+        accessToken without ever re-sending a username/password. Store
+        both; a client that discards sessionToken can't silently renew and
+        will need a fresh login once accessToken expires.
       properties:
-        token: { type: string }
-        expiresAt: { type: string, format: date-time }
-      required: [token, expiresAt]
+        accessToken: { type: string }
+        accessTokenExpiresAt: { type: string, format: date-time }
+        sessionToken: { type: string }
+        sessionExpiresAt: { type: string, format: date-time }
+      required: [accessToken, accessTokenExpiresAt, sessionToken, sessionExpiresAt]
+    SessionTokenRequest:
+      type: object
+      description: Shared request body for POST /auth/refresh and POST /auth/logout.
+      properties:
+        sessionToken: { type: string, description: "The \"<id>.<secret>\" value from LoginResponse.sessionToken" }
+      required: [sessionToken]
+    RefreshResponse:
+      type: object
+      properties:
+        accessToken: { type: string }
+        accessTokenExpiresAt: { type: string, format: date-time }
+      required: [accessToken, accessTokenExpiresAt]
     ClusterDTO:
       type: object
       description: Deliberately excludes driverOutputs and any kubeconfig/credential data.
