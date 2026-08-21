@@ -11,17 +11,54 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+
+	"github.com/cbridges1/hyve/internal/k8sjob"
 )
 
 func TestKubernetesJobStepRunner_RequiresContainer(t *testing.T) {
 	assert.True(t, KubernetesJobStepRunner{}.RequiresContainer())
 }
 
-func TestKubernetesJobStepRunner_NoContainerIsAHardError(t *testing.T) {
-	r := &KubernetesJobStepRunner{Client: k8sfake.NewClientset(), Namespace: "default"}
-	_, _, _, err := r.RunStep(context.Background(), WorkflowStep{Name: "step", Script: "echo hi"}, nil, "", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no container image")
+// TestKubernetesJobStepRunner_NoContainerFallsBackToDefaultImage confirms
+// an empty step.Container no longer hard-fails pre-flight — it's passed
+// straight through to k8sjob.Run, which falls back to its own default
+// image (see k8sjob's defaultFallbackImage) rather than erroring.
+func TestKubernetesJobStepRunner_NoContainerFallsBackToDefaultImage(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+	r := &KubernetesJobStepRunner{
+		Client:       clientset,
+		Namespace:    "default",
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      5 * time.Second,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		assert.Equal(t, "debian:stable-slim", job.Spec.Template.Spec.Containers[0].Image)
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	_, _, exitCode, err := r.RunStep(context.Background(), WorkflowStep{Name: "step", Script: "echo hi"}, nil, "", nil)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
 }
 
 func TestKubernetesJobStepRunner_NoScriptOrCommandIsAHardError(t *testing.T) {
@@ -109,6 +146,49 @@ func TestKubernetesJobStepRunner_CreatesJobWithExpectedSpecAndSucceeds(t *testin
 	jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, jobs.Items, "Job should be cleaned up after RunStep returns")
+}
+
+// TestKubernetesJobStepRunner_ImageInstalls_ThreadedThroughToJob confirms
+// KubernetesJobStepRunner.RunStep passes its ImageInstalls through into
+// the k8sjob.RunRequest it builds — set once at startup from
+// HyveConfig.spec.imageInstalls (cmd/controller/run.go), reaching every
+// workflow step's Job the same way ImagePullSecrets does.
+func TestKubernetesJobStepRunner_ImageInstalls_ThreadedThroughToJob(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+	r := &KubernetesJobStepRunner{
+		Client: clientset, Namespace: "default",
+		PollInterval:  10 * time.Millisecond,
+		Timeout:       5 * time.Second,
+		ImageInstalls: []k8sjob.ImageInstall{{Image: "my-image:latest", Install: "apt-get install -y jq"}},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		assert.Contains(t, job.Spec.Template.Spec.Containers[0].Command[2], "apt-get install -y jq")
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	_, _, exitCode, err := r.RunStep(context.Background(), WorkflowStep{Name: "step", Container: "my-image:latest", Script: "echo hi"}, nil, "", nil)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
 }
 
 func TestKubernetesJobStepRunner_JobFailureIsReportedAsAStepFailure(t *testing.T) {

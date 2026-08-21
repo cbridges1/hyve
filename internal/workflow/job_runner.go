@@ -183,20 +183,21 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 
 	// Resolution order: per-step container: -> per-job container: ->
 	// HyveConfig.spec.defaultWorkflowImage (Executor.DefaultWorkflowImage,
-	// empty for every local-mode caller) -> hard failure, but ONLY when
-	// the selected runner actually needs one — container: is
-	// meaningless, and ignored rather than validated, under LocalStepRunner.
+	// empty for every local-mode caller) -> k8sjob's own fallback image
+	// (only consulted when the selected runner actually needs a container
+	// at all — container: is meaningless, and ignored rather than
+	// resolved, under LocalStepRunner). Left empty here on purpose when
+	// every tier above is unset and the runner requires a container:
+	// resolvedStep.Container is passed straight through to
+	// runner.RunStep -> k8sjob.Run, which applies its own default rather
+	// than this function hard-failing pre-flight — see k8sjob's
+	// defaultFallbackImage doc comment.
 	resolvedStep.Container = step.Container
 	if resolvedStep.Container == "" {
 		resolvedStep.Container = job.Container
 	}
 	if resolvedStep.Container == "" {
 		resolvedStep.Container = e.DefaultWorkflowImage
-	}
-	if runner.RequiresContainer() && resolvedStep.Container == "" {
-		result.Status = JobStatusFailed
-		result.Error = fmt.Sprintf("step %q resolved to no container image — set container: on the step, its job, or configure HyveConfig.spec.defaultWorkflowImage", step.Name)
-		return result, fmt.Errorf("%s", result.Error)
 	}
 
 	workingDir := e.workingDir

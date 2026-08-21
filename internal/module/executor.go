@@ -118,7 +118,7 @@ func (e *Executor) executeYAML(ctx context.Context, path string) (*OperationResu
 		return e.executeAuth(ctx, ca.Spec, e.AuthMethod)
 
 	case "Workflow":
-		return e.executeWorkflow(ctx, data)
+		return e.executeWorkflow(ctx, data, filepath.Base(path))
 
 	default:
 		return nil, fmt.Errorf("unknown kind %q in %s", meta.Kind, path)
@@ -131,13 +131,15 @@ func (e *Executor) executeYAML(ctx context.Context, path string) (*OperationResu
 //
 // spec.secretsFrom (see internal/secretsfrom and HYVE-IMPLEMENTATION-PLAN.md's
 // Phase 5 "extend secretsFrom to module operations") is resolved before
-// running the combined script — module operations always execute as a
-// direct subprocess of whichever process (CLI or controller) is running the
-// reconcile, never as a scheduled Kubernetes Job the way a workflow step
-// under KubernetesJobStepRunner can, so there is only ever this one
-// resolution path here (a live kubeconfig-backed fetch), unlike
-// internal/workflow's runtime: client case which branches on StepRunner.
-func (e *Executor) executeWorkflow(ctx context.Context, data []byte) (*OperationResult, error) {
+// running the combined script, in this process either way — a live
+// kubeconfig-backed fetch, unlike internal/workflow's runtime: client case
+// which branches on StepRunner — regardless of whether the combined script
+// itself then runs inline or is dispatched to a Job (see e.Runner below).
+//
+// name identifies the dispatched run when e.Runner != nil (see
+// executeScriptViaJob's identical use of filepath.Base) — irrelevant to
+// the inline path, which never sends anything through k8sjob.Run.
+func (e *Executor) executeWorkflow(ctx context.Context, data []byte, name string) (*OperationResult, error) {
 	type step struct {
 		Run     string `yaml:"run"`
 		Script  string `yaml:"script"`
@@ -198,6 +200,17 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte) (*Operation
 	}
 
 	combined := "set -e\n" + strings.Join(scripts, "\n")
+
+	if e.Runner != nil {
+		stdout, exitCode, runErr := e.Runner.Run(ctx, name, e.Image, combined, append(append([]string{}, e.Env...), secretEnv...))
+		if runErr != nil && exitCode == 0 {
+			// Dispatch/infra-level failure, not the script itself exiting
+			// non-zero — mirrors executeScriptViaJob's identical handling.
+			return nil, fmt.Errorf("workflow %s: %w", name, runErr)
+		}
+		return &OperationResult{Outputs: parseOutputs([]byte(stdout)), ExitCode: exitCode}, nil
+	}
+
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", combined)
 	cmd.Env = append(append(os.Environ(), e.Env...), secretEnv...)
 	cmd.Dir = e.WorkDir

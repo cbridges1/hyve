@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -50,6 +51,24 @@ type RunRequest struct {
 	// / 15m) — set explicitly in tests for a fast, deterministic poll loop.
 	PollInterval time.Duration
 	Timeout      time.Duration
+
+	// ImageInstalls is passed through from HyveConfig.spec.imageInstalls by
+	// the caller (module.JobRunner / workflow.KubernetesJobStepRunner) —
+	// see ImageInstall's own doc comment. Run matches these against the
+	// final resolved image (after Image's own empty-string fallback, if
+	// any) and prefixes the first match's Install script onto the Job's
+	// script. At most one entry is expected to match a given image; if
+	// more than one does, the first match (in slice order) wins.
+	ImageInstalls []ImageInstall
+}
+
+// ImageInstall pairs an exact image reference with a shell script to run
+// once, before a Job's own script, inside that same container — see
+// HyveConfigSpec.ImageInstalls' own doc comment for why this is declared
+// per image rather than per module/workflow.
+type ImageInstall struct {
+	Image   string
+	Install string
 }
 
 var jobNameSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -91,6 +110,22 @@ func sanitizeJobName(name string) string {
 	return fmt.Sprintf("hyve-%s-%d", s, time.Now().UnixNano())
 }
 
+// defaultFallbackImage is used when req.Image is empty after every
+// configured tier has been exhausted (ClusterDefinition.spec.runner.image /
+// HyveConfig.spec.defaultModuleImage for modules; step/job container: /
+// HyveConfig.spec.defaultWorkflowImage for workflows — see those fields'
+// doc comments). A small, official, apt-based image so an
+// HyveConfig.spec.imageInstalls entry for it has something to
+// `apt-get install` into out of the box. Does NOT guarantee curl or
+// ca-certificates are present (Debian's slim images are commonly missing
+// both) — an install script needing network access installs those itself
+// first. A deliberate, narrow exception to
+// HyveConfigSpec.DefaultModuleImage/DefaultWorkflowImage's own "never a
+// code-level default" stance: an out-of-the-box cluster-mode install
+// should work with zero image configuration, paired with an
+// imageInstalls entry declared for this exact fallback image.
+const defaultFallbackImage = "debian:stable-slim"
+
 // Run creates a Job running req.Image with req.Script as its entrypoint,
 // waits for it to finish, and returns its pod's combined logs. The Job
 // (and its Pods, via Kubernetes' own Job-owns-Pods garbage collection) is
@@ -98,11 +133,22 @@ func sanitizeJobName(name string) string {
 // caller to separately clean up. If output is non-nil, the pod's logs are
 // also streamed to it as they're captured.
 func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, output io.Writer) (stdout string, exitCode int, err error) {
-	if req.Image == "" {
-		return "", 0, fmt.Errorf("%q resolved to no container image", req.Name)
-	}
 	if req.Script == "" {
 		return "", 0, fmt.Errorf("no command or script specified for %q", req.Name)
+	}
+
+	image := req.Image
+	if image == "" {
+		image = defaultFallbackImage
+		log.Printf("hyve: %q has no configured container image — falling back to %s", req.Name, defaultFallbackImage)
+	}
+
+	script := req.Script
+	for _, ii := range req.ImageInstalls {
+		if ii.Image == image && ii.Install != "" {
+			script = fmt.Sprintf("if ! (\n%s\n); then\n  echo \"hyve: image %q install script failed\" >&2\n  exit 1\nfi\n%s", ii.Install, image, script)
+			break
+		}
 	}
 
 	envVars := make([]corev1.EnvVar, 0, len(req.Env))
@@ -127,8 +173,8 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 					ImagePullSecrets: buildLocalObjectRefs(req.ImagePullSecrets),
 					Containers: []corev1.Container{{
 						Name:       "run",
-						Image:      req.Image,
-						Command:    []string{"/bin/sh", "-c", req.Script},
+						Image:      image,
+						Command:    []string{"/bin/sh", "-c", script},
 						Env:        envVars,
 						WorkingDir: req.WorkingDir,
 					}},

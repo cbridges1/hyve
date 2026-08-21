@@ -16,6 +16,7 @@ import (
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	internalcontroller "github.com/cbridges1/hyve/internal/controller"
+	"github.com/cbridges1/hyve/internal/k8sjob"
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/workflow"
@@ -141,20 +142,25 @@ func runController() {
 	var startupCfg hyvev1alpha1.HyveConfig
 	var defaultWorkflowImage, defaultModuleImage string
 	var imagePullSecrets []string
+	var imageInstalls []k8sjob.ImageInstall
 	if err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: namespace, Name: configName}, &startupCfg); err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/imagePullSecrets at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
+			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/imagePullSecrets/imageInstalls at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
 		}
 	} else {
 		defaultWorkflowImage = startupCfg.Spec.DefaultWorkflowImage
 		defaultModuleImage = startupCfg.Spec.DefaultModuleImage
 		imagePullSecrets = startupCfg.Spec.ImagePullSecrets
+		imageInstalls = make([]k8sjob.ImageInstall, len(startupCfg.Spec.ImageInstalls))
+		for i, ii := range startupCfg.Spec.ImageInstalls {
+			imageInstalls[i] = k8sjob.ImageInstall{Image: ii.Image, Install: ii.Install}
+		}
 	}
 
 	hyveReconciler := reconcile.NewReconciler(stateProvider)
-	hyveReconciler.StepRunner = &workflow.KubernetesJobStepRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets}
+	hyveReconciler.StepRunner = &workflow.KubernetesJobStepRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets, ImageInstalls: imageInstalls}
 	hyveReconciler.DefaultWorkflowImage = defaultWorkflowImage
-	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets}
+	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets, ImageInstalls: imageInstalls}
 	hyveReconciler.DefaultModuleImage = defaultModuleImage
 
 	reconciler := &internalcontroller.ClusterDefinitionReconciler{

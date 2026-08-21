@@ -27,17 +27,29 @@ func (v *RequirementValidator) Close() error {
 // module's auth output), not process-global state, so this is safe to call
 // concurrently for different clusters (see MaxConcurrentReconciles). May be
 // nil.
-func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequirements, extraEnv map[string]string) error {
+//
+// validateTools controls whether tool presence is checked against *this
+// process's own PATH* — only meaningful when the workflow's steps actually
+// run inline in it (LocalStepRunner). Under KubernetesJobStepRunner, each
+// step runs inside a separate Job on its own resolved container image,
+// which this process has no visibility into and was never meant to share
+// tooling with — see HyveConfig.spec.imageInstalls for how a required tool
+// gets there instead. Callers pass false in that case; a genuinely missing
+// tool still fails, just naturally, as an ordinary "command not found" from
+// inside the Job's own script. Secret validation is unaffected by this
+// flag either way — unrelated to container tooling.
+func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequirements, extraEnv map[string]string, validateTools bool) error {
 	if requirements == nil {
 		return nil // No requirements to validate
 	}
 
 	var errors []string
 
-	// Validate tool requirements
-	for _, tool := range requirements.Tools {
-		if err := v.validateTool(tool); err != nil {
-			errors = append(errors, err.Error())
+	if validateTools {
+		for _, tool := range requirements.Tools {
+			if err := v.validateTool(tool); err != nil {
+				errors = append(errors, err.Error())
+			}
 		}
 	}
 

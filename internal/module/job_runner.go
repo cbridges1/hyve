@@ -32,6 +32,11 @@ type JobRunner struct {
 	// defaults (2s / 15m).
 	PollInterval time.Duration
 	Timeout      time.Duration
+
+	// ImageInstalls is set once at startup from HyveConfig.spec.imageInstalls
+	// (cmd/controller/run.go) and passed through to every k8sjob.Run call —
+	// see k8sjob.ImageInstall's own doc comment.
+	ImageInstalls []k8sjob.ImageInstall
 }
 
 // Run executes script (the module operation script's own content, not a
@@ -47,5 +52,6 @@ func (r *JobRunner) Run(ctx context.Context, name, image, script string, env []s
 		ImagePullSecrets: r.ImagePullSecrets,
 		PollInterval:     r.PollInterval,
 		Timeout:          r.Timeout,
+		ImageInstalls:    r.ImageInstalls,
 	}, nil)
 }

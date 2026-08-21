@@ -10,6 +10,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestExecuteYAMLWorkflowOperation_RunsInlineWhenRunnerNil confirms a
+// kind:Workflow module operation file still runs inline via os/exec in
+// local/CLI mode (Runner == nil) exactly as before — the Job-dispatch
+// branch added to executeWorkflow only applies when Runner is set.
+func TestExecuteYAMLWorkflowOperation_RunsInlineWhenRunnerNil(t *testing.T) {
+	moduleDir := t.TempDir()
+	statusYAML := `apiVersion: v1
+kind: Workflow
+metadata:
+  name: status
+spec:
+  jobs:
+    main:
+      steps:
+        - run: echo HYVE_CLUSTER_STATUS=ACTIVE
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.yaml"), []byte(statusYAML), 0644))
+
+	exec := &Executor{ModuleDir: moduleDir, ClusterName: "my-cluster"}
+	result, err := exec.Execute(context.Background(), OperationStatus)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Equal(t, "ACTIVE", result.Outputs["HYVE_CLUSTER_STATUS"])
+}
+
 func TestExtractBetweenMarkers_WithTrailingNewlineInFile(t *testing.T) {
 	// The wrapper's `cat "$KUBECONFIG"` output already ends in "\n" here
 	// (a real kubeconfig file almost always does), plus the wrapper's own

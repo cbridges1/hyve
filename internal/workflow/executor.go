@@ -212,7 +212,17 @@ func (e *Executor) runWorkflow(ctx context.Context, wf *Workflow, displayName st
 		}
 		defer validator.Close()
 
-		if err := validator.ValidateRequirements(wf.Spec.Requirements, e.variables); err != nil {
+		// Same effective-runner computation job_runner.go's executeStep uses
+		// for its own per-workflow runtime: client override — tool-PATH
+		// validation only makes sense when steps actually run inline in
+		// this process (see ValidateRequirements' own doc comment).
+		runner := e.StepRunner
+		if wf.Spec.Runtime == RuntimeClient {
+			runner = LocalStepRunner{}
+		}
+		validateTools := !runner.RequiresContainer()
+
+		if err := validator.ValidateRequirements(wf.Spec.Requirements, e.variables, validateTools); err != nil {
 			e.execution.Status = StatusFailed
 			e.addLog("ERROR", "", "", fmt.Sprintf("Requirements validation failed: %v", err))
 			return execution, fmt.Errorf("requirements validation failed: %w", err)

@@ -3,6 +3,7 @@ package k8sjob
 import (
 	"bytes"
 	"context"
+	"log"
 	"testing"
 	"time"
 
@@ -14,10 +15,192 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
-func TestRun_NoImageIsAHardError(t *testing.T) {
-	_, _, err := Run(context.Background(), k8sfake.NewClientset(), RunRequest{Name: "run", Namespace: "default", Script: "echo hi"}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no container image")
+// TestRun_EmptyImageFallsBackToDefault confirms an unset RunRequest.Image
+// no longer hard-fails — it falls back to defaultFallbackImage instead.
+func TestRun_EmptyImageFallsBackToDefault(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		assert.Equal(t, defaultFallbackImage, job.Spec.Template.Spec.Containers[0].Image)
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	_, exitCode, err := Run(context.Background(), clientset, RunRequest{
+		Name:         "run",
+		Namespace:    "default",
+		Script:       "echo hi",
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      5 * time.Second,
+	}, nil)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
+}
+
+// TestRun_ImageInstalls_MatchingEntryPrefixesScript confirms an
+// ImageInstalls entry matching the resolved image (here, the fallback
+// image, proving the two features compose) prefixes its Install script
+// onto the Job's command.
+func TestRun_ImageInstalls_MatchingEntryPrefixesScript(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		cmd := job.Spec.Template.Spec.Containers[0].Command
+		require.Len(t, cmd, 3)
+		assert.Contains(t, cmd[2], "apt-get install -y jq")
+		assert.Contains(t, cmd[2], "echo hi") // the original script, still present after the install block
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	_, exitCode, err := Run(context.Background(), clientset, RunRequest{
+		Name:      "run",
+		Namespace: "default",
+		Script:    "echo hi",
+		ImageInstalls: []ImageInstall{
+			{Image: "other:image", Install: "should not appear"},
+			{Image: defaultFallbackImage, Install: "apt-get install -y jq"},
+		},
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      5 * time.Second,
+	}, nil)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
+}
+
+// TestRun_ImageInstalls_NoMatchLeavesScriptUnchanged confirms an
+// ImageInstalls list with no entry matching the resolved image is a no-op.
+func TestRun_ImageInstalls_NoMatchLeavesScriptUnchanged(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		assert.Equal(t, []string{"/bin/sh", "-c", "echo hi"}, job.Spec.Template.Spec.Containers[0].Command)
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	_, exitCode, err := Run(context.Background(), clientset, RunRequest{
+		Name:          "run",
+		Namespace:     "default",
+		Image:         "my-image:latest",
+		Script:        "echo hi",
+		ImageInstalls: []ImageInstall{{Image: "some-other-image:latest", Install: "apt-get install -y jq"}},
+		PollInterval:  10 * time.Millisecond,
+		Timeout:       5 * time.Second,
+	}, nil)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
+}
+
+// TestRun_LogsOnlyWhenImageFallsBack confirms the fallback log line fires
+// only when RunRequest.Image is empty, never when explicitly set — the
+// only durable trace a fallback fired, since the Job itself is deleted
+// within ~30s regardless of outcome.
+func TestRun_LogsOnlyWhenImageFallsBack(t *testing.T) {
+	var buf bytes.Buffer
+	origOutput := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(origOutput)
+		log.SetFlags(origFlags)
+	})
+
+	clientset := k8sfake.NewClientset()
+	go func() {
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			job := &jobs.Items[0]
+			job.Status.Succeeded = 1
+			_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+			return err == nil
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+	}()
+	_, _, err := Run(context.Background(), clientset, RunRequest{
+		Name: "explicit-image-run", Namespace: "default", Image: "my-image:latest", Script: "echo hi",
+		PollInterval: 10 * time.Millisecond, Timeout: 5 * time.Second,
+	}, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), "falling back", "no fallback log line expected when Image is explicitly set")
+
+	buf.Reset()
+	clientset2 := k8sfake.NewClientset()
+	go func() {
+		require.Eventually(t, func() bool {
+			jobs, err := clientset2.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			job := &jobs.Items[0]
+			job.Status.Succeeded = 1
+			_, err = clientset2.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+			return err == nil
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+	}()
+	_, _, err = Run(context.Background(), clientset2, RunRequest{
+		Name: "empty-image-run", Namespace: "default", Script: "echo hi",
+		PollInterval: 10 * time.Millisecond, Timeout: 5 * time.Second,
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "falling back")
 }
 
 func TestRun_NoScriptIsAHardError(t *testing.T) {

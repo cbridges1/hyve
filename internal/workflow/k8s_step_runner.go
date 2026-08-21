@@ -42,6 +42,11 @@ type KubernetesJobStepRunner struct {
 	// / 15m) — set explicitly in tests for a fast, deterministic poll loop.
 	PollInterval time.Duration
 	Timeout      time.Duration
+
+	// ImageInstalls is set once at startup from HyveConfig.spec.imageInstalls
+	// (cmd/controller/run.go) and passed through to every k8sjob.Run call —
+	// see k8sjob.ImageInstall's own doc comment.
+	ImageInstalls []k8sjob.ImageInstall
 }
 
 // RequiresContainer always returns true — see StepRunner's doc comment.
@@ -84,12 +89,11 @@ func sanitizeJobName(stepName string) string {
 // step.Command) as its entrypoint, waits for it to finish, and returns its
 // pod's combined logs. The Job (and its Pods, via Kubernetes' own
 // Job-owns-Pods garbage collection) is deleted afterward regardless of
-// outcome — nothing is left behind for a caller to separately clean up.
+// outcome — nothing is left behind for a caller to separately clean up. An
+// empty step.Container is passed straight through to k8sjob.Run, which
+// falls back to its own default image rather than erroring here — see
+// k8sjob's defaultFallbackImage doc comment.
 func (r *KubernetesJobStepRunner) RunStep(ctx context.Context, step WorkflowStep, env []string, workingDir string, output io.Writer) (stdout, stderr string, exitCode int, err error) {
-	if step.Container == "" {
-		return "", "", 0, fmt.Errorf("step %q resolved to no container image — set container: on the step, its job, or HyveConfig.spec.defaultWorkflowImage", step.Name)
-	}
-
 	script := step.Script
 	if script == "" {
 		script = step.Command
@@ -108,6 +112,7 @@ func (r *KubernetesJobStepRunner) RunStep(ctx context.Context, step WorkflowStep
 		ImagePullSecrets: r.ImagePullSecrets,
 		PollInterval:     r.PollInterval,
 		Timeout:          r.Timeout,
+		ImageInstalls:    r.ImageInstalls,
 	}, output)
 	if runErr != nil {
 		return logs, "", code, fmt.Errorf("step %q: %w", step.Name, runErr)

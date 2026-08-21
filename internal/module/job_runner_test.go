@@ -13,6 +13,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+
+	"github.com/cbridges1/hyve/internal/k8sjob"
 )
 
 // simulateJobSuccess watches for a Job to appear on clientset and marks it
@@ -72,6 +74,106 @@ func TestExecutor_ExecuteScript_DispatchesToJobWhenRunnerSet(t *testing.T) {
 	jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, jobs.Items, "Job should be cleaned up after Execute returns")
+}
+
+// TestExecutor_ExecuteYAMLWorkflowOperation_DispatchesToJobWhenRunnerSet
+// confirms a module operation expressed as a kind:Workflow YAML file (e.g.
+// status.yaml, as real modules like hyve-civo-module use for every
+// operation) dispatches to e.Runner in cluster mode instead of always
+// running inline — a gap that previously meant such modules never went
+// through Job dispatch at all, regardless of Runner/Image being set.
+func TestExecutor_ExecuteYAMLWorkflowOperation_DispatchesToJobWhenRunnerSet(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+	runner := &JobRunner{Client: clientset, Namespace: "default", PollInterval: 10 * time.Millisecond, Timeout: 5 * time.Second}
+
+	moduleDir := t.TempDir()
+	statusYAML := `apiVersion: v1
+kind: Workflow
+metadata:
+  name: status
+spec:
+  jobs:
+    main:
+      steps:
+        - run: echo HYVE_CLUSTER_STATUS=ACTIVE
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.yaml"), []byte(statusYAML), 0644))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		assert.Equal(t, "my-driver:latest", job.Spec.Template.Spec.Containers[0].Image)
+		assert.Contains(t, job.Spec.Template.Spec.Containers[0].Command[2], "echo HYVE_CLUSTER_STATUS=ACTIVE")
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	exec := &Executor{ModuleDir: moduleDir, ClusterName: "my-cluster", Runner: runner, Image: "my-driver:latest"}
+	result, err := exec.Execute(context.Background(), OperationStatus)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.ExitCode)
+
+	jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, jobs.Items, "Job should be cleaned up after Execute returns")
+}
+
+// TestJobRunner_ImageInstalls_ThreadedThroughToJob confirms JobRunner.Run
+// passes its ImageInstalls through into the k8sjob.RunRequest it builds —
+// set once at startup from HyveConfig.spec.imageInstalls (cmd/controller/
+// run.go), reaching every module Job the same way ImagePullSecrets does.
+func TestJobRunner_ImageInstalls_ThreadedThroughToJob(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+	runner := &JobRunner{
+		Client: clientset, Namespace: "default",
+		PollInterval:  10 * time.Millisecond,
+		Timeout:       5 * time.Second,
+		ImageInstalls: []k8sjob.ImageInstall{{Image: "my-driver:latest", Install: "apt-get install -y jq"}},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var jobName string
+		require.Eventually(t, func() bool {
+			jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				return false
+			}
+			jobName = jobs.Items[0].Name
+			return true
+		}, 2*time.Second, 5*time.Millisecond, "job was never created")
+
+		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, job.Spec.Template.Spec.Containers, 1)
+		assert.Contains(t, job.Spec.Template.Spec.Containers[0].Command[2], "apt-get install -y jq")
+
+		job.Status.Succeeded = 1
+		_, err = clientset.BatchV1().Jobs("default").UpdateStatus(context.Background(), job, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	}()
+
+	_, exitCode, err := runner.Run(context.Background(), "run", "my-driver:latest", "echo hi", nil)
+	<-done
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
 }
 
 // TestExecutor_ExecuteAuth_DispatchesToJobAndWrapsScriptUnmodified confirms
