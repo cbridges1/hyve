@@ -55,6 +55,20 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # hyve-cli-secrets (see `hyve env secrets`, cluster mode) is fetched live
+  # once per reconcile — internal/controller/reconciler.go's
+  # fetchCLISecrets — via mgr.GetAPIReader(), an uncached direct read, not
+  # the cached Client used for hyve.io's own kinds above. Kubernetes RBAC
+  # cannot scope list/watch by resourceNames (only get), so a cached read
+  # here would force granting list/watch on every Secret in the namespace
+  # just to read this one by name — confirmed live: a get+list+watch rule
+  # with resourceNames set still 403'd the informer's List call. get alone,
+  # scoped by resourceNames, is both sufficient and correctly restrictive
+  # for an uncached read.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["hyve-cli-secrets"]
 {{- if .Values.controller.leaderElection }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

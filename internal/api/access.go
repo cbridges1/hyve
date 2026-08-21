@@ -133,7 +133,7 @@ func (p *ModuleAuthProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cl
 	}
 	kcPath := result.Outputs["KUBECONFIG"]
 	if kcPath == "" {
-		return nil, fmt.Errorf("auth op for cluster %q produced no kubeconfig — its auth.yaml must set exports: KUBECONFIG", cd.Name)
+		return nil, fmt.Errorf("auth op for cluster %q produced no kubeconfig — its auth.yaml's script must print HYVE_KUBECONFIG_B64=<base64 kubeconfig content> to stdout", cd.Name)
 	}
 	data, err := os.ReadFile(kcPath)
 	if err != nil {

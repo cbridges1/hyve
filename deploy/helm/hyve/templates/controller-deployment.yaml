@@ -76,17 +76,6 @@ spec:
           env:
             - name: HOME
               value: /data
-            # optional: true means a deployment where this Secret doesn't
-            # exist (the common case — public modules need no token at
-            # all) starts up completely unaffected, GITHUB_TOKEN simply
-            # unset — see internal/module/resolver.go's githubToken() and
-            # values.yaml's own comment on controller.githubTokenSecret.
-            - name: GITHUB_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.controller.githubTokenSecret.name }}
-                  key: {{ .Values.controller.githubTokenSecret.key }}
-                  optional: true
           volumeMounts:
             - name: modules
               mountPath: /data

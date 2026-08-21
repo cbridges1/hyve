@@ -35,10 +35,10 @@ func TestKubeconfigPathForCluster_SanitizesUnsafeCharacters(t *testing.T) {
 // TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv is the direct
 // regression test for the MaxConcurrentReconciles fix: two clusters'
 // concurrent auth calls must never be able to clobber each other via
-// process-wide KUBECONFIG. Confirms the auth script sees a per-cluster
-// KUBECONFIG value (so tools like civo --save write there), the returned
-// OperationResult carries that same path, and the process environment is
-// never mutated as a side effect.
+// process-wide KUBECONFIG. Confirms the auth script's
+// HYVE_KUBECONFIG_B64= contract output gets decoded and written to a
+// per-cluster path, the returned OperationResult carries that same path,
+// and the process environment is never mutated as a side effect.
 func TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -53,8 +53,8 @@ spec:
   methods:
     - name: default
       auth:
-        script: "echo fake-kubeconfig > \"$KUBECONFIG\""
-      exports: KUBECONFIG
+        script: |
+          echo "HYVE_KUBECONFIG_B64=$(printf %s fake-kubeconfig | base64)"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
 
@@ -66,6 +66,9 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, wantPath, result.Outputs["KUBECONFIG"])
 	assert.FileExists(t, wantPath)
+	content, err := os.ReadFile(wantPath)
+	require.NoError(t, err)
+	assert.Equal(t, "fake-kubeconfig", string(content))
 
 	assert.Empty(t, os.Getenv("KUBECONFIG"), "auth must never mutate the process-wide KUBECONFIG env var")
 }
@@ -86,8 +89,8 @@ spec:
   methods:
     - name: default
       auth:
-        script: "echo \"cluster=$HYVE_CLUSTER_NAME\" > \"$KUBECONFIG\""
-      exports: KUBECONFIG
+        script: |
+          echo "HYVE_KUBECONFIG_B64=$(printf 'cluster=%s' "$HYVE_CLUSTER_NAME" | base64)"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
 

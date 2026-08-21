@@ -1,8 +1,11 @@
 package module
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +60,15 @@ type Executor struct {
 	// KubeconfigPathForCluster). Every OperationAuth caller must set it.
 	ClusterName string
 	AuthMethod  string // optional: name of auth method to use; empty means first
+
+	// Runner, if non-nil, dispatches create/status/delete/auth operations to
+	// a fresh Kubernetes Job (see JobRunner) instead of running them inline
+	// via os/exec — cluster mode only. Local/CLI mode never sets this, so
+	// its behavior is completely unchanged.
+	Runner *JobRunner
+	// Image is the container image Runner should use. Only consulted when
+	// Runner != nil.
+	Image string
 }
 
 // Execute runs a named operation and returns captured outputs.
@@ -232,39 +244,45 @@ func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec, method
 		}
 	}
 
-	// For an export-producing method, point KUBECONFIG at a path unique to
-	// this cluster (not the shared ~/.kube/config) *before* running the auth
-	// script, so tools like civo/eks/gcloud kubeconfig plugins — which all
-	// honor KUBECONFIG for --save/--merge — write their context there
-	// instead. This is what makes concurrent reconciles of different
-	// clusters safe: each has its own kubeconfig file, never a shared
-	// mutable one keyed only by "whichever context is current".
-	var authEnv []string
-	var kcPath string
-	switch method.Exports {
-	case "KUBECONFIG", "KEEPER_KUBECONFIG":
-		path, pathErr := KubeconfigPathForCluster(e.ClusterName)
-		if pathErr != nil {
-			return nil, fmt.Errorf("resolve per-cluster kubeconfig path: %w", pathErr)
-		}
-		kcPath = path
-		authEnv = []string{"KUBECONFIG=" + kcPath}
-	}
-
-	if err := e.runShellScriptWithEnv(ctx, method.Auth.Script, authEnv); err != nil {
+	// Contract: an auth script that produces a kubeconfig prints
+	// HYVE_KUBECONFIG_B64=<base64 kubeconfig content> to stdout — it's
+	// responsible for generating that content itself (e.g. invoking a
+	// provider's kubeconfig plugin against its own temp file and
+	// base64-encoding it), since a Job-dispatched script (e.Runner != nil)
+	// runs in a separate, ephemeral pod with no access to this process's
+	// filesystem to write a shared path into. Applies identically whether
+	// the script actually ran inline or as a Job — one contract, regardless
+	// of invocation mode.
+	stdout, err := e.runShellScriptWithEnv(ctx, "auth-"+method.Name, method.Auth.Script, nil)
+	if err != nil {
 		return nil, fmt.Errorf("auth method %q failed: %w", method.Name, err)
 	}
 
 	outputs := map[string]string{}
-	if kcPath != "" {
-		if _, statErr := os.Stat(kcPath); statErr == nil {
-			outputs["KUBECONFIG"] = kcPath
+	var kcPath string
+	if b64 := parseOutputs([]byte(stdout))["HYVE_KUBECONFIG_B64"]; b64 != "" {
+		content, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+		if decErr != nil {
+			return nil, fmt.Errorf("auth method %q: decode HYVE_KUBECONFIG_B64: %w", method.Name, decErr)
 		}
+		path, pathErr := KubeconfigPathForCluster(e.ClusterName)
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve per-cluster kubeconfig path: %w", pathErr)
+		}
+		if writeErr := os.WriteFile(path, content, 0600); writeErr != nil {
+			return nil, fmt.Errorf("write kubeconfig for cluster %q: %w", e.ClusterName, writeErr)
+		}
+		kcPath = path
+		outputs["KUBECONFIG"] = kcPath
 	}
 
 	// Legacy verify step — only applies when using the legacy single-method shape.
 	if len(spec.Methods) == 0 && spec.Verify != nil && spec.Verify.Command != "" {
-		if err := e.runShellScriptWithEnv(ctx, spec.Verify.Command, authEnv); err != nil {
+		var verifyEnv []string
+		if kcPath != "" {
+			verifyEnv = []string{"KUBECONFIG=" + kcPath}
+		}
+		if _, err := e.runShellScriptWithEnv(ctx, "auth-verify", spec.Verify.Command, verifyEnv); err != nil {
 			return nil, fmt.Errorf("auth verify failed: %w", err)
 		}
 	}
@@ -283,6 +301,10 @@ func findMethod(methods []AuthMethod, name string) *AuthMethod {
 }
 
 func (e *Executor) executeScript(ctx context.Context, scriptPath string) (*OperationResult, error) {
+	if e.Runner != nil {
+		return e.executeScriptViaJob(ctx, scriptPath)
+	}
+
 	cmd := exec.CommandContext(ctx, "/bin/sh", scriptPath)
 	cmd.Env = append(os.Environ(), e.Env...)
 	cmd.Dir = e.WorkDir
@@ -302,17 +324,49 @@ func (e *Executor) executeScript(ctx context.Context, scriptPath string) (*Opera
 	}, nil
 }
 
-// runShellScriptWithEnv runs script with e.Env plus extraEnv layered on top
-// of the inherited process environment — extraEnv wins on key collision
-// (exec.Cmd resolves duplicate keys to the last occurrence), which is how
-// executeAuth overrides KUBECONFIG per-cluster without touching os.Environ.
-func (e *Executor) runShellScriptWithEnv(ctx context.Context, script string, extraEnv []string) error {
+// executeScriptViaJob reads scriptPath's own content and dispatches it to a
+// fresh Kubernetes Job via e.Runner — the Job's pod has no access to this
+// process's filesystem, so the script's bytes (not its path) are what's
+// actually sent to run.
+func (e *Executor) executeScriptViaJob(ctx context.Context, scriptPath string) (*OperationResult, error) {
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", scriptPath, err)
+	}
+	stdout, exitCode, runErr := e.Runner.Run(ctx, filepath.Base(scriptPath), e.Image, string(content), e.Env)
+	if runErr != nil && exitCode == 0 {
+		// Dispatch/infra-level failure (couldn't create or wait for the
+		// Job) rather than the script itself exiting non-zero — that case
+		// is reported via ExitCode below instead, mirroring the inline
+		// os/exec path's *exec.ExitError handling above.
+		return nil, fmt.Errorf("script %s: %w", scriptPath, runErr)
+	}
+	return &OperationResult{
+		Outputs:  parseOutputs([]byte(stdout)),
+		ExitCode: exitCode,
+	}, nil
+}
+
+// runShellScriptWithEnv runs script — inline via os/exec, or dispatched to a
+// fresh Job when e.Runner != nil — with e.Env plus extraEnv layered on top,
+// and returns its captured stdout so callers (executeAuth) can read back
+// the HYVE_KUBECONFIG_B64= contract regardless of where the script actually
+// ran. extraEnv wins on key collision with e.Env (exec.Cmd resolves
+// duplicate keys to the last occurrence).
+func (e *Executor) runShellScriptWithEnv(ctx context.Context, name, script string, extraEnv []string) (string, error) {
+	if e.Runner != nil {
+		stdout, _, err := e.Runner.Run(ctx, name, e.Image, script, append(append([]string{}, e.Env...), extraEnv...))
+		return stdout, err
+	}
+
+	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
 	cmd.Env = append(append(os.Environ(), e.Env...), extraEnv...)
 	cmd.Dir = e.WorkDir
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = io.MultiWriter(&buf, os.Stdout)
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	err := cmd.Run()
+	return buf.String(), err
 }
 
 func parseOutputs(stdout []byte) map[string]string {

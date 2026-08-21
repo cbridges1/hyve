@@ -16,6 +16,7 @@ import (
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	internalcontroller "github.com/cbridges1/hyve/internal/controller"
+	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/workflow"
 
@@ -138,21 +139,25 @@ func runController() {
 	// mgr.GetAPIReader() reads directly from the API server, bypassing the
 	// cache entirely, which is exactly what a one-time startup read needs.
 	var startupCfg hyvev1alpha1.HyveConfig
-	var defaultImage string
+	var defaultWorkflowImage, defaultModuleImage string
 	if err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: namespace, Name: configName}, &startupCfg); err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage at startup (%v) — workflow jobs with no container: of their own will fail pre-flight validation until this is fixed and the controller restarts", err)
+			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
 		}
 	} else {
-		defaultImage = startupCfg.Spec.DefaultWorkflowImage
+		defaultWorkflowImage = startupCfg.Spec.DefaultWorkflowImage
+		defaultModuleImage = startupCfg.Spec.DefaultModuleImage
 	}
 
 	hyveReconciler := reconcile.NewReconciler(stateProvider)
 	hyveReconciler.StepRunner = &workflow.KubernetesJobStepRunner{Client: clientset, Namespace: namespace}
-	hyveReconciler.DefaultWorkflowImage = defaultImage
+	hyveReconciler.DefaultWorkflowImage = defaultWorkflowImage
+	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace}
+	hyveReconciler.DefaultModuleImage = defaultModuleImage
 
 	reconciler := &internalcontroller.ClusterDefinitionReconciler{
 		Client:                  mgr.GetClient(),
+		APIReader:               mgr.GetAPIReader(),
 		Reconciler:              hyveReconciler,
 		StateProvider:           stateProvider,
 		Namespace:               namespace,

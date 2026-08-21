@@ -9,4 +9,7 @@ spec:
   {{- if .Values.controller.hyveConfig.defaultWorkflowImage }}
   defaultWorkflowImage: {{ .Values.controller.hyveConfig.defaultWorkflowImage }}
   {{- end }}
+  {{- if .Values.controller.hyveConfig.defaultModuleImage }}
+  defaultModuleImage: {{ .Values.controller.hyveConfig.defaultModuleImage }}
+  {{- end }}
 {{- end }}

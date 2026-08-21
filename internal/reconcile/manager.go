@@ -44,6 +44,34 @@ type Reconciler struct {
 	// container: resolution order it participates in. Left empty by the
 	// CLI; cmd/controller/run.go sets it from HyveConfig.spec.defaultWorkflowImage.
 	DefaultWorkflowImage string
+
+	// ModuleRunner, when set, is propagated onto every module.Executor this
+	// Reconciler creates — cluster mode's equivalent of StepRunner, moving
+	// create/status/delete/auth execution from an inline os/exec child
+	// process to a fresh per-execution Kubernetes Job. Left nil by the CLI,
+	// which leaves module.Executor's default (Runner == nil, today's inline
+	// path) untouched — zero behavior change for local/CLI mode.
+	// cmd/controller/run.go is the only caller that sets this.
+	ModuleRunner *module.JobRunner
+
+	// DefaultModuleImage is the image a module.Executor falls back to when
+	// its module has no spec.runner.image of its own (see
+	// HyveConfigSpec.DefaultModuleImage's doc comment for the two-tier
+	// resolution order). Only consulted when ModuleRunner != nil. Left
+	// empty by the CLI; cmd/controller/run.go sets it from
+	// HyveConfig.spec.defaultModuleImage.
+	DefaultModuleImage string
+}
+
+// moduleImage resolves the image a module.Executor should use when
+// dispatching to ModuleRunner — the module's own locked spec.runner.image
+// (from hyve.lock) if set, else r.DefaultModuleImage. locked may be nil for
+// a local-source module with no lock entry.
+func (r *Reconciler) moduleImage(locked *module.LockedModule) string {
+	if locked != nil && locked.Runner.Image != "" {
+		return locked.Runner.Image
+	}
+	return r.DefaultModuleImage
 }
 
 func NewReconciler(stateMgr StateProvider) *Reconciler {
@@ -119,7 +147,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		name := next.Metadata.Name
 		processed[name] = true
 
-		if err := r.ReconcileOne(ctx, *next, lf, dryRun); err != nil {
+		if err := r.ReconcileOne(ctx, *next, lf, dryRun, nil); err != nil {
 			r.logf("[%s] reconcile error: %v", name, err)
 		}
 
@@ -146,7 +174,17 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 // validation below runs against exactly what def's driver/workflow refs
 // name, independent of whatever ReconcileAll's own upfront batch validation
 // already checked for a file-mode run.
-func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
+//
+// secretsEnv, when non-nil, is merged into every module/workflow
+// operation's env as "KEY=VALUE" pairs — cluster mode's live, per-reconcile
+// fetch of the hyve-cli-secrets Secret (see
+// internal/controller/reconciler.go's Reconcile), passed explicitly rather
+// than via a shared mutable field so concurrent reconciles of different
+// clusters (MaxConcurrentReconciles > 1) can't race on it. File/CLI mode
+// always passes nil here: its module/workflow child processes already
+// inherit the CLI's own os.Environ() directly, the same secrets flow
+// that's always existed for local mode.
+func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string) error {
 	name := def.Metadata.Name
 
 	if err := validateDriverModuleLocked(def, lf); err != nil {
@@ -176,14 +214,14 @@ func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefiniti
 		}
 	}
 
-	if unmet, err := r.unmetDependency(ctx, def, lf); err != nil {
+	if unmet, err := r.unmetDependency(ctx, def, lf, secretsEnv); err != nil {
 		r.logf("[%s] Warning: failed to check dependsOn: %v", name, err)
 	} else if unmet != "" {
 		r.logf("[%s] Waiting on dependsOn cluster %q to become ACTIVE — skipping this cycle", name, unmet)
 		return nil
 	}
 
-	return r.reconcileCluster(ctx, def, lf, dryRun)
+	return r.reconcileCluster(ctx, def, lf, dryRun, secretsEnv)
 }
 
 // effectiveStatus applies the authOnly default: an authOnly module's status
@@ -199,7 +237,7 @@ func effectiveStatus(status string, isAuthOnly bool) string {
 	return status
 }
 
-func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
+func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string) error {
 	name := cluster.Metadata.Name
 	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
 	resolved, err := module.Resolve(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
@@ -218,8 +256,15 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	}
 	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
 
-	env := buildModuleEnv(cluster, nil)
-	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath(), ClusterName: name}
+	env := buildModuleEnv(cluster, secretsEnv)
+	exec := &module.Executor{
+		ModuleDir:   resolved.Dir,
+		Env:         env,
+		WorkDir:     r.stateMgr.LocalPath(),
+		ClusterName: name,
+		Runner:      r.ModuleRunner,
+		Image:       r.moduleImage(locked),
+	}
 
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
@@ -249,7 +294,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] DRY RUN: would create cluster", name)
 			return nil
 		}
-		return r.createCluster(ctx, cluster, exec, env, lf)
+		return r.createCluster(ctx, cluster, exec, env, lf, secretsEnv)
 
 	case status == "ACTIVE" && !cluster.Spec.Delete:
 		// Hoisted out of the paramsChanged branch: resource reconciliation
@@ -303,7 +348,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	return nil
 }
 
-func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
+func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, secretsEnv map[string]string) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Creating cluster...", name)
 
@@ -333,7 +378,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	r.logf("[%s] ✅ Cluster created", name)
 
 	// Rebuild env so onCreate workflows see the new driverOutputs.
-	env = buildModuleEnv(cluster, nil)
+	env = buildModuleEnv(cluster, secretsEnv)
 	exec.Env = env
 
 	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
@@ -587,7 +632,7 @@ func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) 
 // the error — dependsOn's whole point is "skip this cycle, don't fail
 // hard," so a dependency that's erroring out should read the same as one
 // that's simply not ready yet.
-func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types.ClusterDefinition, lf *module.LockFile) string {
+func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types.ClusterDefinition, lf *module.LockFile, secretsEnv map[string]string) string {
 	locked := lf.GetLocked(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version)
 	resolved, err := module.Resolve(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
 	if err != nil {
@@ -596,8 +641,15 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 	manifest, _ := module.LoadManifestForSource(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
 	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
 
-	env := buildModuleEnv(depCluster, nil)
-	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath(), ClusterName: depCluster.Metadata.Name}
+	env := buildModuleEnv(depCluster, secretsEnv)
+	exec := &module.Executor{
+		ModuleDir:   resolved.Dir,
+		Env:         env,
+		WorkDir:     r.stateMgr.LocalPath(),
+		ClusterName: depCluster.Metadata.Name,
+		Runner:      r.ModuleRunner,
+		Image:       r.moduleImage(locked),
+	}
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
 		return ""
@@ -611,7 +663,7 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 // exist at all counts as unmet, same as one that exists but isn't ACTIVE
 // yet — both mean "not ready," and ReconcileOne's caller treats either the
 // same way (skip this cycle, log it, don't fail hard).
-func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile) (string, error) {
+func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, secretsEnv map[string]string) (string, error) {
 	if len(def.Spec.DependsOn) == 0 {
 		return "", nil
 	}
@@ -625,7 +677,7 @@ func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefin
 	}
 	for _, depName := range def.Spec.DependsOn {
 		dep, ok := byName[depName]
-		if !ok || r.checkDependencyStatus(ctx, dep, lf) != "ACTIVE" {
+		if !ok || r.checkDependencyStatus(ctx, dep, lf, secretsEnv) != "ACTIVE" {
 			return depName, nil
 		}
 	}

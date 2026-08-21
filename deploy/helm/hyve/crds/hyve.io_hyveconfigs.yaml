@@ -54,6 +54,20 @@ spec:
               container/Secret mounts, not a dotenv file loaded at CLI startup. Only
               the fields ReconcileOne's call graph actually consumes are carried over.
             properties:
+              defaultModuleImage:
+                description: |-
+                  DefaultModuleImage is the container image module.JobRunner falls back
+                  to for a driver module's create/status/delete/auth operation whose
+                  own module.yaml doesn't set spec.runner.image (see
+                  internal/module/resolver.go's readRunnerFromManifest and
+                  LockedModule.Runner.Image, resolved from hyve.lock). Resolution order
+                  is per-module spec.runner.image -> this field -> hard failure, one
+                  tier shorter than DefaultWorkflowImage's chain since modules have no
+                  per-operation image, only a per-module one. Same non-default stance
+                  as DefaultWorkflowImage: no hyve-built or -maintained image is
+                  implied, and this field is only consulted at all in cluster mode —
+                  local/CLI mode always runs modules inline, never via a Job.
+                type: string
               defaultWorkflowImage:
                 description: |-
                   DefaultWorkflowImage is the container image KubernetesJobStepRunner

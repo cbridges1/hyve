@@ -6,6 +6,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestResolveGitHubToken_ExplicitWinsOverEnv(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "env-token")
+	assert.Equal(t, "explicit-token", resolveGitHubToken("explicit-token"))
+}
+
+func TestResolveGitHubToken_EmptyFallsBackToEnv(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "env-token")
+	assert.Equal(t, "env-token", resolveGitHubToken(""))
+}
+
+func TestResolveGitHubToken_BothEmpty(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	assert.Equal(t, "", resolveGitHubToken(""))
+}
+
 func TestIsLocalSource(t *testing.T) {
 	tests := []struct {
 		source string

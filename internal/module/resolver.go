@@ -46,14 +46,37 @@ func githubToken() string {
 	return os.Getenv("GITHUB_TOKEN")
 }
 
+// resolveGitHubToken prefers an explicit token (cluster mode's live
+// hyve-cli-secrets fetch, threaded in per-reconcile via
+// ResolveWithToken/ResolveRefWithToken — see internal/controller/
+// reconciler.go's resolveModuleIfNeeded) over the process-wide GITHUB_TOKEN
+// env var, falling back to the latter when explicit is empty. Explicit,
+// not os.Setenv: MaxConcurrentReconciles already permits concurrently
+// reconciling different ClusterDefinitions in one process, and a
+// per-reconcile token mutated into a global env var would race.
+func resolveGitHubToken(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return githubToken()
+}
+
 // Resolve fetches and caches a module, returning its local directory.
 // For local paths (starting with "./" or absolute): returns the dir directly, no caching.
 // For Git sources: downloads, hashes, and caches under ~/.hyve/module-cache/{sha256}/.
 func Resolve(source, version string, locked *LockedModule, repoRoot string) (*ResolvedModule, error) {
+	return ResolveWithToken(source, version, locked, repoRoot, "")
+}
+
+// ResolveWithToken is Resolve, but with an explicit GitHub token to use
+// instead of reading GITHUB_TOKEN from the process environment — see
+// resolveGitHubToken. An empty token falls back to GITHUB_TOKEN exactly as
+// Resolve does, so every other existing caller is unaffected.
+func ResolveWithToken(source, version string, locked *LockedModule, repoRoot, token string) (*ResolvedModule, error) {
 	if IsLocalSource(source) {
 		return resolveLocal(source, repoRoot)
 	}
-	return resolveGit(source, version, locked)
+	return resolveGit(source, version, locked, token)
 }
 
 func resolveLocal(source, repoRoot string) (*ResolvedModule, error) {
@@ -69,7 +92,7 @@ func resolveLocal(source, repoRoot string) (*ResolvedModule, error) {
 	return &ResolvedModule{Dir: dir}, nil
 }
 
-func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, error) {
+func resolveGit(source, version string, locked *LockedModule, token string) (*ResolvedModule, error) {
 	host, org, repo, subdir, err := parseGitSource(source)
 	if err != nil {
 		return nil, err
@@ -91,7 +114,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	}
 
 	// Resolve version to a concrete ref (tag or HEAD)
-	ref, err := ResolveRef(host, org, repo, version)
+	ref, err := ResolveRefWithToken(host, org, repo, version, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
 	}
@@ -119,8 +142,8 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	// there.
 	cleanRepoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
 	cloneURL := cleanRepoURL
-	if token := githubToken(); token != "" && host == "github.com" {
-		cloneURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", token, host, org, repo)
+	if t := resolveGitHubToken(token); t != "" && host == "github.com" {
+		cloneURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", t, host, org, repo)
 	}
 	tmpDir, err := os.MkdirTemp("", "hyve-module-*")
 	if err != nil {
@@ -187,13 +210,19 @@ func parseGitSource(source string) (host, org, repo, subdir string, err error) {
 // - semver constraint (e.g. "~> 1.2", ">= 1.0"): picks the highest matching tag.
 // - anything else: treated as an exact tag or commit ref.
 func ResolveRef(host, org, repo, version string) (string, error) {
+	return ResolveRefWithToken(host, org, repo, version, "")
+}
+
+// ResolveRefWithToken is ResolveRef, but with an explicit GitHub token — see
+// resolveGitHubToken/ResolveWithToken.
+func ResolveRefWithToken(host, org, repo, version, token string) (string, error) {
 	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
 	// `git ls-remote` below has no credential prompt to fall back on in a
 	// non-interactive reconcile run — a private repo needs the token
 	// embedded directly in the URL (GitHub's documented HTTPS PAT format)
 	// rather than relying on a credential helper being configured.
-	if token := githubToken(); token != "" && host == "github.com" {
-		repoURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", token, host, org, repo)
+	if t := resolveGitHubToken(token); t != "" && host == "github.com" {
+		repoURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", t, host, org, repo)
 	}
 
 	if version == "" || version == "latest" {

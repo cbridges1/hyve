@@ -215,7 +215,7 @@ func TestUnmetDependency(t *testing.T) {
 	t.Run("no dependsOn is always met", func(t *testing.T) {
 		r := NewReconciler(&fakeStateProvider{})
 		def := types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}
-		unmet, err := r.unmetDependency(context.Background(), def, lf)
+		unmet, err := r.unmetDependency(context.Background(), def, lf, nil)
 		require.NoError(t, err)
 		assert.Empty(t, unmet)
 	})
@@ -226,7 +226,7 @@ func TestUnmetDependency(t *testing.T) {
 			Metadata: types.ClusterMetadata{Name: "workload"},
 			Spec:     types.ClusterSpec{DependsOn: []string{"mgmt"}},
 		}
-		unmet, err := r.unmetDependency(context.Background(), def, lf)
+		unmet, err := r.unmetDependency(context.Background(), def, lf, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "mgmt", unmet)
 	})
@@ -245,7 +245,7 @@ func TestUnmetDependency(t *testing.T) {
 			Metadata: types.ClusterMetadata{Name: "workload"},
 			Spec:     types.ClusterSpec{DependsOn: []string{"mgmt"}},
 		}
-		unmet, err := r.unmetDependency(context.Background(), def, lf)
+		unmet, err := r.unmetDependency(context.Background(), def, lf, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "mgmt", unmet)
 	})

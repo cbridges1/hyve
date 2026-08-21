@@ -11,6 +11,7 @@ import (
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -18,6 +19,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
+
+// cliSecretsName is the single shared Secret `hyve env secrets` (cluster
+// mode) manages — see that command's own design. The controller only ever
+// reads it (RBAC: get, resourceNames: [cliSecretsName] — see
+// deploy/helm/hyve/templates/controller-rbac.yaml), never writes it.
+const cliSecretsName = "hyve-cli-secrets"
+
+// cliSecretGitHubToken is the key module resolution (resolveModuleIfNeeded)
+// reads out of the fetched hyve-cli-secrets map for a private Git-sourced
+// module — see module.ResolveWithToken/EnsureResolvedWithToken.
+const cliSecretGitHubToken = "GITHUB_TOKEN"
 
 // resyncInterval is how often a ClusterDefinition is re-reconciled even
 // with no spec change — the controller-mode equivalent of running `hyve
@@ -38,6 +50,23 @@ type ClusterDefinitionReconciler struct {
 	Reconciler    *reconcile.Reconciler
 	StateProvider *CRDStateProvider
 	Namespace     string
+
+	// APIReader, when set, is used instead of Client for fetchCLISecrets —
+	// an uncached, direct-to-API-server read (mgr.GetAPIReader(), same
+	// pattern cmd/controller/run.go's own HyveConfig startup read uses).
+	// The cached Client's informer needs unscoped list/watch RBAC to
+	// populate its cache for a type at all — Kubernetes RBAC's
+	// resourceNames restriction has no effect on list/watch, only get (see
+	// controller-rbac.yaml's own comment) — so reading hyve-cli-secrets
+	// through it would force granting the controller list/watch on every
+	// Secret in the namespace just to read one by name. An uncached read
+	// needs only "get" with resourceNames, and there's no cache staleness
+	// concern to trade away either: this is already a live, once-per-
+	// reconcile fetch, not something the cache's watch-driven freshness
+	// would meaningfully improve on. Falls back to Client if left nil
+	// (tests construct ClusterDefinitionReconciler directly without a real
+	// manager).
+	APIReader client.Reader
 
 	// MaxConcurrentReconciles bounds how many ClusterDefinitions this
 	// controller reconciles at once. controller-runtime defaults this to 1
@@ -86,9 +115,10 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("load hyve.lock: %w", err)
 	}
-	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version)
+	secretsEnv := r.fetchCLISecrets(ctx)
+	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version, secretsEnv[cliSecretGitHubToken])
 
-	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false)
+	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv)
 
 	// Re-fetch before the status update: ReconcileOne may have driven a
 	// SaveClusterDefinition call (via CRDStateProvider) that already
@@ -142,9 +172,10 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("load hyve.lock: %w", err)
 	}
-	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version)
+	secretsEnv := r.fetchCLISecrets(ctx)
+	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version, secretsEnv[cliSecretGitHubToken])
 
-	if err := r.Reconciler.ReconcileOne(ctx, def, lf, false); err != nil {
+	if err := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete cleanup: %w", err)
 	}
 
@@ -191,19 +222,53 @@ func (r *ClusterDefinitionReconciler) setCondition(ctx context.Context, cr *hyve
 	return r.Client.Status().Update(ctx, cr)
 }
 
-// resolveModuleIfNeeded calls module.EnsureResolved when source@version
-// isn't already locked in lf, and records the outcome on a Module CR
-// either way — a plain write from this same reconcile pass, not a second
-// watch loop (see this session's design discussion on why: no separate
-// human-run install step exists in cluster mode, so the controller has to
-// be self-sufficient, but the Module CR still gives the same visibility
-// local mode's hyve.lock gives on disk). Never returns an error: a
-// resolution failure here is intentionally left to surface through the
-// existing shared validateDriverModuleLocked check inside ReconcileOne, so
-// the ClusterDefinition's own condition message is unchanged — this just
-// adds a second, richer place to look. Returns the (possibly reloaded)
-// lock file for the caller to pass into ReconcileOne.
-func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context, lf *module.LockFile, source, version string) *module.LockFile {
+// fetchCLISecrets reads the shared hyve-cli-secrets Secret once per
+// Reconcile/reconcileDelete call and returns its contents as a plain map —
+// apierrors.IsNotFound is treated as "not configured yet" (an empty map),
+// matching the same soft-failure stance the rest of cluster mode already
+// takes for optional configuration (e.g. HyveConfig itself). This map is
+// then threaded explicitly through resolveModuleIfNeeded (for
+// GITHUB_TOKEN) and ReconcileOne (for every module/workflow Job's env) —
+// never stashed on a shared, mutable field, since MaxConcurrentReconciles
+// already permits concurrent reconciles of different ClusterDefinitions in
+// this one process.
+func (r *ClusterDefinitionReconciler) fetchCLISecrets(ctx context.Context) map[string]string {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var secret corev1.Secret
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: r.Namespace, Name: cliSecretsName}, &secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Printf("Warning: failed to read %s Secret: %v", cliSecretsName, err)
+		}
+		return nil
+	}
+	out := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		out[k] = string(v)
+	}
+	return out
+}
+
+// resolveModuleIfNeeded calls module.EnsureResolvedWithToken when
+// source@version isn't already locked in lf, and records the outcome on a
+// Module CR either way — a plain write from this same reconcile pass, not a
+// second watch loop (see this session's design discussion on why: no
+// separate human-run install step exists in cluster mode, so the
+// controller has to be self-sufficient, but the Module CR still gives the
+// same visibility local mode's hyve.lock gives on disk). githubToken, when
+// non-empty, is the live-fetched hyve-cli-secrets GITHUB_TOKEN value (see
+// fetchCLISecrets) — passed explicitly rather than via os.Setenv, which
+// would race under MaxConcurrentReconciles > 1; empty falls back to the
+// process's own GITHUB_TOKEN env var exactly as local/CLI mode always has
+// (see module.resolveGitHubToken). Never returns an error: a resolution
+// failure here is intentionally left to surface through the existing
+// shared validateDriverModuleLocked check inside ReconcileOne, so the
+// ClusterDefinition's own condition message is unchanged — this just adds
+// a second, richer place to look. Returns the (possibly reloaded) lock
+// file for the caller to pass into ReconcileOne.
+func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context, lf *module.LockFile, source, version, githubToken string) *module.LockFile {
 	if source == "" || lf.GetLocked(source, version) != nil {
 		return lf
 	}
@@ -211,7 +276,7 @@ func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context,
 	mod := &hyvev1alpha1.Module{ObjectMeta: metav1.ObjectMeta{Name: module.CRName(source, version), Namespace: r.Namespace}}
 	mod.Spec = hyvev1alpha1.ModuleSpec{Source: source, Version: version}
 
-	if _, err := module.EnsureResolved(r.StateProvider.LocalPath(), source, version); err != nil {
+	if _, err := module.EnsureResolvedWithToken(r.StateProvider.LocalPath(), source, version, githubToken); err != nil {
 		mod.Status = hyvev1alpha1.ModuleStatus{Resolved: false, Error: err.Error()}
 		r.upsertModuleCR(ctx, mod)
 		return lf // unchanged — the shared check below will still fail, as today

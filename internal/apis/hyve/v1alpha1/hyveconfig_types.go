@@ -32,6 +32,19 @@ type HyveConfigSpec struct {
 	// documented suggestion for operators to configure, never a
 	// code-level default.
 	DefaultWorkflowImage string `json:"defaultWorkflowImage,omitempty"`
+
+	// DefaultModuleImage is the container image module.JobRunner falls back
+	// to for a driver module's create/status/delete/auth operation whose
+	// own module.yaml doesn't set spec.runner.image (see
+	// internal/module/resolver.go's readRunnerFromManifest and
+	// LockedModule.Runner.Image, resolved from hyve.lock). Resolution order
+	// is per-module spec.runner.image -> this field -> hard failure, one
+	// tier shorter than DefaultWorkflowImage's chain since modules have no
+	// per-operation image, only a per-module one. Same non-default stance
+	// as DefaultWorkflowImage: no hyve-built or -maintained image is
+	// implied, and this field is only consulted at all in cluster mode —
+	// local/CLI mode always runs modules inline, never via a Job.
+	DefaultModuleImage string `json:"defaultModuleImage,omitempty"`
 }
 
 // +kubebuilder:object:root=true

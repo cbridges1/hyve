@@ -131,6 +131,16 @@ func CRName(source, version string) string {
 // step (see cmd/module/install.go) — see this session's design discussion
 // on why the two modes deliberately differ here.
 func EnsureResolved(repoPath, source, version string) (*LockedModule, error) {
+	return EnsureResolvedWithToken(repoPath, source, version, "")
+}
+
+// EnsureResolvedWithToken is EnsureResolved, but with an explicit GitHub
+// token to use instead of reading GITHUB_TOKEN from the process environment
+// — see ResolveWithToken/resolveGitHubToken. Used by
+// internal/controller/reconciler.go's resolveModuleIfNeeded, which fetches
+// the token live from hyve-cli-secrets per-reconcile rather than relying on
+// a pod-start env var.
+func EnsureResolvedWithToken(repoPath, source, version, token string) (*LockedModule, error) {
 	lf, err := LoadLockFile(repoPath)
 	if err != nil {
 		return nil, err
@@ -138,7 +148,7 @@ func EnsureResolved(repoPath, source, version string) (*LockedModule, error) {
 	if locked := lf.GetLocked(source, version); locked != nil {
 		return locked, nil
 	}
-	resolved, err := Resolve(source, version, nil, repoPath)
+	resolved, err := ResolveWithToken(source, version, nil, repoPath, token)
 	if err != nil {
 		return nil, err
 	}
