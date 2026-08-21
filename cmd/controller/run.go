@@ -140,19 +140,21 @@ func runController() {
 	// cache entirely, which is exactly what a one-time startup read needs.
 	var startupCfg hyvev1alpha1.HyveConfig
 	var defaultWorkflowImage, defaultModuleImage string
+	var imagePullSecrets []string
 	if err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: namespace, Name: configName}, &startupCfg); err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
+			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/imagePullSecrets at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
 		}
 	} else {
 		defaultWorkflowImage = startupCfg.Spec.DefaultWorkflowImage
 		defaultModuleImage = startupCfg.Spec.DefaultModuleImage
+		imagePullSecrets = startupCfg.Spec.ImagePullSecrets
 	}
 
 	hyveReconciler := reconcile.NewReconciler(stateProvider)
-	hyveReconciler.StepRunner = &workflow.KubernetesJobStepRunner{Client: clientset, Namespace: namespace}
+	hyveReconciler.StepRunner = &workflow.KubernetesJobStepRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets}
 	hyveReconciler.DefaultWorkflowImage = defaultWorkflowImage
-	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace}
+	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets}
 	hyveReconciler.DefaultModuleImage = defaultModuleImage
 
 	reconciler := &internalcontroller.ClusterDefinitionReconciler{

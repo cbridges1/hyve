@@ -2,7 +2,6 @@ package module
 
 import (
 	"context"
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,16 +74,19 @@ func TestExecutor_ExecuteScript_DispatchesToJobWhenRunnerSet(t *testing.T) {
 	assert.Empty(t, jobs.Items, "Job should be cleaned up after Execute returns")
 }
 
-// TestExecutor_ExecuteAuth_DispatchesToJobAndCarriesScriptContent confirms
-// executeAuth's Job-dispatch branch sends the auth script's own content
-// (not a local path a Job's pod couldn't read) and cleans up afterward. The
-// fake clientset's GetLogs never returns real content (same limitation
-// noted in internal/k8sjob's and internal/workflow's own tests), so the
-// actual HYVE_KUBECONFIG_B64 decode-and-write path — already exercised
+// TestExecutor_ExecuteAuth_DispatchesToJobAndWrapsScriptUnmodified confirms
+// executeAuth's Job-dispatch branch sends a *wrapped* version of the auth
+// script (setting $KUBECONFIG to an in-container temp path and relaying it
+// back over stdout between sentinel markers — see runAuthScript) while the
+// module author's own script text appears verbatim, untouched, inside that
+// wrapper. The fake clientset's GetLogs never returns real content (same
+// limitation noted in internal/k8sjob's and internal/workflow's own
+// tests), so the actual relay-and-write path — already exercised
 // end-to-end by TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv via
-// the inline (Runner == nil) path, since it's the same executeAuth code
-// either way — is confirmed for real against a live k3d cluster instead.
-func TestExecutor_ExecuteAuth_DispatchesToJobAndCarriesScriptContent(t *testing.T) {
+// the inline (Runner == nil) path, since runAuthScript's post-wrapper write
+// logic is identical either way — is confirmed for real against a live k3d
+// cluster instead.
+func TestExecutor_ExecuteAuth_DispatchesToJobAndWrapsScriptUnmodified(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -100,8 +102,8 @@ spec:
   methods:
     - name: default
       auth:
-        script: |
-          echo "HYVE_KUBECONFIG_B64=$(printf %s fake-kubeconfig | base64)"
+        script: "civo kubernetes config \"$HYVE_CLUSTER_NAME\" --save --yes"
+      exports: KUBECONFIG
 `
 	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
 
@@ -121,7 +123,11 @@ spec:
 		job, err := clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
 		require.NoError(t, err)
 		assert.Equal(t, "my-driver:latest", job.Spec.Template.Spec.Containers[0].Image)
-		assert.Contains(t, job.Spec.Template.Spec.Containers[0].Command[2], "HYVE_KUBECONFIG_B64")
+		wrapped := job.Spec.Template.Spec.Containers[0].Command[2]
+		assert.Contains(t, wrapped, "civo kubernetes config", "the module's own script must appear verbatim inside the wrapper")
+		assert.Contains(t, wrapped, "export KUBECONFIG=/tmp/hyve-auth-kubeconfig")
+		assert.Contains(t, wrapped, kubeconfigBeginMarker)
+		assert.Contains(t, wrapped, kubeconfigEndMarker)
 
 		_, err = clientset.CoreV1().Pods("default").Create(context.Background(), &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: jobName + "-pod", Namespace: "default", Labels: map[string]string{"job-name": jobName}},
@@ -143,18 +149,9 @@ spec:
 	result, err := exec.Execute(context.Background(), OperationAuth)
 	<-done
 	require.NoError(t, err)
-	assert.Empty(t, result.Outputs["KUBECONFIG"], "fake clientset serves no real pod logs, so no HYVE_KUBECONFIG_B64 is observed here")
+	assert.Empty(t, result.Outputs["KUBECONFIG"], "fake clientset serves no real pod logs, so nothing is relayed back here")
 
 	jobs, err := clientset.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, jobs.Items, "Job should be cleaned up after Execute returns")
-}
-
-func TestBase64RoundTrip_Sanity(t *testing.T) {
-	// Guards the decode side of the HYVE_KUBECONFIG_B64 contract in
-	// isolation from any shell/base64 CLI quirks.
-	encoded := base64.StdEncoding.EncodeToString([]byte("hello world"))
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	require.NoError(t, err)
-	assert.Equal(t, "hello world", string(decoded))
 }

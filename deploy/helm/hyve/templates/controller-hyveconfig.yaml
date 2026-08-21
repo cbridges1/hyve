@@ -12,4 +12,10 @@ spec:
   {{- if .Values.controller.hyveConfig.defaultModuleImage }}
   defaultModuleImage: {{ .Values.controller.hyveConfig.defaultModuleImage }}
   {{- end }}
+  {{- if .Values.controller.hyveConfig.imagePullSecrets }}
+  imagePullSecrets:
+    {{- range .Values.controller.hyveConfig.imagePullSecrets }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
 {{- end }}

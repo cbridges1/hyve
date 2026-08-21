@@ -35,16 +35,36 @@ type HyveConfigSpec struct {
 
 	// DefaultModuleImage is the container image module.JobRunner falls back
 	// to for a driver module's create/status/delete/auth operation whose
-	// own module.yaml doesn't set spec.runner.image (see
-	// internal/module/resolver.go's readRunnerFromManifest and
-	// LockedModule.Runner.Image, resolved from hyve.lock). Resolution order
-	// is per-module spec.runner.image -> this field -> hard failure, one
-	// tier shorter than DefaultWorkflowImage's chain since modules have no
-	// per-operation image, only a per-module one. Same non-default stance
-	// as DefaultWorkflowImage: no hyve-built or -maintained image is
-	// implied, and this field is only consulted at all in cluster mode —
-	// local/CLI mode always runs modules inline, never via a Job.
+	// ClusterDefinition doesn't set spec.runner.image (see RunnerSpec —
+	// set directly on a ClusterDefinition, or inherited from the Template
+	// it was created from). Resolution order is
+	// ClusterDefinition.spec.runner.image -> this field -> hard failure,
+	// one tier shorter than DefaultWorkflowImage's chain since modules have
+	// no per-operation image, only a per-cluster one. Deliberately does NOT
+	// consult the module's own module.yaml — a module can recommend a
+	// suitable image (its requirements.tools entries' description field)
+	// but doesn't choose one, since the same module may need different
+	// images across different deployments; that choice belongs to whoever
+	// is instantiating it (a Template author or the ClusterDefinition
+	// itself), not the module. Same non-default stance as
+	// DefaultWorkflowImage: no hyve-built or -maintained image is implied,
+	// and this field is only consulted at all in cluster mode — local/CLI
+	// mode always runs modules inline, never via a Job.
 	DefaultModuleImage string `json:"defaultModuleImage,omitempty"`
+
+	// ImagePullSecrets names existing kubernetes.io/dockerconfigjson
+	// Secrets (in the controller's own namespace) attached to every
+	// module/workflow Job's PodSpec so kubelet can authenticate pulling a
+	// private runner/container: image — see k8sjob.RunRequest's own doc
+	// comment. A public image needs nothing here. Cluster-wide, not
+	// per-module/per-step: the registry credentials a Job needs depend on
+	// which registry its image lives in, not which module or workflow
+	// dispatched it. This chart never creates the Secret itself — create
+	// it once yourself (e.g. `kubectl create secret docker-registry`) and
+	// name it here. Only consulted in cluster mode — local/CLI mode always
+	// runs everything inline, never via a Job, so pulling a container image
+	// never comes up at all.
+	ImagePullSecrets []string `json:"imagePullSecrets,omitempty"`
 }
 
 // +kubebuilder:object:root=true

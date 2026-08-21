@@ -26,6 +26,15 @@ func TestRun_NoScriptIsAHardError(t *testing.T) {
 	assert.Contains(t, err.Error(), "no command or script")
 }
 
+func TestBuildLocalObjectRefs(t *testing.T) {
+	assert.Nil(t, buildLocalObjectRefs(nil))
+	assert.Nil(t, buildLocalObjectRefs([]string{}))
+	assert.Equal(t,
+		[]corev1.LocalObjectReference{{Name: "a"}, {Name: "b"}},
+		buildLocalObjectRefs([]string{"a", "b"}),
+	)
+}
+
 // TestRun_CreatesJobWithExpectedSpecAndSucceeds drives Run against a fake
 // clientset with the poll interval set fast, and a background goroutine
 // that simulates the Job controller: marks the Job Succeeded and creates a
@@ -56,6 +65,7 @@ func TestRun_CreatesJobWithExpectedSpecAndSucceeds(t *testing.T) {
 		assert.Contains(t, c.Env, corev1.EnvVar{Name: "HYVE_CLUSTER_NAME", Value: "demo"})
 		require.NotNil(t, job.Spec.BackoffLimit)
 		assert.Equal(t, int32(0), *job.Spec.BackoffLimit)
+		assert.Equal(t, []corev1.LocalObjectReference{{Name: "ghcr-pull-secret"}}, job.Spec.Template.Spec.ImagePullSecrets)
 
 		_, err = clientset.CoreV1().Pods("default").Create(context.Background(), &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -79,14 +89,15 @@ func TestRun_CreatesJobWithExpectedSpecAndSucceeds(t *testing.T) {
 
 	var output bytes.Buffer
 	stdout, exitCode, err := Run(context.Background(), clientset, RunRequest{
-		Name:         "run",
-		Namespace:    "default",
-		Image:        "my-image:latest",
-		Script:       "echo hello",
-		Env:          []string{"HYVE_CLUSTER_NAME=demo"},
-		WorkingDir:   "/workdir",
-		PollInterval: 10 * time.Millisecond,
-		Timeout:      5 * time.Second,
+		Name:             "run",
+		Namespace:        "default",
+		Image:            "my-image:latest",
+		Script:           "echo hello",
+		Env:              []string{"HYVE_CLUSTER_NAME=demo"},
+		WorkingDir:       "/workdir",
+		ImagePullSecrets: []string{"ghcr-pull-secret"},
+		PollInterval:     10 * time.Millisecond,
+		Timeout:          5 * time.Second,
 	}, &output)
 
 	<-done

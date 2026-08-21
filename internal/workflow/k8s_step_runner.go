@@ -31,6 +31,12 @@ type KubernetesJobStepRunner struct {
 	Client    kubernetes.Interface
 	Namespace string
 
+	// ImagePullSecrets names existing Secrets (in Namespace) kubelet uses
+	// to authenticate pulling a private step container: image — see
+	// k8sjob.RunRequest.ImagePullSecrets. Cluster-wide: set once at
+	// startup from HyveConfig.spec.imagePullSecrets (cmd/controller/run.go).
+	ImagePullSecrets []string
+
 	// PollInterval and Timeout control how long RunStep waits for a Job to
 	// finish before giving up. Zero values fall back to sane defaults (2s
 	// / 15m) — set explicitly in tests for a fast, deterministic poll loop.
@@ -93,14 +99,15 @@ func (r *KubernetesJobStepRunner) RunStep(ctx context.Context, step WorkflowStep
 	}
 
 	logs, code, runErr := k8sjob.Run(ctx, r.Client, k8sjob.RunRequest{
-		Name:         step.Name,
-		Namespace:    r.Namespace,
-		Image:        step.Container,
-		Script:       script,
-		Env:          env,
-		WorkingDir:   workingDir,
-		PollInterval: r.PollInterval,
-		Timeout:      r.Timeout,
+		Name:             step.Name,
+		Namespace:        r.Namespace,
+		Image:            step.Container,
+		Script:           script,
+		Env:              env,
+		WorkingDir:       workingDir,
+		ImagePullSecrets: r.ImagePullSecrets,
+		PollInterval:     r.PollInterval,
+		Timeout:          r.Timeout,
 	}, output)
 	if runErr != nil {
 		return logs, "", code, fmt.Errorf("step %q: %w", step.Name, runErr)

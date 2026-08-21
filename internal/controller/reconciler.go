@@ -10,6 +10,8 @@ import (
 	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflowref"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -117,6 +119,7 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	secretsEnv := r.fetchCLISecrets(ctx)
 	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version, secretsEnv[cliSecretGitHubToken])
+	lf = r.resolveWorkflowIfNeeded(ctx, lf, def)
 
 	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv)
 
@@ -174,6 +177,7 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 	}
 	secretsEnv := r.fetchCLISecrets(ctx)
 	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version, secretsEnv[cliSecretGitHubToken])
+	lf = r.resolveWorkflowIfNeeded(ctx, lf, def)
 
 	if err := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete cleanup: %w", err)
@@ -292,6 +296,65 @@ func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context,
 		mod.Status.SHA256 = locked.SHA256
 	}
 	r.upsertModuleCR(ctx, mod)
+	return reloaded
+}
+
+// resolveWorkflowIfNeeded resolves every remote WorkflowRef across def's
+// lifecycle hooks (see reconcile.AllWorkflowHookRefs) that isn't already
+// locked in lf — cluster mode's equivalent of resolveModuleIfNeeded, for
+// the identical reason: no separate human-run install step exists here.
+// `hyve workflow install` (the CLI command that does this in local mode)
+// is explicitly disabled in cluster mode today (cmd/workflow/install.go:
+// "hyve.lock-based remote-ref resolution is a local-checkout concept
+// only") — this closes that gap by resolving inline, per-reconcile,
+// exactly like resolveModuleIfNeeded already does for driver modules.
+//
+// Reuses workflowref.Install directly rather than reimplementing per-ref
+// resolution: it already short-circuits to a no-op for any ref whose
+// content hasn't changed since it was last locked (Resolve's own SHA256
+// cache-hit check), so calling it with the full set of hook refs on every
+// reconcile is cheap once everything's resolved — no network at all after
+// the first successful pass, matching the "resolve once, cache forever
+// until content changes" model hyve.lock already uses everywhere else.
+//
+// Unlike resolveModuleIfNeeded, this has no explicit-token parameter:
+// workflowref's remote fetch (module.DownloadAndExtract, a plain
+// unauthenticated archive download) has no private-repo path at all in
+// either mode — a pre-existing limitation this doesn't change. Also unlike
+// modules, no CR is created to track resolution status — hyve.lock is the
+// only record; add one later if that visibility gap matters in practice.
+//
+// Never returns an error: a resolution failure here is intentionally left
+// to surface through the existing shared validateWorkflowRefsLocked check
+// inside ReconcileOne, matching resolveModuleIfNeeded's own stance exactly.
+func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Context, lf *module.LockFile, def types.ClusterDefinition) *module.LockFile {
+	var refs []types.WorkflowRef
+	for _, ref := range reconcile.AllWorkflowHookRefs(def) {
+		if ref.IsRemote() {
+			refs = append(refs, ref)
+		}
+	}
+	if len(refs) == 0 {
+		return lf
+	}
+
+	_, _, resolveErrors, changed, err := workflowref.Install(r.StateProvider.LocalPath(), refs)
+	if err != nil {
+		log.Printf("[%s] Warning: failed to resolve workflow refs: %v", def.Metadata.Name, err)
+		return lf
+	}
+	for _, e := range resolveErrors {
+		log.Printf("[%s] Warning: failed to resolve workflow ref: %s", def.Metadata.Name, e)
+	}
+	if !changed {
+		return lf
+	}
+
+	reloaded, err := module.LoadLockFile(r.StateProvider.LocalPath())
+	if err != nil {
+		log.Printf("[%s] Warning: workflow refs resolved but failed to reload hyve.lock: %v", def.Metadata.Name, err)
+		return lf
+	}
 	return reloaded
 }
 

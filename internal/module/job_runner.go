@@ -19,6 +19,14 @@ type JobRunner struct {
 	Client    kubernetes.Interface
 	Namespace string
 
+	// ImagePullSecrets names existing Secrets (in Namespace) kubelet uses
+	// to authenticate pulling a private runner image — see
+	// k8sjob.RunRequest.ImagePullSecrets. Cluster-wide: set once at
+	// startup from HyveConfig.spec.imagePullSecrets (cmd/controller/run.go),
+	// not per-module — the same registry credentials apply regardless of
+	// which module's Job is pulling from it.
+	ImagePullSecrets []string
+
 	// PollInterval and Timeout control how long Run waits for a Job to
 	// finish before giving up. Zero values fall back to k8sjob's own
 	// defaults (2s / 15m).
@@ -31,12 +39,13 @@ type JobRunner struct {
 // filesystem) inside a fresh Job running image, with env applied.
 func (r *JobRunner) Run(ctx context.Context, name, image, script string, env []string) (stdout string, exitCode int, err error) {
 	return k8sjob.Run(ctx, r.Client, k8sjob.RunRequest{
-		Name:         name,
-		Namespace:    r.Namespace,
-		Image:        image,
-		Script:       script,
-		Env:          env,
-		PollInterval: r.PollInterval,
-		Timeout:      r.Timeout,
+		Name:             name,
+		Namespace:        r.Namespace,
+		Image:            image,
+		Script:           script,
+		Env:              env,
+		ImagePullSecrets: r.ImagePullSecrets,
+		PollInterval:     r.PollInterval,
+		Timeout:          r.Timeout,
 	}, nil)
 }

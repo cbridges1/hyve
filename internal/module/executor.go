@@ -1,11 +1,8 @@
 package module
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,50 +241,142 @@ func (e *Executor) executeAuth(ctx context.Context, spec ClusterAuthSpec, method
 		}
 	}
 
-	// Contract: an auth script that produces a kubeconfig prints
-	// HYVE_KUBECONFIG_B64=<base64 kubeconfig content> to stdout — it's
-	// responsible for generating that content itself (e.g. invoking a
-	// provider's kubeconfig plugin against its own temp file and
-	// base64-encoding it), since a Job-dispatched script (e.Runner != nil)
-	// runs in a separate, ephemeral pod with no access to this process's
-	// filesystem to write a shared path into. Applies identically whether
-	// the script actually ran inline or as a Job — one contract, regardless
-	// of invocation mode.
-	stdout, err := e.runShellScriptWithEnv(ctx, "auth-"+method.Name, method.Auth.Script, nil)
-	if err != nil {
-		return nil, fmt.Errorf("auth method %q failed: %w", method.Name, err)
-	}
+	// Contract (unchanged from before Job dispatch existed, and identical
+	// for every module author regardless of mode): a method that produces a
+	// kubeconfig sets exports: KUBECONFIG (or KEEPER_KUBECONFIG) and its
+	// script writes the file it finds at $KUBECONFIG — see
+	// runAuthScript for how that plain contract is honored whether the
+	// script actually runs inline (same process, same filesystem, no relay
+	// needed) or dispatched to a separate, ephemeral Job pod (hyve wraps
+	// the script itself to relay the file back over stdout — the module's
+	// own script never sees or needs to know about that wrapping).
+	wantsKubeconfig := method.Exports == "KUBECONFIG" || method.Exports == "KEEPER_KUBECONFIG"
 
-	outputs := map[string]string{}
 	var kcPath string
-	if b64 := parseOutputs([]byte(stdout))["HYVE_KUBECONFIG_B64"]; b64 != "" {
-		content, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
-		if decErr != nil {
-			return nil, fmt.Errorf("auth method %q: decode HYVE_KUBECONFIG_B64: %w", method.Name, decErr)
-		}
+	if wantsKubeconfig {
 		path, pathErr := KubeconfigPathForCluster(e.ClusterName)
 		if pathErr != nil {
 			return nil, fmt.Errorf("resolve per-cluster kubeconfig path: %w", pathErr)
 		}
-		if writeErr := os.WriteFile(path, content, 0600); writeErr != nil {
-			return nil, fmt.Errorf("write kubeconfig for cluster %q: %w", e.ClusterName, writeErr)
-		}
 		kcPath = path
-		outputs["KUBECONFIG"] = kcPath
 	}
 
-	// Legacy verify step — only applies when using the legacy single-method shape.
+	if err := e.runAuthScript(ctx, "auth-"+method.Name, method.Auth.Script, wantsKubeconfig, kcPath); err != nil {
+		return nil, fmt.Errorf("auth method %q failed: %w", method.Name, err)
+	}
+
+	outputs := map[string]string{}
+	if kcPath != "" {
+		if _, statErr := os.Stat(kcPath); statErr == nil {
+			outputs["KUBECONFIG"] = kcPath
+		}
+	}
+
+	// Legacy verify step — only applies when using the legacy single-method
+	// shape, and always runs inline in this process regardless of mode: it
+	// needs kcPath, which this call just wrote to *this process's* local
+	// disk — a separately-dispatched Job's pod would have no access to it.
 	if len(spec.Methods) == 0 && spec.Verify != nil && spec.Verify.Command != "" {
 		var verifyEnv []string
 		if kcPath != "" {
 			verifyEnv = []string{"KUBECONFIG=" + kcPath}
 		}
-		if _, err := e.runShellScriptWithEnv(ctx, "auth-verify", spec.Verify.Command, verifyEnv); err != nil {
+		if err := e.runShellScriptWithEnv(ctx, spec.Verify.Command, verifyEnv); err != nil {
 			return nil, fmt.Errorf("auth verify failed: %w", err)
 		}
 	}
 
 	return &OperationResult{Outputs: outputs, ExitCode: 0}, nil
+}
+
+// jobKubeconfigTempPath is where runAuthScript's wrapper points $KUBECONFIG
+// inside a dispatched Job's own container — never seen or chosen by the
+// module's script itself, which only ever knows "$KUBECONFIG points
+// somewhere I should write to," exactly as it always has.
+const jobKubeconfigTempPath = "/tmp/hyve-auth-kubeconfig"
+
+const kubeconfigBeginMarker = "___HYVE_KUBECONFIG_BEGIN___"
+const kubeconfigEndMarker = "___HYVE_KUBECONFIG_END___"
+
+// runAuthScript runs an auth method's script unmodified from the module
+// author's point of view: it writes a kubeconfig to $KUBECONFIG if
+// wantsKubeconfig, exactly like every version of this contract before Job
+// dispatch existed. Inline (e.Runner == nil), $KUBECONFIG is set directly
+// to kcPath — same process, same filesystem, done. Dispatched to a Job
+// (e.Runner != nil), a fresh ephemeral pod shares no filesystem with this
+// process, so the script is wrapped (invisible to its author) to point
+// $KUBECONFIG at a private in-container temp path and relay that file back
+// over stdout, between sentinel markers, once the script itself succeeds —
+// runAuthScript then extracts it and writes it to kcPath here. The
+// script's own text is embedded in a subshell so an explicit `exit` inside
+// it (a common pattern on an error path) only ends that subshell, not the
+// wrapper — otherwise the relay logic after it would never run.
+func (e *Executor) runAuthScript(ctx context.Context, name, script string, wantsKubeconfig bool, kcPath string) error {
+	if e.Runner == nil {
+		var env []string
+		if wantsKubeconfig {
+			env = []string{"KUBECONFIG=" + kcPath}
+		}
+		return e.runShellScriptWithEnv(ctx, script, env)
+	}
+
+	dispatched := script
+	if wantsKubeconfig {
+		dispatched = fmt.Sprintf(`export KUBECONFIG=%s
+(
+%s
+)
+__hyve_rc=$?
+if [ $__hyve_rc -eq 0 ] && [ -f "$KUBECONFIG" ]; then
+  echo "%s"
+  cat "$KUBECONFIG"
+  echo ""
+  echo "%s"
+fi
+exit $__hyve_rc`, jobKubeconfigTempPath, script, kubeconfigBeginMarker, kubeconfigEndMarker)
+	}
+
+	stdout, _, err := e.Runner.Run(ctx, name, e.Image, dispatched, e.Env)
+	if err != nil {
+		return err
+	}
+	if wantsKubeconfig {
+		if content, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker); ok {
+			if writeErr := os.WriteFile(kcPath, []byte(content), 0600); writeErr != nil {
+				return fmt.Errorf("write kubeconfig for cluster %q: %w", e.ClusterName, writeErr)
+			}
+		}
+	}
+	return nil
+}
+
+// extractBetweenMarkers recovers the exact original file bytes the wrapper
+// in runAuthScript relayed. Byte accounting, not line splitting: the
+// wrapper always emits `cat "$KUBECONFIG"` (the file's raw bytes,
+// whatever they are) immediately followed by one unconditional blank
+// `echo` (exactly one "\n", regardless of whether the file itself ended in
+// a newline) before the end marker's own line — so the span between the
+// begin marker's line and the "\n"+end substring is always exactly
+// original_content + "\n", and slicing it off at the start of that "\n"
+// recovers original_content byte-for-byte, whether or not the file had a
+// trailing newline of its own. (A line-split-and-rejoin approach was tried
+// first and got this wrong: it can't tell "file had a trailing newline"
+// apart from "file didn't," since both produce an empty trailing element
+// after splitting.)
+func extractBetweenMarkers(stdout, begin, end string) (string, bool) {
+	beginLine := begin + "\n"
+	startIdx := strings.Index(stdout, beginLine)
+	if startIdx < 0 {
+		return "", false
+	}
+	contentStart := startIdx + len(beginLine)
+
+	needle := "\n" + end
+	relEndIdx := strings.Index(stdout[contentStart:], needle)
+	if relEndIdx < 0 {
+		return "", false
+	}
+	return stdout[contentStart : contentStart+relEndIdx], true
 }
 
 // findMethod returns the first method with the given name, or nil if not found.
@@ -347,26 +436,19 @@ func (e *Executor) executeScriptViaJob(ctx context.Context, scriptPath string) (
 	}, nil
 }
 
-// runShellScriptWithEnv runs script — inline via os/exec, or dispatched to a
-// fresh Job when e.Runner != nil — with e.Env plus extraEnv layered on top,
-// and returns its captured stdout so callers (executeAuth) can read back
-// the HYVE_KUBECONFIG_B64= contract regardless of where the script actually
-// ran. extraEnv wins on key collision with e.Env (exec.Cmd resolves
-// duplicate keys to the last occurrence).
-func (e *Executor) runShellScriptWithEnv(ctx context.Context, name, script string, extraEnv []string) (string, error) {
-	if e.Runner != nil {
-		stdout, _, err := e.Runner.Run(ctx, name, e.Image, script, append(append([]string{}, e.Env...), extraEnv...))
-		return stdout, err
-	}
-
-	var buf bytes.Buffer
+// runShellScriptWithEnv runs script inline via os/exec (never dispatched to
+// a Job — see runAuthScript and executeAuth's verify step, its only two
+// callers) with e.Env plus extraEnv layered on top of the inherited process
+// environment — extraEnv wins on key collision (exec.Cmd resolves duplicate
+// keys to the last occurrence), which is how the auth/verify paths override
+// KUBECONFIG per-cluster without touching os.Environ.
+func (e *Executor) runShellScriptWithEnv(ctx context.Context, script string, extraEnv []string) error {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
 	cmd.Env = append(append(os.Environ(), e.Env...), extraEnv...)
 	cmd.Dir = e.WorkDir
-	cmd.Stdout = io.MultiWriter(&buf, os.Stdout)
+	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	return buf.String(), err
+	return cmd.Run()
 }
 
 func parseOutputs(stdout []byte) map[string]string {

@@ -94,8 +94,8 @@ spec:
   methods:
     - name: default
       auth:
-        script: |
-          echo "HYVE_KUBECONFIG_B64=$(printf 'cluster=%s' "$HYVE_CLUSTER_NAME" | base64)"
+        script: "echo cluster=$HYVE_CLUSTER_NAME > \"$KUBECONFIG\""
+      exports: KUBECONFIG
 EOF
 
 log "Starting hyve cluster-config api run"

@@ -14,6 +14,7 @@ func FromTypesClusterDefinitionSpec(def *types.ClusterDefinition) hyvev1alpha1.C
 	return hyvev1alpha1.ClusterDefinitionSpec{
 		Region:    def.Metadata.Region,
 		Driver:    FromTypesDriverRef(def.Spec.Driver),
+		Runner:    hyvev1alpha1.RunnerSpec{Image: def.Spec.Runner.Image},
 		Params:    def.Spec.Params,
 		Workflows: FromTypesWorkflowsSpec(def.Spec.Workflows),
 		Resources: FromTypesResourceRefs(def.Spec.Resources),

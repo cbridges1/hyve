@@ -2,6 +2,8 @@ package reconcile
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,10 +20,11 @@ import (
 // panics if called, so a test using it fails loudly if it exercises more
 // of the interface than intended.
 type fakeStateProvider struct {
-	defs []types.ClusterDefinition
+	defs      []types.ClusterDefinition
+	localPath string
 }
 
-func (f *fakeStateProvider) LocalPath() string { return "" }
+func (f *fakeStateProvider) LocalPath() string { return f.localPath }
 func (f *fakeStateProvider) LoadRepoConfig() (*state.RepoConfig, error) {
 	return &state.RepoConfig{}, nil
 }
@@ -184,6 +187,78 @@ func TestValidateWorkflowRefsLocked(t *testing.T) {
 			}
 			assert.Error(t, validateWorkflowRefsLocked(c, lf))
 		}
+	})
+}
+
+// TestReconcileCluster_ToolRequirements_OnlyEnforcedInlineNotViaJobDispatch
+// is the regression test for the "civo not found in PATH" bug: modules
+// declaring spec.requirements.tools are meant to be checked against
+// whatever process actually runs their scripts. In local/CLI mode that's
+// this process, so the check is real and correct. In cluster mode
+// (r.ModuleRunner != nil) the module instead runs inside a separate Job on
+// its own runner.image — this process's own PATH says nothing about what's
+// in that image, so the pre-flight check must be skipped there (a missing
+// tool still surfaces, just naturally, as the Job's script failing with
+// "command not found").
+func TestReconcileCluster_ToolRequirements_OnlyEnforcedInlineNotViaJobDispatch(t *testing.T) {
+	repoRoot := t.TempDir()
+	moduleDir := filepath.Join(repoRoot, "modules", "test-driver")
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.yaml"), []byte(`apiVersion: v1
+kind: Module
+metadata:
+  name: test-driver
+  version: 0.1.0
+  type: authOnly
+spec:
+  requirements:
+    tools:
+      - name: definitely-not-a-real-tool-xyz-123
+`), 0644))
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./modules/test-driver", Version: "local"}},
+	}
+	lf := &module.LockFile{Version: 1}
+
+	t.Run("local mode: missing tool is a hard error", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "definitely-not-a-real-tool-xyz-123")
+	})
+
+	t.Run("cluster mode: tool check is skipped, module dispatches to its own runner.image instead", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		r.ModuleRunner = &module.JobRunner{} // never actually invoked — this authOnly module has no auth/create/status/delete files to dispatch
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil)
+		assert.NoError(t, err)
+	})
+}
+
+// TestModuleImage covers the resolution chain: a ClusterDefinition's own
+// spec.runner.image (set directly, or inherited from a Template at
+// creation time) wins over HyveConfig's cluster-wide DefaultModuleImage —
+// the module's own module.yaml is never consulted at all (see moduleImage's
+// doc comment for why: a module recommends, but doesn't choose).
+func TestModuleImage(t *testing.T) {
+	t.Run("cluster's own runner.image wins", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		r.DefaultModuleImage = "cluster-wide-default:latest"
+		cluster := types.ClusterDefinition{Spec: types.ClusterSpec{Runner: types.RunnerSpec{Image: "per-cluster:v2"}}}
+		assert.Equal(t, "per-cluster:v2", r.moduleImage(cluster))
+	})
+
+	t.Run("falls back to DefaultModuleImage when unset", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		r.DefaultModuleImage = "cluster-wide-default:latest"
+		assert.Equal(t, "cluster-wide-default:latest", r.moduleImage(types.ClusterDefinition{}))
+	})
+
+	t.Run("empty when neither is set", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		assert.Empty(t, r.moduleImage(types.ClusterDefinition{}))
 	})
 }
 

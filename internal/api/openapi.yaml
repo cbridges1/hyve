@@ -4,8 +4,9 @@ info:
   description: |
     hyve's HTTP API + auth layer — see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
     Phase 6. A thin, authorized front door onto the ClusterDefinition/
-    HyveAccessBinding CRDs the controller already reconciles — cluster mode
-    never requires this API, plain kubectl against the CRDs always works.
+    Template/Workflow/Module/HyveAccessBinding CRDs the controller already
+    reconciles — cluster mode never requires this API, plain kubectl
+    against the CRDs always works.
 
     Everything under /api/* requires a session: log in via /auth/login,
     then send the returned token as `Authorization: Bearer <token>` on
@@ -18,6 +19,10 @@ security:
 tags:
   - name: auth
   - name: clusters
+  - name: templates
+  - name: workflows
+  - name: modules
+  - name: secrets
   - name: kubeconfig
 paths:
   /healthz:
@@ -110,7 +115,13 @@ paths:
     post:
       tags: [clusters]
       summary: Create a ClusterDefinition
-      description: Requires the `admin` role. Request body's `spec` is validated by the same Kubernetes CRD schema `kubectl apply` would enforce.
+      description: |
+        Requires the `admin` role. Either `spec` (validated by the same
+        Kubernetes CRD schema `kubectl apply` would enforce) or `template`
+        must be set — `template` names an existing Template CR and renders
+        it server-side (the same rendering POST /api/templates/{name}/render
+        uses standalone) into the new cluster's spec in one round trip,
+        rather than requiring a separate render-then-create call.
       requestBody:
         required: true
         content:
@@ -176,6 +187,403 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/clusters/{name}/resources:
+    get:
+      tags: [clusters]
+      summary: Get a cluster's declared and currently-applied resources
+      description: |
+        A separate endpoint from GET /api/clusters/{name} specifically so
+        that base listing/get stays lean — a cluster can declare an
+        arbitrary number of resources, and most callers don't need them.
+      parameters:
+        - $ref: "#/components/parameters/ClusterName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterResourcesDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/clusters/{name}/auth-context:
+    get:
+      tags: [clusters]
+      summary: Get the data needed to run a driver module's auth op client-side
+      description: |
+        Only serves clusters using the default client-side auth method
+        (spec.access.method unset) — a cluster using the module-auth or
+        tunnel access override, or the API's own configured primary
+        cluster, is rejected with 409 (fetch its kubeconfig via
+        GET /api/kubeconfig instead). Deliberately more sensitive than
+        ClusterDTO: this is the one legitimate place driverOutputs/params
+        get exposed, since a client-side `hyve cluster auth` needs them to
+        actually run the module's auth.yaml locally.
+      parameters:
+        - $ref: "#/components/parameters/ClusterName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthContextDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: This cluster doesn't use client-side auth — fetch its kubeconfig via GET /api/kubeconfig instead
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/templates:
+    get:
+      tags: [templates]
+      summary: List Templates
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TemplateDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [templates]
+      summary: Create a Template
+      description: Requires the `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateDTO"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A template with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/templates/{name}:
+    get:
+      tags: [templates]
+      summary: Get a Template by name
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [templates]
+      summary: Delete a Template
+      description: Requires the `admin` role. Only removes the scaffold — clusters already created from it are unaffected.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+      responses:
+        "204":
+          description: Deleted
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/templates/{name}/render:
+    post:
+      tags: [templates]
+      summary: Preview-render a Template into a ClusterDefinitionSpec
+      description: |
+        Requires the `admin` role (the only role that can subsequently act
+        on the result via POST /api/clusters anyway). Merges the template's
+        default params with any `params` override (override wins) and
+        resolves `region` (request value, else the template's own default).
+        Purely a preview — no cluster object is created.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenderTemplateRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterDefinitionSpec"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/workflows:
+    get:
+      tags: [workflows]
+      summary: List Workflows
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkflowDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [workflows]
+      summary: Create a Workflow
+      description: Requires the `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkflowRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDTO"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A workflow with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/workflows/{name}:
+    get:
+      tags: [workflows]
+      summary: Get a Workflow by name
+      parameters:
+        - $ref: "#/components/parameters/WorkflowName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [workflows]
+      summary: Delete a Workflow
+      description: Requires the `admin` role.
+      parameters:
+        - $ref: "#/components/parameters/WorkflowName"
+      responses:
+        "204":
+          description: Deleted
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/modules:
+    get:
+      tags: [modules]
+      summary: List Modules
+      description: |
+        Read-only — the API never writes Module CRs. Each one is a
+        visibility record the controller creates as a side effect of
+        auto-resolving a driver module referenced by some ClusterDefinition
+        (see internal/controller/reconciler.go's resolveModuleIfNeeded) —
+        there's no user-triggered `hyve module install` equivalent in
+        cluster mode, resolution just happens live on the next reconcile.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ModuleDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/modules/{name}:
+    get:
+      tags: [modules]
+      summary: Get a Module by name
+      parameters:
+        - $ref: "#/components/parameters/ModuleName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModuleDTO"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/secrets:
+    get:
+      tags: [secrets]
+      summary: List secret key names, or (with ?values=true) every key/value
+      description: |
+        Every secret set via `hyve env secrets` (cluster mode) lives in one
+        shared Kubernetes Secret for this hyve-api deployment — not scoped
+        per caller/environment. Key names alone are readable by any
+        authenticated role; `?values=true` additionally requires the
+        `admin` role and returns the full key->value map in one round trip
+        (used by cmd/shared's LoadEnvironmentSecrets rather than fetching
+        each key individually).
+      parameters:
+        - name: values
+          in: query
+          schema:
+            type: boolean
+          description: Return the full key->value map instead of just key names. Requires the admin role.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: { type: string }
+                    description: Key names only (default)
+                  - type: object
+                    additionalProperties: { type: string }
+                    description: Full key->value map (?values=true)
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/secrets/{key}:
+    get:
+      tags: [secrets]
+      summary: Get a single secret's value
+      description: Requires the `admin` role.
+      parameters:
+        - $ref: "#/components/parameters/SecretKey"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+                  value: { type: string }
+                required: [key, value]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [secrets]
+      summary: Add or update a secret
+      description: Requires the `admin` role. Creates the shared secrets Secret on first use if it doesn't exist yet.
+      parameters:
+        - $ref: "#/components/parameters/SecretKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value: { type: string }
+              required: [value]
+      responses:
+        "204":
+          description: Set
+        "400":
+          description: Key doesn't match the required env-var-name pattern (^[A-Za-z_][A-Za-z0-9_]*$), or malformed body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [secrets]
+      summary: Remove a secret
+      description: Requires the `admin` role. Idempotent — removing a key that isn't set still returns 204.
+      parameters:
+        - $ref: "#/components/parameters/SecretKey"
+      responses:
+        "204":
+          description: Removed (or already absent)
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's role is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/kubeconfig:
     get:
       tags: [kubeconfig]
@@ -233,6 +641,30 @@ components:
       required: true
       schema:
         type: string
+    TemplateName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    WorkflowName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    ModuleName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    SecretKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
   responses:
     BadRequest:
       description: Malformed request
@@ -253,7 +685,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: No such cluster
+      description: No such object
       content:
         application/json:
           schema:
@@ -296,11 +728,109 @@ components:
         accessMethod: { type: string, enum: ["", "module-auth", "tunnel"] }
         accessLastMinted: { type: string, format: date-time }
       required: [name, driver, observedGeneration]
+    ClusterResourcesDTO:
+      type: object
+      properties:
+        resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceRef"
+        appliedResources:
+          type: object
+          additionalProperties:
+            type: object
+            description: Reconciler-owned state tracking what got applied for one resources[] entry — never hand-edited.
+    AuthContextDTO:
+      type: object
+      description: Only served for clusters using the default client-side auth method — see GET /api/clusters/{name}/auth-context.
+      properties:
+        driverSource: { type: string }
+        driverVersion: { type: string }
+        region: { type: string }
+        params:
+          type: object
+          additionalProperties: { type: string }
+        driverOutputs:
+          type: object
+          additionalProperties: { type: string }
+      required: [driverSource, driverVersion]
     DriverRef:
       type: object
       properties:
         source: { type: string, example: "./modules/civo" }
         version: { type: string, example: "latest" }
+    RunnerSpec:
+      type: object
+      description: |
+        Configures the container image cluster mode dispatches this
+        cluster's module create/status/delete/auth operations to as a
+        Kubernetes Job. A module's own module.yaml can recommend/document a
+        suitable image but doesn't choose one — that's this field's job,
+        set directly on a ClusterDefinition or inherited from the Template
+        it was created from. Falls back to HyveConfig.spec.defaultModuleImage
+        when unset. Ignored in local/CLI mode, where modules always run
+        inline.
+      properties:
+        image: { type: string, example: "ghcr.io/org/module-runner:1.0.0" }
+    WorkflowRef:
+      type: object
+      description: Either name (a local Workflow, resolved by name — see CRDSource) or source (a remote git ref, e.g. "github.com/org/repo//path/workflow.yaml@v1") is set, not both.
+      properties:
+        name: { type: string }
+        source: { type: string }
+        path: { type: string, description: "Overrides an inline //path in source, if both are set." }
+    WorkflowsSpec:
+      type: object
+      description: Lifecycle hooks — each a list of WorkflowRefs run in order at the named point in a cluster's lifecycle.
+      properties:
+        preReconcile:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowRef" }
+        beforeCreate:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowRef" }
+        onCreate:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowRef" }
+        afterCreate:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowRef" }
+        onDelete:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowRef" }
+        afterDelete:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowRef" }
+    ResourceRef:
+      type: object
+      description: One Kubernetes manifest (or Helm release, or Secret) hyve should own, drift-check, and re-apply on every reconcile cycle for an ACTIVE cluster.
+      properties:
+        name: { type: string }
+        source: { type: string, description: "Path to a manifest file, mutually exclusive with helm/secret." }
+        namespace: { type: string }
+        delete: { type: boolean, description: "Marks this entry for removal on the next reconcile." }
+        helm:
+          type: object
+          properties:
+            chart: { type: string }
+            repo: { type: string }
+            version: { type: string }
+            namespace: { type: string }
+            values:
+              type: object
+              additionalProperties: true
+        secret:
+          type: object
+          properties:
+            namespace: { type: string }
+            type: { type: string }
+            keys:
+              type: array
+              items:
+                type: object
+                properties:
+                  env: { type: string }
+                  key: { type: string }
     ClusterDefinitionSpec:
       type: object
       description: Same schema `kubectl apply` on a ClusterDefinition would enforce.
@@ -308,9 +838,17 @@ components:
         region: { type: string }
         driver:
           $ref: "#/components/schemas/DriverRef"
+        runner:
+          $ref: "#/components/schemas/RunnerSpec"
         params:
           type: object
           additionalProperties: { type: string }
+        workflows:
+          $ref: "#/components/schemas/WorkflowsSpec"
+        resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceRef"
         delete: { type: boolean }
         pause: { type: boolean }
         expiresAt: { type: string, format: date-time }
@@ -327,8 +865,217 @@ components:
                 provider: { type: string, enum: ["rancher", "teleport"] }
     CreateClusterRequest:
       type: object
+      description: Either spec or template must be set — see POST /api/clusters.
       properties:
         name: { type: string }
         spec:
           $ref: "#/components/schemas/ClusterDefinitionSpec"
+        template:
+          $ref: "#/components/schemas/CreateClusterFromTemplateRef"
       required: [name]
+    CreateClusterFromTemplateRef:
+      type: object
+      properties:
+        name: { type: string, description: "Template CR name" }
+        region: { type: string, description: "Overrides the template's default region" }
+        params:
+          type: object
+          additionalProperties: { type: string }
+          description: Merged with the template's default params (override wins).
+      required: [name]
+    TemplateSpec:
+      type: object
+      description: Same schema `kubectl apply` on a Template would enforce — a reusable ClusterDefinition scaffold.
+      properties:
+        description: { type: string }
+        driver:
+          $ref: "#/components/schemas/DriverRef"
+        runner:
+          $ref: "#/components/schemas/RunnerSpec"
+        params:
+          type: object
+          additionalProperties: { type: string }
+        region: { type: string }
+        workflows:
+          $ref: "#/components/schemas/WorkflowsSpec"
+        resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceRef"
+        schedule: { type: string, description: "5-field cron expression — when set, a cluster created from this template gets spec.expiresAt set to the next occurrence." }
+        lockParams: { type: boolean, description: "Reject rather than silently ignore a param override at cluster-creation time." }
+    TemplateDTO:
+      type: object
+      properties:
+        name: { type: string }
+        spec:
+          $ref: "#/components/schemas/TemplateSpec"
+      required: [name, spec]
+    CreateTemplateRequest:
+      type: object
+      properties:
+        name: { type: string }
+        spec:
+          $ref: "#/components/schemas/TemplateSpec"
+      required: [name]
+    RenderTemplateRequest:
+      type: object
+      properties:
+        region: { type: string, description: "Overrides the template's default region" }
+        params:
+          type: object
+          additionalProperties: { type: string }
+    WorkflowStep:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        if: { type: string }
+        command: { type: string }
+        script: { type: string }
+        action: { type: string }
+        with:
+          type: object
+          additionalProperties: { type: string }
+        env:
+          type: object
+          additionalProperties: { type: string }
+        workingDir: { type: string }
+        timeout: { type: string }
+        continueOnError: { type: boolean }
+        container: { type: string, description: "Overrides the parent job's container: for this step only." }
+      required: [name]
+    WorkflowJob:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        if: { type: string }
+        dependsOn:
+          type: array
+          items: { type: string }
+        cluster: { type: string }
+        env:
+          type: object
+          additionalProperties: { type: string }
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowStep"
+        timeout: { type: string }
+        retry:
+          type: object
+          properties:
+            maxAttempts: { type: integer }
+            delay: { type: string }
+        container: { type: string, description: "Image every step in this job runs in under cluster mode's Job dispatch. A step's own container overrides this; HyveConfig.spec.defaultWorkflowImage is the last fallback before a hard pre-flight failure." }
+      required: [name, steps]
+    WorkflowSpec:
+      type: object
+      description: Same schema `kubectl apply` on a Workflow would enforce.
+      properties:
+        description: { type: string }
+        inputs:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              description: { type: string }
+              default: { type: string }
+            required: [name]
+        requirements:
+          type: object
+          properties:
+            tools:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  version: { type: string }
+                  description: { type: string }
+                required: [name]
+            secrets:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  provider: { type: string }
+                  required: { type: boolean }
+                  description: { type: string }
+                required: [name, required]
+        preFlight:
+          type: object
+          properties:
+            cluster: { type: string }
+        triggers:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              config:
+                type: object
+                additionalProperties: { type: string }
+            required: [type]
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowJob"
+        env:
+          type: object
+          additionalProperties: { type: string }
+        runtime: { type: string, enum: ["client", "cluster"], description: "Defaults to cluster when unset." }
+        secretsFrom:
+          type: array
+          items:
+            type: object
+            description: One Kubernetes Secret to resolve into env vars before this workflow's steps run.
+            properties:
+              cluster: { type: string }
+              namespace: { type: string }
+              secretRef: { type: string }
+              keys:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    key: { type: string }
+                    env: { type: string }
+                  required: [key]
+            required: [cluster, namespace, secretRef, keys]
+      required: [jobs]
+    WorkflowDTO:
+      type: object
+      properties:
+        name: { type: string }
+        spec:
+          $ref: "#/components/schemas/WorkflowSpec"
+      required: [name, spec]
+    CreateWorkflowRequest:
+      type: object
+      properties:
+        name: { type: string }
+        spec:
+          $ref: "#/components/schemas/WorkflowSpec"
+      required: [name]
+    ModuleDTO:
+      type: object
+      description: Read-only — see GET /api/modules.
+      properties:
+        name: { type: string }
+        spec:
+          type: object
+          properties:
+            source: { type: string }
+            version: { type: string }
+        status:
+          type: object
+          properties:
+            resolved: { type: boolean }
+            resolvedAt: { type: string, format: date-time }
+            sha256: { type: string }
+            error: { type: string }
+      required: [name, spec, status]

@@ -32,6 +32,7 @@ func ToTypesClusterDefinition(cr *hyvev1alpha1.ClusterDefinition) types.ClusterD
 		},
 		Spec: types.ClusterSpec{
 			Driver:           ToTypesDriverRef(cr.Spec.Driver),
+			Runner:           types.RunnerSpec{Image: cr.Spec.Runner.Image},
 			Params:           cr.Spec.Params,
 			DriverOutputs:    cr.Status.DriverOutputs,
 			Workflows:        ToTypesWorkflowsSpec(cr.Spec.Workflows),

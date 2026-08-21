@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cbridges1/hyve/internal/module"
+	"github.com/cbridges1/hyve/internal/types"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,6 +29,26 @@ func TestFetchCLISecrets_MissingSecretReturnsNil(t *testing.T) {
 
 	got := r.fetchCLISecrets(context.Background())
 	assert.Nil(t, got)
+}
+
+// TestResolveWorkflowIfNeeded_NoRemoteRefsIsANoOp confirms
+// resolveWorkflowIfNeeded never touches the network (or hyve.lock) for a
+// ClusterDefinition whose lifecycle hooks name workflows locally — the
+// common case (see reconciler.go's own comment: nexus-config's own
+// workflows are all local-path refs) — by using a StateProvider whose
+// LocalPath() panics if ever called, so the test fails loudly if this
+// no-remote-refs short-circuit regresses.
+func TestResolveWorkflowIfNeeded_NoRemoteRefsIsANoOp(t *testing.T) {
+	r := &ClusterDefinitionReconciler{StateProvider: nil}
+	lf := &module.LockFile{Version: 1}
+	def := types.ClusterDefinition{
+		Spec: types.ClusterSpec{Workflows: types.WorkflowsSpec{
+			OnCreate: []types.WorkflowRef{{Name: "local-workflow"}}, // Source unset: not remote
+		}},
+	}
+
+	got := r.resolveWorkflowIfNeeded(context.Background(), lf, def)
+	assert.Same(t, lf, got, "must return the same lf, untouched, with no remote refs to resolve")
 }
 
 func TestFetchCLISecrets_ReturnsSecretDataAsStrings(t *testing.T) {

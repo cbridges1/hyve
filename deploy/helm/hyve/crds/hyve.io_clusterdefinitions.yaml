@@ -203,6 +203,18 @@ spec:
                   - name
                   type: object
                 type: array
+              runner:
+                description: |-
+                  Runner configures the image cluster mode's Job dispatch uses to run
+                  this cluster's module create/status/delete/auth operations — see
+                  RunnerSpec's own doc comment for why this lives here (or on the
+                  Template a cluster was rendered from — see
+                  RenderClusterDefinitionSpec) rather than on the module itself.
+                  Ignored entirely in local/CLI mode.
+                properties:
+                  image:
+                    type: string
+                type: object
               workflows:
                 description: |-
                   WorkflowsSpec defines workflows to run on cluster lifecycle events.

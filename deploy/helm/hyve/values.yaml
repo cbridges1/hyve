@@ -23,6 +23,11 @@ controller:
     strictResourceDelete: false
     defaultWorkflowImage: ""
     defaultModuleImage: ""
+    # Names of existing kubernetes.io/dockerconfigjson Secrets (in
+    # namespace, above) for pulling private runner/container: images —
+    # this chart never creates them, create yours first (e.g.
+    # `kubectl create secret docker-registry`). e.g. ["ghcr-pull-secret"]
+    imagePullSecrets: []
 
   resources:
     requests:

@@ -64,12 +64,18 @@ type Reconciler struct {
 }
 
 // moduleImage resolves the image a module.Executor should use when
-// dispatching to ModuleRunner — the module's own locked spec.runner.image
-// (from hyve.lock) if set, else r.DefaultModuleImage. locked may be nil for
-// a local-source module with no lock entry.
-func (r *Reconciler) moduleImage(locked *module.LockedModule) string {
-	if locked != nil && locked.Runner.Image != "" {
-		return locked.Runner.Image
+// dispatching to ModuleRunner — cluster.Spec.Runner.Image (set directly, or
+// inherited from a Template at creation time — see
+// hyvev1alpha1.RenderClusterDefinitionSpec) if set, else
+// r.DefaultModuleImage. Deliberately does not consult the module's own
+// module.yaml spec.runner.image/hyve.lock entry: a module can
+// recommend/document a suitable image (its requirements.tools entries),
+// but doesn't choose one — the same module may need different images
+// across different deployments, which is a per-cluster/per-Template
+// decision, not the module's to make.
+func (r *Reconciler) moduleImage(cluster types.ClusterDefinition) string {
+	if cluster.Spec.Runner.Image != "" {
+		return cluster.Spec.Runner.Image
 	}
 	return r.DefaultModuleImage
 }
@@ -247,8 +253,19 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 
 	manifest, _ := module.LoadManifestForSource(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
 	if manifest != nil {
-		if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
-			return reqErr
+		// ValidateToolRequirements checks *this process's own* PATH — only
+		// meaningful when the module actually runs inline in it (local/CLI
+		// mode, r.ModuleRunner == nil). In cluster mode the module runs
+		// inside a separate Job, on its own runner.image, which this
+		// process has no visibility into and was never meant to share
+		// tooling with — that's the entire point of Job dispatch. Skipping
+		// this pre-flight check there is safe: a genuinely missing tool
+		// still fails, just naturally, as an ordinary "command not found"
+		// from inside the Job's own script.
+		if r.ModuleRunner == nil {
+			if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+				return reqErr
+			}
 		}
 		if reqErr := r.validateMgmtClusterRequirement(name, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
 			return reqErr
@@ -263,7 +280,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		WorkDir:     r.stateMgr.LocalPath(),
 		ClusterName: name,
 		Runner:      r.ModuleRunner,
-		Image:       r.moduleImage(locked),
+		Image:       r.moduleImage(cluster),
 	}
 
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
@@ -592,31 +609,43 @@ func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) 
 // validateWorkflowRefsLocked checks — with no network access — that every
 // remote WorkflowRef in a cluster's lifecycle hooks is already present in
 // hyve.lock. Mirrors validateDriverModuleLocked's local/remote split above.
-func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+// AllWorkflowHookRefs returns every WorkflowRef across all of c's lifecycle
+// hooks — the single list validateWorkflowRefsLocked validates against and
+// internal/controller's resolveWorkflowIfNeeded resolves against, so the
+// two can never drift out of sync with each other (or with runWorkflows'
+// own set of hook fields it actually runs).
+func AllWorkflowHookRefs(c types.ClusterDefinition) []types.WorkflowRef {
 	lists := [][]types.WorkflowRef{
 		c.Spec.Workflows.PreReconcile, c.Spec.Workflows.BeforeCreate,
-		c.Spec.Workflows.OnCreate, c.Spec.Workflows.OnDelete, c.Spec.Workflows.AfterDelete,
+		c.Spec.Workflows.OnCreate, c.Spec.Workflows.AfterCreate,
+		c.Spec.Workflows.OnDelete, c.Spec.Workflows.AfterDelete,
 	}
+	var refs []types.WorkflowRef
 	for _, list := range lists {
-		for _, ref := range list {
-			if !ref.IsRemote() {
-				continue
-			}
-			ps, err := workflowref.ParseSource(ref.Source)
-			if err != nil {
-				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
-			}
-			ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
-			kind, err := workflowref.ClassifyPath(ps.Path)
-			if err != nil {
-				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
-			}
-			if kind == workflowref.PathKindDir {
-				return fmt.Errorf("cluster %s: workflow ref %q resolves to a directory — lifecycle hooks must reference a single file", c.Metadata.Name, ref.Source)
-			}
-			if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
-				return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install`", c.Metadata.Name, ref.Source)
-			}
+		refs = append(refs, list...)
+	}
+	return refs
+}
+
+func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	for _, ref := range AllWorkflowHookRefs(c) {
+		if !ref.IsRemote() {
+			continue
+		}
+		ps, err := workflowref.ParseSource(ref.Source)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
+		kind, err := workflowref.ClassifyPath(ps.Path)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		if kind == workflowref.PathKindDir {
+			return fmt.Errorf("cluster %s: workflow ref %q resolves to a directory — lifecycle hooks must reference a single file", c.Metadata.Name, ref.Source)
+		}
+		if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
+			return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install` (local mode), or check the controller logs for a resolution failure (cluster mode resolves this automatically per-reconcile — see resolveWorkflowIfNeeded)", c.Metadata.Name, ref.Source)
 		}
 	}
 	return nil
@@ -648,7 +677,7 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 		WorkDir:     r.stateMgr.LocalPath(),
 		ClusterName: depCluster.Metadata.Name,
 		Runner:      r.ModuleRunner,
-		Image:       r.moduleImage(locked),
+		Image:       r.moduleImage(depCluster),
 	}
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {

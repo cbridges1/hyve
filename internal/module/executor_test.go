@@ -10,6 +10,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestExtractBetweenMarkers_WithTrailingNewlineInFile(t *testing.T) {
+	// The wrapper's `cat "$KUBECONFIG"` output already ends in "\n" here
+	// (a real kubeconfig file almost always does), plus the wrapper's own
+	// unconditional blank echo before the end marker.
+	stdout := "noise before\n___HYVE_KUBECONFIG_BEGIN___\nline1\nline2\n\n___HYVE_KUBECONFIG_END___\nnoise after\n"
+	content, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker)
+	require.True(t, ok)
+	assert.Equal(t, "line1\nline2\n", content)
+}
+
+func TestExtractBetweenMarkers_NoTrailingNewlineInFile(t *testing.T) {
+	// cat's output does NOT end in "\n" here — only the wrapper's own
+	// unconditional blank echo (exactly one "\n") separates it from the
+	// end marker.
+	stdout := "___HYVE_KUBECONFIG_BEGIN___\nline1\n___HYVE_KUBECONFIG_END___\n"
+	content, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker)
+	require.True(t, ok)
+	assert.Equal(t, "line1", content)
+}
+
+func TestExtractBetweenMarkers_MissingMarkersReturnsFalse(t *testing.T) {
+	_, ok := extractBetweenMarkers("no markers here\n", kubeconfigBeginMarker, kubeconfigEndMarker)
+	assert.False(t, ok)
+}
+
+func TestExtractBetweenMarkers_MissingEndMarkerReturnsFalse(t *testing.T) {
+	stdout := "___HYVE_KUBECONFIG_BEGIN___\nline1\n"
+	_, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker)
+	assert.False(t, ok)
+}
+
 func TestKubeconfigPathForCluster_UniquePerCluster(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -35,10 +66,10 @@ func TestKubeconfigPathForCluster_SanitizesUnsafeCharacters(t *testing.T) {
 // TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv is the direct
 // regression test for the MaxConcurrentReconciles fix: two clusters'
 // concurrent auth calls must never be able to clobber each other via
-// process-wide KUBECONFIG. Confirms the auth script's
-// HYVE_KUBECONFIG_B64= contract output gets decoded and written to a
-// per-cluster path, the returned OperationResult carries that same path,
-// and the process environment is never mutated as a side effect.
+// process-wide KUBECONFIG. Confirms the auth script (inline mode — no
+// Runner set) sees a per-cluster KUBECONFIG value (so tools like civo
+// --save write there), the returned OperationResult carries that same
+// path, and the process environment is never mutated as a side effect.
 func TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -53,8 +84,8 @@ spec:
   methods:
     - name: default
       auth:
-        script: |
-          echo "HYVE_KUBECONFIG_B64=$(printf %s fake-kubeconfig | base64)"
+        script: "echo fake-kubeconfig > \"$KUBECONFIG\""
+      exports: KUBECONFIG
 `
 	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
 
@@ -66,9 +97,6 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, wantPath, result.Outputs["KUBECONFIG"])
 	assert.FileExists(t, wantPath)
-	content, err := os.ReadFile(wantPath)
-	require.NoError(t, err)
-	assert.Equal(t, "fake-kubeconfig", string(content))
 
 	assert.Empty(t, os.Getenv("KUBECONFIG"), "auth must never mutate the process-wide KUBECONFIG env var")
 }
@@ -89,8 +117,8 @@ spec:
   methods:
     - name: default
       auth:
-        script: |
-          echo "HYVE_KUBECONFIG_B64=$(printf 'cluster=%s' "$HYVE_CLUSTER_NAME" | base64)"
+        script: "echo \"cluster=$HYVE_CLUSTER_NAME\" > \"$KUBECONFIG\""
+      exports: KUBECONFIG
 `
 	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
 

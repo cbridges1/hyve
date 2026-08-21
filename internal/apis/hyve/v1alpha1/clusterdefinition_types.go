@@ -23,6 +23,14 @@ type ClusterDefinitionSpec struct {
 	// Driver identifies the module that manages this cluster.
 	Driver DriverRef `json:"driver,omitempty"`
 
+	// Runner configures the image cluster mode's Job dispatch uses to run
+	// this cluster's module create/status/delete/auth operations — see
+	// RunnerSpec's own doc comment for why this lives here (or on the
+	// Template a cluster was rendered from — see
+	// RenderClusterDefinitionSpec) rather than on the module itself.
+	// Ignored entirely in local/CLI mode.
+	Runner RunnerSpec `json:"runner,omitempty"`
+
 	// Params are arbitrary key/value pairs passed to the driver as
 	// HYVE_PARAM_<KEY> environment variables.
 	Params map[string]string `json:"params,omitempty"`

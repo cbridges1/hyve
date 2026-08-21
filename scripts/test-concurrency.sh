@@ -74,7 +74,7 @@ trap cleanup EXIT
 log "Building hyve"
 go build -o "$BIN" "$ROOT_DIR"
 
-log "Writing fake authOnly driver module (auth sleeps ${SLEEP_SECONDS}s then prints its own identity as HYVE_KUBECONFIG_B64)"
+log "Writing fake authOnly driver module (auth sleeps ${SLEEP_SECONDS}s then writes its own identity to \$KUBECONFIG)"
 mkdir -p "$MODULES_DIR/modules/concurrency-test-driver"
 cat > "$MODULES_DIR/modules/concurrency-test-driver/module.yaml" <<'EOF'
 apiVersion: v1
@@ -96,8 +96,9 @@ spec:
         script: |
           echo "\$SECONDS START \$HYVE_CLUSTER_NAME" >> "$TIMING_LOG"
           sleep $SLEEP_SECONDS
-          echo "HYVE_KUBECONFIG_B64=\$(printf 'cluster=%s' "\$HYVE_CLUSTER_NAME" | base64)"
+          echo "cluster=\$HYVE_CLUSTER_NAME" > "\$KUBECONFIG"
           echo "\$SECONDS END \$HYVE_CLUSTER_NAME" >> "$TIMING_LOG"
+      exports: KUBECONFIG
 EOF
 
 log "Applying CRDs"

@@ -122,12 +122,31 @@ type DriverRef struct {
 	Version string `yaml:"version" json:"version"`
 }
 
+// RunnerSpec configures the container image cluster mode dispatches this
+// cluster's module create/status/delete/auth operations to as a Kubernetes
+// Job (see module.JobRunner) — set here (or on the Template a cluster was
+// created from, which this is rendered from — see
+// hyvev1alpha1.RenderClusterDefinitionSpec) rather than on the module
+// itself: a module's own module.yaml can document/recommend a suitable
+// image (its requirements.tools entries' description field), but doesn't
+// choose one, since the same module may run under different images across
+// different deployments (a private registry mirror, extra bundled tools,
+// a hardened base). Ignored entirely in local/CLI mode, where modules
+// always run inline.
+type RunnerSpec struct {
+	Image string `yaml:"image,omitempty" json:"image,omitempty"`
+}
+
 // ClusterSpec represents the desired cluster configuration.
 // The module identified by Driver is responsible for translating Params into
 // cloud API calls; the reconciler is provider-agnostic and only orchestrates.
 type ClusterSpec struct {
 	// Driver identifies the module that manages this cluster (e.g. github.com/hyve-modules/aws-eks).
 	Driver DriverRef `yaml:"driver,omitempty" json:"driver,omitempty"`
+
+	// Runner configures the image cluster mode's Job dispatch uses for this
+	// cluster's module operations — see RunnerSpec.
+	Runner RunnerSpec `yaml:"runner,omitempty" json:"runner,omitempty"`
 
 	// Params are arbitrary key/value pairs passed to the driver as HYVE_PARAM_<KEY>
 	// environment variables when running module operations.

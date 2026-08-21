@@ -35,6 +35,16 @@ type RunRequest struct {
 	Env        []string // "KEY=VALUE" pairs
 	WorkingDir string   // best-effort — only meaningful if Image has this path baked in; no checkout is mounted
 
+	// ImagePullSecrets names existing kubernetes.io/dockerconfigjson
+	// Secrets (in Namespace) kubelet should use to authenticate pulling
+	// Image — set on the Job's PodSpec exactly like a normal Pod's own
+	// spec.imagePullSecrets. Needed for a private Image; a public one needs
+	// nothing here. The Secret itself isn't created or read by this
+	// package — it must already exist in Namespace (see
+	// HyveConfigSpec.ImagePullSecrets for cluster mode's cluster-wide
+	// configuration of this list).
+	ImagePullSecrets []string
+
 	// PollInterval and Timeout control how long Run waits for the Job to
 	// finish before giving up. Zero values fall back to sane defaults (2s
 	// / 15m) — set explicitly in tests for a fast, deterministic poll loop.
@@ -53,6 +63,21 @@ const maxJobNameLen = 63
 // "-<UnixNano timestamp>" suffix (up to 20 chars: a leading "-" plus a
 // 19-digit nanosecond epoch) within maxJobNameLen.
 const maxNamePortion = maxJobNameLen - len("hyve-") - len("-") - len("9223372036854775807") // 19-digit max int64 (UnixNano)
+
+// buildLocalObjectRefs returns nil (not an empty slice) for a nil/empty
+// input, matching corev1.PodSpec.ImagePullSecrets' own omitempty
+// convention and avoiding a spurious empty imagePullSecrets: [] in every
+// created Job's YAML when nothing was configured.
+func buildLocalObjectRefs(names []string) []corev1.LocalObjectReference {
+	if len(names) == 0 {
+		return nil
+	}
+	refs := make([]corev1.LocalObjectReference, len(names))
+	for i, n := range names {
+		refs[i] = corev1.LocalObjectReference{Name: n}
+	}
+	return refs
+}
 
 func sanitizeJobName(name string) string {
 	s := jobNameSanitizer.ReplaceAllString(strings.ToLower(name), "-")
@@ -98,7 +123,8 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 			BackoffLimit: &backoffLimit,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:    corev1.RestartPolicyNever,
+					ImagePullSecrets: buildLocalObjectRefs(req.ImagePullSecrets),
 					Containers: []corev1.Container{{
 						Name:       "run",
 						Image:      req.Image,
