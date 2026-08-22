@@ -248,6 +248,8 @@ func TestRun_CreatesJobWithExpectedSpecAndSucceeds(t *testing.T) {
 		assert.Contains(t, c.Env, corev1.EnvVar{Name: "HYVE_CLUSTER_NAME", Value: "demo"})
 		require.NotNil(t, job.Spec.BackoffLimit)
 		assert.Equal(t, int32(0), *job.Spec.BackoffLimit)
+		require.NotNil(t, job.Spec.TTLSecondsAfterFinished, "backstop cleanup — see jobTTLSecondsAfterFinished's own doc comment")
+		assert.Equal(t, jobTTLSecondsAfterFinished, *job.Spec.TTLSecondsAfterFinished)
 		assert.Equal(t, []corev1.LocalObjectReference{{Name: "ghcr-pull-secret"}}, job.Spec.Template.Spec.ImagePullSecrets)
 
 		_, err = clientset.CoreV1().Pods("default").Create(context.Background(), &corev1.Pod{

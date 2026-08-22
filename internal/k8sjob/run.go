@@ -47,8 +47,10 @@ type RunRequest struct {
 	ImagePullSecrets []string
 
 	// PollInterval and Timeout control how long Run waits for the Job to
-	// finish before giving up. Zero values fall back to sane defaults (2s
-	// / 15m) — set explicitly in tests for a fast, deterministic poll loop.
+	// finish before giving up. Zero values fall back to defaultPollInterval
+	// / defaultTimeout — set explicitly in tests for a fast, deterministic
+	// poll loop. Timeout (or its default) is also used as the Job's own
+	// ActiveDeadlineSeconds — see that field's own doc comment in Run.
 	PollInterval time.Duration
 	Timeout      time.Duration
 
@@ -126,6 +128,30 @@ func sanitizeJobName(name string) string {
 // imageInstalls entry declared for this exact fallback image.
 const defaultFallbackImage = "debian:stable-slim"
 
+// defaultPollInterval and defaultTimeout are RunRequest.PollInterval/
+// Timeout's zero-value fallbacks — named constants so Run's use of Timeout
+// for ActiveDeadlineSeconds and waitForJob's own identical fallback can't
+// silently drift apart.
+const (
+	defaultPollInterval = 2 * time.Second
+	defaultTimeout      = 15 * time.Minute
+)
+
+// jobTTLSecondsAfterFinished is a backstop, not the primary cleanup path —
+// Run's own deferred Delete call (below) still fires immediately in the
+// normal case. This exists for when that never gets to run at all: if the
+// process calling Run is killed (crashed, OOM-killed, or a Deployment
+// scaled to 0) between the Job finishing and Run's defer executing, the
+// Job is otherwise orphaned forever — nothing else in this codebase sweeps
+// for leftover hyve.io/run-labeled Jobs. Confirmed live: exactly this
+// happened when a controller pod was stopped mid-verification, leaving two
+// already-finished Jobs sitting in the cluster with no process left to
+// clean them up. Counts from the Job's own completion (Succeeded/Failed),
+// not creation — a still-*running* Job when the caller disappears is a
+// separate, unhandled risk this does not cover (see ActiveDeadlineSeconds
+// as a possible follow-up if that ever needs bounding too).
+const jobTTLSecondsAfterFinished = int32(300)
+
 // Run creates a Job running req.Image with req.Script as its entrypoint,
 // waits for it to finish, and returns its pod's combined logs. The Job
 // (and its Pods, via Kubernetes' own Job-owns-Pods garbage collection) is
@@ -158,7 +184,25 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 		}
 	}
 
+	// effectiveTimeout is resolved here, once, and used for both
+	// ActiveDeadlineSeconds (below) and the wait loop (waitForJob) — the
+	// same value governs "how long Run itself will wait" and "how long
+	// Kubernetes lets the Job's pod run before force-failing it," so a
+	// caller that gives up waiting was never going to see a later result
+	// anyway. Without this, a Job whose caller process died (crashed, or a
+	// Deployment scaled to 0 — see jobTTLSecondsAfterFinished's own doc
+	// comment for exactly this scenario, confirmed live) could keep
+	// running indefinitely with nothing left tracking it or able to react
+	// to its outcome; ActiveDeadlineSeconds bounds that even when nothing
+	// is left alive to call Delete.
+	effectiveTimeout := req.Timeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = defaultTimeout
+	}
+	activeDeadlineSeconds := int64(effectiveTimeout.Seconds())
+
 	backoffLimit := int32(0) // no retries — the caller's own retry/continueOnError semantics own that decision, not the Job's
+	ttl := jobTTLSecondsAfterFinished
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sanitizeJobName(req.Name),
@@ -166,7 +210,9 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 			Labels:    map[string]string{"app.kubernetes.io/managed-by": "hyve", "hyve.io/run": req.Name},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoffLimit,
+			BackoffLimit:            &backoffLimit,
+			TTLSecondsAfterFinished: &ttl,
+			ActiveDeadlineSeconds:   &activeDeadlineSeconds,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy:    corev1.RestartPolicyNever,
@@ -188,6 +234,9 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 		return "", 0, fmt.Errorf("create job for %q: %w", req.Name, err)
 	}
 
+	// Primary cleanup path — fires immediately once Run itself is about to
+	// return. jobTTLSecondsAfterFinished (set on the Job's own spec above)
+	// is the backstop for when this defer never gets to run at all.
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelCleanup()
 	defer func() {
@@ -195,7 +244,7 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 		_ = client.BatchV1().Jobs(req.Namespace).Delete(cleanupCtx, created.Name, metav1.DeleteOptions{PropagationPolicy: &policy})
 	}()
 
-	finished, waitErr := waitForJob(ctx, client, req.Namespace, created.Name, req.PollInterval, req.Timeout)
+	finished, waitErr := waitForJob(ctx, client, req.Namespace, created.Name, req.PollInterval, effectiveTimeout)
 
 	logs, logErr := fetchPodLogs(ctx, client, req.Namespace, created.Name)
 	if logErr == nil && logs != "" && output != nil {
@@ -229,10 +278,10 @@ type jobOutcome struct {
 func waitForJob(ctx context.Context, client kubernetes.Interface, namespace, jobName string, pollInterval, timeout time.Duration) (jobOutcome, error) {
 	interval := pollInterval
 	if interval <= 0 {
-		interval = 2 * time.Second
+		interval = defaultPollInterval
 	}
 	if timeout <= 0 {
-		timeout = 15 * time.Minute
+		timeout = defaultTimeout
 	}
 
 	deadline := time.Now().Add(timeout)

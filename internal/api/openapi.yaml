@@ -277,7 +277,11 @@ paths:
         GET /api/kubeconfig instead). Deliberately more sensitive than
         ClusterDTO: this is the one legitimate place driverOutputs/params
         get exposed, since a client-side `hyve cluster auth` needs them to
-        actually run the module's auth.yaml locally.
+        actually run the module's auth operation locally. The driver
+        module itself is resolved server-side, against this API's own
+        module cache, and its auth operation file's raw content is
+        delivered directly (authFileContent) — the client needs no local
+        hyve.lock/module resolution of its own at all.
       parameters:
         - $ref: "#/components/parameters/ClusterName"
       responses:
@@ -822,7 +826,13 @@ components:
             description: Reconciler-owned state tracking what got applied for one resources[] entry — never hand-edited.
     AuthContextDTO:
       type: object
-      description: Only served for clusters using the default client-side auth method — see GET /api/clusters/{name}/auth-context.
+      description: |
+        Only served for clusters using the default client-side auth method —
+        see GET /api/clusters/{name}/auth-context. authFileContent is the
+        driver module's resolved auth operation file (auth.yaml/auth.sh),
+        resolved server-side against the API's own module cache and
+        delivered verbatim — the client writes it to a temp file and runs it
+        locally, with no hyve.lock/module resolution of its own required.
       properties:
         driverSource: { type: string }
         driverVersion: { type: string }
@@ -833,7 +843,18 @@ components:
         driverOutputs:
           type: object
           additionalProperties: { type: string }
-      required: [driverSource, driverVersion]
+        authFileName: { type: string, example: "auth.yaml" }
+        authFileContent: { type: string, description: "Raw contents of authFileName, verbatim." }
+        tools:
+          type: array
+          description: The driver module's declared tool requirements (name/description only) — enough for the client to run its usual local-PATH validation before executing authFileContent.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              description: { type: string }
+            required: [name]
+      required: [driverSource, driverVersion, authFileName, authFileContent]
     DriverRef:
       type: object
       properties:

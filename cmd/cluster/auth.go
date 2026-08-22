@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,11 +27,14 @@ operation directly against the target cloud/cluster and writes the result to
 your local kubeconfig, exactly as before.
 
 Cluster mode (a valid 'hyve login' session exists): by default, runs the
-exact same client-side flow — the API just supplies the driver info
-(source/version/params/outputs) via GET /api/clusters/<name>/auth-context
-instead of a git-checked-out clusters/<name>.yaml. Module auth.yaml scripts
-are written assuming your own local credentials/tools, so this still needs
-the module locally resolvable (run 'hyve module install' first).
+same auth operation client-side too, but with no local module resolution
+required at all — GET /api/clusters/<name>/auth-context delivers the
+resolved auth operation file's content directly (resolved against the API's
+own module cache, not yours), along with driver info
+(source/version/params/outputs). No local environment, git checkout, or
+'hyve module install' is needed; only your own local credentials/tools
+(civo, aws, gcloud, etc.) still apply, since the script runs on your
+machine.
 
 If the cluster has opted into server-side auth (spec.access.method:
 module-auth on its ClusterDefinition), the module instead runs inside the
@@ -135,44 +140,41 @@ func authClusterAPI(client *shared.APIClient, name string, method string) {
 	fmt.Printf("kubectl context for '%s' configured (via the API, server-side auth)\n", name)
 }
 
-// runModuleAuthLocally is cluster mode's client-side-default path: resolves
-// and executes name's driver module locally, exactly like local mode's own
-// flow above, except driver source/version/params/driverOutputs come from
-// the API's auth-context response instead of a git-checked-out
-// clusters/<name>.yaml. The module still needs to be locked locally via
-// `hyve module install` regardless of which mode owns the ClusterDefinition
-// it's being run for — module resolution/caching has no cluster-mode
-// equivalent (yet), so this reuses the same git-backed repoPath local mode
-// requires.
+// runModuleAuthLocally is cluster mode's client-side-default path: runs the
+// auth operation file the API's auth-context response already delivered
+// (AuthFileContent, resolved server-side against the API's own module
+// cache — see internal/api's handleAuthContext) by writing it to a fresh
+// temp directory and pointing Executor at that, instead of resolving the
+// module from a local hyve.lock. No local environment/git checkout is
+// required for this at all — matching how cluster-mode login and local
+// directories are otherwise completely independent (see internal/session's
+// own doc comment); requiring `hyve module install` here would have been
+// exactly the kind of silent re-coupling that split was meant to prevent.
 func runModuleAuthLocally(name string, authCtx *shared.AuthContextDTO, method string) {
 	ctx := context.Background()
-	stateMgr, _ := shared.CreateStateManager(ctx)
-	repoPath := stateMgr.LocalPath()
 
-	lf, err := mod.LoadLockFile(repoPath)
-	if err != nil {
-		log.Fatalf("Failed to load hyve.lock: %v", err)
-	}
-	locked := lf.GetLocked(authCtx.DriverSource, authCtx.DriverVersion)
-	if locked == nil && !mod.IsLocalSource(authCtx.DriverSource) {
-		log.Fatalf("Module %s@%s not in hyve.lock — run `hyve module install`",
-			authCtx.DriverSource, authCtx.DriverVersion)
-	}
-
-	resolved, err := mod.Resolve(authCtx.DriverSource, authCtx.DriverVersion, locked, repoPath)
-	if err != nil {
-		log.Fatalf("Failed to resolve module: %v", err)
-	}
-
-	manifest, _ := mod.LoadManifestForSource(authCtx.DriverSource, authCtx.DriverVersion, repoPath, lf)
-	if manifest != nil {
-		if reqErr := mod.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+	if len(authCtx.Tools) > 0 {
+		tools := make([]mod.ToolRequirement, len(authCtx.Tools))
+		for i, t := range authCtx.Tools {
+			tools[i] = mod.ToolRequirement{Name: t.Name, Description: t.Description}
+		}
+		if reqErr := mod.ValidateToolRequirements(tools); reqErr != nil {
 			log.Fatalf("%v", reqErr)
 		}
 	}
 
+	tmpDir, err := os.MkdirTemp("", "hyve-cluster-auth-*")
+	if err != nil {
+		log.Fatalf("Failed to create temp directory for auth module: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, authCtx.AuthFileName), []byte(authCtx.AuthFileContent), 0600); err != nil {
+		log.Fatalf("Failed to write auth module file: %v", err)
+	}
+
 	env := authContextEnv(name, authCtx)
-	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: repoPath, AuthMethod: method}
+	executor := &mod.Executor{ModuleDir: tmpDir, Env: env, WorkDir: tmpDir, AuthMethod: method}
 
 	if _, err := executor.Execute(ctx, mod.OperationAuth); err != nil {
 		log.Fatalf("Auth failed: %v", err)

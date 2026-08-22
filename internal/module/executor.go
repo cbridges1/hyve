@@ -70,24 +70,32 @@ type Executor struct {
 
 // Execute runs a named operation and returns captured outputs.
 func (e *Executor) Execute(ctx context.Context, op OperationType) (*OperationResult, error) {
-	opStr := string(op)
-
-	// Search for operation file in priority order: <op>.yaml, <op>.sh, <op>
-	yamlPath := filepath.Join(e.ModuleDir, opStr+".yaml")
-	shPath := filepath.Join(e.ModuleDir, opStr+".sh")
-	binPath := filepath.Join(e.ModuleDir, opStr)
-
-	switch {
-	case fileExists(yamlPath):
-		return e.executeYAML(ctx, yamlPath)
-	case fileExists(shPath):
-		return e.executeScript(ctx, shPath)
-	case fileExists(binPath):
-		return e.executeScript(ctx, binPath)
-	default:
+	path, ok := FindOperationFile(e.ModuleDir, op)
+	if !ok {
 		// Operation not implemented — return empty result (e.g. scale.yaml missing is OK)
 		return &OperationResult{Outputs: map[string]string{}, ExitCode: 0}, nil
 	}
+	if strings.HasSuffix(path, ".yaml") {
+		return e.executeYAML(ctx, path)
+	}
+	return e.executeScript(ctx, path)
+}
+
+// FindOperationFile returns op's operation file path in moduleDir, checking
+// <op>.yaml, <op>.sh, then <op> in that order — exported so a caller that
+// needs to know an operation's file without executing it (e.g. internal/api's
+// auth-context endpoint, which delivers auth.yaml's raw content to a CLI to
+// run entirely client-side, without that CLI needing its own hyve.lock/
+// module resolution at all) doesn't have to duplicate this precedence.
+func FindOperationFile(moduleDir string, op OperationType) (path string, ok bool) {
+	opStr := string(op)
+	for _, candidate := range []string{opStr + ".yaml", opStr + ".sh", opStr} {
+		p := filepath.Join(moduleDir, candidate)
+		if fileExists(p) {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 func fileExists(path string) bool {

@@ -368,14 +368,28 @@ func (c *APIClient) GetModule(name string) (*ModuleDTO, error) {
 	return &out, nil
 }
 
-// AuthContextDTO mirrors internal/api's authContextDTO — the driver info
-// needed to resolve and run a module's auth operation client-side.
+// AuthContextDTO mirrors internal/api's authContextDTO — everything needed
+// to run a module's auth operation entirely client-side, with no local
+// hyve.lock/module resolution: AuthFileContent is the resolved auth
+// operation file's raw bytes as the server-side module cache already has
+// it, AuthFileName is the filename to write them under (e.g. "auth.yaml")
+// so Executor's own extension-based dispatch (module.FindOperationFile)
+// picks the right execution path once it exists on disk locally.
 type AuthContextDTO struct {
-	DriverSource  string            `json:"driverSource"`
-	DriverVersion string            `json:"driverVersion"`
-	Region        string            `json:"region,omitempty"`
-	Params        map[string]string `json:"params,omitempty"`
-	DriverOutputs map[string]string `json:"driverOutputs,omitempty"`
+	DriverSource    string                   `json:"driverSource"`
+	DriverVersion   string                   `json:"driverVersion"`
+	Region          string                   `json:"region,omitempty"`
+	Params          map[string]string        `json:"params,omitempty"`
+	DriverOutputs   map[string]string        `json:"driverOutputs,omitempty"`
+	AuthFileName    string                   `json:"authFileName"`
+	AuthFileContent string                   `json:"authFileContent"`
+	Tools           []AuthToolRequirementDTO `json:"tools,omitempty"`
+}
+
+// AuthToolRequirementDTO mirrors internal/api's authToolRequirement.
+type AuthToolRequirementDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // GetAuthContext calls GET /api/clusters/<name>/auth-context. A 409

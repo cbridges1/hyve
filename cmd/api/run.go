@@ -98,6 +98,7 @@ func runAPI() {
 		PrimaryClusterName: apiPrimaryClusterName,
 		ModuleAuthProvider: moduleAuthProvider,
 		TunnelProvider:     tunnelProvider,
+		ModulesDir:         apiModulesDir,
 	}
 
 	caData, caErr := os.ReadFile(apiInClusterCAPath)

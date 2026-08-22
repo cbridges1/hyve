@@ -36,6 +36,13 @@ type Server struct {
 	ModuleAuthProvider AccessProvider
 	TunnelProvider     AccessProvider
 
+	// ModulesDir is the same baked-in modules root ModuleAuthProvider's own
+	// ModulesDir points at (see its doc comment) — used directly by
+	// handleAuthContext to resolve a driver module and read its auth
+	// operation file for delivery to the client, since that's a read, not
+	// an AccessProvider.Kubeconfig-shaped execution.
+	ModulesDir string
+
 	// Proxy backs /proxy/* — see proxy.go. Left nil, /proxy/* 503s rather
 	// than panicking.
 	Proxy http.Handler
