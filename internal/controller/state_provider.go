@@ -8,6 +8,7 @@ import (
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/resource"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
@@ -199,5 +200,15 @@ func (p *CRDStateProvider) WorkflowSource() workflow.Source {
 	return workflow.ChainSource{
 		Primary:  workflow.CRDSource{Client: p.Client, Namespace: p.Namespace},
 		Fallback: workflow.FileSource{Dir: filepath.Join(p.ModulesDirPath, workflow.WorkflowsDir)},
+	}
+}
+
+// ResourceSource mirrors WorkflowSource exactly, one tier below it: a
+// Resource CR takes precedence, falling back to a local resources/<name>.yaml
+// file only when no CR by that name exists.
+func (p *CRDStateProvider) ResourceSource() resource.Source {
+	return resource.ChainSource{
+		Primary:  resource.CRDSource{Client: p.Client, Namespace: p.Namespace},
+		Fallback: resource.FileSource{Dir: filepath.Join(p.ModulesDirPath, resource.ResourcesDir)},
 	}
 }

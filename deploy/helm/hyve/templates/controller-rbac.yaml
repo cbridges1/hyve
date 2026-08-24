@@ -34,6 +34,12 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["workflows"]
     verbs: ["get", "list", "watch"]
+  # resources mirrors workflows exactly, one tier below it — see
+  # internal/controller/state_provider.go's CRDStateProvider.ResourceSource
+  # and reconciler.go's resolveResourceIfNeeded.
+  - apiGroups: ["hyve.io"]
+    resources: ["resources"]
+    verbs: ["get", "list", "watch"]
   # modules is the controller's own write target — see
   # internal/controller/reconciler.go's resolveModuleIfNeeded, which
   # creates/updates one Module CR per auto-resolved driver module as a

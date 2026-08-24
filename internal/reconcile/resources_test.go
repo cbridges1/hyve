@@ -61,13 +61,15 @@ func TestValidateResourceRef_HelmOnly(t *testing.T) {
 func TestValidateResourceRef_BothSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Helm: &types.HelmSpec{Chart: "c"}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+	assert.Contains(t, err.Error(), "at most one of source, helm, or secret")
 }
 
+// TestValidateResourceRef_NeitherSet: zero of Source/Helm/Secret set is now
+// valid — it means "resolve by Name" (a Resource CRD or local
+// resources/<name>.yaml file), not an error, unlike the old exactly-one rule.
 func TestValidateResourceRef_NeitherSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+	assert.NoError(t, err)
 }
 
 func TestValidateResourceRef_SecretOnly(t *testing.T) {
@@ -78,17 +80,17 @@ func TestValidateResourceRef_SecretOnly(t *testing.T) {
 func TestValidateResourceRef_SourceAndSecretBothSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Secret: &types.SecretSpec{}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+	assert.Contains(t, err.Error(), "at most one of source, helm, or secret")
 }
 
 func TestValidateResourceRef_HelmAndSecretBothSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a", Helm: &types.HelmSpec{Chart: "c"}, Secret: &types.SecretSpec{}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+	assert.Contains(t, err.Error(), "at most one of source, helm, or secret")
 }
 
 func TestValidateResourceRef_AllThreeSet(t *testing.T) {
 	err := validateResourceRef(types.ResourceRef{Name: "a", Source: "./x.yaml", Helm: &types.HelmSpec{Chart: "c"}, Secret: &types.SecretSpec{}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one of source, helm, or secret")
+	assert.Contains(t, err.Error(), "at most one of source, helm, or secret")
 }

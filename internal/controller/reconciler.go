@@ -10,6 +10,7 @@ import (
 	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/resourceref"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflowref"
 
@@ -119,7 +120,8 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	secretsEnv := r.fetchCLISecrets(ctx)
 	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version, secretsEnv[cliSecretGitHubToken])
-	lf = r.resolveWorkflowIfNeeded(ctx, lf, def)
+	lf = r.resolveWorkflowIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
+	lf = r.resolveResourceIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 
 	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv)
 
@@ -177,7 +179,8 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 	}
 	secretsEnv := r.fetchCLISecrets(ctx)
 	lf = r.resolveModuleIfNeeded(ctx, lf, def.Spec.Driver.Source, def.Spec.Driver.Version, secretsEnv[cliSecretGitHubToken])
-	lf = r.resolveWorkflowIfNeeded(ctx, lf, def)
+	lf = r.resolveWorkflowIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
+	lf = r.resolveResourceIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 
 	if err := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete cleanup: %w", err)
@@ -317,17 +320,23 @@ func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context,
 // the first successful pass, matching the "resolve once, cache forever
 // until content changes" model hyve.lock already uses everywhere else.
 //
-// Unlike resolveModuleIfNeeded, this has no explicit-token parameter:
-// workflowref's remote fetch (module.DownloadAndExtract, a plain
-// unauthenticated archive download) has no private-repo path at all in
-// either mode — a pre-existing limitation this doesn't change. Also unlike
-// modules, no CR is created to track resolution status — hyve.lock is the
-// only record; add one later if that visibility gap matters in practice.
+// githubToken, when non-empty, is the live-fetched hyve-cli-secrets
+// GITHUB_TOKEN value (see fetchCLISecrets) — passed explicitly rather than
+// via os.Setenv, which would race under MaxConcurrentReconciles > 1; empty
+// falls back to the process's own GITHUB_TOKEN env var exactly as
+// resolveModuleIfNeeded's own githubToken param does (see
+// module.ResolveToken). This is what makes workflowref.FetchRepoArchive's
+// git clone able to authenticate against a private repo in cluster mode at
+// all — previously no token reached this call site.
+//
+// No CR is created to track resolution status, unlike modules — hyve.lock
+// is the only record; add one later if that visibility gap matters in
+// practice.
 //
 // Never returns an error: a resolution failure here is intentionally left
 // to surface through the existing shared validateWorkflowRefsLocked check
 // inside ReconcileOne, matching resolveModuleIfNeeded's own stance exactly.
-func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Context, lf *module.LockFile, def types.ClusterDefinition) *module.LockFile {
+func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Context, lf *module.LockFile, def types.ClusterDefinition, githubToken string) *module.LockFile {
 	var refs []types.WorkflowRef
 	for _, ref := range reconcile.AllWorkflowHookRefs(def) {
 		if ref.IsRemote() {
@@ -338,7 +347,7 @@ func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Contex
 		return lf
 	}
 
-	_, _, resolveErrors, changed, err := workflowref.Install(r.StateProvider.LocalPath(), refs)
+	_, _, resolveErrors, changed, err := workflowref.Install(r.StateProvider.LocalPath(), refs, githubToken)
 	if err != nil {
 		log.Printf("[%s] Warning: failed to resolve workflow refs: %v", def.Metadata.Name, err)
 		return lf
@@ -353,6 +362,42 @@ func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Contex
 	reloaded, err := module.LoadLockFile(r.StateProvider.LocalPath())
 	if err != nil {
 		log.Printf("[%s] Warning: workflow refs resolved but failed to reload hyve.lock: %v", def.Metadata.Name, err)
+		return lf
+	}
+	return reloaded
+}
+
+// resolveResourceIfNeeded mirrors resolveWorkflowIfNeeded exactly, one tier
+// below it: it resolves every remote ResourceRef in def.Spec.Resources
+// that isn't already locked in lf. Simpler than resolveWorkflowIfNeeded's
+// ref-gathering — resources have no lifecycle-hook fan-out to scan, just
+// the one flat def.Spec.Resources list.
+func (r *ClusterDefinitionReconciler) resolveResourceIfNeeded(ctx context.Context, lf *module.LockFile, def types.ClusterDefinition, githubToken string) *module.LockFile {
+	var refs []types.ResourceRef
+	for _, ref := range def.Spec.Resources {
+		if ref.IsRemote() {
+			refs = append(refs, ref)
+		}
+	}
+	if len(refs) == 0 {
+		return lf
+	}
+
+	_, _, resolveErrors, changed, err := resourceref.Install(r.StateProvider.LocalPath(), refs, githubToken)
+	if err != nil {
+		log.Printf("[%s] Warning: failed to resolve resource refs: %v", def.Metadata.Name, err)
+		return lf
+	}
+	for _, e := range resolveErrors {
+		log.Printf("[%s] Warning: failed to resolve resource ref: %s", def.Metadata.Name, e)
+	}
+	if !changed {
+		return lf
+	}
+
+	reloaded, err := module.LoadLockFile(r.StateProvider.LocalPath())
+	if err != nil {
+		log.Printf("[%s] Warning: resource refs resolved but failed to reload hyve.lock: %v", def.Metadata.Name, err)
 		return lf
 	}
 	return reloaded

@@ -12,6 +12,7 @@ import (
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/crdconv"
+	"github.com/cbridges1/hyve/internal/resource"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
 
@@ -254,6 +255,12 @@ func (m *Manager) HasStateSidecar(name string) bool {
 // this repository — file mode's only ever source, unchanged behavior.
 func (m *Manager) WorkflowSource() workflow.Source {
 	return workflow.FileSource{Dir: filepath.Join(m.LocalPath(), workflow.WorkflowsDir)}
+}
+
+// ResourceSource resolves a Name-only ResourceRef against resources/ under
+// this repository — file mode's only ever source, mirroring WorkflowSource.
+func (m *Manager) ResourceSource() resource.Source {
+	return resource.FileSource{Dir: filepath.Join(m.LocalPath(), resource.ResourcesDir)}
 }
 
 // statusIsEmpty reports whether there is nothing worth persisting to a

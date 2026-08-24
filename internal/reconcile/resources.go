@@ -2,11 +2,13 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"sort"
 	"time"
 
+	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/resourceref"
 	"github.com/cbridges1/hyve/internal/types"
 )
@@ -39,9 +41,10 @@ import (
 // cluster.Spec.Resources/AppliedResources are left untouched in dry-run
 // mode — the caller's in-memory copy is discarded either way since nothing
 // is persisted.
-func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.ClusterDefinition, env []string, strictResourceDelete, dryRun bool) error {
+func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.ClusterDefinition, env []string, lf *module.LockFile, strictResourceDelete, dryRun bool) error {
 	name := cluster.Metadata.Name
 	repoRoot := r.stateMgr.LocalPath()
+	githubToken := envValue(env, "GITHUB_TOKEN")
 
 	if cluster.Spec.AppliedResources == nil {
 		cluster.Spec.AppliedResources = map[string]*types.AppliedResource{}
@@ -123,8 +126,8 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 			configHash = secretConfigHash(res.Secret, resolved)
 			applyNamespace = res.Secret.Namespace
 			liveManifest = rendered
-		} else {
-			resolved, err := resourceref.Resolve(res.Source, repoRoot)
+		} else if res.Source != "" {
+			resolved, err := resourceref.Resolve(res.Source, repoRoot, lf, githubToken)
 			if err != nil {
 				loopErr = fmt.Errorf("resource %s: resolve failed: %w", res.Name, err)
 				break
@@ -132,6 +135,22 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 			configHash = resolved.SHA256
 			applyNamespace = res.Namespace
 			liveManifest = resolved.Data
+		} else {
+			// Neither Source, Helm, nor Secret set — resolve by Name via a
+			// Resource CRD (cluster mode) or a local resources/<name>.yaml
+			// file (local mode), mirroring WorkflowRef.Name's own
+			// ChainSource resolution exactly. See validateResourceRef's
+			// relaxed "at most one" check, which is what makes this a
+			// legitimate zero-set case rather than a validation error.
+			manifest, err := r.stateMgr.ResourceSource().GetResource(res.Name)
+			if err != nil {
+				loopErr = fmt.Errorf("resource %s: resolve failed: %w", res.Name, err)
+				break
+			}
+			sum := sha256.Sum256(manifest)
+			configHash = fmt.Sprintf("%x", sum)
+			applyNamespace = res.Namespace
+			liveManifest = manifest
 		}
 
 		applied := cluster.Spec.AppliedResources[res.Name]
@@ -291,6 +310,11 @@ func findOrphanedResources(resources []types.ResourceRef, applied map[string]*ty
 
 // validateResourceRef checks that exactly one of Source or Helm is set on a
 // non-delete resource entry. Pure — table-testable.
+// validateResourceRef requires at most one of Source/Helm/Secret — zero is
+// now a legitimate case too (see the resolution loop above): it means
+// "resolve by Name" via a Resource CRD or local resources/<name>.yaml file,
+// mirroring how a bare WorkflowRef.Name needs neither Source nor any other
+// field set either.
 func validateResourceRef(res types.ResourceRef) error {
 	set := 0
 	if res.Source != "" {
@@ -302,8 +326,8 @@ func validateResourceRef(res types.ResourceRef) error {
 	if res.Secret != nil {
 		set++
 	}
-	if set != 1 {
-		return fmt.Errorf("resource %s: exactly one of source, helm, or secret must be set", res.Name)
+	if set > 1 {
+		return fmt.Errorf("resource %s: at most one of source, helm, or secret may be set", res.Name)
 	}
 	return nil
 }

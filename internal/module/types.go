@@ -69,6 +69,7 @@ type LockFile struct {
 	Version   int                        `yaml:"version" json:"version"`
 	Modules   map[string]*LockedModule   `yaml:"modules" json:"modules"`
 	Workflows map[string]*LockedWorkflow `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	Resources map[string]*LockedResource `yaml:"resources,omitempty" json:"resources,omitempty"`
 }
 
 type LockedModule struct {
@@ -92,6 +93,20 @@ type LockedWorkflow struct {
 type LockedRunner struct {
 	Image  string `yaml:"image,omitempty" json:"image,omitempty"`
 	Digest string `yaml:"digest,omitempty" json:"digest,omitempty"`
+}
+
+// LockedResource is one resolved, content-hashed remote resource manifest.
+// Unlike LockedModule, it carries a Name for the same reason LockedWorkflow
+// does — a resource is referenced by Name after install, not by
+// source+version. Unlike LockedWorkflow, Name comes from the ResourceRef
+// itself rather than being derived from file content: a raw K8s manifest
+// has no single canonical "hyve name" the way a Workflow file's own
+// metadata.name does, especially once multi-document.
+type LockedResource struct {
+	Name     string `yaml:"name" json:"name"`
+	Source   string `yaml:"source" json:"source"`     // canonical "host/org/repo//path/file.yaml" — never a directory
+	Resolved string `yaml:"resolved" json:"resolved"` // full download URL for this exact file at the pinned ref
+	SHA256   string `yaml:"sha256" json:"sha256"`     // sha256 of this file's raw bytes only
 }
 
 // ClusterAuth is parsed from auth.yaml (kind: ClusterAuth).

@@ -88,7 +88,7 @@ func runRemoteWorkflowSource(source, pathFlag, cluster string, showLogs, showOut
 	repoPath := shared.GetRepoPath()
 	lf, _ := mod.LoadLockFile(repoPath) // best-effort; workflowref.Resolve is nil-safe
 
-	files, err := workflowref.Resolve(source, pathFlag, lf)
+	files, err := workflowref.Resolve(source, pathFlag, lf, "")
 	if err != nil {
 		log.Fatalf("Failed to resolve workflow %q: %v", source, err)
 	}

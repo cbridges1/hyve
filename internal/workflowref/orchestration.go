@@ -81,8 +81,10 @@ func GatherWorkflowRefs(stateMgr *state.Manager, repoPath string) ([]types.Workf
 // Install resolves every ref (as gathered by GatherWorkflowRefs) into
 // hyve.lock, skipping any file whose content hasn't changed since the last
 // install (to avoid a no-op commit). The caller is responsible for
-// committing the repo when changed is true.
-func Install(repoPath string, refs []types.WorkflowRef) (locked []LockedRef, collisions []NameCollision, resolveErrors []string, changed bool, err error) {
+// committing the repo when changed is true. token is an explicit GitHub-
+// style access token for a private source (see Resolve's own doc comment);
+// empty falls back to the process's own GITHUB_TOKEN env var.
+func Install(repoPath string, refs []types.WorkflowRef, token string) (locked []LockedRef, collisions []NameCollision, resolveErrors []string, changed bool, err error) {
 	lf, err := module.LoadLockFile(repoPath)
 	if err != nil {
 		return nil, nil, nil, false, fmt.Errorf("failed to load lock file: %w", err)
@@ -90,7 +92,7 @@ func Install(repoPath string, refs []types.WorkflowRef) (locked []LockedRef, col
 
 	nameOwner := map[string]string{} // name -> first canonical source seen this run
 	for _, ref := range refs {
-		files, resolveErr := Resolve(ref.Source, ref.Path, lf)
+		files, resolveErr := Resolve(ref.Source, ref.Path, lf, token)
 		if resolveErr != nil {
 			resolveErrors = append(resolveErrors, fmt.Sprintf("%s: %v", ref.String(), resolveErr))
 			continue
@@ -128,14 +130,14 @@ func Install(repoPath string, refs []types.WorkflowRef) (locked []LockedRef, col
 // Update forces a full re-resolve (bypassing the lock-file cache hint) of one
 // source, refreshing hyve.lock entries for every file it resolves to. The
 // caller is responsible for committing the repo afterward.
-func Update(repoPath, source, pathOverride string) ([]LockedRef, error) {
+func Update(repoPath, source, pathOverride, token string) ([]LockedRef, error) {
 	lf, err := module.LoadLockFile(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load lock file: %w", err)
 	}
 
 	// nil lf forces a full re-resolve, bypassing any cache short-circuit.
-	files, err := Resolve(source, pathOverride, nil)
+	files, err := Resolve(source, pathOverride, nil, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve workflow: %w", err)
 	}

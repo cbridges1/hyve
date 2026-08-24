@@ -47,7 +47,24 @@ func TestResolveWorkflowIfNeeded_NoRemoteRefsIsANoOp(t *testing.T) {
 		}},
 	}
 
-	got := r.resolveWorkflowIfNeeded(context.Background(), lf, def)
+	got := r.resolveWorkflowIfNeeded(context.Background(), lf, def, "")
+	assert.Same(t, lf, got, "must return the same lf, untouched, with no remote refs to resolve")
+}
+
+// TestResolveResourceIfNeeded_NoRemoteRefsIsANoOp mirrors
+// TestResolveWorkflowIfNeeded_NoRemoteRefsIsANoOp exactly, one tier below
+// it: a ClusterDefinition whose resources are all local-path or Name-only
+// refs (IsRemote() false) must short-circuit with no StateProvider access.
+func TestResolveResourceIfNeeded_NoRemoteRefsIsANoOp(t *testing.T) {
+	r := &ClusterDefinitionReconciler{StateProvider: nil}
+	lf := &module.LockFile{Version: 1}
+	def := types.ClusterDefinition{
+		Spec: types.ClusterSpec{Resources: []types.ResourceRef{
+			{Name: "local-resource"}, // Source unset: not remote
+		}},
+	}
+
+	got := r.resolveResourceIfNeeded(context.Background(), lf, def, "")
 	assert.Same(t, lf, got, "must return the same lf, untouched, with no remote refs to resolve")
 }
 

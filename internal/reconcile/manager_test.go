@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cbridges1/hyve/internal/module"
+	"github.com/cbridges1/hyve/internal/resource"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
@@ -36,6 +37,9 @@ func (f *fakeStateProvider) RemoveClusterFile(name string) error                
 func (f *fakeStateProvider) HasStateSidecar(name string) bool                         { return false }
 func (f *fakeStateProvider) WorkflowSource() workflow.Source {
 	return workflow.FileSource{Dir: f.LocalPath()}
+}
+func (f *fakeStateProvider) ResourceSource() resource.Source {
+	return resource.FileSource{Dir: f.LocalPath()}
 }
 
 func TestValidateDriverModuleLocked(t *testing.T) {
@@ -187,6 +191,67 @@ func TestValidateWorkflowRefsLocked(t *testing.T) {
 			}
 			assert.Error(t, validateWorkflowRefsLocked(c, lf))
 		}
+	})
+}
+
+// TestValidateResourceRefsLocked mirrors TestValidateWorkflowRefsLocked
+// exactly, one tier below it — validateResourceRefsLocked has the same
+// local/Name-is-fine, remote-must-be-locked, directory-kind-rejected shape.
+func TestValidateResourceRefsLocked(t *testing.T) {
+	t.Run("local and Name-only refs are always fine", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{
+					{Name: "local-resource", Source: "./x.yaml"},
+					{Name: "by-name"},
+				},
+			},
+		}
+		assert.NoError(t, validateResourceRefsLocked(c, lf))
+	})
+
+	t.Run("remote ref not in lock errors", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//a.yaml@v1.0.0"}},
+			},
+		}
+		err := validateResourceRefsLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in hyve.lock")
+	})
+
+	t.Run("remote ref present in lock passes", func(t *testing.T) {
+		lf := &module.LockFile{
+			Version: 1,
+			Resources: map[string]*module.LockedResource{
+				"github.com/org/repo//a.yaml@v1.0.0": {Name: "a", Source: "github.com/org/repo//a.yaml", SHA256: "abc"},
+			},
+		}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//a.yaml@v1.0.0"}},
+			},
+		}
+		assert.NoError(t, validateResourceRefsLocked(c, lf))
+	})
+
+	t.Run("directory-kind ref is rejected", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//manifests/"}},
+			},
+		}
+		err := validateResourceRefsLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must name a single file")
 	})
 }
 

@@ -115,6 +115,9 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 		if err := validateWorkflowRefsLocked(c, lf); err != nil {
 			return err
 		}
+		if err := validateResourceRefsLocked(c, lf); err != nil {
+			return err
+		}
 	}
 
 	if len(clusterDefs) == 0 {
@@ -197,6 +200,9 @@ func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefiniti
 		return err
 	}
 	if err := validateWorkflowRefsLocked(def, lf); err != nil {
+		return err
+	}
+	if err := validateResourceRefsLocked(def, lf); err != nil {
 		return err
 	}
 
@@ -353,7 +359,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 			repoCfg = &state.RepoConfig{}
 		}
-		return r.reconcileResources(ctx, &cluster, env, repoCfg.Reconcile.StrictResourceDelete, dryRun)
+		return r.reconcileResources(ctx, &cluster, env, lf, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 
 	case status == "CREATING" || status == "UPDATING" || status == "DELETING":
 		r.logf("[%s] Operation in progress (%s) — skipping", name, status)
@@ -420,7 +426,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 		r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 		repoCfg = &state.RepoConfig{}
 	}
-	if resErr := r.reconcileResources(ctx, &cluster, env, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
+	if resErr := r.reconcileResources(ctx, &cluster, env, lf, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
 		r.logf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
 	}
 
@@ -496,6 +502,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 		return nil
 	}
 	name := cluster.Metadata.Name
+	githubToken := envValue(env, "GITHUB_TOKEN")
 
 	wfMgr, err := workflow.NewManagerWithSource(r.stateMgr.LocalPath(), r.stateMgr.WorkflowSource())
 	if err != nil {
@@ -539,7 +546,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 		if !ref.IsRemote() {
 			execution, runErr = executor.RunWorkflow(ctx, ref.Name, "")
 		} else {
-			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf)
+			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf, githubToken)
 		}
 		if runErr != nil {
 			r.logf("[%s] ⚠️  Workflow '%s' failed: %v", name, label, runErr)
@@ -561,7 +568,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 // exists) and executes it. A lifecycle hook ref must resolve to a single
 // file: directory-kind sources are rejected here — a hook names exactly one
 // workflow to run, not a batch.
-func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workflow.Executor, ref types.WorkflowRef, lf *module.LockFile) (*workflow.WorkflowExecution, error) {
+func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workflow.Executor, ref types.WorkflowRef, lf *module.LockFile, githubToken string) (*workflow.WorkflowExecution, error) {
 	ps, err := workflowref.ParseSource(ref.Source)
 	if err != nil {
 		return nil, err
@@ -575,7 +582,7 @@ func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workfl
 		return nil, fmt.Errorf("lifecycle hook workflow ref %q resolves to a directory — must reference exactly one file", ref.Source)
 	}
 
-	files, err := workflowref.Resolve(ref.Source, ref.Path, lf)
+	files, err := workflowref.Resolve(ref.Source, ref.Path, lf, githubToken)
 	if err != nil {
 		return nil, err
 	}
@@ -584,6 +591,24 @@ func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workfl
 		return nil, fmt.Errorf("parse remote workflow %s: %w", ref.Source, err)
 	}
 	return executor.RunResolvedWorkflow(ctx, &wf, ref.String(), "")
+}
+
+// envValue reads key's value out of a "KEY=VALUE" env slice, or "" if
+// unset. Used to recover GITHUB_TOKEN (already merged into env by cluster
+// mode's live hyve-cli-secrets fetch — see internal/controller.
+// ClusterDefinitionReconciler.fetchCLISecrets) for the rare case a remote
+// workflow/resource ref's cache-hint misses at runtime and a live re-fetch
+// is needed — the normal path is a cache hit with no token required at
+// all, since resolveWorkflowIfNeeded/resolveResourceIfNeeded already
+// installed everything earlier in the same reconcile.
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			return kv[len(prefix):]
+		}
+	}
+	return ""
 }
 
 // validateDriverModuleLocked checks that a cluster's driver module is either
@@ -646,6 +671,35 @@ func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) 
 		}
 		if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
 			return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install` (local mode), or check the controller logs for a resolution failure (cluster mode resolves this automatically per-reconcile — see resolveWorkflowIfNeeded)", c.Metadata.Name, ref.Source)
+		}
+	}
+	return nil
+}
+
+// validateResourceRefsLocked mirrors validateWorkflowRefsLocked exactly, one
+// tier below it: a remote ResourceRef.Source is install-required, just like
+// a remote WorkflowRef.Source — no live/uninstalled fallback. A local-path
+// or Name-only ResourceRef needs no lock entry at all (IsRemote() is false
+// for both), so this only ever validates c.Spec.Resources entries whose
+// Source is a remote git ref.
+func validateResourceRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	for _, ref := range c.Spec.Resources {
+		if !ref.IsRemote() {
+			continue
+		}
+		ps, err := workflowref.ParseSource(ref.Source)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		kind, err := workflowref.ClassifyPath(ps.Path)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		if kind == workflowref.PathKindDir {
+			return fmt.Errorf("cluster %s: resource ref %q resolves to a directory — a resource source must name a single file", c.Metadata.Name, ref.Source)
+		}
+		if lf.GetLockedResource(ps.CanonicalSource(), ps.Version) == nil {
+			return fmt.Errorf("cluster %s: resource %s not in hyve.lock — run `hyve resource install` (local mode), or check the controller logs for a resolution failure (cluster mode resolves this automatically per-reconcile — see resolveResourceIfNeeded)", c.Metadata.Name, ref.Source)
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"github.com/cbridges1/hyve/internal/resource"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
@@ -34,6 +35,13 @@ type StateProvider interface {
 	// mode; a CR-preferring ChainSource for CRD mode (see
 	// internal/controller.CRDStateProvider.WorkflowSource's doc comment).
 	WorkflowSource() workflow.Source
+
+	// ResourceSource resolves a Name-only ResourceRef into raw manifest
+	// bytes — the identical pattern to WorkflowSource, one tier below it:
+	// a plain FileSource under LocalPath() for file mode; a CR-preferring
+	// ChainSource for CRD mode (see
+	// internal/controller.CRDStateProvider.ResourceSource's doc comment).
+	ResourceSource() resource.Source
 }
 
 // Compile-time conformance check. Lives here, not in internal/state, since

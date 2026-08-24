@@ -14,7 +14,7 @@ func LoadLockFile(repoDir string) (*LockFile, error) {
 	path := filepath.Join(repoDir, lockFileName)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &LockFile{Version: 1, Modules: map[string]*LockedModule{}, Workflows: map[string]*LockedWorkflow{}}, nil
+		return &LockFile{Version: 1, Modules: map[string]*LockedModule{}, Workflows: map[string]*LockedWorkflow{}, Resources: map[string]*LockedResource{}}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -28,6 +28,9 @@ func LoadLockFile(repoDir string) (*LockFile, error) {
 	}
 	if lf.Workflows == nil {
 		lf.Workflows = map[string]*LockedWorkflow{}
+	}
+	if lf.Resources == nil {
+		lf.Resources = map[string]*LockedResource{}
 	}
 	return &lf, nil
 }
@@ -82,6 +85,24 @@ func (lf *LockFile) SetLockedWorkflow(source, version string, w *LockedWorkflow)
 
 func (lf *LockFile) RemoveLockedWorkflow(source, version string) {
 	delete(lf.Workflows, LockKey(source, version))
+}
+
+func (lf *LockFile) GetLockedResource(source, version string) *LockedResource {
+	if lf.Resources == nil {
+		return nil
+	}
+	return lf.Resources[LockKey(source, version)]
+}
+
+func (lf *LockFile) SetLockedResource(source, version string, r *LockedResource) {
+	if lf.Resources == nil {
+		lf.Resources = map[string]*LockedResource{}
+	}
+	lf.Resources[LockKey(source, version)] = r
+}
+
+func (lf *LockFile) RemoveLockedResource(source, version string) {
+	delete(lf.Resources, LockKey(source, version))
 }
 
 // splitLockKey reverses LockKey. Safe because canonical workflow sources and
@@ -180,6 +201,28 @@ func (lf *LockFile) FindLockedWorkflowsByName(name string) []LockedWorkflowMatch
 		}
 		source, version := splitLockKey(key)
 		out = append(out, LockedWorkflowMatch{Source: source, Version: version, Locked: w})
+	}
+	return out
+}
+
+// LockedResourceMatch pairs a LockedResource with the (source, version) pair
+// needed to re-resolve it via resourceref.Resolve.
+type LockedResourceMatch struct {
+	Source  string
+	Version string
+	Locked  *LockedResource
+}
+
+// FindLockedResourcesByName returns every locked resource entry whose
+// declared Name matches — multiple results mean the name is ambiguous.
+func (lf *LockFile) FindLockedResourcesByName(name string) []LockedResourceMatch {
+	var out []LockedResourceMatch
+	for key, r := range lf.Resources {
+		if r.Name != name {
+			continue
+		}
+		source, version := splitLockKey(key)
+		out = append(out, LockedResourceMatch{Source: source, Version: version, Locked: r})
 	}
 	return out
 }

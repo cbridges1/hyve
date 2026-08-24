@@ -25,7 +25,7 @@ rules:
     resources: ["clusterdefinitions/status"]
     verbs: ["get"]
   - apiGroups: ["hyve.io"]
-    resources: ["templates", "workflows"]
+    resources: ["templates", "workflows", "resources"]
     verbs: ["get", "list", "watch", "create", "delete"]
   # HyveSession backs POST /auth/login, /auth/refresh, /auth/logout (see
   # internal/api/auth_handlers.go) — the durable, revocable record behind

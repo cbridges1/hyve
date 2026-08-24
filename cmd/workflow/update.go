@@ -28,7 +28,7 @@ unlike a version-argument command, there is no separate <version> argument.`,
 		repoPath := stateMgr.LocalPath()
 
 		log.Printf("Re-resolving %s ...", source)
-		updated, err := workflowref.Update(repoPath, source, pathFlag)
+		updated, err := workflowref.Update(repoPath, source, pathFlag, "")
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

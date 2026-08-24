@@ -1,6 +1,9 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ResourceRef declares one Kubernetes resource hyve should own, drift-check,
 // and re-apply on every reconcile cycle. See ClusterSpec.Resources. Exactly
@@ -41,6 +44,18 @@ type ResourceRef struct {
 	// generic manifest path a Source resource uses. Mutually exclusive with
 	// Source/Helm.
 	Secret *SecretSpec `yaml:"secret,omitempty" json:"secret,omitempty"`
+}
+
+// IsRemote reports whether this ref names a remote git source rather than
+// a local file path — mirrors resourceref.Resolve's own local/remote
+// dispatch exactly (a "./" or "/" prefix is local; anything else,
+// including empty, is not a remote git ref either — an empty Source is the
+// zero-set, resolve-by-Name case instead, see ClusterSpec.Resources'
+// resolution order). Unlike WorkflowRef.IsRemote (WorkflowRef.Source is
+// always remote when set), ResourceRef.Source is dual-purpose today, so
+// this can't be a bare non-empty check.
+func (r ResourceRef) IsRemote() bool {
+	return r.Source != "" && !strings.HasPrefix(r.Source, "./") && !strings.HasPrefix(r.Source, "/")
 }
 
 // HelmSpec declares a Helm chart release to install/upgrade and drift-check.

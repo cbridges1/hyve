@@ -9,6 +9,7 @@ import (
 	"github.com/cbridges1/hyve/cmd/clusterconfig"
 	"github.com/cbridges1/hyve/cmd/env"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
+	rescmd "github.com/cbridges1/hyve/cmd/resource"
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
@@ -62,6 +63,7 @@ func init() {
 	rootCmd.AddCommand(cluster.Cmd)
 	rootCmd.AddCommand(template.Cmd)
 	rootCmd.AddCommand(workflow.Cmd)
+	rootCmd.AddCommand(rescmd.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
 
 	// Ops-only — runs inside Helm-deployed pods, not an interactive

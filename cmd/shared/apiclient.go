@@ -294,6 +294,48 @@ func (c *APIClient) DeleteWorkflow(name string) error {
 	return c.do(http.MethodDelete, "/api/workflows/"+name, nil, nil)
 }
 
+// ResourceDTO mirrors internal/api's resourceDTO — same raw-Spec rationale
+// as WorkflowDTO.
+type ResourceDTO struct {
+	Name string          `json:"name"`
+	Spec json.RawMessage `json:"spec"`
+}
+
+func (c *APIClient) ListResources() ([]ResourceDTO, error) {
+	var out []ResourceDTO
+	if err := c.do(http.MethodGet, "/api/resources", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *APIClient) GetResource(name string) (*ResourceDTO, error) {
+	var out ResourceDTO
+	if err := c.do(http.MethodGet, "/api/resources/"+name, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) CreateResource(name string, spec json.RawMessage) (*ResourceDTO, error) {
+	body, err := json.Marshal(struct {
+		Name string          `json:"name"`
+		Spec json.RawMessage `json:"spec"`
+	}{Name: name, Spec: spec})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out ResourceDTO
+	if err := c.do(http.MethodPost, "/api/resources", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) DeleteResource(name string) error {
+	return c.do(http.MethodDelete, "/api/resources/"+name, nil, nil)
+}
+
 // ListSecretKeys returns every secret key name — readable by any
 // authenticated role, since names alone aren't sensitive (see
 // internal/api/secrets.go's handleListSecrets).

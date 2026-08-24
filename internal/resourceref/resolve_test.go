@@ -23,7 +23,7 @@ func TestResolveLocal_RelativePath(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeFixtureFile(t, repoRoot, "resource-files/nginx.yaml", "kind: Deployment\n")
 
-	res, err := Resolve("./resource-files/nginx.yaml", repoRoot)
+	res, err := Resolve("./resource-files/nginx.yaml", repoRoot, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, "./resource-files/nginx.yaml", res.CanonicalSource)
 	assert.Equal(t, []byte("kind: Deployment\n"), res.Data)
@@ -36,14 +36,14 @@ func TestResolveLocal_AbsolutePath(t *testing.T) {
 	otherDir := t.TempDir()
 	full := writeFixtureFile(t, otherDir, "nginx.yaml", "kind: Deployment\n")
 
-	res, err := Resolve(full, repoRoot)
+	res, err := Resolve(full, repoRoot, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, full, res.Resolved)
 }
 
 func TestResolveLocal_NotFound(t *testing.T) {
 	repoRoot := t.TempDir()
-	_, err := Resolve("./missing.yaml", repoRoot)
+	_, err := Resolve("./missing.yaml", repoRoot, nil, "")
 	require.Error(t, err)
 }
 
@@ -71,7 +71,7 @@ func TestResolveRemote_RejectsDirectoryKind(t *testing.T) {
 	// A directory-kind source is rejected by ParseSource+ClassifyPath before
 	// any network call (module.ResolveRef/workflowref.FetchRepoArchive are
 	// never reached), so this is safe to run without network access.
-	_, err := resolveRemote("github.com/org/repo//manifests/")
+	_, err := resolveRemote("github.com/org/repo//manifests/", nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must name a single file")
 }
@@ -79,7 +79,7 @@ func TestResolveRemote_RejectsDirectoryKind(t *testing.T) {
 func TestResolveRemote_RejectsRepoRootSource(t *testing.T) {
 	// An omitted path classifies as PathKindDir too (repo root, shallow
 	// listing) — also rejected before any network call.
-	_, err := resolveRemote("github.com/org/repo")
+	_, err := resolveRemote("github.com/org/repo", nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must name a single file")
 }
