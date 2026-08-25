@@ -29,7 +29,7 @@ var workflowInstallCmd = &cobra.Command{
 			log.Printf("Resolving %s ...", ref.String())
 		}
 
-		locked, collisions, resolveErrors, changed, err := workflowref.Install(repoPath, refs, "")
+		locked, collisions, resolveErrors, _, changed, err := workflowref.Install(repoPath, refs, "")
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

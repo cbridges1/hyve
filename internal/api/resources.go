@@ -15,14 +15,42 @@ import (
 )
 
 // resourceDTO is the response shape for GET /api/resources and
-// GET /api/resources/<name> — mirrors workflowDTO exactly.
+// GET /api/resources/<name> — mirrors workflowDTO exactly, including the
+// Spec-vs-RefStatus split (see that type's doc comment).
 type resourceDTO struct {
-	Name string                    `json:"name"`
-	Spec hyvev1alpha1.ResourceSpec `json:"spec"`
+	Name      string                     `json:"name"`
+	Spec      *hyvev1alpha1.ResourceSpec `json:"spec,omitempty"`
+	RefStatus *resourceRefStatusDTO      `json:"refStatus,omitempty"`
+}
+
+// resourceRefStatusDTO mirrors workflowRefStatusDTO, minus
+// ResolvedVersion — ResourceRefStatusStatus has no such field.
+type resourceRefStatusDTO struct {
+	Source     string `json:"source"`
+	Resolved   bool   `json:"resolved"`
+	RawVersion string `json:"rawVersion,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func toResourceDTO(cr *hyvev1alpha1.Resource) resourceDTO {
-	return resourceDTO{Name: cr.Name, Spec: cr.Spec}
+	spec := cr.Spec
+	return resourceDTO{Name: cr.Name, Spec: &spec}
+}
+
+// toResourceRefStatusDTO mirrors toWorkflowRefStatusDTO — see its doc
+// comment for why Name comes from spec.Name, not cr.Name.
+func toResourceRefStatusDTO(cr *hyvev1alpha1.ResourceRefStatus) resourceDTO {
+	return resourceDTO{
+		Name: cr.Spec.Name,
+		RefStatus: &resourceRefStatusDTO{
+			Source:     cr.Spec.Source,
+			Resolved:   cr.Status.Resolved,
+			RawVersion: cr.Status.RawVersion,
+			SHA256:     cr.Status.SHA256,
+			Error:      cr.Status.Error,
+		},
+	}
 }
 
 // registerResourceRoutes wires the /resources endpoints onto mux — mounted
@@ -41,9 +69,18 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list resources")
 		return
 	}
-	dtos := make([]resourceDTO, 0, len(list.Items))
+	var refStatusList hyvev1alpha1.ResourceRefStatusList
+	if err := s.Client.List(r.Context(), &refStatusList, client.InNamespace(s.Namespace)); err != nil {
+		log.Printf("api: failed to list resource ref statuses: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to list resources")
+		return
+	}
+	dtos := make([]resourceDTO, 0, len(list.Items)+len(refStatusList.Items))
 	for i := range list.Items {
 		dtos = append(dtos, toResourceDTO(&list.Items[i]))
+	}
+	for i := range refStatusList.Items {
+		dtos = append(dtos, toResourceRefStatusDTO(&refStatusList.Items[i]))
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
@@ -51,16 +88,35 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.Resource
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
-		if apierrors.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "resource not found")
-			return
-		}
+	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr)
+	if err == nil {
+		writeJSON(w, http.StatusOK, toResourceDTO(&cr))
+		return
+	}
+	if !apierrors.IsNotFound(err) {
 		log.Printf("api: failed to get resource %q: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "failed to get resource")
 		return
 	}
-	writeJSON(w, http.StatusOK, toResourceDTO(&cr))
+
+	// Not a real Resource CR — check whether it's a git-referenced one
+	// instead, mirrored under a derived metadata.name (see
+	// toResourceRefStatusDTO). If more than one ref shares this short
+	// Name (see resourceref.NameCollision), the first match wins — full
+	// disambiguation isn't supported here yet.
+	var refStatusList hyvev1alpha1.ResourceRefStatusList
+	if err := s.Client.List(r.Context(), &refStatusList, client.InNamespace(s.Namespace)); err != nil {
+		log.Printf("api: failed to list resource ref statuses: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to get resource")
+		return
+	}
+	for i := range refStatusList.Items {
+		if refStatusList.Items[i].Spec.Name == name {
+			writeJSON(w, http.StatusOK, toResourceRefStatusDTO(&refStatusList.Items[i]))
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "resource not found")
 }
 
 // createResourceRequest reuses hyvev1alpha1.ResourceSpec directly as the

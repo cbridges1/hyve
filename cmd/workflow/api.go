@@ -10,6 +10,7 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/workflowref"
 
 	"sigs.k8s.io/yaml"
 )
@@ -96,15 +97,23 @@ func listWorkflowsAPI(client *shared.APIClient) {
 
 	log.Printf("📋 Workflows (%d):\n", len(workflows))
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tJOBS")
+	fmt.Fprintln(w, "NAME\tDESCRIPTION\tJOBS\tSOURCE")
 	for _, wf := range workflows {
+		if wf.RefStatus != nil {
+			status := wf.RefStatus.Source
+			if !wf.RefStatus.Resolved {
+				status += " (error: " + wf.RefStatus.Error + ")"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", wf.Name, "", "", status)
+			continue
+		}
 		var summary workflowSpecSummary
 		_ = json.Unmarshal(wf.Spec, &summary)
 		description := summary.Description
 		if len(description) > 50 {
 			description = description[:47] + "..."
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\n", wf.Name, description, len(summary.Jobs))
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", wf.Name, description, len(summary.Jobs), "")
 	}
 	w.Flush()
 
@@ -129,6 +138,23 @@ func showWorkflowAPI(client *shared.APIClient, name string) {
 	wf, err := client.GetWorkflow(name)
 	if err != nil {
 		log.Fatalf("Failed to get workflow: %v", err)
+	}
+	if wf.RefStatus != nil {
+		log.Printf("📋 Workflow: %s (git-referenced: %s)\n", wf.Name, wf.RefStatus.Source)
+		if !wf.RefStatus.Resolved {
+			log.Fatalf("Last resolve failed: %s", wf.RefStatus.Error)
+		}
+		// Live-resolve for display rather than trusting any content on the
+		// ref-status CR itself — it only ever carries a status pointer
+		// (source/sha256/error), never the resolved content. This CLI
+		// process resolves independently of the controller, so there's no
+		// local hyve.lock cache hint here — always a fresh fetch.
+		files, err := workflowref.Resolve(wf.RefStatus.Source, "", nil, "")
+		if err != nil {
+			log.Fatalf("Failed to resolve workflow content: %v", err)
+		}
+		log.Println(string(files[0].Data))
+		return
 	}
 	var pretty map[string]interface{}
 	_ = json.Unmarshal(wf.Spec, &pretty)

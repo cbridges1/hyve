@@ -46,6 +46,13 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["modules"]
     verbs: ["get", "list", "watch"]
+  # Same read-only reasoning as modules above — only the controller writes
+  # these (upsertWorkflowRefStatusCR/upsertResourceRefStatusCR); the API
+  # merges them into `hyve workflow list`/`resource list`'s output
+  # alongside real Workflow/Resource CRs.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowrefstatuses", "resourcerefstatuses"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]

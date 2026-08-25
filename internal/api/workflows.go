@@ -15,15 +15,49 @@ import (
 )
 
 // workflowDTO is the response shape for GET /api/workflows and
-// GET /api/workflows/<name> — like templateDTO, nothing here is sensitive,
-// so this exposes the CRD's own Spec directly.
+// GET /api/workflows/<name>. Spec is populated for a real, hand-authored
+// Workflow CR; RefStatus is populated instead for a git-referenced workflow
+// that was never a Workflow CR at all — mirrored onto a WorkflowRefStatus CR
+// by the controller purely for this listing (see that kind's own doc
+// comment). The two are mutually exclusive on any one row.
 type workflowDTO struct {
-	Name string                    `json:"name"`
-	Spec hyvev1alpha1.WorkflowSpec `json:"spec"`
+	Name      string                     `json:"name"`
+	Spec      *hyvev1alpha1.WorkflowSpec `json:"spec,omitempty"`
+	RefStatus *workflowRefStatusDTO      `json:"refStatus,omitempty"`
+}
+
+// workflowRefStatusDTO mirrors WorkflowRefStatusStatus — nothing sensitive,
+// exposed directly.
+type workflowRefStatusDTO struct {
+	Source          string `json:"source"`
+	Resolved        bool   `json:"resolved"`
+	RawVersion      string `json:"rawVersion,omitempty"`
+	ResolvedVersion string `json:"resolvedVersion,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 func toWorkflowDTO(cr *hyvev1alpha1.Workflow) workflowDTO {
-	return workflowDTO{Name: cr.Name, Spec: cr.Spec}
+	spec := cr.Spec
+	return workflowDTO{Name: cr.Name, Spec: &spec}
+}
+
+// toWorkflowRefStatusDTO builds a workflowDTO row from a mirrored
+// WorkflowRefStatus CR. Name comes from spec.Name (the declared ref's short
+// name), not cr.Name — cr.Name is a derived, collision-safe slug (see
+// module.CRName), never the human-facing identity.
+func toWorkflowRefStatusDTO(cr *hyvev1alpha1.WorkflowRefStatus) workflowDTO {
+	return workflowDTO{
+		Name: cr.Spec.Name,
+		RefStatus: &workflowRefStatusDTO{
+			Source:          cr.Spec.Source,
+			Resolved:        cr.Status.Resolved,
+			RawVersion:      cr.Status.RawVersion,
+			ResolvedVersion: cr.Status.ResolvedVersion,
+			SHA256:          cr.Status.SHA256,
+			Error:           cr.Status.Error,
+		},
+	}
 }
 
 // registerWorkflowRoutes wires the /workflows endpoints onto mux — mounted
@@ -42,9 +76,18 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list workflows")
 		return
 	}
-	dtos := make([]workflowDTO, 0, len(list.Items))
+	var refStatusList hyvev1alpha1.WorkflowRefStatusList
+	if err := s.Client.List(r.Context(), &refStatusList, client.InNamespace(s.Namespace)); err != nil {
+		log.Printf("api: failed to list workflow ref statuses: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to list workflows")
+		return
+	}
+	dtos := make([]workflowDTO, 0, len(list.Items)+len(refStatusList.Items))
 	for i := range list.Items {
 		dtos = append(dtos, toWorkflowDTO(&list.Items[i]))
+	}
+	for i := range refStatusList.Items {
+		dtos = append(dtos, toWorkflowRefStatusDTO(&refStatusList.Items[i]))
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
@@ -52,16 +95,36 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.Workflow
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
-		if apierrors.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "workflow not found")
-			return
-		}
+	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr)
+	if err == nil {
+		writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
+		return
+	}
+	if !apierrors.IsNotFound(err) {
 		log.Printf("api: failed to get workflow %q: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "failed to get workflow")
 		return
 	}
-	writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
+
+	// Not a real Workflow CR — check whether it's a git-referenced one
+	// instead, mirrored under a derived metadata.name (see
+	// toWorkflowRefStatusDTO), so this has to be a filtered List, not a
+	// direct Get. If more than one ref shares this short Name (see
+	// workflowref.NameCollision), the first match wins — full
+	// disambiguation isn't supported here yet.
+	var refStatusList hyvev1alpha1.WorkflowRefStatusList
+	if err := s.Client.List(r.Context(), &refStatusList, client.InNamespace(s.Namespace)); err != nil {
+		log.Printf("api: failed to list workflow ref statuses: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to get workflow")
+		return
+	}
+	for i := range refStatusList.Items {
+		if refStatusList.Items[i].Spec.Name == name {
+			writeJSON(w, http.StatusOK, toWorkflowRefStatusDTO(&refStatusList.Items[i]))
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "workflow not found")
 }
 
 // createWorkflowRequest reuses hyvev1alpha1.WorkflowSpec directly as the

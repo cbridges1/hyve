@@ -29,7 +29,7 @@ var resourceInstallCmd = &cobra.Command{
 			log.Printf("Resolving %s ...", ref.Source)
 		}
 
-		locked, collisions, resolveErrors, changed, err := resourceref.Install(repoPath, refs, "")
+		locked, collisions, resolveErrors, _, changed, err := resourceref.Install(repoPath, refs, "")
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

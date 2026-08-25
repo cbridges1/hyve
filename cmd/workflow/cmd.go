@@ -15,6 +15,7 @@ import (
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/workflowref"
 )
 
 // Cmd is the root workflow command exposed to the parent.
@@ -234,16 +235,27 @@ func listWorkflows() {
 		log.Fatalf("Failed to list workflows: %v", err)
 	}
 
-	if len(workflows) == 0 {
+	// Best-effort; a missing/unreadable hyve.lock just means no
+	// git-referenced workflows to add to the listing below — this is
+	// local mode's equivalent of cluster mode's WorkflowRefStatus merge
+	// (internal/api/workflows.go's handleListWorkflows), using the
+	// mechanism local mode already has instead of a CRD it has no use for.
+	lf, _ := module.LoadLockFile(getWorkflowLocalPath())
+
+	if len(workflows) == 0 && (lf == nil || len(lf.Workflows) == 0) {
 		log.Println("No workflows found in repository")
 		log.Printf("💡 Create a workflow with: hyve workflow create --template my-workflow")
 		return
 	}
 
-	log.Printf("📋 Workflows in repository (%d):\n", len(workflows))
+	total := len(workflows)
+	if lf != nil {
+		total += len(lf.Workflows)
+	}
+	log.Printf("📋 Workflows in repository (%d):\n", total)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tJOBS\tCREATED")
+	fmt.Fprintln(w, "NAME\tDESCRIPTION\tJOBS\tCREATED\tSOURCE")
 
 	for _, wf := range workflows {
 		created := wf.Metadata.Created.Format("2006-01-02")
@@ -256,11 +268,17 @@ func listWorkflows() {
 			description = description[:47] + "..."
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
 			wf.Metadata.Name,
 			description,
 			len(wf.Spec.Jobs),
-			created)
+			created,
+			"")
+	}
+	if lf != nil {
+		for _, locked := range lf.Workflows {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", locked.Name, "", "", "", locked.Source)
+		}
 	}
 
 	w.Flush()
@@ -279,7 +297,8 @@ func showWorkflow(name string) {
 
 	wf, err := manager.GetWorkflow(name)
 	if err != nil {
-		log.Fatalf("Failed to get workflow: %v", err)
+		showRemoteWorkflowFromLock(name)
+		return
 	}
 
 	log.Printf("📋 Workflow: %s", wf.Metadata.Name)
@@ -349,6 +368,40 @@ func showWorkflow(name string) {
 	}
 
 	log.Printf("\n💡 Run with: hyve workflow run %s", name)
+}
+
+// showRemoteWorkflowFromLock is showWorkflow's fallback once the local
+// workflows/ dir has no such name — mirrors runWorkflowByRef's own
+// hyve.lock-by-Name lookup (cmd/workflow/run_remote.go) exactly, but
+// displays the resolved content instead of executing it.
+func showRemoteWorkflowFromLock(name string) {
+	repoPath := getWorkflowLocalPath()
+	lf, err := module.LoadLockFile(repoPath)
+	if err != nil {
+		log.Fatalf("Failed to get workflow: not found locally, and failed to load hyve.lock: %v", err)
+	}
+	matches := lf.FindLockedWorkflowsByName(name)
+	switch len(matches) {
+	case 0:
+		log.Fatalf("workflow %q not found locally or in hyve.lock — run `hyve workflow list` or `hyve workflow install`", name)
+	case 1:
+		full := matches[0].Source
+		if matches[0].Version != "" {
+			full += "@" + matches[0].Version
+		}
+		files, err := workflowref.Resolve(full, "", lf, "")
+		if err != nil {
+			log.Fatalf("Failed to resolve workflow %q: %v", full, err)
+		}
+		log.Printf("📋 Workflow: %s (git-referenced: %s)\n", name, full)
+		log.Println(string(files[0].Data))
+	default:
+		var b strings.Builder
+		for _, m := range matches {
+			fmt.Fprintf(&b, "  %s@%s\n", m.Source, m.Version)
+		}
+		log.Fatalf("workflow name %q is ambiguous across %d locked sources — run with the full source string instead:\n%s", name, len(matches), b.String())
+	}
 }
 
 func runWorkflow(name, cluster string, showLogs, showOutput bool, setVars map[string]string) {

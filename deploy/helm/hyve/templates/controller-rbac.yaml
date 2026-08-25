@@ -52,6 +52,15 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["modules/status"]
     verbs: ["get", "update", "patch"]
+  # workflowrefstatuses/resourcerefstatuses mirror modules exactly, one
+  # tier up/down respectively — see reconciler.go's
+  # upsertWorkflowRefStatusCR/upsertResourceRefStatusCR, the sole writers.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowrefstatuses", "resourcerefstatuses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowrefstatuses/status", "resourcerefstatuses/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]

@@ -15,7 +15,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/resource"
+	"github.com/cbridges1/hyve/internal/resourceref"
 )
 
 // Cmd is the root resource command exposed to the parent.
@@ -141,18 +143,19 @@ func createResourceFromFile(name, filePath string) {
 func listResources() {
 	dir := getResourcesDir()
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Println("No resources found in repository")
-			log.Printf("💡 Create a resource with: hyve resource create <name> --file <path>")
-			return
-		}
+	if err != nil && !os.IsNotExist(err) {
 		log.Fatalf("Failed to list resources: %v", err)
 	}
 
+	// Best-effort; a missing/unreadable hyve.lock just means no
+	// git-referenced resources to add to the listing below — local mode's
+	// equivalent of cluster mode's ResourceRefStatus merge
+	// (internal/api/resources.go's handleListResources).
+	lf, _ := module.LoadLockFile(shared.GetLocalPath())
+
 	src := resource.FileSource{Dir: dir}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSIZE (bytes)")
+	fmt.Fprintln(w, "NAME\tSIZE (bytes)\tSOURCE")
 	count := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), resource.ResourceFileExt) {
@@ -164,8 +167,14 @@ func listResources() {
 			log.Printf("Warning: failed to read resource %q: %v", name, err)
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%d\n", name, len(manifest))
+		fmt.Fprintf(w, "%s\t%d\t%s\n", name, len(manifest), "")
 		count++
+	}
+	if lf != nil {
+		for _, locked := range lf.Resources {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", locked.Name, "", locked.Source)
+			count++
+		}
 	}
 	w.Flush()
 
@@ -184,10 +193,44 @@ func showResource(name string) {
 	src := resource.FileSource{Dir: getResourcesDir()}
 	manifest, err := src.GetResource(name)
 	if err != nil {
-		log.Fatalf("Failed to get resource: %v", err)
+		showRemoteResourceFromLock(name)
+		return
 	}
 	log.Printf("📋 Resource: %s\n", name)
 	fmt.Println(string(manifest))
+}
+
+// showRemoteResourceFromLock is showResource's fallback once the local
+// resources/ dir has no such name — mirrors cmd/workflow/cmd.go's
+// showRemoteWorkflowFromLock exactly, one tier below it.
+func showRemoteResourceFromLock(name string) {
+	repoPath := shared.GetLocalPath()
+	lf, err := module.LoadLockFile(repoPath)
+	if err != nil {
+		log.Fatalf("Failed to get resource: not found locally, and failed to load hyve.lock: %v", err)
+	}
+	matches := lf.FindLockedResourcesByName(name)
+	switch len(matches) {
+	case 0:
+		log.Fatalf("resource %q not found locally or in hyve.lock — run `hyve resource list` or `hyve resource install`", name)
+	case 1:
+		full := matches[0].Source
+		if matches[0].Version != "" {
+			full += "@" + matches[0].Version
+		}
+		resolved, err := resourceref.Resolve(full, repoPath, lf, "")
+		if err != nil {
+			log.Fatalf("Failed to resolve resource %q: %v", full, err)
+		}
+		log.Printf("📋 Resource: %s (git-referenced: %s)\n", name, full)
+		fmt.Println(string(resolved.Data))
+	default:
+		var b strings.Builder
+		for _, m := range matches {
+			fmt.Fprintf(&b, "  %s@%s\n", m.Source, m.Version)
+		}
+		log.Fatalf("resource name %q is ambiguous across %d locked sources — run with the full source string instead:\n%s", name, len(matches), b.String())
+	}
 }
 
 func deleteResource(name string, force bool) {

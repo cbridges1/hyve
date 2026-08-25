@@ -11,6 +11,7 @@ import (
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/resourceref"
 )
 
 // createResourceFromFileAPI is cluster mode's counterpart to
@@ -45,11 +46,19 @@ func listResourcesAPI(client *shared.APIClient) {
 
 	log.Printf("📋 Resources (%d):\n", len(resources))
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSIZE (bytes)")
+	fmt.Fprintln(w, "NAME\tSIZE (bytes)\tSOURCE")
 	for _, res := range resources {
+		if res.RefStatus != nil {
+			status := res.RefStatus.Source
+			if !res.RefStatus.Resolved {
+				status += " (error: " + res.RefStatus.Error + ")"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\n", res.Name, "", status)
+			continue
+		}
 		var summary hyvev1alpha1.ResourceSpec
 		_ = json.Unmarshal(res.Spec, &summary)
-		fmt.Fprintf(w, "%s\t%d\n", res.Name, len(summary.Manifest))
+		fmt.Fprintf(w, "%s\t%d\t%s\n", res.Name, len(summary.Manifest), "")
 	}
 	w.Flush()
 
@@ -62,6 +71,20 @@ func showResourceAPI(client *shared.APIClient, name string) {
 	res, err := client.GetResource(name)
 	if err != nil {
 		log.Fatalf("Failed to get resource: %v", err)
+	}
+	if res.RefStatus != nil {
+		log.Printf("📋 Resource: %s (git-referenced: %s)\n", res.Name, res.RefStatus.Source)
+		if !res.RefStatus.Resolved {
+			log.Fatalf("Last resolve failed: %s", res.RefStatus.Error)
+		}
+		// Live-resolve for display — see cmd/workflow/api.go's
+		// showWorkflowAPI for why (same reasoning, mirrored exactly).
+		resolved, err := resourceref.Resolve(res.RefStatus.Source, "", nil, "")
+		if err != nil {
+			log.Fatalf("Failed to resolve resource content: %v", err)
+		}
+		fmt.Println(string(resolved.Data))
+		return
 	}
 	var spec hyvev1alpha1.ResourceSpec
 	_ = json.Unmarshal(res.Spec, &spec)

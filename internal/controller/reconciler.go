@@ -329,9 +329,12 @@ func (r *ClusterDefinitionReconciler) resolveModuleIfNeeded(ctx context.Context,
 // git clone able to authenticate against a private repo in cluster mode at
 // all — previously no token reached this call site.
 //
-// No CR is created to track resolution status, unlike modules — hyve.lock
-// is the only record; add one later if that visibility gap matters in
-// practice.
+// Also mirrors every resolved ref's outcome onto a WorkflowRefStatus CR —
+// one per reconcile, regardless of whether anything actually changed —
+// exactly like resolveModuleIfNeeded's Module CR, and for the identical
+// reason: hyve.lock lives on the controller's own local checkout, invisible
+// to kubectl/hyve workflow list; the CR is what makes it discoverable (see
+// WorkflowRefStatus's own doc comment).
 //
 // Never returns an error: a resolution failure here is intentionally left
 // to surface through the existing shared validateWorkflowRefsLocked check
@@ -347,13 +350,20 @@ func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Contex
 		return lf
 	}
 
-	_, _, resolveErrors, changed, err := workflowref.Install(r.StateProvider.LocalPath(), refs, githubToken)
+	_, _, resolveErrors, results, changed, err := workflowref.Install(r.StateProvider.LocalPath(), refs, githubToken)
 	if err != nil {
 		log.Printf("[%s] Warning: failed to resolve workflow refs: %v", def.Metadata.Name, err)
 		return lf
 	}
 	for _, e := range resolveErrors {
 		log.Printf("[%s] Warning: failed to resolve workflow ref: %s", def.Metadata.Name, e)
+	}
+	// results covers every ref this call attempted, changed or not — mirror
+	// all of them before the changed-only early return below, since the
+	// common steady-state (nothing changed) case is exactly what CR
+	// mirroring needs to run on every reconcile.
+	for _, res := range results {
+		r.upsertWorkflowRefStatusCR(ctx, res)
 	}
 	if !changed {
 		return lf
@@ -371,7 +381,9 @@ func (r *ClusterDefinitionReconciler) resolveWorkflowIfNeeded(ctx context.Contex
 // below it: it resolves every remote ResourceRef in def.Spec.Resources
 // that isn't already locked in lf. Simpler than resolveWorkflowIfNeeded's
 // ref-gathering — resources have no lifecycle-hook fan-out to scan, just
-// the one flat def.Spec.Resources list.
+// the one flat def.Spec.Resources list. Also mirrors every resolved ref's
+// outcome onto a ResourceRefStatus CR every reconcile — see
+// resolveWorkflowIfNeeded's own doc comment for why.
 func (r *ClusterDefinitionReconciler) resolveResourceIfNeeded(ctx context.Context, lf *module.LockFile, def types.ClusterDefinition, githubToken string) *module.LockFile {
 	var refs []types.ResourceRef
 	for _, ref := range def.Spec.Resources {
@@ -383,13 +395,16 @@ func (r *ClusterDefinitionReconciler) resolveResourceIfNeeded(ctx context.Contex
 		return lf
 	}
 
-	_, _, resolveErrors, changed, err := resourceref.Install(r.StateProvider.LocalPath(), refs, githubToken)
+	_, _, resolveErrors, results, changed, err := resourceref.Install(r.StateProvider.LocalPath(), refs, githubToken)
 	if err != nil {
 		log.Printf("[%s] Warning: failed to resolve resource refs: %v", def.Metadata.Name, err)
 		return lf
 	}
 	for _, e := range resolveErrors {
 		log.Printf("[%s] Warning: failed to resolve resource ref: %s", def.Metadata.Name, e)
+	}
+	for _, res := range results {
+		r.upsertResourceRefStatusCR(ctx, res)
 	}
 	if !changed {
 		return lf
@@ -441,6 +456,124 @@ func (r *ClusterDefinitionReconciler) upsertModuleCR(ctx context.Context, want *
 	existing.Status = desiredStatus
 	if err := r.Client.Status().Update(ctx, &existing); err != nil {
 		log.Printf("Warning: failed to update Module CR %s status: %v", want.Name, err)
+	}
+}
+
+// upsertWorkflowRefStatusCR builds and upserts one WorkflowRefStatus CR from
+// a single workflowref.RefResult — same Get→Create-with-status-update /
+// Get→Update-spec→Update-status flow as upsertModuleCR, for the identical
+// reason (status subresource writes need the desired status re-applied
+// after Create/Update, since both echo back whatever the server already
+// had). metadata.name is a derived slug (module.CRName), not res.Name
+// directly, since two different sources can legitimately share the same
+// short Name (see workflowref.NameCollision) — spec.name carries the
+// human-facing identity instead.
+//
+// Called on every reconcile for every remote ref, including the common
+// steady-state case where nothing about it changed (see
+// resolveWorkflowIfNeeded's own doc comment for why) — so an existing CR
+// whose status already matches is left untouched rather than getting a
+// fresh ResolvedAt and a Status().Update() every single cycle; only an
+// actual content/error change (or a brand new CR) writes anything.
+func (r *ClusterDefinitionReconciler) upsertWorkflowRefStatusCR(ctx context.Context, res workflowref.RefResult) {
+	want := &hyvev1alpha1.WorkflowRefStatus{
+		ObjectMeta: metav1.ObjectMeta{Name: module.CRName(res.Name, res.CanonicalSource), Namespace: r.Namespace},
+		Spec:       hyvev1alpha1.WorkflowRefStatusSpec{Name: res.Name, Source: res.CanonicalSource},
+	}
+	if res.Err != nil {
+		want.Status = hyvev1alpha1.WorkflowRefStatusStatus{Resolved: false, Error: res.Err.Error(), RawVersion: res.RawVersion}
+	} else {
+		want.Status = hyvev1alpha1.WorkflowRefStatusStatus{
+			Resolved: true, SHA256: res.SHA256, RawVersion: res.RawVersion, ResolvedVersion: res.ResolvedVersion,
+		}
+	}
+
+	desiredStatus := want.Status
+	var existing hyvev1alpha1.WorkflowRefStatus
+	err := r.Client.Get(ctx, client.ObjectKeyFromObject(want), &existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Client.Create(ctx, want); err != nil {
+			log.Printf("Warning: failed to create WorkflowRefStatus CR %s: %v", want.Name, err)
+			return
+		}
+		desiredStatus.ResolvedAt = metav1.Now()
+		want.Status = desiredStatus
+		if err := r.Client.Status().Update(ctx, want); err != nil {
+			log.Printf("Warning: failed to set WorkflowRefStatus CR %s status: %v", want.Name, err)
+		}
+		return
+	}
+	if err != nil {
+		log.Printf("Warning: failed to get WorkflowRefStatus CR %s: %v", want.Name, err)
+		return
+	}
+	if statusUnchanged := existing.Status.Resolved == desiredStatus.Resolved &&
+		existing.Status.RawVersion == desiredStatus.RawVersion &&
+		existing.Status.ResolvedVersion == desiredStatus.ResolvedVersion &&
+		existing.Status.SHA256 == desiredStatus.SHA256 &&
+		existing.Status.Error == desiredStatus.Error; statusUnchanged {
+		return
+	}
+	existing.Spec = want.Spec
+	if err := r.Client.Update(ctx, &existing); err != nil {
+		log.Printf("Warning: failed to update WorkflowRefStatus CR %s: %v", want.Name, err)
+		return
+	}
+	desiredStatus.ResolvedAt = metav1.Now()
+	existing.Status = desiredStatus
+	if err := r.Client.Status().Update(ctx, &existing); err != nil {
+		log.Printf("Warning: failed to update WorkflowRefStatus CR %s status: %v", want.Name, err)
+	}
+}
+
+// upsertResourceRefStatusCR mirrors upsertWorkflowRefStatusCR exactly, one
+// tier below it — see its doc comment, including the no-op-on-unchanged-
+// status skip.
+func (r *ClusterDefinitionReconciler) upsertResourceRefStatusCR(ctx context.Context, res resourceref.RefResult) {
+	want := &hyvev1alpha1.ResourceRefStatus{
+		ObjectMeta: metav1.ObjectMeta{Name: module.CRName(res.Name, res.CanonicalSource), Namespace: r.Namespace},
+		Spec:       hyvev1alpha1.ResourceRefStatusSpec{Name: res.Name, Source: res.CanonicalSource},
+	}
+	if res.Err != nil {
+		want.Status = hyvev1alpha1.ResourceRefStatusStatus{Resolved: false, Error: res.Err.Error(), RawVersion: res.RawVersion}
+	} else {
+		want.Status = hyvev1alpha1.ResourceRefStatusStatus{Resolved: true, SHA256: res.SHA256, RawVersion: res.RawVersion}
+	}
+
+	desiredStatus := want.Status
+	var existing hyvev1alpha1.ResourceRefStatus
+	err := r.Client.Get(ctx, client.ObjectKeyFromObject(want), &existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Client.Create(ctx, want); err != nil {
+			log.Printf("Warning: failed to create ResourceRefStatus CR %s: %v", want.Name, err)
+			return
+		}
+		desiredStatus.ResolvedAt = metav1.Now()
+		want.Status = desiredStatus
+		if err := r.Client.Status().Update(ctx, want); err != nil {
+			log.Printf("Warning: failed to set ResourceRefStatus CR %s status: %v", want.Name, err)
+		}
+		return
+	}
+	if err != nil {
+		log.Printf("Warning: failed to get ResourceRefStatus CR %s: %v", want.Name, err)
+		return
+	}
+	if statusUnchanged := existing.Status.Resolved == desiredStatus.Resolved &&
+		existing.Status.RawVersion == desiredStatus.RawVersion &&
+		existing.Status.SHA256 == desiredStatus.SHA256 &&
+		existing.Status.Error == desiredStatus.Error; statusUnchanged {
+		return
+	}
+	existing.Spec = want.Spec
+	if err := r.Client.Update(ctx, &existing); err != nil {
+		log.Printf("Warning: failed to update ResourceRefStatus CR %s: %v", want.Name, err)
+		return
+	}
+	desiredStatus.ResolvedAt = metav1.Now()
+	existing.Status = desiredStatus
+	if err := r.Client.Status().Update(ctx, &existing); err != nil {
+		log.Printf("Warning: failed to update ResourceRefStatus CR %s status: %v", want.Name, err)
 	}
 }
 

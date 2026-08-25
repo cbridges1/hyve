@@ -1,0 +1,97 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: resourcerefstatuses.hyve.io
+spec:
+  group: hyve.io
+  names:
+    kind: ResourceRefStatus
+    listKind: ResourceRefStatusList
+    plural: resourcerefstatuses
+    shortNames:
+    - resrs
+    singular: resourcerefstatus
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .spec.source
+      name: Source
+      type: string
+    - jsonPath: .status.resolved
+      name: Resolved
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ResourceRefStatus mirrors WorkflowRefStatus exactly, one tier below it —
+          see that kind's doc comment. A visibility record of a remote
+          (git-referenced) ResourceRef the controller has (attempted to) resolve
+          automatically; the ClusterDefinition never references this CR. Only ever
+          written by internal/controller/reconciler.go's resolveResourceIfNeeded /
+          upsertResourceRefStatusCR.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ResourceRefStatusSpec identifies which remote ResourceRef this mirrors.
+              Mirrors WorkflowRefStatusSpec exactly — see its doc comment for why
+              metadata.name is a derived slug rather than Name directly.
+            properties:
+              name:
+                type: string
+              source:
+                type: string
+            required:
+            - name
+            - source
+            type: object
+          status:
+            description: |-
+              ResourceRefStatusStatus is reconciler-owned observed state — status
+              subresource only. Mirrors WorkflowRefStatusStatus, minus ResolvedVersion:
+              resourceref.ResolvedResource has no such field (unlike
+              workflowref.ResolvedWorkflowFile), so there's nothing to carry here.
+            properties:
+              error:
+                type: string
+              rawVersion:
+                type: string
+              resolved:
+                type: boolean
+              resolvedAt:
+                format: date-time
+                type: string
+              sha256:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

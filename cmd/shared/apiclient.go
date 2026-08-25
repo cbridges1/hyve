@@ -253,10 +253,23 @@ func (c *APIClient) RenderTemplate(name, region string, params map[string]string
 }
 
 // WorkflowDTO mirrors internal/api's workflowDTO — same raw-Spec rationale
-// as TemplateDTO.
+// as TemplateDTO. Spec is nil for a git-referenced workflow (never a real
+// Workflow CR); RefStatus is nil for a real, hand-authored one — mutually
+// exclusive per row, mirroring the server-side DTO exactly.
 type WorkflowDTO struct {
-	Name string          `json:"name"`
-	Spec json.RawMessage `json:"spec"`
+	Name      string                `json:"name"`
+	Spec      json.RawMessage       `json:"spec,omitempty"`
+	RefStatus *WorkflowRefStatusDTO `json:"refStatus,omitempty"`
+}
+
+// WorkflowRefStatusDTO mirrors internal/api's workflowRefStatusDTO.
+type WorkflowRefStatusDTO struct {
+	Source          string `json:"source"`
+	Resolved        bool   `json:"resolved"`
+	RawVersion      string `json:"rawVersion,omitempty"`
+	ResolvedVersion string `json:"resolvedVersion,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 func (c *APIClient) ListWorkflows() ([]WorkflowDTO, error) {
@@ -295,10 +308,20 @@ func (c *APIClient) DeleteWorkflow(name string) error {
 }
 
 // ResourceDTO mirrors internal/api's resourceDTO — same raw-Spec rationale
-// as WorkflowDTO.
+// and Spec-vs-RefStatus split as WorkflowDTO.
 type ResourceDTO struct {
-	Name string          `json:"name"`
-	Spec json.RawMessage `json:"spec"`
+	Name      string                `json:"name"`
+	Spec      json.RawMessage       `json:"spec,omitempty"`
+	RefStatus *ResourceRefStatusDTO `json:"refStatus,omitempty"`
+}
+
+// ResourceRefStatusDTO mirrors internal/api's resourceRefStatusDTO.
+type ResourceRefStatusDTO struct {
+	Source     string `json:"source"`
+	Resolved   bool   `json:"resolved"`
+	RawVersion string `json:"rawVersion,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func (c *APIClient) ListResources() ([]ResourceDTO, error) {

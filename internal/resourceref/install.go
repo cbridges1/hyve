@@ -28,6 +28,18 @@ type LockedRef struct {
 	SHA256          string `json:"sha256"`
 }
 
+// RefResult is the outcome of resolving one ref during Install — populated
+// for every ref Install attempts, not just ones whose lock entry changed.
+// Mirrors workflowref.RefResult exactly, minus ResolvedVersion:
+// resourceref.ResolvedResource has no such field.
+type RefResult struct {
+	Name            string
+	CanonicalSource string
+	RawVersion      string
+	SHA256          string
+	Err             error // nil on success
+}
+
 // Install resolves every remote ref (as gathered by GatherResourceRefs)
 // into hyve.lock, skipping any file whose content hasn't changed since the
 // last install (to avoid a no-op commit). The caller is responsible for
@@ -36,10 +48,10 @@ type LockedRef struct {
 // process's own GITHUB_TOKEN env var. Mirrors workflowref.Install, but
 // delegates the actual fetch/hash to the existing, cache-aware Resolve
 // rather than a resource-specific resolver.
-func Install(repoPath string, refs []types.ResourceRef, token string) (locked []LockedRef, collisions []NameCollision, resolveErrors []string, changed bool, err error) {
+func Install(repoPath string, refs []types.ResourceRef, token string) (locked []LockedRef, collisions []NameCollision, resolveErrors []string, results []RefResult, changed bool, err error) {
 	lf, err := module.LoadLockFile(repoPath)
 	if err != nil {
-		return nil, nil, nil, false, fmt.Errorf("failed to load lock file: %w", err)
+		return nil, nil, nil, nil, false, fmt.Errorf("failed to load lock file: %w", err)
 	}
 
 	nameOwner := map[string]string{} // name -> first canonical source seen this run
@@ -50,6 +62,7 @@ func Install(repoPath string, refs []types.ResourceRef, token string) (locked []
 		resolved, resolveErr := Resolve(ref.Source, repoPath, lf, token)
 		if resolveErr != nil {
 			resolveErrors = append(resolveErrors, fmt.Sprintf("%s: %v", ref.Source, resolveErr))
+			results = append(results, RefResult{Name: ref.Name, CanonicalSource: ref.Source, Err: resolveErr})
 			continue
 		}
 
@@ -57,6 +70,10 @@ func Install(repoPath string, refs []types.ResourceRef, token string) (locked []
 			collisions = append(collisions, NameCollision{Name: ref.Name, FirstSource: owner, CollidedSource: resolved.CanonicalSource})
 		}
 		nameOwner[ref.Name] = resolved.CanonicalSource
+
+		results = append(results, RefResult{
+			Name: ref.Name, CanonicalSource: resolved.CanonicalSource, RawVersion: resolved.RawVersion, SHA256: resolved.SHA256,
+		})
 
 		existing := lf.GetLockedResource(resolved.CanonicalSource, resolved.RawVersion)
 		if existing != nil && existing.SHA256 == resolved.SHA256 {
@@ -73,10 +90,10 @@ func Install(repoPath string, refs []types.ResourceRef, token string) (locked []
 	}
 
 	if !changed {
-		return nil, collisions, resolveErrors, false, nil
+		return nil, collisions, resolveErrors, results, false, nil
 	}
 	if err := module.SaveLockFile(repoPath, lf); err != nil {
-		return nil, collisions, resolveErrors, false, fmt.Errorf("failed to save lock file: %w", err)
+		return nil, collisions, resolveErrors, results, false, fmt.Errorf("failed to save lock file: %w", err)
 	}
-	return locked, collisions, resolveErrors, true, nil
+	return locked, collisions, resolveErrors, results, true, nil
 }
