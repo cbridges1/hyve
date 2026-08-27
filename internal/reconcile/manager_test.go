@@ -390,3 +390,38 @@ func TestUnmetDependency(t *testing.T) {
 		assert.Equal(t, "mgmt", unmet)
 	})
 }
+
+func TestParamsHash_DeterministicRegardlessOfMapIterationOrder(t *testing.T) {
+	a := map[string]string{"node_count": "3", "node_size": "g4s.kube.medium"}
+	b := map[string]string{"node_size": "g4s.kube.medium", "node_count": "3"}
+	assert.Equal(t, ParamsHash(a), ParamsHash(b))
+	assert.NotEmpty(t, ParamsHash(a))
+}
+
+func TestParamsHash_DifferentParamsDifferentHash(t *testing.T) {
+	a := map[string]string{"node_count": "3"}
+	b := map[string]string{"node_count": "5"}
+	assert.NotEqual(t, ParamsHash(a), ParamsHash(b))
+}
+
+func TestParamsHash_EmptyIsEmptyString(t *testing.T) {
+	assert.Equal(t, "", ParamsHash(nil))
+	assert.Equal(t, "", ParamsHash(map[string]string{}))
+}
+
+// TestParamsHash_MatchesDriftDetection guards against ParamsHash and
+// paramsChanged's own comparison ever drifting apart now that adopt (via
+// cmd/shared.ParamsHash) seeds HYVE_LAST_PARAMS_HASH from outside this
+// package — a cluster adopted with this hash must read back as "no drift"
+// on the very next paramsChanged check.
+func TestParamsHash_MatchesDriftDetection(t *testing.T) {
+	r := NewReconciler(&fakeStateProvider{})
+	params := map[string]string{"node_count": "3", "node_size": "g4s.kube.medium"}
+	cluster := types.ClusterDefinition{
+		Spec: types.ClusterSpec{
+			Params:        params,
+			DriverOutputs: map[string]string{"HYVE_LAST_PARAMS_HASH": ParamsHash(params)},
+		},
+	}
+	assert.False(t, r.paramsChanged(cluster))
+}

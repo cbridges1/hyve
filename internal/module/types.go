@@ -150,11 +150,12 @@ type AuthMethod struct {
 type OperationType string
 
 const (
-	OperationCreate OperationType = "create"
-	OperationDelete OperationType = "delete"
-	OperationStatus OperationType = "status"
-	OperationAuth   OperationType = "auth"
-	OperationScale  OperationType = "scale"
+	OperationCreate   OperationType = "create"
+	OperationDelete   OperationType = "delete"
+	OperationStatus   OperationType = "status"
+	OperationAuth     OperationType = "auth"
+	OperationScale    OperationType = "scale"
+	OperationDescribe OperationType = "describe"
 )
 
 // ModuleTypeAuthOnly marks a module that only manages authentication for an

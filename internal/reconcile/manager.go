@@ -392,7 +392,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	for k, v := range result.Outputs {
 		cluster.Spec.DriverOutputs[k] = v
 	}
-	cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = paramsHash(cluster.Spec.Params)
+	cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = ParamsHash(cluster.Spec.Params)
 
 	if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
 		r.logf("[%s] Warning: failed to save driverOutputs: %v", name, err)
@@ -794,10 +794,15 @@ func (r *Reconciler) validateMgmtClusterRequirement(clusterName, mgmtCluster str
 
 func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {
 	stored := cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"]
-	return stored != "" && stored != paramsHash(cluster.Spec.Params)
+	return stored != "" && stored != ParamsHash(cluster.Spec.Params)
 }
 
-func paramsHash(params map[string]string) string {
+// ParamsHash deterministically hashes a cluster's params map — exported so
+// `hyve cluster adopt` (cmd/cluster, via cmd/shared) can seed
+// HYVE_LAST_PARAMS_HASH with the exact same algorithm reconcile itself uses
+// for drift detection. Must never diverge from paramsChanged's own call to
+// this function above.
+func ParamsHash(params map[string]string) string {
 	if len(params) == 0 {
 		return ""
 	}

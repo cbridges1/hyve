@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/cbridges1/hyve/internal/module"
+	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -24,6 +25,15 @@ func LoadManifest(source, version string) *module.ModuleManifest {
 	lf, _ := module.LoadLockFile(repoRoot)
 	m, _ := module.LoadManifestForSource(source, version, repoRoot, lf)
 	return m
+}
+
+// ParamsHash re-exposes reconcile.ParamsHash — cmd/cluster doesn't import
+// internal/reconcile directly (see cmd/shared's layering), but `hyve cluster
+// adopt` needs to seed HYVE_LAST_PARAMS_HASH with the exact same algorithm
+// reconcile's own drift detection uses, so this must call through rather
+// than duplicate it.
+func ParamsHash(params map[string]string) string {
+	return reconcile.ParamsHash(params)
 }
 
 // ParseParamOverrides splits a "key=value,key2=value2" string into a map.
