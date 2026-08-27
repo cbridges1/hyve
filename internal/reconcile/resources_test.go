@@ -11,6 +11,14 @@ import (
 
 func TestNeedsApply(t *testing.T) {
 	assert.True(t, needsApply(true, true))
+	// needsApply(true, false) == true is what makes it safe for
+	// reconcileResources to skip kubectlDiff entirely on a resource's
+	// first-ever apply (AppliedResources[name] == nil forces configChanged
+	// true) — liveDiff can never change this outcome, so there's nothing to
+	// lose by not computing it, and a Helm chart whose first-install render
+	// references a CRD type not yet in the cluster (crds/ hasn't run yet)
+	// would otherwise hard-fail kubectl diff before ever reaching the real
+	// helm upgrade --install that actually installs crds/ first.
 	assert.True(t, needsApply(true, false))
 	assert.True(t, needsApply(false, true))
 	assert.False(t, needsApply(false, false))

@@ -156,10 +156,25 @@ func (r *Reconciler) reconcileResources(ctx context.Context, cluster *types.Clus
 		applied := cluster.Spec.AppliedResources[res.Name]
 		configChanged := applied == nil || applied.SourceSHA256 != configHash
 
-		liveDiff, err := kubectlDiff(ctx, repoRoot, env, liveManifest, applyNamespace)
-		if err != nil {
-			loopErr = fmt.Errorf("resource %s: kubectl diff failed: %w", res.Name, err)
-			break
+		// Skip the diff entirely on a resource's first-ever apply: needsApply
+		// already returns true unconditionally whenever configChanged is true
+		// (which applied == nil forces), so liveDiff can't change the outcome
+		// — and running it anyway is actively harmful, not just wasted work,
+		// for a Helm chart whose rendered templates reference a CRD type its
+		// own crds/ directory hasn't installed yet (kubectl diff has no
+		// install step of its own, so "ensure CRDs are installed first" is
+		// unavoidable on a from-scratch helm template render — confirmed live
+		// against a real chart). helmUpgradeInstall/kubectlApply below runs
+		// the real install, which — for Helm specifically — does install
+		// crds/ first, same as a normal `helm install` always has.
+		var liveDiff bool
+		if applied != nil {
+			var err error
+			liveDiff, err = kubectlDiff(ctx, repoRoot, env, liveManifest, applyNamespace)
+			if err != nil {
+				loopErr = fmt.Errorf("resource %s: kubectl diff failed: %w", res.Name, err)
+				break
+			}
 		}
 
 		if !needsApply(configChanged, liveDiff) {
