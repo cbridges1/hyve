@@ -89,17 +89,14 @@ func runClusterAuth(name string, method string) {
 	}
 
 	env := moduleEnv(cluster)
-	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: repoPath, AuthMethod: method}
+	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: repoPath, ClusterName: name, AuthMethod: method}
 
-	if _, err := executor.Execute(ctx, mod.OperationAuth); err != nil {
+	result, err := executor.Execute(ctx, mod.OperationAuth)
+	if err != nil {
 		log.Fatalf("Auth failed: %v", err)
 	}
 
-	if kcPath, pathErr := mod.DefaultKubeconfigPath(); pathErr != nil {
-		log.Printf("Warning: could not resolve kubeconfig path: %v", pathErr)
-	} else if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
-		log.Printf("Warning: failed to deduplicate kubeconfig: %v", err)
-	}
+	mergeAuthResultIntoDefaultKubeconfig(name, result.Outputs["KUBECONFIG"])
 
 	fmt.Printf("kubectl context for '%s' configured\n", name)
 }
@@ -174,19 +171,52 @@ func runModuleAuthLocally(name string, authCtx *shared.AuthContextDTO, method st
 	}
 
 	env := authContextEnv(name, authCtx)
-	executor := &mod.Executor{ModuleDir: tmpDir, Env: env, WorkDir: tmpDir, AuthMethod: method}
+	executor := &mod.Executor{ModuleDir: tmpDir, Env: env, WorkDir: tmpDir, ClusterName: name, AuthMethod: method}
 
-	if _, err := executor.Execute(ctx, mod.OperationAuth); err != nil {
+	result, err := executor.Execute(ctx, mod.OperationAuth)
+	if err != nil {
 		log.Fatalf("Auth failed: %v", err)
 	}
 
-	if kcPath, pathErr := mod.DefaultKubeconfigPath(); pathErr != nil {
-		log.Printf("Warning: could not resolve kubeconfig path: %v", pathErr)
-	} else if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
-		log.Printf("Warning: failed to deduplicate kubeconfig: %v", err)
-	}
+	mergeAuthResultIntoDefaultKubeconfig(name, result.Outputs["KUBECONFIG"])
 
 	fmt.Printf("kubectl context for '%s' configured (module run locally)\n", name)
+}
+
+// mergeAuthResultIntoDefaultKubeconfig reads the per-cluster kubeconfig
+// executeAuth just wrote (see module.KubeconfigPathForCluster) and merges
+// its cluster/context/user entry into the user's real default kubeconfig
+// (~/.kube/config), named after the cluster — this is what actually makes
+// "kubectl context for '%s' configured" true; without it, the per-cluster
+// file gets written but kubectl (which reads ~/.kube/config by default)
+// never sees it. Best-effort no-op when perClusterKcPath is empty — not
+// every auth method exports a KUBECONFIG (see ClusterAuth's Exports
+// field), and that's not an error.
+func mergeAuthResultIntoDefaultKubeconfig(name, perClusterKcPath string) {
+	if perClusterKcPath == "" {
+		return
+	}
+	// Dedupe the per-cluster file first — MergeKubeconfigEntry only ever
+	// reads its first cluster/context/user entry, so a stale duplicate left
+	// over from an earlier `hyve cluster auth` run (if the module's own
+	// script appends rather than overwrites) would otherwise silently win
+	// over the fresh entry just written.
+	if err := kubeconfig.DeduplicateKubeconfigEntries(perClusterKcPath); err != nil {
+		log.Printf("Warning: failed to deduplicate %s: %v", perClusterKcPath, err)
+	}
+	data, err := os.ReadFile(perClusterKcPath)
+	if err != nil {
+		log.Printf("Warning: failed to read %s: %v", perClusterKcPath, err)
+		return
+	}
+	defaultKcPath, err := mod.DefaultKubeconfigPath()
+	if err != nil {
+		log.Printf("Warning: could not resolve kubeconfig path: %v", err)
+		return
+	}
+	if err := kubeconfig.MergeKubeconfigEntry(defaultKcPath, data, name); err != nil {
+		log.Printf("Warning: failed to merge kubeconfig: %v", err)
+	}
 }
 
 // authContextEnv mirrors moduleEnv but builds off shared.AuthContextDTO

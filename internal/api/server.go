@@ -85,7 +85,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
-	return mux
+	return corsMiddleware(mux)
 }
 
 // handleProxy forwards to s.Proxy (see proxy.go's BuildProxy) — a thin
