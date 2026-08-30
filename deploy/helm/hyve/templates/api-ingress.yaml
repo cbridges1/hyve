@@ -10,6 +10,25 @@ spec:
     - host: {{ required "api.ingress.host is required when api.ingress.enabled=true" .Values.api.ingress.host }}
       http:
         paths:
+        {{- if .Values.ui.enabled }}
+          # ui-ingress.yaml owns "/" on this same host for hyve-ui — these
+          # specific paths are the API's full surface per
+          # internal/api/server.go's own Routes doc comment (/auth/*,
+          # /healthz, /docs, /openapi.yaml, everything under /api/, and
+          # /proxy/*). Path specificity (these are all more specific than
+          # "/") is what makes both Ingress objects coexist correctly on
+          # one host regardless of which the ingress controller evaluates
+          # first.
+          {{- range list "/api" "/auth" "/healthz" "/docs" "/openapi.yaml" "/proxy" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: hyve-api
+                port:
+                  number: {{ $.Values.api.service.port }}
+          {{- end }}
+        {{- else }}
           - path: /
             pathType: Prefix
             backend:
@@ -17,4 +36,5 @@ spec:
                 name: hyve-api
                 port:
                   number: {{ .Values.api.service.port }}
+        {{- end }}
 {{- end }}

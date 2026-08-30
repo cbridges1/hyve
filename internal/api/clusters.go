@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/template"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -158,6 +160,25 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		spec = hyvev1alpha1.RenderClusterDefinitionSpec(tpl.Spec, req.Template.Region, req.Template.Params)
+
+		// RenderClusterDefinitionSpec doesn't compute this itself (it lives
+		// in internal/apis/hyve/v1alpha1, which internal/template already
+		// imports the other way — pulling CronNextOccurrence in there would
+		// be an import cycle), so every caller has to do it explicitly.
+		// cmd/cluster/create.go (local mode) already does; this cluster-mode
+		// path never did, which meant a cluster created here from a
+		// schedule-having template got no spec.expiresAt at all — expiry
+		// (internal/reconcile's ReconcileOne) had nothing to ever act on, so
+		// "scheduled deletion" silently never happened for any
+		// cluster-mode-created cluster, regardless of how much time passed.
+		if tpl.Spec.Schedule != "" {
+			next, err := template.CronNextOccurrence(tpl.Spec.Schedule, time.Now())
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid schedule %q on template %q: %v", tpl.Spec.Schedule, req.Template.Name, err))
+				return
+			}
+			spec.ExpiresAt = next.Format(time.RFC3339)
+		}
 	}
 
 	cd := &hyvev1alpha1.ClusterDefinition{

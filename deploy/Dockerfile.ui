@@ -1,0 +1,27 @@
+# Builds the static web/ frontend (see web/README.md) and serves it via
+# plain nginx — there's no server-side rendering or rewrite-rule dependency
+# to speak of: web/ uses react-router-dom's HashRouter specifically so that
+# routing state lives entirely in the URL fragment, which browsers never
+# send to the server. Every navigation the browser actually makes is just
+# `GET /` or a static asset request, so nginx's own unmodified default
+# config (no custom try_files/rewrite needed) is enough.
+#
+# The built app makes every API call as a bare relative path (/api/...,
+# /auth/...) — see web/src/lib/api/client.ts — so it MUST be served from
+# the exact same origin as hyve-api. This image is meaningless deployed on
+# its own; see deploy/helm/hyve's ui-ingress.yaml, which only ever gets
+# created alongside api.ingress on the same host.
+#
+# Build context is the hyve repo root, same convention as
+# deploy/Dockerfile.dev/.controller:
+#   docker build -f deploy/Dockerfile.ui -t hyve-ui:dev .
+FROM node:24-alpine AS builder
+WORKDIR /src
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ .
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=builder /src/dist /usr/share/nginx/html
+EXPOSE 80

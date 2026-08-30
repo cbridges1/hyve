@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/template"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -159,5 +161,20 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec := hyvev1alpha1.RenderClusterDefinitionSpec(cr.Spec, req.Region, req.Params)
+
+	// Same schedule -> expiresAt computation handleCreateCluster applies —
+	// see its own comment for why this can't live inside
+	// RenderClusterDefinitionSpec itself (import cycle). Kept here too so
+	// this preview actually reflects what POST /clusters with the same
+	// template would produce, not a stale spec missing expiresAt.
+	if cr.Spec.Schedule != "" {
+		next, err := template.CronNextOccurrence(cr.Spec.Schedule, time.Now())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid schedule %q on template %q: %v", cr.Spec.Schedule, name, err))
+			return
+		}
+		spec.ExpiresAt = next.Format(time.RFC3339)
+	}
+
 	writeJSON(w, http.StatusOK, spec)
 }

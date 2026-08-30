@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Installs hyve's controller + API onto whatever cluster your current
-# kubectl context points at — intended for the k3d cluster
-# scripts/create-local-cluster.sh creates (run that first), or any other
-# dev cluster sharing your local Docker image store, so no registry push is
-# needed. Builds deploy/Dockerfile.dev (from THIS repo's local source, not
-# a published release — see that file's header comment), applies CRDs, and
-# helm upgrade --installs the merged deploy/helm/hyve chart (controller +
-# API together).
+# Installs hyve's controller + API (+ optionally the web/ UI) onto whatever
+# cluster your current kubectl context points at — intended for the k3d
+# cluster scripts/create-local-cluster.sh creates (run that first), or any
+# other dev cluster sharing your local Docker image store, so no registry
+# push is needed. Builds deploy/Dockerfile.dev (from THIS repo's local
+# source, not a published release — see that file's header comment),
+# applies CRDs, and helm upgrade --installs the merged deploy/helm/hyve
+# chart (controller + API, and the UI unless HYVE_INSTALL_UI=false).
 #
-# Exposes hyve-api via Ingress (host: hyve-api.127.0.0.1.nip.io by
-# default), not NodePort — Docker Desktop's own built-in Kubernetes doesn't
-# map any host port beyond its fixed API-server one (confirmed live:
+# The UI (deploy/Dockerfile.ui) is disabled by default at the chart level
+# (values.yaml's ui.enabled: false — a real install makes its own exposure
+# decision) but this local-dev script turns it on by default, since the
+# whole point of a local sandbox is a full one, and it costs nothing extra
+# (same Ingress host, split by path — see ui-ingress.yaml). Set
+# HYVE_INSTALL_UI=false to skip building/deploying it.
+#
+# Exposes hyve-api (and the UI, at "/") via Ingress (host:
+# hyve-api.127.0.0.1.nip.io by default), not NodePort — Docker Desktop's own
+# built-in Kubernetes doesn't map any host port beyond its fixed API-server
+# one (confirmed live:
 # NodePort and LoadBalancer were both unreachable from the host on it), so
 # this only actually works against create-local-cluster.sh's k3d cluster,
 # whose host 80/443 are mapped to k3d's own load balancer -> Traefik (k3d's
@@ -45,6 +53,8 @@ set -euo pipefail
 
 NAMESPACE="${1:-hyve-system}"
 IMAGE_TAG="hyve:dev"
+UI_IMAGE_TAG="hyve-ui:dev"
+INSTALL_UI="${HYVE_INSTALL_UI:-true}"
 PRIMARY_CLUSTER_NAME="${HYVE_INSTALL_PRIMARY_CLUSTER_NAME:-local}"
 INGRESS_HOST="${HYVE_INSTALL_INGRESS_HOST:-hyve-api.127.0.0.1.nip.io}"
 PUBLIC_BASE_URL="${HYVE_INSTALL_PUBLIC_BASE_URL:-http://$INGRESS_HOST}"
@@ -64,6 +74,11 @@ DOCKER_PLATFORM="linux/$(docker version --format '{{.Server.Arch}}')"
 log "Building $IMAGE_TAG from local source (platform $DOCKER_PLATFORM)"
 docker build --platform "$DOCKER_PLATFORM" --load -f "$ROOT_DIR/deploy/Dockerfile.dev" -t "$IMAGE_TAG" "$ROOT_DIR"
 
+if [[ "$INSTALL_UI" == "true" ]]; then
+  log "Building $UI_IMAGE_TAG from local source (platform $DOCKER_PLATFORM)"
+  docker build --platform "$DOCKER_PLATFORM" --load -f "$ROOT_DIR/deploy/Dockerfile.ui" -t "$UI_IMAGE_TAG" "$ROOT_DIR"
+fi
+
 # k3d nodes run their own containerd, entirely separate from the host
 # Docker daemon's image store — unlike Docker Desktop's own built-in
 # Kubernetes, `docker build --load` alone does NOT make the image visible
@@ -78,6 +93,10 @@ if [[ "$CURRENT_CONTEXT" == k3d-* ]]; then
   K3D_CLUSTER="${CURRENT_CONTEXT#k3d-}"
   log "Importing $IMAGE_TAG into k3d cluster '$K3D_CLUSTER'"
   k3d image import "$IMAGE_TAG" -c "$K3D_CLUSTER"
+  if [[ "$INSTALL_UI" == "true" ]]; then
+    log "Importing $UI_IMAGE_TAG into k3d cluster '$K3D_CLUSTER'"
+    k3d image import "$UI_IMAGE_TAG" -c "$K3D_CLUSTER"
+  fi
 fi
 
 log "Ensuring namespace $NAMESPACE exists"
@@ -114,7 +133,23 @@ else
   PULL_POLICY="Always"
 fi
 
-log "Installing hyve (controller + api, image.pullPolicy=$PULL_POLICY, primary-cluster-name=$PRIMARY_CLUSTER_NAME, public-base-url=$PUBLIC_BASE_URL)"
+# Always non-empty (unlike a conditionally-populated UI_SET_FLAGS=()) —
+# macOS's default bash (3.2, pre-4.4) treats "${arr[@]}" on a genuinely
+# empty array as an unbound variable under `set -u`, confirmed live.
+# Setting ui.enabled explicitly either way, rather than only in the true
+# branch and relying on the chart's own default for false, is also just
+# more correct: this script's own belief about UI state should never
+# silently depend on values.yaml's default staying what it is today.
+UI_SET_FLAGS=(--set "ui.enabled=$INSTALL_UI")
+if [[ "$INSTALL_UI" == "true" ]]; then
+  UI_SET_FLAGS+=(--set ui.image.repository=hyve-ui --set ui.image.tag=dev --set "ui.image.pullPolicy=$PULL_POLICY")
+fi
+
+COMPONENTS="controller + api"
+if [[ "$INSTALL_UI" == "true" ]]; then
+  COMPONENTS="$COMPONENTS + ui"
+fi
+log "Installing hyve ($COMPONENTS, image.pullPolicy=$PULL_POLICY, primary-cluster-name=$PRIMARY_CLUSTER_NAME, public-base-url=$PUBLIC_BASE_URL)"
 helm upgrade --install hyve "$ROOT_DIR/deploy/helm/hyve" \
   --namespace "$NAMESPACE" \
   --set image.repository=hyve --set image.tag=dev --set image.pullPolicy="$PULL_POLICY" \
@@ -122,17 +157,26 @@ helm upgrade --install hyve "$ROOT_DIR/deploy/helm/hyve" \
   --set api.primaryClusterName="$PRIMARY_CLUSTER_NAME" \
   --set api.publicBaseURL="$PUBLIC_BASE_URL" \
   --set api.ingress.enabled=true \
-  --set api.ingress.host="$INGRESS_HOST" >/dev/null
+  --set api.ingress.host="$INGRESS_HOST" \
+  "${UI_SET_FLAGS[@]}" >/dev/null
 
-log "Restarting both Deployments so the freshly-built image is actually used"
-kubectl -n "$NAMESPACE" rollout restart deployment/hyve-controller deployment/hyve-api
+log "Restarting Deployments so the freshly-built image(s) are actually used"
+DEPLOYMENTS=(deployment/hyve-controller deployment/hyve-api)
+if [[ "$INSTALL_UI" == "true" ]]; then
+  DEPLOYMENTS+=(deployment/hyve-ui)
+fi
+kubectl -n "$NAMESPACE" rollout restart "${DEPLOYMENTS[@]}"
 
 log "Waiting for rollout"
-kubectl -n "$NAMESPACE" rollout status deployment/hyve-controller --timeout=90s
-kubectl -n "$NAMESPACE" rollout status deployment/hyve-api --timeout=90s
+for d in "${DEPLOYMENTS[@]}"; do
+  kubectl -n "$NAMESPACE" rollout status "$d" --timeout=90s
+done
 
 echo ""
 echo "✅ Installed. API reachable directly at $PUBLIC_BASE_URL (via Ingress — no port-forward needed)."
+if [[ "$INSTALL_UI" == "true" ]]; then
+  echo "✅ UI reachable at the same address: $PUBLIC_BASE_URL"
+fi
 echo ""
 echo "Next steps:"
 echo ""

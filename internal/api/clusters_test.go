@@ -153,6 +153,60 @@ func TestHandleCreateCluster_FromTemplate(t *testing.T) {
 	assert.Equal(t, "large", created.Spec.Params["node_size"])
 }
 
+// TestHandleCreateCluster_FromTemplate_WithSchedule_SetsExpiresAt is the
+// regression test for a real bug: RenderClusterDefinitionSpec never looks
+// at Template.Spec.Schedule (it can't — internal/template, where
+// CronNextOccurrence lives, already imports this package the other way),
+// so a cluster created here from a schedule-having template got no
+// spec.expiresAt at all. internal/reconcile's expiry check
+// (ReconcileOne: `if def.Spec.ExpiresAt != ""`) had nothing to act on, so
+// scheduled deletion silently never happened for any cluster created via
+// this endpoint — confirmed live against a real k3d deployment before this
+// fix, where the equivalent local-mode path (cmd/cluster/create.go) has
+// always computed this correctly.
+func TestHandleCreateCluster_FromTemplate_WithSchedule_SetsExpiresAt(t *testing.T) {
+	tpl := newTemplateDef("scheduled")
+	tpl.Spec.Schedule = "0 0 * * *" // every day at midnight — just needs to resolve to *some* future time
+	s := &Server{Client: newFakeClient(t, tpl), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{
+		Name:     "from-scheduled-tpl",
+		Template: &createClusterFromTemplateRef{Name: "scheduled"},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var created hyvev1alpha1.ClusterDefinition
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: "from-scheduled-tpl"}, &created))
+	assert.NotEmpty(t, created.Spec.ExpiresAt, "a cluster created from a schedule-having template must get spec.expiresAt set, or expiry can never fire")
+}
+
+func TestHandleCreateCluster_FromTemplate_NoSchedule_NoExpiresAt(t *testing.T) {
+	tpl := newTemplateDef("unscheduled")
+	s := &Server{Client: newFakeClient(t, tpl), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{
+		Name:     "from-unscheduled-tpl",
+		Template: &createClusterFromTemplateRef{Name: "unscheduled"},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var created hyvev1alpha1.ClusterDefinition
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: "from-unscheduled-tpl"}, &created))
+	assert.Empty(t, created.Spec.ExpiresAt)
+}
+
+func TestHandleCreateCluster_FromTemplate_InvalidSchedule_400(t *testing.T) {
+	tpl := newTemplateDef("bad-schedule")
+	tpl.Spec.Schedule = "not a cron expression"
+	s := &Server{Client: newFakeClient(t, tpl), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{
+		Name:     "from-bad-schedule-tpl",
+		Template: &createClusterFromTemplateRef{Name: "bad-schedule"},
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestHandleCreateCluster_FromTemplate_NotFound(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
 

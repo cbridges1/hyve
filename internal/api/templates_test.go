@@ -113,6 +113,32 @@ func TestHandleRenderTemplate_NoOverrides_UsesTemplateDefaults(t *testing.T) {
 	assert.Equal(t, "small", spec.Params["node_size"])
 }
 
+// TestHandleRenderTemplate_WithSchedule_SetsExpiresAt: this preview must
+// reflect the same spec.expiresAt a real POST /clusters with this template
+// would produce — see handleCreateCluster's identical fix and comment for
+// why this can't live inside RenderClusterDefinitionSpec itself.
+func TestHandleRenderTemplate_WithSchedule_SetsExpiresAt(t *testing.T) {
+	tpl := newTemplateDef("t1")
+	tpl.Spec.Schedule = "0 0 * * *"
+	s := &Server{Client: newFakeClient(t, tpl), Namespace: testNamespace}
+
+	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/templates/t1/render", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var spec hyvev1alpha1.ClusterDefinitionSpec
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &spec))
+	assert.NotEmpty(t, spec.ExpiresAt)
+}
+
+func TestHandleRenderTemplate_InvalidSchedule_400(t *testing.T) {
+	tpl := newTemplateDef("t1")
+	tpl.Spec.Schedule = "not a cron expression"
+	s := &Server{Client: newFakeClient(t, tpl), Namespace: testNamespace}
+
+	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/templates/t1/render", nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestHandleRenderTemplate_NotFound(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
 	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/templates/missing/render", nil)

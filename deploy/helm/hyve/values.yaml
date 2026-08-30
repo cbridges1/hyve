@@ -125,3 +125,36 @@ api:
   # instead.
   accessRoles:
     create: true
+
+# ui deploys the optional web/ frontend (see HYVE-IMPLEMENTATION-PLAN.md's
+# Phase 11) — disabled by default, same "a real install makes its own
+# exposure decision" stance as api.ingress. Requires api.ingress.enabled:
+# true to actually be reachable — web/ only ever makes relative (/api/...,
+# /auth/...) requests, so it MUST be served from api.ingress.host, the
+# exact same origin as hyve-api. There is no separate ui.ingress.host to
+# set: ui-ingress.yaml always reuses api.ingress.host, so this
+# same-origin requirement can't be misconfigured into two different hosts.
+ui:
+  enabled: false
+
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  service:
+    port: 80
+
+  ingress:
+    # className mirrors api.ingress.className by default — override only if
+    # the UI genuinely needs a different ingress controller than the API,
+    # which on a shared host would be unusual.
+    className: ""
