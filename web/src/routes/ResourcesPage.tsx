@@ -2,6 +2,7 @@ import { useState, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AdminOnly } from '../components/RoleGate'
 import { RefStatusBadge } from '../components/ConditionBadge'
+import { Modal } from '../components/Modal'
 import { ApiError } from '../lib/api/client'
 import { resourcesApi } from '../lib/api/resources'
 import { useConfirm } from '../lib/confirm'
@@ -37,7 +38,7 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="mb-4 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+    <Modal title="New resource" onClose={() => setOpen(false)}>
       <label className="mb-3 block text-sm">
         <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
@@ -52,15 +53,15 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
         />
       </label>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
-      <div className="flex gap-2">
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700">
+          Cancel
+        </button>
         <button type="button" disabled={!name || submitting} onClick={submit} className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
           {submitting ? 'Creating…' : 'Create'}
         </button>
-        <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
-          Cancel
-        </button>
       </div>
-    </div>
+    </Modal>
   )
 }
 

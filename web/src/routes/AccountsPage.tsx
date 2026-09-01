@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { RoleAdmin, RoleReadOnly } from '../lib/api/auth'
+import { Modal } from '../components/Modal'
 import { accountsApi } from '../lib/api/accounts'
 import { ApiError } from '../lib/api/client'
 import { useConfirm } from '../lib/confirm'
@@ -44,7 +45,7 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="mb-4 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+    <Modal title="New account" onClose={() => setOpen(false)}>
       <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <label className="text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Username</span>
@@ -78,7 +79,14 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
         </label>
       </div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
-      <div className="flex gap-2">
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700"
+        >
+          Cancel
+        </button>
         <button
           type="button"
           disabled={!username || !password || submitting}
@@ -87,19 +95,12 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
         >
           {submitting ? 'Creating…' : 'Create'}
         </button>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          Cancel
-        </button>
       </div>
       <p className="mt-3 text-xs text-neutral-500">
         Only the built-in admin/read-only roles are supported here — a custom role with its own ServiceAccount still
         needs <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">hyve cluster-config api create-user --role custom</code>.
       </p>
-    </div>
+    </Modal>
   )
 }
 

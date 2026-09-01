@@ -44,17 +44,17 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           <button
             type="button"
             aria-label="Cancel"
-            className="absolute inset-0 bg-black/50"
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
             onClick={() => settle(false)}
           />
-          <div className="relative w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-5 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="relative w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-5 shadow-2xl ring-1 ring-black/5 dark:border-neutral-700 dark:bg-neutral-800 dark:ring-white/10">
             <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">{pending.title}</h2>
             <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">{pending.message}</p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => settle(false)}
-                className="rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700"
               >
                 {pending.cancelLabel ?? 'Cancel'}
               </button>
