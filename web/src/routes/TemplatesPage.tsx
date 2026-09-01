@@ -1,66 +1,10 @@
-import { useState } from 'react'
+import { useState, type MouseEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AdminOnly } from '../components/RoleGate'
-import { templatesApi } from '../lib/api/templates'
 import { ApiError } from '../lib/api/client'
-import type { ClusterDefinitionSpec } from '../lib/api/types'
+import { templatesApi } from '../lib/api/templates'
+import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
-
-function RenderPreview({ name }: { name: string }) {
-  const [region, setRegion] = useState('')
-  const [paramsText, setParamsText] = useState('{}')
-  const [result, setResult] = useState<ClusterDefinitionSpec | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  async function render() {
-    setError(null)
-    setResult(null)
-    let params: Record<string, string> = {}
-    try {
-      params = JSON.parse(paramsText)
-    } catch {
-      setError('Params must be valid JSON, e.g. {"node_count": "5"}')
-      return
-    }
-    try {
-      const spec = await templatesApi.render(name, { region: region || undefined, params })
-      setResult(spec)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to render')
-    }
-  }
-
-  return (
-    <div className="mt-2 rounded border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-      <div className="mb-2 flex gap-2">
-        <input
-          value={region}
-          onChange={(e) => setRegion(e.target.value)}
-          placeholder="region override (optional)"
-          className="flex-1 rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-        />
-        <input
-          value={paramsText}
-          onChange={(e) => setParamsText(e.target.value)}
-          placeholder='{"key": "value"}'
-          className="flex-1 rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-        />
-        <button
-          type="button"
-          onClick={render}
-          className="rounded bg-neutral-900 px-2 py-1 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
-        >
-          Preview render
-        </button>
-      </div>
-      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-      {result && (
-        <pre className="max-h-48 overflow-auto rounded bg-neutral-100 p-2 text-xs dark:bg-neutral-800">
-          {JSON.stringify(result, null, 2)}
-        </pre>
-      )}
-    </div>
-  )
-}
 
 function NewTemplateForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
@@ -76,7 +20,7 @@ function NewTemplateForm({ onCreated }: { onCreated: () => void }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+        className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
       >
         New template
       </button>
@@ -101,31 +45,31 @@ function NewTemplateForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="mb-4 rounded border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="mb-3 grid grid-cols-4 gap-3 text-sm">
+    <div className="mb-4 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="mb-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <label>
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded border border-neutral-300 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
         </label>
         <label>
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Driver source</span>
-          <input value={driverSource} onChange={(e) => setDriverSource(e.target.value)} placeholder="github.com/org/hyve-x-module" className="w-full rounded border border-neutral-300 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
+          <input value={driverSource} onChange={(e) => setDriverSource(e.target.value)} placeholder="github.com/org/hyve-x-module" className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
         </label>
         <label>
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Driver version</span>
-          <input value={driverVersion} onChange={(e) => setDriverVersion(e.target.value)} className="w-full rounded border border-neutral-300 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
+          <input value={driverVersion} onChange={(e) => setDriverVersion(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
         </label>
         <label>
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Region</span>
-          <input value={region} onChange={(e) => setRegion(e.target.value)} className="w-full rounded border border-neutral-300 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
+          <input value={region} onChange={(e) => setRegion(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
         </label>
       </div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex gap-2">
-        <button type="button" disabled={!name || !driverSource || submitting} onClick={submit} className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900">
+        <button type="button" disabled={!name || !driverSource || submitting} onClick={submit} className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
           {submitting ? 'Creating…' : 'Create'}
         </button>
-        <button type="button" onClick={() => setOpen(false)} className="rounded px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-400">
+        <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
           Cancel
         </button>
       </div>
@@ -134,11 +78,19 @@ function NewTemplateForm({ onCreated }: { onCreated: () => void }) {
 }
 
 export function TemplatesPage() {
+  const navigate = useNavigate()
+  const confirm = useConfirm()
   const { data: templates, loading, error, reload } = useApi(() => templatesApi.list())
-  const [expanded, setExpanded] = useState<string | null>(null)
 
-  async function onDelete(name: string) {
-    if (!confirm(`Delete template "${name}"?`)) return
+  async function onDelete(e: MouseEvent, name: string) {
+    e.stopPropagation()
+    const ok = await confirm({
+      title: `Delete template "${name}"?`,
+      message: 'Clusters already created from this template are unaffected — this only removes the template itself.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     await templatesApi.delete(name)
     reload()
   }
@@ -155,28 +107,34 @@ export function TemplatesPage() {
       {loading && <p className="text-sm text-neutral-500">Loading…</p>}
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-      <div className="space-y-2">
-        {templates?.map((t) => (
-          <div key={t.name} className="rounded border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="font-medium">{t.name}</span>
-                <span className="ml-2 text-sm text-neutral-500">{t.spec.driver.source}@{t.spec.driver.version}</span>
+      <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        {templates?.length === 0 && <p className="p-6 text-center text-sm text-neutral-500">No templates yet.</p>}
+        <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+          {templates?.map((t) => (
+            <div
+              key={t.name}
+              onClick={() => navigate(`/templates/${encodeURIComponent(t.name)}`)}
+              className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+            >
+              <div className="min-w-0">
+                <div className="font-medium text-neutral-900 dark:text-neutral-100">{t.name}</div>
+                <div className="truncate text-xs text-neutral-500 dark:text-neutral-500">
+                  {t.spec.driver.source}@{t.spec.driver.version}
+                  {t.spec.region ? ` · ${t.spec.region}` : ''}
+                </div>
               </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setExpanded(expanded === t.name ? null : t.name)} className="text-sm text-neutral-500 hover:underline">
-                  {expanded === t.name ? 'Hide' : 'Preview render'}
+              <AdminOnly>
+                <button
+                  type="button"
+                  onClick={(e) => onDelete(e, t.name)}
+                  className="shrink-0 rounded-lg px-2.5 py-1 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                >
+                  Delete
                 </button>
-                <AdminOnly>
-                  <button type="button" onClick={() => onDelete(t.name)} className="text-sm text-red-600 hover:underline dark:text-red-400">
-                    Delete
-                  </button>
-                </AdminOnly>
-              </div>
+              </AdminOnly>
             </div>
-            {expanded === t.name && <RenderPreview name={t.name} />}
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   )

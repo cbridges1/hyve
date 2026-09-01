@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
 
 :root {
@@ -6,4 +7,27 @@
 
 body {
   margin: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom, thinner scrollbars for the sidebar and any overflow-x table
+   wrapper — the default OS scrollbar reads noticeably dated next to
+   everything else here. Webkit-only (Chrome/Safari/Edge); Firefox falls
+   back to its own default, which is already reasonably thin. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(212 212 216 / 0.8);
+  border-radius: 9999px;
+}
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-thumb {
+    background: rgb(63 63 70 / 0.8);
+  }
 }

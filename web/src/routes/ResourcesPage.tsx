@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, type MouseEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AdminOnly } from '../components/RoleGate'
 import { RefStatusBadge } from '../components/ConditionBadge'
 import { ApiError } from '../lib/api/client'
 import { resourcesApi } from '../lib/api/resources'
+import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
 
 function NewResourceForm({ onCreated }: { onCreated: () => void }) {
@@ -14,7 +16,7 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900">
+      <button type="button" onClick={() => setOpen(true)} className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
         New resource
       </button>
     )
@@ -35,10 +37,10 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="mb-4 rounded border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+    <div className="mb-4 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
       <label className="mb-3 block text-sm">
         <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded border border-neutral-300 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
+        <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
       </label>
       <label className="mb-3 block text-sm">
         <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Manifest (YAML)</span>
@@ -46,15 +48,15 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
           value={manifest}
           onChange={(e) => setManifest(e.target.value)}
           rows={6}
-          className="w-full rounded border border-neutral-300 px-2 py-1.5 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-800"
+          className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-800"
         />
       </label>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex gap-2">
-        <button type="button" disabled={!name || submitting} onClick={submit} className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900">
+        <button type="button" disabled={!name || submitting} onClick={submit} className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
           {submitting ? 'Creating…' : 'Create'}
         </button>
-        <button type="button" onClick={() => setOpen(false)} className="rounded px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-400">
+        <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
           Cancel
         </button>
       </div>
@@ -63,10 +65,19 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
 }
 
 export function ResourcesPage() {
+  const navigate = useNavigate()
+  const confirm = useConfirm()
   const { data: resources, loading, error, reload } = useApi(() => resourcesApi.list())
 
-  async function onDelete(name: string) {
-    if (!confirm(`Delete resource "${name}"?`)) return
+  async function onDelete(e: MouseEvent, name: string) {
+    e.stopPropagation()
+    const ok = await confirm({
+      title: `Delete resource "${name}"?`,
+      message: 'This cannot be undone. Any cluster still referencing this resource by name will fail to resolve it on its next reconcile.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     await resourcesApi.delete(name)
     reload()
   }
@@ -83,30 +94,42 @@ export function ResourcesPage() {
       {loading && <p className="text-sm text-neutral-500">Loading…</p>}
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-      <div className="space-y-2">
-        {resources?.map((r) => (
-          <div key={r.name} className="flex items-center justify-between rounded border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex items-center gap-2">
-              <span className="font-medium">{r.name}</span>
-              {r.refStatus && (
-                <>
-                  <RefStatusBadge resolved={r.refStatus.resolved} error={r.refStatus.error} />
-                  <span className="text-sm text-neutral-500">{r.refStatus.source}</span>
-                </>
+      <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        {resources?.length === 0 && <p className="p-6 text-center text-sm text-neutral-500">No resources yet.</p>}
+        <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+          {resources?.map((r) => (
+            <div
+              key={r.name}
+              onClick={() => navigate(`/resources/${encodeURIComponent(r.name)}`)}
+              className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="font-medium text-neutral-900 dark:text-neutral-100">{r.name}</span>
+                {r.refStatus && (
+                  <>
+                    <RefStatusBadge resolved={r.refStatus.resolved} error={r.refStatus.error} />
+                    <span className="truncate text-xs text-neutral-500">{r.refStatus.source}</span>
+                  </>
+                )}
+              </div>
+              {!r.refStatus && (
+                <AdminOnly>
+                  <button
+                    type="button"
+                    onClick={(e) => onDelete(e, r.name)}
+                    className="shrink-0 rounded-lg px-2.5 py-1 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                  >
+                    Delete
+                  </button>
+                </AdminOnly>
               )}
             </div>
-            {!r.refStatus && (
-              <AdminOnly>
-                <button type="button" onClick={() => onDelete(r.name)} className="text-sm text-red-600 hover:underline dark:text-red-400">
-                  Delete
-                </button>
-              </AdminOnly>
-            )}
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
       <p className="mt-3 text-xs text-neutral-400">
-        This is the standalone Resource CRD type — distinct from a cluster's own spec.resources[] entries, shown on each cluster's detail page.
+        This is the standalone Resource CRD type — distinct from a cluster's own spec.resources[] entries, shown on
+        each cluster's detail page.
       </p>
     </div>
   )

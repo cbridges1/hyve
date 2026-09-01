@@ -71,6 +71,20 @@ rules:
     resources: ["secrets"]
     verbs: ["update", "patch", "delete"]
     resourceNames: ["hyve-cli-secrets"]
+  # Unscoped delete, unlike the resourceNames-scoped rule directly above:
+  # account deletion (handleDeleteAccount, accounts.go) removes a
+  # <username>-credentials Secret, and RBAC resourceNames can't do prefix/
+  # pattern matching — only exact names, which is infeasible for a name
+  # that varies per created account. This does let hyve-api delete *any*
+  # Secret in this namespace, including hyve-api-credentials (its own
+  # signing key) and hyve-cli-secrets — a real, deliberate widening, not an
+  # oversight. Accepted because an admin-role caller through this API can
+  # already mint a cluster-admin kubeconfig via the primary-cluster
+  # TokenRequest path (see access.go's PrimaryClusterProvider), so this
+  # isn't a first departure from a tightly-scoped baseline.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["delete"]
   - apiGroups: [""]
     resources: ["serviceaccounts/token"]
     verbs: ["create"]
@@ -100,6 +114,11 @@ roleRef:
 ---
 # HyveAccessBinding is cluster-scoped (identity -> role mapping isn't tied
 # to a namespace) — needs a ClusterRole, not the namespaced Role above.
+# create/delete (beyond the original get/list/watch, needed since Phase 6's
+# own auth middleware) back the admin-facing account-management endpoints
+# in accounts.go (GET/POST/DELETE /accounts) — before that, HyveAccessBinding
+# was only ever written via `hyve cluster-config api create-user` + kubectl,
+# never by this API itself.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -107,7 +126,7 @@ metadata:
 rules:
   - apiGroups: ["hyve.io"]
     resources: ["hyveaccessbindings"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

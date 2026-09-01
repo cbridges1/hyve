@@ -1,6 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { login } from '../lib/api/auth'
 import { ApiError } from '../lib/api/client'
+import { Logo } from './Logo'
+
+const inputClass =
+  'w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:border-neutral-500 dark:focus:ring-white/10'
 
 export function LoginForm() {
   const [username, setUsername] = useState('')
@@ -22,17 +26,17 @@ export function LoginForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-neutral-50 dark:bg-neutral-950">
+    <div className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+        className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-7 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
       >
-        <h1 className="mb-6 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          Sign in to hyve
-        </h1>
+        <div className="mb-7 flex justify-center">
+          <Logo className="h-6" />
+        </div>
 
-        <label className="mb-3 block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Username</span>
+        <label className="mb-3.5 block text-sm">
+          <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">Username</span>
           <input
             type="text"
             value={username}
@@ -40,24 +44,24 @@ export function LoginForm() {
             required
             autoFocus
             autoComplete="username"
-            className="w-full rounded border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            className={inputClass}
           />
         </label>
 
-        <label className="mb-4 block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Password</span>
+        <label className="mb-5 block text-sm">
+          <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">Password</span>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
             autoComplete="current-password"
-            className="w-full rounded border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            className={inputClass}
           />
         </label>
 
         {error && (
-          <p className="mb-4 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+          <p className="mb-5 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/60 dark:text-red-300">
             {error}
           </p>
         )}
@@ -65,17 +69,13 @@ export function LoginForm() {
         <button
           type="submit"
           disabled={submitting}
-          className="w-full rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          className="w-full rounded-lg bg-neutral-900 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
           {submitting ? 'Signing in…' : 'Sign in'}
         </button>
 
-        <p className="mt-4 text-xs text-neutral-500 dark:text-neutral-500">
-          Accounts are provisioned via{' '}
-          <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">
-            hyve cluster-config api create-user
-          </code>
-          . There's no self-registration.
+        <p className="mt-5 text-center text-xs text-neutral-500 dark:text-neutral-500">
+          Accounts are provisioned by an admin. There's no self-registration.
         </p>
       </form>
     </div>

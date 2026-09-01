@@ -82,6 +82,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerSecretsRoutes(apiMux)
 	s.registerModuleRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
+	s.registerAccountRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
