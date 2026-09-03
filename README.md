@@ -191,6 +191,27 @@ hyve login                     # --api-url defaults to the active environment's,
 
 `hyve apply -f <file>` creates a single resource, auto-detecting `kind` (ClusterDefinition/Template/Workflow) from the file — the single-file equivalent of `hyve cluster create --file`, `hyve template create --file`, or `hyve workflow create --file`, without needing to know which one matches a given file. Either way — `apply`, `migrate`, or the per-resource `--file` flags — the same file works: `kubectl apply -f` it directly, or hand it to the CLI.
 
+### Multi-tenant installs
+
+Multiple hyve installs (controller + API pairs) can safely share one Kubernetes cluster, each isolated to its own namespace — one install per tenant, rather than one shared controller watching many namespaces. Every `hyve.io` CRD is namespaced, and by default (`api.accessRoles.clusterScoped: false`) each install's admin/read-only roles are scoped to its own namespace only, so one tenant's caller can never read, modify, or gain cluster-admin over another tenant's objects or namespace.
+
+To add a tenant:
+
+```bash
+kubectl create namespace <tenant-ns>
+helm install hyve-<tenant> deploy/helm/hyve \
+  --namespace <tenant-ns> \
+  -f deploy/helm/hyve/values-tenant-example.yaml \
+  --set namespace=<tenant-ns> \
+  --set api.ingress.host=<tenant>.hyve.example.com
+
+hyve cluster-config api create-user <username> --role admin --namespace <tenant-ns> | kubectl apply -f -
+```
+
+See `deploy/helm/hyve/values-tenant-example.yaml` for the full set of per-tenant overrides.
+
+**CRDs are cluster-global, shared by every tenant install.** `helm install` only applies `deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm upgrade` never touches them (standard Helm behavior). So only the very first tenant's install actually creates them; a later CRD schema change needs a manual `kubectl apply -f deploy/helm/hyve/crds/` before any tenant runs `helm upgrade`, or that tenant's upgrade will run against a stale schema.
+
 ## Module System
 
 Modules are directories containing operation files that Hyve executes during reconciliation:

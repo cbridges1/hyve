@@ -47,7 +47,13 @@ func buildKubeconfig(server string, caData []byte, token string) ([]byte, error)
 // PrimaryClusterProvider mints a scoped ServiceAccount token via
 // TokenRequest and assembles a kubeconfig whose server: points back at
 // this API's own /proxy path (see proxy.go) — Phase 6.5/6.6. Hardcoded to
-// the one cluster this API runs on; not configurable per-request.
+// the one cluster this API runs on; not configurable per-request. The
+// minted token's actual permissions come from whatever RoleBinding/
+// ClusterRoleBinding the resolved ServiceAccountRef's ServiceAccount has —
+// by default (api.accessRoles.clusterScoped: false in the Helm chart) that's
+// a namespaced RoleBinding scoped to this install's own namespace, so a
+// caller's "admin" role means admin of this install's namespace, not
+// cluster-admin over a cluster shared with other hyve installs.
 type PrimaryClusterProvider struct {
 	Clientset kubernetes.Interface
 

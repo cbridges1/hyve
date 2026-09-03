@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // accountDTO is the response shape for GET /api/accounts — deliberately
@@ -42,7 +43,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list hyvev1alpha1.HyveAccessBindingList
-	if err := s.Client.List(r.Context(), &list); err != nil {
+	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.Namespace)); err != nil {
 		log.Printf("api: failed to list access bindings: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list accounts")
 		return
@@ -95,7 +96,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := FindBindingBySubject(r.Context(), s.Client, hyvev1alpha1.SubjectTypeLocal, req.Username); err == nil {
+	if _, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, req.Username); err == nil {
 		writeError(w, http.StatusConflict, "an account with this username already exists")
 		return
 	}
@@ -118,7 +119,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Username},
+		ObjectMeta: metav1.ObjectMeta{Name: req.Username, Namespace: s.Namespace},
 		Spec: hyvev1alpha1.HyveAccessBindingSpec{
 			Subject:           hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: req.Username},
 			Role:              req.Role,
@@ -158,7 +159,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	binding, err := FindBindingBySubject(r.Context(), s.Client, hyvev1alpha1.SubjectTypeLocal, username)
+	binding, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, username)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return

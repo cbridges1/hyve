@@ -9,15 +9,17 @@ import (
 )
 
 // FindBindingBySubject returns the HyveAccessBinding matching
-// subjectType/subjectValue (e.g. "local"/"cedric"). Used both at login time
-// (to find the paired credentials Secret) and by the authz middleware (to
-// resolve a role per-request — see authz.go), so a role change on a
-// binding takes effect on the very next request, not just the next login.
-// More than one match is a configuration error (ambiguous), not something
-// to silently resolve by picking the first.
-func FindBindingBySubject(ctx context.Context, c client.Client, subjectType, subjectValue string) (*hyvev1alpha1.HyveAccessBinding, error) {
+// subjectType/subjectValue (e.g. "local"/"cedric") within namespace — a
+// HyveAccessBinding is namespaced (one install = one tenant = one
+// namespace), so this never sees or matches another install's bindings.
+// Used both at login time (to find the paired credentials Secret) and by
+// the authz middleware (to resolve a role per-request — see authz.go), so a
+// role change on a binding takes effect on the very next request, not just
+// the next login. More than one match is a configuration error (ambiguous),
+// not something to silently resolve by picking the first.
+func FindBindingBySubject(ctx context.Context, c client.Client, namespace, subjectType, subjectValue string) (*hyvev1alpha1.HyveAccessBinding, error) {
 	var list hyvev1alpha1.HyveAccessBindingList
-	if err := c.List(ctx, &list); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("list HyveAccessBindings: %w", err)
 	}
 	var matches []hyvev1alpha1.HyveAccessBinding

@@ -165,7 +165,7 @@ func (s *Server) requireRole(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		binding, err := FindBindingBySubject(r.Context(), s.Client, hyvev1alpha1.SubjectTypeLocal, username)
+		binding, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, username)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "no access binding for this identity")
 			return

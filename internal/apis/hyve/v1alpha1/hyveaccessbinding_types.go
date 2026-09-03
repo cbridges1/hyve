@@ -55,16 +55,19 @@ type HyveAccessBindingSpec struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=hab
+// +kubebuilder:resource:scope=Namespaced,shortName=hab
 // +kubebuilder:printcolumn:name="Subject",type=string,JSONPath=`.spec.subject.value`
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.role`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // HyveAccessBinding is the Schema for the hyveaccessbindings API — maps an
 // external identity (an OIDC subject/email today) to a role, resolved by
-// internal/api's auth middleware on every authenticated request. Cluster-
-// scoped, not namespaced: it binds an identity outside Kubernetes to a
-// role, not a namespaced workload.
+// internal/api's auth middleware on every authenticated request. Namespaced:
+// each hyve install (controller+API pair) only reads/writes bindings in its
+// own namespace, so multiple installs (tenants) sharing one cluster never
+// see or resolve each other's identities. Was cluster-scoped originally;
+// switched to namespaced once multi-tenant installs on a shared cluster
+// became a real requirement (see HYVE-MULTI-TENANCY-PLAN.md).
 type HyveAccessBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

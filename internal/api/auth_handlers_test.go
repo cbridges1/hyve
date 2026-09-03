@@ -26,7 +26,7 @@ func newTestServerWithUser(t *testing.T, username, password, role string) *Serve
 
 	bindingName := username + "-binding"
 	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: testNamespace},
 		Spec: hyvev1alpha1.HyveAccessBindingSpec{
 			Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: username},
 			Role:    role,

@@ -27,6 +27,17 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["templates", "workflows", "resources"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # HyveAccessBinding is namespaced (one install = one tenant = one
+  # namespace — see hyveaccessbinding_types.go), so this lives in the same
+  # namespaced Role as everything else above rather than a ClusterRole.
+  # create/delete (beyond the original get/list/watch, needed since Phase
+  # 6's own auth middleware) back the admin-facing account-management
+  # endpoints in accounts.go (GET/POST/DELETE /accounts) — before that,
+  # HyveAccessBinding was only ever written via `hyve cluster-config api
+  # create-user` + kubectl, never by this API itself.
+  - apiGroups: ["hyve.io"]
+    resources: ["hyveaccessbindings"]
+    verbs: ["get", "list", "watch", "create", "delete"]
   # HyveSession backs POST /auth/login, /auth/refresh, /auth/logout (see
   # internal/api/auth_handlers.go) — the durable, revocable record behind
   # every session. No list/watch here unlike the resources above: this
@@ -79,9 +90,11 @@ rules:
   # Secret in this namespace, including hyve-api-credentials (its own
   # signing key) and hyve-cli-secrets — a real, deliberate widening, not an
   # oversight. Accepted because an admin-role caller through this API can
-  # already mint a cluster-admin kubeconfig via the primary-cluster
-  # TokenRequest path (see access.go's PrimaryClusterProvider), so this
-  # isn't a first departure from a tightly-scoped baseline.
+  # already mint a kubeconfig scoped to admin of this whole namespace via
+  # the primary-cluster TokenRequest path (see access.go's
+  # PrimaryClusterProvider, and api-access-roles.yaml's
+  # accessRoles.clusterScoped), so this isn't a first departure from a
+  # tightly-scoped baseline.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["delete"]
@@ -110,33 +123,4 @@ subjects:
 roleRef:
   kind: Role
   name: hyve-api
-  apiGroup: rbac.authorization.k8s.io
----
-# HyveAccessBinding is cluster-scoped (identity -> role mapping isn't tied
-# to a namespace) — needs a ClusterRole, not the namespaced Role above.
-# create/delete (beyond the original get/list/watch, needed since Phase 6's
-# own auth middleware) back the admin-facing account-management endpoints
-# in accounts.go (GET/POST/DELETE /accounts) — before that, HyveAccessBinding
-# was only ever written via `hyve cluster-config api create-user` + kubectl,
-# never by this API itself.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: hyve-api-accessbindings
-rules:
-  - apiGroups: ["hyve.io"]
-    resources: ["hyveaccessbindings"]
-    verbs: ["get", "list", "watch", "create", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: hyve-api-accessbindings
-subjects:
-  - kind: ServiceAccount
-    name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
-    namespace: {{ .Values.namespace }}
-roleRef:
-  kind: ClusterRole
-  name: hyve-api-accessbindings
   apiGroup: rbac.authorization.k8s.io

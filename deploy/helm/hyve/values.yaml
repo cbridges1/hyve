@@ -118,13 +118,21 @@ api:
     className: traefik
 
   # accessRoles controls whether this chart also creates the two default
-  # roles' backing ServiceAccounts + ClusterRoleBindings
+  # roles' backing ServiceAccounts + RoleBindings/ClusterRoleBindings
   # (hyve-access-admin -> cluster-admin, hyve-access-readonly -> view) that
   # HyveAccessBinding.spec.serviceAccountRef points at by default. Disable
   # if you'd rather define your own custom roles and reference those
   # instead.
   accessRoles:
     create: true
+    # clusterScoped: false (default) binds these roles as namespaced
+    # RoleBindings, so a caller who mints a kubeconfig via the primary-
+    # cluster path (see PrimaryClusterProvider, internal/api/access.go) only
+    # gets cluster-admin/view over THIS install's own namespace — required
+    # for multiple hyve installs (tenants) to safely share one cluster. Set
+    # true only for a genuinely single-tenant cluster where cluster-wide
+    # cluster-admin/view for these roles is actually intended.
+    clusterScoped: false
 
 # ui deploys the optional web/ frontend (see HYVE-IMPLEMENTATION-PLAN.md's
 # Phase 11) — disabled by default, same "a real install makes its own

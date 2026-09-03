@@ -59,7 +59,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	binding, err := FindBindingBySubject(r.Context(), s.Client, hyvev1alpha1.SubjectTypeLocal, req.Username)
+	binding, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, req.Username)
 	if err != nil {
 		// Deliberately the same error as a wrong password below — a login
 		// endpoint shouldn't reveal which usernames exist.

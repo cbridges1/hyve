@@ -24,6 +24,12 @@ set -euo pipefail
 # that file isn't found.
 #
 # Cleans up everything it creates on exit, success or failure.
+#
+# NOTE: HyveAccessBinding is namespaced (see HYVE-MULTI-TENANCY-PLAN.md) —
+# a cluster still running the older cluster-scoped CRD needs the one-time
+# migration documented there before "Applying CRDs" below will succeed
+# (CustomResourceDefinition.spec.scope is immutable, so kubectl apply alone
+# cannot upgrade an existing cluster-scoped CRD in place).
 
 NAMESPACE="hyve-api-test"
 MODULE_CLUSTER="api-test-module-auth-cluster"
@@ -49,7 +55,7 @@ cleanup() {
   log "Cleaning up"
   stop_api
   kubectl delete clusterdefinition "$MODULE_CLUSTER" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-  kubectl delete hyveaccessbinding admin-test-binding readonly-test-binding --ignore-not-found >/dev/null 2>&1 || true
+  kubectl delete hyveaccessbinding admin-test-binding readonly-test-binding -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
   kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   rm -f "$HOME/.hyve/kubeconfigs/$MODULE_CLUSTER.yaml"
   rm -rf "$WORK_DIR"

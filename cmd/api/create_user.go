@@ -106,7 +106,7 @@ func runCreateUser(username string) {
 
 	binding := &hyvev1alpha1.HyveAccessBinding{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "hyve.io/v1alpha1", Kind: "HyveAccessBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: createUserNamespace},
 		Spec: hyvev1alpha1.HyveAccessBindingSpec{
 			Subject:           hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: username},
 			Role:              role,

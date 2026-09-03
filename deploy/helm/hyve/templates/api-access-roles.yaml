@@ -1,18 +1,28 @@
 {{- if .Values.api.accessRoles.create }}
 # The two default roles HyveAccessBinding.spec.serviceAccountRef points at
 # — a caller matched to an "admin" binding gets a token minted against
-# hyve-access-admin (bound to the built-in cluster-admin ClusterRole — this
-# cluster's own real RBAC is the actual authority once a caller reaches it
-# via /proxy, not a second hyve-side check); "read-only" gets
-# hyve-access-readonly (bound to the built-in view ClusterRole). A custom
-# role can point serviceAccountRef at any other ServiceAccount instead,
-# without touching this chart.
+# hyve-access-admin (bound to the built-in cluster-admin ClusterRole,
+# scoped to this install's own namespace by default — this cluster's own
+# real RBAC is the actual authority once a caller reaches it via /proxy,
+# not a second hyve-side check); "read-only" gets hyve-access-readonly
+# (bound to the built-in view ClusterRole, same scoping). A custom role can
+# point serviceAccountRef at any other ServiceAccount instead, without
+# touching this chart.
+#
+# api.accessRoles.clusterScoped (default false) controls whether these
+# bindings are namespaced RoleBindings (safe for multiple hyve installs
+# sharing one cluster — each tenant's "admin" is admin of only its own
+# namespace) or cluster-wide ClusterRoleBindings (the pre-multi-tenancy
+# behavior — only appropriate for a genuinely single-tenant cluster, since
+# it grants real cluster-admin/view over the whole cluster, not just this
+# install's namespace).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: hyve-access-admin
   namespace: {{ .Values.namespace }}
 ---
+{{- if .Values.api.accessRoles.clusterScoped }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -25,6 +35,21 @@ roleRef:
   kind: ClusterRole
   name: cluster-admin
   apiGroup: rbac.authorization.k8s.io
+{{- else }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyve-access-admin
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: hyve-access-admin
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -32,6 +57,7 @@ metadata:
   name: hyve-access-readonly
   namespace: {{ .Values.namespace }}
 ---
+{{- if .Values.api.accessRoles.clusterScoped }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -44,4 +70,19 @@ roleRef:
   kind: ClusterRole
   name: view
   apiGroup: rbac.authorization.k8s.io
+{{- else }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyve-access-readonly
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: hyve-access-readonly
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

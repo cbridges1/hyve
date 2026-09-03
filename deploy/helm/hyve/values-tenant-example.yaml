@@ -1,0 +1,53 @@
+# Example per-tenant override file for a multi-tenant install (one hyve
+# release per tenant namespace, sharing a cluster — see README.md's
+# "Multi-tenant installs" section). Copy this to values-tenant-<name>.yaml,
+# fill in the placeholders, and install with:
+#
+#   kubectl create namespace <tenant-ns>
+#   helm install hyve-<tenant> deploy/helm/hyve \
+#     --namespace <tenant-ns> \
+#     -f deploy/helm/hyve/values-tenant-<name>.yaml
+#
+# Everything not listed here just uses the chart's own default from
+# values.yaml — this file only lists the fields that must differ per tenant.
+
+image:
+  repository: "" # same image every tenant runs — set once, org-wide
+  tag: ""
+
+# Must match the --namespace this release is installed into (the
+# `helm install --namespace` flag above only controls where the chart's own
+# resources land; the controller/API read this value to know which
+# namespace to watch/serve).
+namespace: <tenant-ns>
+
+api:
+  # This tenant's own public hostname — each tenant needs a distinct host
+  # (or distinct path prefix on a shared host, if you front multiple
+  # tenants with one Ingress yourself instead of using this chart's own
+  # api.ingress).
+  publicBaseURL: https://<tenant>.hyve.example.com
+  primaryClusterName: <tenant>-primary
+  ingress:
+    enabled: true
+    host: <tenant>.hyve.example.com
+
+  # Leave at the chart default (false) unless this tenant's cluster is
+  # genuinely single-tenant — true grants this tenant's admin role
+  # cluster-admin over the WHOLE shared cluster, not just its own
+  # namespace. See api-access-roles.yaml's comment.
+  # accessRoles:
+  #   clusterScoped: false
+
+# Optional: size requests/limits per tenant if they have different load
+# expectations — otherwise the chart defaults apply to every tenant equally.
+# controller:
+#   resources:
+#     requests:
+#       cpu: 100m
+#       memory: 128Mi
+
+# fullnameOverride / a distinct Helm release name (hyve-<tenant> above) is
+# what keeps `helm list -n <tenant-ns>` and release history readable per
+# tenant — resource names inside the namespace itself (Deployments, Roles,
+# etc.) are already namespace-isolated and don't need to vary by tenant.

@@ -133,6 +133,33 @@ you've ever logged into without a separate registration step, while still
 keeping the credential itself (which environment is a URL vs. who's
 authenticated to it) in two independent places.
 
+## Multi-tenant installs
+
+Multiple hyve installs (controller + API pairs) can share one cluster, each
+scoped to its own namespace — see the README's
+[Multi-tenant installs](../README.md#multi-tenant-installs) section for the
+operator-facing walkthrough. Two things make this actually safe rather than
+just namespace-flavored:
+
+- `HyveAccessBinding` is namespaced (not cluster-scoped, as it originally
+  was) — `FindBindingBySubject` (`internal/api/identity.go`) always lists
+  within `Server.Namespace`, so one install can never see or resolve another
+  install's identities, and the backing RBAC is a `Role`, not a `ClusterRole`
+  (`deploy/helm/hyve/templates/api-rbac.yaml`).
+- The default `admin`/`read-only` roles bind to the built-in
+  `cluster-admin`/`view` `ClusterRole`s via a namespaced `RoleBinding`, not a
+  `ClusterRoleBinding` (`api.accessRoles.clusterScoped: false`, the chart
+  default) — so a kubeconfig minted through `PrimaryClusterProvider`
+  (`internal/api/access.go`, served via `/proxy`) only grants admin/view over
+  that install's own namespace, never the whole shared cluster.
+
+**CRD scope is a one-time, breaking migration for any cluster still running
+the pre-multi-tenancy, cluster-scoped `HyveAccessBinding`.** Kubernetes
+can't change a CRD's scope in place: existing bindings must be exported, the
+old CRD deleted (which deletes every instance), the new namespaced CRD
+applied, then each binding re-applied with `namespace:` set. Do this before
+any tenant install relies on `HyveAccessBinding` namespacing for isolation.
+
 ## Module and workflow execution
 
 Both module operations (`create`/`status`/`delete`/`auth`/`scale`) and

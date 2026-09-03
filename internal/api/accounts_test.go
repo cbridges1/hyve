@@ -54,7 +54,7 @@ func TestHandleListAccounts_ReadOnlyForbidden(t *testing.T) {
 func TestHandleListAccounts_ExcludesOIDCBindings(t *testing.T) {
 	local := newBinding("cedric", "cedric", hyvev1alpha1.RoleAdmin)
 	oidc := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "okta-someone"},
+		ObjectMeta: metav1.ObjectMeta{Name: "okta-someone", Namespace: testNamespace},
 		Spec: hyvev1alpha1.HyveAccessBindingSpec{
 			Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeOIDC, Value: "someone@example.com"},
 			Role:    hyvev1alpha1.RoleReadOnly,
@@ -70,6 +70,23 @@ func TestHandleListAccounts_ExcludesOIDCBindings(t *testing.T) {
 	require.Len(t, accounts, 1)
 	assert.Equal(t, "cedric", accounts[0].Username)
 	assert.Equal(t, hyvev1alpha1.RoleAdmin, accounts[0].Role)
+}
+
+// TestHandleListAccounts_ExcludesOtherNamespaces is the regression test for
+// the cross-tenant leak namespacing HyveAccessBinding closes: an install
+// serving `testNamespace` must never list another tenant's accounts.
+func TestHandleListAccounts_ExcludesOtherNamespaces(t *testing.T) {
+	mine := newBinding("cedric", "cedric", hyvev1alpha1.RoleAdmin)
+	other := newBindingInNamespace("someone-else", "tenant-b", "someone-else", hyvev1alpha1.RoleAdmin)
+	s := &Server{Client: newFakeClient(t, mine, other), Namespace: testNamespace}
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var accounts []accountDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &accounts))
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "cedric", accounts[0].Username)
 }
 
 func TestHandleCreateAccount_ReadOnlyForbidden(t *testing.T) {
@@ -93,7 +110,7 @@ func TestHandleCreateAccount_CreatesSecretAndBinding(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "s3cret", "the plaintext password must never appear in the response")
 
 	var binding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "new-user"}, &binding))
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "new-user", Namespace: testNamespace}, &binding))
 	assert.Equal(t, "hyve-access-readonly", binding.Spec.ServiceAccountRef.Name)
 
 	var secret corev1.Secret
@@ -150,7 +167,7 @@ func TestHandleDeleteAccount_CannotDeleteSelf(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var binding hyvev1alpha1.HyveAccessBinding
-	assert.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "cedric"}, &binding), "binding must survive a rejected self-delete")
+	assert.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "cedric", Namespace: testNamespace}, &binding), "binding must survive a rejected self-delete")
 }
 
 func TestHandleDeleteAccount_RemovesBindingAndSecret(t *testing.T) {
@@ -162,7 +179,7 @@ func TestHandleDeleteAccount_RemovesBindingAndSecret(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 
 	var gone hyvev1alpha1.HyveAccessBinding
-	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "victim"}, &gone)
+	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "victim", Namespace: testNamespace}, &gone)
 	assert.True(t, apierrors.IsNotFound(err))
 
 	var goneSecret corev1.Secret
