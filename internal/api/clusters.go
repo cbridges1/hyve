@@ -26,16 +26,25 @@ type clusterDTO struct {
 	ObservedGeneration int64              `json:"observedGeneration"`
 	AccessMethod       string             `json:"accessMethod,omitempty"`
 	AccessLastMinted   string             `json:"accessLastMinted,omitempty"`
+
+	// AccessMethodRef surfaces spec.access.accessMethodRef so `hyve cluster
+	// auth` can discover it via GET /api/clusters/<name> and take the
+	// client-side AccessMethod path (see HYVE-ACCESS-METHOD-DESIGN.md)
+	// before deciding whether to fall back to GetAuthContext/GetKubeconfig.
+	AccessMethodRef       string `json:"accessMethodRef,omitempty"`
+	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
 }
 
 func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 	return clusterDTO{
-		Name:               cd.Name,
-		Driver:             cd.Spec.Driver.Source,
-		Conditions:         cd.Status.Conditions,
-		ObservedGeneration: cd.Status.ObservedGeneration,
-		AccessMethod:       cd.Status.Access.Method,
-		AccessLastMinted:   cd.Status.Access.LastMinted,
+		Name:                  cd.Name,
+		Driver:                cd.Spec.Driver.Source,
+		Conditions:            cd.Status.Conditions,
+		ObservedGeneration:    cd.Status.ObservedGeneration,
+		AccessMethod:          cd.Status.Access.Method,
+		AccessLastMinted:      cd.Status.Access.LastMinted,
+		AccessMethodRef:       cd.Spec.Access.AccessMethodRef,
+		AccessMethodClusterID: cd.Spec.Access.AccessMethodClusterID,
 	}
 }
 

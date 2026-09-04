@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/accessmethod"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 	mod "github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/types"
@@ -66,6 +67,19 @@ func runClusterAuth(name string, method string) {
 		log.Fatalf("Failed to load cluster '%s': %v", name, err)
 	}
 
+	amMgr := accessmethod.NewManager(repoPath)
+	handled := runAccessMethodAuth(name, cluster.Spec.AccessMethodRef, cluster.Spec.AccessMethodClusterID,
+		func(ref string) (string, string, error) {
+			am, err := amMgr.GetAccessMethod(ref)
+			if err != nil {
+				return "", "", err
+			}
+			return am.Spec.Provider, am.Spec.ServerURL, nil
+		})
+	if handled {
+		return
+	}
+
 	lf, err := mod.LoadLockFile(repoPath)
 	if err != nil {
 		log.Fatalf("Failed to load hyve.lock: %v", err)
@@ -108,6 +122,20 @@ func runClusterAuth(name string, method string) {
 // into the server-side override (or tunnel access) does this fall back to
 // fetching an already-minted kubeconfig and merging it in.
 func authClusterAPI(client *shared.APIClient, name string, method string) {
+	if cd, err := client.GetCluster(name); err == nil {
+		handled := runAccessMethodAuth(name, cd.AccessMethodRef, cd.AccessMethodClusterID,
+			func(ref string) (string, string, error) {
+				am, err := client.GetAccessMethod(ref)
+				if err != nil {
+					return "", "", err
+				}
+				return am.Spec.Provider, am.Spec.ServerURL, nil
+			})
+		if handled {
+			return
+		}
+	}
+
 	authCtx, err := client.GetAuthContext(name)
 	if err == nil {
 		runModuleAuthLocally(name, authCtx, method)

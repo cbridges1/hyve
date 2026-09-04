@@ -200,6 +200,22 @@ type ClusterSpec struct {
 	// fail) a reconcile cycle for this cluster while any named dependency
 	// isn't ACTIVE.
 	DependsOn []string `yaml:"dependsOn,omitempty" json:"dependsOn,omitempty"`
+
+	// AccessMethodRef names an AccessMethod (see internal/accessmethod for
+	// local-file mode, internal/apis/hyve/v1alpha1's AccessMethod CRD for
+	// cluster mode) that `hyve cluster auth` resolves client-side to mint a
+	// kubeconfig — independent of the CRD-only Access.Method/Tunnel fields,
+	// which are server-mediated cluster-mode-only concepts with no local
+	// equivalent. See HYVE-ACCESS-METHOD-DESIGN.md.
+	AccessMethodRef string `yaml:"accessMethodRef,omitempty" json:"accessMethodRef,omitempty"`
+
+	// AccessMethodClusterID is this cluster's own identifier within the
+	// referenced AccessMethod's provider (e.g. Rancher's internal cluster
+	// ID) — required when AccessMethodRef is set. An admin sets this
+	// directly today; auto-populating it (e.g. via a CAPI module's
+	// afterCreate hook writing it into DriverOutputs) is a natural later
+	// addition, not required for this to work.
+	AccessMethodClusterID string `yaml:"accessMethodClusterID,omitempty" json:"accessMethodClusterID,omitempty"`
 }
 
 // ClusterMetadata represents cluster metadata

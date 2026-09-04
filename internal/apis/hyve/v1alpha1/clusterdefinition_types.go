@@ -104,10 +104,32 @@ const (
 	TunnelProviderTeleport = "teleport"
 )
 
-// AccessSpec is only meaningful when Method is AccessMethodTunnel.
+// AccessSpec.
 type AccessSpec struct {
 	Method string      `json:"method,omitempty"`
-	Tunnel *TunnelSpec `json:"tunnel,omitempty"`
+	Tunnel *TunnelSpec `json:"tunnel,omitempty"` // only meaningful when Method is AccessMethodTunnel
+
+	// AccessMethodRef names an AccessMethod object (see accessmethod_types.go)
+	// providing a client-side, per-user access path independent of Method/
+	// Tunnel above — set by `hyve cluster auth` itself, resolved entirely
+	// client-side (or via a small read-only API lookup in cluster mode),
+	// never through GET /api/kubeconfig or ModuleAuthProvider/TunnelProvider
+	// at all. Orthogonal to Method: a cluster can leave Method unset (the
+	// client-side module-auth default) and still set AccessMethodRef, since
+	// they're two independent ways a caller might obtain a kubeconfig for
+	// the same cluster. See HYVE-ACCESS-METHOD-DESIGN.md for the full
+	// design and why this is additive rather than replacing Tunnel/
+	// TunnelProvider (that path stays for the case Rancher/Teleport is only
+	// reachable from the API pod, not the caller's own machine — deferred,
+	// not removed).
+	AccessMethodRef string `json:"accessMethodRef,omitempty"`
+
+	// AccessMethodClusterID is this cluster's own identifier within the
+	// referenced AccessMethod's provider (e.g. Rancher's internal cluster
+	// ID) — required when AccessMethodRef is set. See AccessMethodRef's own
+	// doc comment and types.ClusterSpec.AccessMethodClusterID (the local-
+	// mode equivalent).
+	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
 }
 
 // TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml

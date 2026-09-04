@@ -82,12 +82,14 @@ func UseClusterMode() (*session.Session, bool) {
 
 // ClusterDTO mirrors internal/api's clusterDTO response shape.
 type ClusterDTO struct {
-	Name               string         `json:"name"`
-	Driver             string         `json:"driver"`
-	Conditions         []ConditionDTO `json:"conditions,omitempty"`
-	ObservedGeneration int64          `json:"observedGeneration"`
-	AccessMethod       string         `json:"accessMethod,omitempty"`
-	AccessLastMinted   string         `json:"accessLastMinted,omitempty"`
+	Name                  string         `json:"name"`
+	Driver                string         `json:"driver"`
+	Conditions            []ConditionDTO `json:"conditions,omitempty"`
+	ObservedGeneration    int64          `json:"observedGeneration"`
+	AccessMethod          string         `json:"accessMethod,omitempty"`
+	AccessLastMinted      string         `json:"accessLastMinted,omitempty"`
+	AccessMethodRef       string         `json:"accessMethodRef,omitempty"`
+	AccessMethodClusterID string         `json:"accessMethodClusterID,omitempty"`
 }
 
 // ConditionDTO mirrors metav1.Condition's JSON shape closely enough for
@@ -529,6 +531,28 @@ func (c *APIClient) GetKubeconfig(clusterName string) ([]byte, error) {
 		return nil, fmt.Errorf("unexpected response: %s", resp.Status)
 	}
 	return body, nil
+}
+
+// AccessMethodDTO mirrors internal/api's accessMethodDTO — GET
+// /api/access-methods/<name>'s response shape.
+type AccessMethodDTO struct {
+	Name string `json:"name"`
+	Spec struct {
+		Provider  string `json:"provider"`
+		ServerURL string `json:"serverURL"`
+	} `json:"spec"`
+}
+
+// GetAccessMethod calls GET /api/access-methods/<name> — the cluster-mode
+// counterpart to internal/accessmethod.Manager.GetAccessMethod, used by
+// `hyve cluster auth` to resolve a ClusterDefinition's accessMethodRef when
+// running against the API rather than local files.
+func (c *APIClient) GetAccessMethod(name string) (*AccessMethodDTO, error) {
+	var out AccessMethodDTO
+	if err := c.do(http.MethodGet, "/api/access-methods/"+url.PathEscape(name), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // do sends the request and, on a non-2xx response, returns an error

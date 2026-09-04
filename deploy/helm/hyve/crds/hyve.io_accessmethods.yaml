@@ -1,0 +1,93 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: accessmethods.hyve.io
+spec:
+  group: hyve.io
+  names:
+    kind: AccessMethod
+    listKind: AccessMethodList
+    plural: accessmethods
+    shortNames:
+    - am
+    singular: accessmethod
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.provider
+      name: Provider
+      type: string
+    - jsonPath: .spec.serverURL
+      name: ServerURL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AccessMethod is the Schema for the accessmethods API — an admin-managed,
+          reusable, named resource referenced by name
+          (ClusterDefinitionSpec.Access.AccessMethodRef) from any ClusterDefinition,
+          decoupled from which module provisioned that cluster. Namespaced, for the
+          same reason HyveAccessBinding is: a cluster-scoped object here would let
+          one tenant's ClusterDefinition reference (and, depending on RBAC, list)
+          another tenant's access-service config. Read-only from this API's own
+          perspective — admins create/update these directly via kubectl, the same
+          stance HyveConfig's controller.hyveConfig.create: false default already
+          takes for a different singleton object; see
+          HYVE-ACCESS-METHOD-DESIGN.md for the full design.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AccessMethodSpec holds connection config for an externally-addressable
+              identity/access service (Rancher, Teleport, ...) that mints kubeconfigs
+              for clusters that reference it — never a credential itself, only where
+              to reach the service. The credential comes from whichever user requests
+              access, at request time (see HYVE-ACCESS-METHOD-DESIGN.md), which is
+              exactly what makes this object safe to read broadly and safe to commit
+              to a GitOps repo. Deliberately not scoped to "tunnel" specifically —
+              Provider is a plain string, not a closed set baked into this struct's
+              shape, so a future non-tunnel provider (an OIDC-based mechanism, a
+              Vault-issued cert, ...) needs no schema change here.
+            properties:
+              provider:
+                description: |-
+                  Provider selects which client-side implementation resolves this
+                  AccessMethod — see AccessMethodProviderRancher/AccessMethodProviderTeleport.
+                type: string
+              serverURL:
+                description: |-
+                  ServerURL is the provider's own address — e.g. a Rancher server's
+                  base URL. Meaning is provider-specific; hyve never validates its
+                  shape beyond requiring it be set.
+                type: string
+            required:
+            - provider
+            - serverURL
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

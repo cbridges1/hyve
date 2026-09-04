@@ -11,6 +11,7 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/crdconv"
+	"github.com/cbridges1/hyve/internal/migrate"
 	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/workflow"
@@ -146,6 +147,27 @@ func migrateDirectory(client *shared.APIClient, dirPath string, dryRun bool) {
 	if dryRun {
 		log.Println("Re-run with --write to actually create these.")
 	}
+}
+
+// printMigrateSummary prints a migrate.Summary in the same shape both
+// `hyve migrate to-cluster` and `hyve migrate cluster` use — created/
+// skipped/failed, one line per object, never aborting on a single
+// failure (the summary itself already didn't).
+func printMigrateSummary(kind string, s *migrate.Summary, dryRun bool) {
+	verb := "created"
+	if dryRun {
+		verb = "would create"
+	}
+	for _, name := range s.Created {
+		log.Printf("[%s] %s — %s", kind, name, verb)
+	}
+	for _, name := range s.Skipped {
+		log.Printf("[%s] %s — already exists, skipped (use --force to overwrite)", kind, name)
+	}
+	for name, err := range s.Failed {
+		log.Printf("[%s] %s — FAILED: %v", kind, name, err)
+	}
+	log.Printf("%s: %d created, %d skipped, %d failed", kind, len(s.Created), len(s.Skipped), len(s.Failed))
 }
 
 // isAlreadyExists reports whether err looks like the API's 409 Conflict

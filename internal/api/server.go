@@ -81,6 +81,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerResourceRoutes(apiMux)
 	s.registerSecretsRoutes(apiMux)
 	s.registerModuleRoutes(apiMux)
+	s.registerAccessMethodRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 	s.registerAccountRoutes(apiMux)
 
