@@ -40,9 +40,13 @@ spec:
             - --primary-cluster-name={{ .Values.api.primaryClusterName }}
             {{- end }}
             - --proxy-target={{ .Values.api.proxyTarget }}
+            - --relay-bind-address={{ .Values.api.relayBindAddress }}
+            - --relay-base-url={{ .Values.api.relayBaseURL | default (printf "http://hyve-api-internal.%s.svc.cluster.local%s" .Values.namespace .Values.api.relayBindAddress) }}
           ports:
             - name: http
               containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
+            - name: relay
+              containerPort: {{ .Values.api.relayBindAddress | trimPrefix ":" }}
           livenessProbe:
             httpGet:
               path: /healthz

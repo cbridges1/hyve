@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/shared"
-	"github.com/cbridges1/hyve/internal/accessmethod"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 	mod "github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/types"
@@ -41,7 +40,13 @@ If the cluster has opted into server-side auth (spec.access.method:
 module-auth on its ClusterDefinition), the module instead runs inside the
 API pod and this fetches an already-minted kubeconfig (GET /api/kubeconfig)
 and merges it in — --method isn't supported for that path, since the server
-always uses the module's default auth method.`,
+always uses the module's default auth method.
+
+If the cluster references an AccessMethod (spec.access.accessMethodRef) —
+an external identity service like Rancher — this requires cluster mode
+('hyve login' first): the AccessMethod's driver module's auth operation
+always runs server-side in a short-lived Job, POST /api/access-methods/
+<ref>/mint, never on this machine. See HYVE-ACCESS-METHOD-DESIGN.md.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		runClusterAuth(args[0], authMethodFlag)
@@ -67,17 +72,8 @@ func runClusterAuth(name string, method string) {
 		log.Fatalf("Failed to load cluster '%s': %v", name, err)
 	}
 
-	amMgr := accessmethod.NewManager(repoPath)
-	handled := runAccessMethodAuth(name, cluster.Spec.AccessMethodRef, cluster.Spec.AccessMethodClusterID,
-		func(ref string) (string, string, error) {
-			am, err := amMgr.GetAccessMethod(ref)
-			if err != nil {
-				return "", "", err
-			}
-			return am.Spec.Provider, am.Spec.ServerURL, nil
-		})
-	if handled {
-		return
+	if cluster.Spec.AccessMethodRef != "" {
+		log.Fatalf("Cluster %q uses access method %q, which requires cluster mode — run `hyve login` first (see HYVE-ACCESS-METHOD-DESIGN.md)", name, cluster.Spec.AccessMethodRef)
 	}
 
 	lf, err := mod.LoadLockFile(repoPath)
@@ -123,14 +119,7 @@ func runClusterAuth(name string, method string) {
 // fetching an already-minted kubeconfig and merging it in.
 func authClusterAPI(client *shared.APIClient, name string, method string) {
 	if cd, err := client.GetCluster(name); err == nil {
-		handled := runAccessMethodAuth(name, cd.AccessMethodRef, cd.AccessMethodClusterID,
-			func(ref string) (string, string, error) {
-				am, err := client.GetAccessMethod(ref)
-				if err != nil {
-					return "", "", err
-				}
-				return am.Spec.Provider, am.Spec.ServerURL, nil
-			})
+		handled := runAccessMethodAuthCluster(name, cd.AccessMethodRef, cd.AccessMethodClusterID, client)
 		if handled {
 			return
 		}

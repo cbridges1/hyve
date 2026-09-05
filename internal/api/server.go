@@ -13,8 +13,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -42,6 +45,34 @@ type Server struct {
 	// operation file for delivery to the client, since that's a read, not
 	// an AccessProvider.Kubeconfig-shaped execution.
 	ModulesDir string
+
+	// Clientset is a plain client-go clientset (as distinct from Client,
+	// the controller-runtime client used for CRDs) — needed for
+	// Job/Secret dispatch, which internal/k8sjob's kubernetes.Interface-
+	// based API expects. Used by the access-method mint handler
+	// (accessmethod_mint.go); nil is fine for a deployment that never
+	// calls it (every other handler uses Client instead).
+	Clientset kubernetes.Interface
+
+	// RelayBaseURL is this API's own in-cluster address for the mint
+	// relay listener (see RelayRoutes) — e.g.
+	// "http://hyve-api-internal.hyve-system.svc.cluster.local:8091". Never
+	// the same as the public-facing address: the relay listener has no
+	// Ingress at all, reachable only from inside the cluster's own pod
+	// network. Required for POST /api/access-methods/<name>/mint to work
+	// at all; that handler 500s with a clear message if this is unset.
+	RelayBaseURL string
+
+	// MintTimeout overrides how long handleAccessMethodMint waits for its
+	// dispatched Job to push a result before giving up — see
+	// mintTimeout's own doc comment for the production default this falls
+	// back to when zero. Exists as a Server field (not just the constant)
+	// so tests can shorten it well below 90s instead of actually waiting.
+	MintTimeout time.Duration
+
+	// mintPending tracks in-flight access-method mint requests awaiting a
+	// push from their dispatched Job — see accessmethod_mint.go.
+	mintPending sync.Map
 
 	// Proxy backs /proxy/* — see proxy.go. Left nil, /proxy/* 503s rather
 	// than panicking.
@@ -82,12 +113,27 @@ func (s *Server) Routes() http.Handler {
 	s.registerSecretsRoutes(apiMux)
 	s.registerModuleRoutes(apiMux)
 	s.registerAccessMethodRoutes(apiMux)
+	s.registerAccessMethodMintRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 	s.registerAccountRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
 	return corsMiddleware(mux)
+}
+
+// RelayRoutes returns the internal-only handler an access-method mint
+// Job's push callback calls — see accessmethod_mint.go. Deliberately not
+// mounted under Routes()/"/api/": this must be served on a separate
+// listener with no Ingress at all (see cmd/api/run.go), since it carries
+// no hyve session concept whatsoever — its own one-shot per-request bearer
+// token (checked inside handleAccessMethodMintRelay itself) is the only
+// authorization it has, and it must never be reachable from outside the
+// cluster's own pod network.
+func (s *Server) RelayRoutes() http.Handler {
+	mux := http.NewServeMux()
+	s.registerAccessMethodMintRelayRoutes(mux)
+	return mux
 }
 
 // handleProxy forwards to s.Proxy (see proxy.go's BuildProxy) — a thin

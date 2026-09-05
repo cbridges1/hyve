@@ -7,60 +7,66 @@ import (
 	"path/filepath"
 	"testing"
 
-	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/kubeconfig"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRunAccessMethodAuth_NoRefReturnsFalse confirms a cluster with no
-// accessMethodRef set never even calls the resolver — the caller falls
-// through to its own existing auth logic untouched.
-func TestRunAccessMethodAuth_NoRefReturnsFalse(t *testing.T) {
-	called := false
-	resolver := func(ref string) (string, string, error) {
-		called = true
-		return "", "", nil
-	}
-	handled := runAccessMethodAuth("my-cluster", "", "", resolver)
+const testMintKubeconfig = "apiVersion: v1\nkind: Config\nclusters:\n- name: prod\n  cluster:\n    server: https://rancher-managed.example.com\nusers:\n- name: prod\n  user:\n    token: tok\ncontexts:\n- name: prod\n  context:\n    cluster: prod\n    user: prod\ncurrent-context: prod\n"
+
+func TestRunAccessMethodAuthCluster_NoRefReturnsFalse(t *testing.T) {
+	client := &shared.APIClient{BaseURL: "http://unused.invalid"}
+	handled := runAccessMethodAuthCluster("my-cluster", "", "", client)
 	assert.False(t, handled)
-	assert.False(t, called, "resolver must not be called when accessMethodRef is unset")
 }
 
-// TestRunAccessMethodAuth_RancherSuccess_MergesKubeconfig exercises the
-// full success path end to end: resolver -> Login (RANCHER_TOKEN reused,
-// login skipped) -> GenerateKubeconfig -> merge into ~/.kube/config —
-// confirming this genuinely never needs a hyve API round trip for the
-// credential exchange, only a resolver call and a direct Rancher round
-// trip.
-func TestRunAccessMethodAuth_RancherSuccess_MergesKubeconfig(t *testing.T) {
+// TestRunAccessMethodAuthCluster_Success_MergesKubeconfig exercises the
+// full path end to end: GET .../<ref> (learns RequiredEnv) -> reads those
+// exact names from the process's own environment -> POST .../<ref>/mint
+// with only those as credentialEnv -> merges the returned kubeconfig into
+// ~/.kube/config. Confirms the driver module's auth operation is never
+// run by this process at all — only two plain HTTP calls.
+func TestRunAccessMethodAuthCluster_Success_MergesKubeconfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("RANCHER_TOKEN", "already-held-token")
-
-	const kc = "apiVersion: v1\nkind: Config\nclusters:\n- name: prod\n  cluster:\n    server: https://rancher-managed.example.com\nusers:\n- name: prod\n  user:\n    token: tok\ncontexts:\n- name: prod\n  context:\n    cluster: prod\n    user: prod\ncurrent-context: prod\n"
+	t.Setenv("RANCHER_USERNAME", "alice")
+	t.Setenv("RANCHER_PASSWORD", "s3cret")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "Bearer already-held-token", r.Header.Get("Authorization"), "must reuse RANCHER_TOKEN, never prompt when it's already set")
-		assert.Equal(t, "/v3/clusters/c-abc123", r.URL.Path)
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(struct {
-			Config string `json:"config"`
-		}{Config: kc})
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/access-methods/corp-rancher":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":        "corp-rancher",
+				"spec":        map[string]any{"serverURL": "https://rancher.example.com", "driver": map[string]any{"source": "x", "version": "v1"}},
+				"requiredEnv": []string{"RANCHER_USERNAME", "RANCHER_PASSWORD"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/access-methods/corp-rancher/mint":
+			var body struct {
+				ClusterName           string            `json:"clusterName"`
+				AccessMethodClusterID string            `json:"accessMethodClusterID"`
+				CredentialEnv         map[string]string `json:"credentialEnv"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "my-cluster", body.ClusterName)
+			assert.Equal(t, "c-abc123", body.AccessMethodClusterID)
+			assert.Equal(t, map[string]string{"RANCHER_USERNAME": "alice", "RANCHER_PASSWORD": "s3cret"}, body.CredentialEnv, "must forward exactly RequiredEnv, never the caller's whole environment")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"kubeconfig": testMintKubeconfig})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 
-	resolver := func(ref string) (string, string, error) {
-		assert.Equal(t, "corp-rancher", ref)
-		return hyvev1alpha1.AccessMethodProviderRancher, srv.URL, nil
-	}
-
-	handled := runAccessMethodAuth("my-cluster", "corp-rancher", "c-abc123", resolver)
+	client := &shared.APIClient{BaseURL: srv.URL}
+	handled := runAccessMethodAuthCluster("my-cluster", "corp-rancher", "c-abc123", client)
 	assert.True(t, handled)
 
 	defaultPath := filepath.Join(home, ".kube", "config")
 	names, err := kubeconfig.ContextNames(readFile(t, defaultPath))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"my-cluster"}, names, "the merged entry must be named after the hyve cluster, not Rancher's own context name")
+	assert.Equal(t, []string{"my-cluster"}, names, "the merged entry must be named after the hyve cluster, not the module's own context name")
 }

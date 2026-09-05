@@ -79,9 +79,11 @@ rules:
   # resourceNames at all — a rule with resourceNames simply never matches a
   # create request (confirmed live: combining create with resourceNames
   # made every create 403, not "unscoped" as might be assumed), so create
-  # needs its own unscoped rule; the handler code itself never attempts to
-  # create any secret other than hyve-cli-secrets. update/patch/delete CAN
-  # be scoped by resourceNames and are.
+  # needs its own unscoped rule — also what access-method minting
+  # (accessmethod_mint.go) needs to create its own short-lived,
+  # per-request credentials Secret (name varies per mint request, so
+  # resourceNames can't scope this one either). update/patch/delete CAN
+  # be scoped by resourceNames and are, for hyve-cli-secrets specifically.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
@@ -108,9 +110,15 @@ rules:
   - apiGroups: [""]
     resources: ["serviceaccounts/token"]
     verbs: ["create"]
+  # create/delete (beyond the original read-only get/list, granted ahead
+  # of Phase 6.7's log-streaming feature) back access-method minting
+  # (accessmethod_mint.go) — a short-lived Job runs an AccessMethod's
+  # driver module's auth operation, deleted again the moment its result
+  # arrives (or its wait times out). No update/patch: this API never
+  # modifies a Job in place.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]

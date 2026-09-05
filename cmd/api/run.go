@@ -34,6 +34,8 @@ var (
 	apiPrimaryClusterName string
 	apiProxyTarget        string
 	apiInClusterCAPath    string
+	apiRelayBindAddress   string
+	apiRelayBaseURL       string
 )
 
 // Cmd is the api command.
@@ -66,6 +68,8 @@ func init() {
 	runCmd.Flags().StringVar(&apiPrimaryClusterName, "primary-cluster-name", "", "ClusterDefinition name that identifies \"this API's own cluster\" for GET /api/kubeconfig — leave unset to disable the primary-cluster path entirely")
 	runCmd.Flags().StringVar(&apiProxyTarget, "proxy-target", "https://kubernetes.default.svc", "Upstream /proxy/* forwards to")
 	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the primary-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
+	runCmd.Flags().StringVar(&apiRelayBindAddress, "relay-bind-address", ":8091", "Address the access-method mint relay listener binds to — never expose this via Ingress; in-cluster pod network only")
+	runCmd.Flags().StringVar(&apiRelayBaseURL, "relay-base-url", "", "This API's own in-cluster address for the relay listener (e.g. http://hyve-api-internal.hyve-system.svc.cluster.local:8091) — required for POST /api/access-methods/<name>/mint; leave unset to disable access-method minting entirely")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -91,6 +95,20 @@ func runAPI() {
 	moduleAuthProvider := &hyveapi.ModuleAuthProvider{ModulesDir: apiModulesDir}
 	tunnelProvider := &hyveapi.TunnelProvider{Client: c, Namespace: apiNamespace}
 
+	// Built unconditionally (unlike PrimaryProvider's clientset below,
+	// which only exists when the primary-cluster path is configured) —
+	// access-method minting (accessmethod_mint.go) needs a plain
+	// client-go clientset for Job/Secret dispatch regardless of whether
+	// this deployment ever uses the primary-cluster feature.
+	clientset, csErr := kubernetes.NewForConfig(cfg)
+	if csErr != nil {
+		log.Fatalf("❌ Failed to build Kubernetes clientset: %v", csErr)
+	}
+
+	if apiRelayBaseURL == "" {
+		log.Printf("ℹ️  --relay-base-url not set — access-method minting (POST /api/access-methods/<name>/mint) disabled")
+	}
+
 	server := &hyveapi.Server{
 		Client:             c,
 		Namespace:          apiNamespace,
@@ -99,6 +117,8 @@ func runAPI() {
 		ModuleAuthProvider: moduleAuthProvider,
 		TunnelProvider:     tunnelProvider,
 		ModulesDir:         apiModulesDir,
+		Clientset:          clientset,
+		RelayBaseURL:       apiRelayBaseURL,
 	}
 
 	caData, caErr := os.ReadFile(apiInClusterCAPath)
@@ -107,10 +127,6 @@ func runAPI() {
 	} else if apiPrimaryClusterName == "" {
 		log.Printf("ℹ️  --primary-cluster-name not set — primary-cluster kubeconfig path disabled")
 	} else {
-		clientset, csErr := kubernetes.NewForConfig(cfg)
-		if csErr != nil {
-			log.Fatalf("❌ Failed to build Kubernetes clientset: %v", csErr)
-		}
 		server.PrimaryProvider = &hyveapi.PrimaryClusterProvider{
 			Clientset:     clientset,
 			CA:            caData,
@@ -122,6 +138,19 @@ func runAPI() {
 		}
 		server.Proxy = proxy
 	}
+
+	// The relay listener is a genuinely separate net/http server on its
+	// own port, not a route under the main mux — see Server.RelayRoutes'
+	// own doc comment for why it must never share the main bind
+	// address/Ingress. Started in its own goroutine; a fatal error here
+	// only kills access-method minting, not the whole API, so it logs
+	// rather than log.Fatalf-ing.
+	go func() {
+		log.Printf("🚀 hyve api relay listener starting — bind=%s", apiRelayBindAddress)
+		if err := http.ListenAndServe(apiRelayBindAddress, server.RelayRoutes()); err != nil {
+			log.Printf("❌ Relay listener exited with error: %v", err)
+		}
+	}()
 
 	log.Printf("🚀 hyve api starting — namespace=%s bind=%s", apiNamespace, apiBindAddress)
 	if err := http.ListenAndServe(apiBindAddress, server.Routes()); err != nil {

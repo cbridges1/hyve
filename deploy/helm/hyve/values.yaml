@@ -86,6 +86,19 @@ api:
 
   proxyTarget: "https://kubernetes.default.svc"
 
+  # relayBindAddress is the access-method mint relay listener's own port —
+  # see accessmethod_mint.go's Server.RelayRoutes. Served on a separate
+  # in-cluster-only Service (api-internal-service.yaml), never an Ingress.
+  relayBindAddress: ":8091"
+
+  # relayBaseURL is this API's own in-cluster address for the relay
+  # listener above. Left empty, it's computed from the internal Service
+  # this chart creates (hyve-api-internal.<namespace>.svc.cluster.local) —
+  # safe to leave unset in the common case, since (unlike publicBaseURL)
+  # nothing external ever needs to reach this address. Set explicitly only
+  # if the internal Service is renamed via fullnameOverride or similar.
+  relayBaseURL: ""
+
   resources:
     requests:
       cpu: 100m

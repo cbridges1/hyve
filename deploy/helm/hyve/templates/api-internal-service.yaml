@@ -1,0 +1,22 @@
+# Deliberately always ClusterIP, never configurable, and never referenced
+# by api-ingress.yaml or any other Ingress in this chart — this backs the
+# access-method mint relay listener (internal/api's Server.RelayRoutes),
+# whose only authorization is a per-request one-shot token (see
+# accessmethod_mint.go's own doc comments). It must stay unreachable from
+# outside the cluster's own pod network; a NodePort/LoadBalancer type or an
+# Ingress rule pointed at it would defeat that entirely.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hyve-api-internal
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hyve-api
+  ports:
+    - name: relay
+      port: {{ .Values.api.relayBindAddress | trimPrefix ":" }}
+      targetPort: relay

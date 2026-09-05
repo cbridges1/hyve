@@ -534,22 +534,59 @@ func (c *APIClient) GetKubeconfig(clusterName string) ([]byte, error) {
 }
 
 // AccessMethodDTO mirrors internal/api's accessMethodDTO — GET
-// /api/access-methods/<name>'s response shape.
+// /api/access-methods/<name>'s response shape. RequiredEnv names the
+// driver module's own declared credential env vars (its module.yaml's
+// spec.requirements.env) — `hyve cluster auth` reads exactly these names
+// from its own local environment and forwards only them to
+// MintAccessMethodKubeconfig, never the caller's whole environment.
 type AccessMethodDTO struct {
 	Name string `json:"name"`
 	Spec struct {
-		Provider  string `json:"provider"`
+		Driver struct {
+			Source  string `json:"source,omitempty"`
+			Version string `json:"version,omitempty"`
+		} `json:"driver"`
 		ServerURL string `json:"serverURL"`
 	} `json:"spec"`
+	RequiredEnv []string `json:"requiredEnv,omitempty"`
 }
 
-// GetAccessMethod calls GET /api/access-methods/<name> — the cluster-mode
-// counterpart to internal/accessmethod.Manager.GetAccessMethod, used by
-// `hyve cluster auth` to resolve a ClusterDefinition's accessMethodRef when
-// running against the API rather than local files.
+// GetAccessMethod calls GET /api/access-methods/<name>.
 func (c *APIClient) GetAccessMethod(name string) (*AccessMethodDTO, error) {
 	var out AccessMethodDTO
 	if err := c.do(http.MethodGet, "/api/access-methods/"+url.PathEscape(name), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MintAccessMethodKubeconfigResponse mirrors internal/api's
+// mintAccessMethodResponse.
+type MintAccessMethodKubeconfigResponse struct {
+	Kubeconfig string `json:"kubeconfig"`
+}
+
+// MintAccessMethodKubeconfig calls
+// POST /api/access-methods/<name>/mint — the one way `hyve cluster auth`
+// resolves an AccessMethod now: the driver module's auth operation always
+// runs server-side, inside a short-lived Job, never on this machine. See
+// HYVE-ACCESS-METHOD-DESIGN.md's "Server-side dispatch" section for the
+// full design (the push-based relay that gets the resulting kubeconfig
+// back without it ever touching a log or persisting in the cluster).
+// credentialEnv should contain exactly the names AccessMethodDTO.RequiredEnv
+// listed — nothing broader.
+func (c *APIClient) MintAccessMethodKubeconfig(name, clusterName, accessMethodClusterID string, credentialEnv map[string]string) (*MintAccessMethodKubeconfigResponse, error) {
+	body, err := json.Marshal(struct {
+		ClusterName           string            `json:"clusterName"`
+		AccessMethodClusterID string            `json:"accessMethodClusterID"`
+		CredentialEnv         map[string]string `json:"credentialEnv"`
+	}{ClusterName: clusterName, AccessMethodClusterID: accessMethodClusterID, CredentialEnv: credentialEnv})
+	if err != nil {
+		return nil, fmt.Errorf("marshal mint request: %w", err)
+	}
+
+	var out MintAccessMethodKubeconfigResponse
+	if err := c.do(http.MethodPost, "/api/access-methods/"+url.PathEscape(name)+"/mint", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
