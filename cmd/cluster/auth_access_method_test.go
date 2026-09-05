@@ -19,7 +19,7 @@ const testMintKubeconfig = "apiVersion: v1\nkind: Config\nclusters:\n- name: pro
 
 func TestRunAccessMethodAuthCluster_NoRefReturnsFalse(t *testing.T) {
 	client := &shared.APIClient{BaseURL: "http://unused.invalid"}
-	handled := runAccessMethodAuthCluster("my-cluster", "", "", client)
+	handled := runAccessMethodAuthCluster("my-cluster", "", "", client, nil)
 	assert.False(t, handled)
 }
 
@@ -63,7 +63,7 @@ func TestRunAccessMethodAuthCluster_Success_MergesKubeconfig(t *testing.T) {
 	defer srv.Close()
 
 	client := &shared.APIClient{BaseURL: srv.URL}
-	handled := runAccessMethodAuthCluster("my-cluster", "corp-rancher", "c-abc123", client)
+	handled := runAccessMethodAuthCluster("my-cluster", "corp-rancher", "c-abc123", client, nil)
 	assert.True(t, handled)
 
 	defaultPath := filepath.Join(home, ".kube", "config")
@@ -73,4 +73,45 @@ func TestRunAccessMethodAuthCluster_Success_MergesKubeconfig(t *testing.T) {
 
 	_, statErr := os.Stat(filepath.Join(home, ".hyve", "kubeconfigs", "my-cluster.yaml"))
 	assert.True(t, os.IsNotExist(statErr), "the mint path must merge directly, never write a ~/.hyve/kubeconfigs staging file")
+}
+
+// TestRunAccessMethodAuthCluster_CredentialParams_TakePrecedenceOverEnv
+// confirms --set KEY=VALUE (credentialParams) satisfies a required
+// credential without needing it in the environment at all, and wins over
+// the environment when both are set.
+func TestRunAccessMethodAuthCluster_CredentialParams_TakePrecedenceOverEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("RANCHER_USERNAME", "env-user")
+	// RANCHER_PASSWORD deliberately never set in the environment at all —
+	// must come entirely from credentialParams.
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/access-methods/corp-rancher":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":        "corp-rancher",
+				"spec":        map[string]any{"serverURL": "https://rancher.example.com", "driver": map[string]any{"source": "x", "version": "v1"}},
+				"requiredEnv": []string{"RANCHER_USERNAME", "RANCHER_PASSWORD"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/access-methods/corp-rancher/mint":
+			var body struct {
+				CredentialEnv map[string]string `json:"credentialEnv"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, map[string]string{"RANCHER_USERNAME": "param-user", "RANCHER_PASSWORD": "param-pass"}, body.CredentialEnv,
+				"--set must win over the same name already in the environment, and must satisfy a name absent from the environment entirely")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"kubeconfig": testMintKubeconfig})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := &shared.APIClient{BaseURL: srv.URL}
+	credentialParams := map[string]string{"RANCHER_USERNAME": "param-user", "RANCHER_PASSWORD": "param-pass"}
+	handled := runAccessMethodAuthCluster("my-cluster", "corp-rancher", "c-abc123", client, credentialParams)
+	assert.True(t, handled)
 }

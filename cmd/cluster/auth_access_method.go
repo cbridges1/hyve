@@ -28,7 +28,15 @@ func requireAccessMethodClusterID(name, accessMethodRef, accessMethodClusterID s
 // doesn't have its tools installed, so a purely client-side path was never
 // going to cover the general case). Returns false (caller falls through
 // to its own existing module-auth logic) when accessMethodRef is unset.
-func runAccessMethodAuthCluster(name, accessMethodRef, accessMethodClusterID string, client *shared.APIClient) bool {
+//
+// credentialParams is `hyve cluster auth`'s --set KEY=VALUE flags — an
+// explicit way to supply a required credential value without needing it
+// already set in the caller's shell environment (useful for scripting/CI,
+// where exporting env vars ahead of time is often more awkward than
+// passing them inline). Takes precedence over the same name found in the
+// environment; the environment is still consulted as a fallback, not
+// removed as an option.
+func runAccessMethodAuthCluster(name, accessMethodRef, accessMethodClusterID string, client *shared.APIClient, credentialParams map[string]string) bool {
 	if accessMethodRef == "" {
 		return false
 	}
@@ -41,9 +49,13 @@ func runAccessMethodAuthCluster(name, accessMethodRef, accessMethodClusterID str
 
 	credentialEnv := make(map[string]string, len(am.RequiredEnv))
 	for _, envName := range am.RequiredEnv {
+		if val, ok := credentialParams[envName]; ok && val != "" {
+			credentialEnv[envName] = val
+			continue
+		}
 		val, ok := os.LookupEnv(envName)
 		if !ok || val == "" {
-			log.Fatalf("Access method %q's driver module requires %s to be set in your environment", accessMethodRef, envName)
+			log.Fatalf("Access method %q's driver module requires %s — pass it via --set %s=<value> or set it in your environment", accessMethodRef, envName, envName)
 		}
 		credentialEnv[envName] = val
 	}

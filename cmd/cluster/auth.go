@@ -46,20 +46,36 @@ If the cluster references an AccessMethod (spec.access.accessMethodRef) —
 an external identity service like Rancher — this requires cluster mode
 ('hyve login' first): the AccessMethod's driver module's auth operation
 always runs server-side in a short-lived Job, POST /api/access-methods/
-<ref>/mint, never on this machine. See HYVE-ACCESS-METHOD-DESIGN.md.`,
+<ref>/mint, never on this machine. See HYVE-ACCESS-METHOD-DESIGN.md.
+
+An AccessMethod's required credentials (its declared RequiredEnv names —
+GET /api/access-methods/<ref> reports them) can be passed explicitly via
+--set KEY=VALUE instead of being expected to already be set in your shell's
+environment — --set takes precedence when both are given, and either form
+satisfies the requirement.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		runClusterAuth(args[0], authMethodFlag)
+		setVals, _ := cmd.Flags().GetStringArray("set")
+		credentialParams := map[string]string{}
+		for _, kv := range setVals {
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) != 2 {
+				log.Fatalf("Invalid --set value %q (expected KEY=VALUE)", kv)
+			}
+			credentialParams[parts[0]] = parts[1]
+		}
+		runClusterAuth(args[0], authMethodFlag, credentialParams)
 	},
 }
 
 func init() {
 	authCmd.Flags().StringVar(&authMethodFlag, "method", "", "auth method name to use (default: first method in auth.yaml)")
+	authCmd.Flags().StringArray("set", nil, "Explicit credential value for an AccessMethod's required env var (repeatable): KEY=VALUE — takes precedence over the same name already set in your environment")
 }
 
-func runClusterAuth(name string, method string) {
+func runClusterAuth(name string, method string, credentialParams map[string]string) {
 	if sess, ok := shared.UseClusterMode(); ok {
-		authClusterAPI(shared.NewAPIClient(sess), name, method)
+		authClusterAPI(shared.NewAPIClient(sess), name, method, credentialParams)
 		return
 	}
 
@@ -117,9 +133,9 @@ func runClusterAuth(name string, method string) {
 // the resulting credentials. Only for a cluster that's explicitly opted
 // into the server-side override (or tunnel access) does this fall back to
 // fetching an already-minted kubeconfig and merging it in.
-func authClusterAPI(client *shared.APIClient, name string, method string) {
+func authClusterAPI(client *shared.APIClient, name string, method string, credentialParams map[string]string) {
 	if cd, err := client.GetCluster(name); err == nil {
-		handled := runAccessMethodAuthCluster(name, cd.AccessMethodRef, cd.AccessMethodClusterID, client)
+		handled := runAccessMethodAuthCluster(name, cd.AccessMethodRef, cd.AccessMethodClusterID, client, credentialParams)
 		if handled {
 			return
 		}
