@@ -18,9 +18,13 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "hyve",
-	Short: "Hyve cluster management CLI",
-	Long: `A CLI tool for managing Kubernetes clusters on various cloud providers.
-Supports cluster creation, modification, deletion, and reconciliation.`,
+	Short: "Hyve — Kubernetes cluster lifecycle management",
+	Long: `hyve manages the full lifecycle of Kubernetes clusters — creation,
+configuration, reconciliation, and teardown — across any cloud provider.
+Run it as a GitOps CLI against a local/git-backed directory, or deploy it
+as a cluster-native controller + API (see 'hyve cluster-config') for
+team/multi-tenant use. Both modes share the same YAML and the same
+reconcile engine.`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		home := shared.HyveHome()

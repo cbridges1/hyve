@@ -123,4 +123,9 @@ func runMigrateToCluster() {
 	log.Println("    'hyve reconcile' against it now that the target cluster's controller also")
 	log.Println("    reconciles these same clusters, both will fight over the same downstream")
 	log.Println("    infrastructure. Stop running 'hyve reconcile' locally against this directory.")
+
+	log.Println("\n⚠️  This command does NOT copy hyve.lock. The target cluster's controller image")
+	log.Println("    needs it baked in separately (see deploy/Dockerfile.controller) — module")
+	log.Println("    resolution will fail for any cluster whose driver isn't already locked into")
+	log.Println("    that image, even though the ClusterDefinition itself migrated successfully.")
 }

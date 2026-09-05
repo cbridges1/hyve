@@ -4,7 +4,7 @@
 
 # Hyve
 
-A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commit the change, and Hyve reconciles the desired state — locally or through a CI/CD pipeline. Cloud operations are delegated to **modules**: versioned, self-contained packages that implement cluster operations via shell scripts or workflow YAMLs. No cloud SDKs are embedded in Hyve itself.
+Hyve manages the full lifecycle of Kubernetes clusters — creation, configuration, reconciliation, and teardown — across any cloud provider. Define clusters as YAML and reconcile them with the `hyve` CLI (GitOps-native, Git as the state backend, no extra infrastructure to run it), or deploy `hyve` itself as a cluster-native controller + API for team/multi-tenant use — both modes share the same YAML and the same reconcile engine, so nothing about how a cluster is defined changes between them. Cloud operations are delegated to **modules**: versioned, self-contained packages that implement cluster operations via shell scripts or workflow YAMLs. No cloud SDKs are embedded in Hyve itself.
 
 [![Documentation](https://img.shields.io/badge/docs-hyve--website-green)](https://cbridges1.github.io/hyve-website/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -17,6 +17,7 @@ A GitOps-first Kubernetes cluster management CLI. Define clusters as YAML, commi
 - **Cluster Templates** — Define the shape of a cluster once; execute the template by name to stamp out clusters consistently.
 - **Variable Injection** — Module params are injected as `HYVE_PARAM_*` env vars. Workflow outputs flow back as `HYVE_KEY=value` lines and are persisted for the next reconcile.
 - **Any Provider** — First-party modules for Civo, AWS EKS, GCP GKE, and Azure AKS. Community modules for anything else. Your credentials stay in your environment.
+- **Two Run Modes, One Engine** — `hyve reconcile` against a local/git directory, or deploy Hyve as a cluster-native controller + API (`deploy/helm/hyve`) for team/multi-tenant use — the same reconcile engine and the same YAML either way.
 
 ## Why Hyve?
 
