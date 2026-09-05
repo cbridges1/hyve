@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -69,4 +70,7 @@ func TestRunAccessMethodAuthCluster_Success_MergesKubeconfig(t *testing.T) {
 	names, err := kubeconfig.ContextNames(readFile(t, defaultPath))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-cluster"}, names, "the merged entry must be named after the hyve cluster, not the module's own context name")
+
+	_, statErr := os.Stat(filepath.Join(home, ".hyve", "kubeconfigs", "my-cluster.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "the mint path must merge directly, never write a ~/.hyve/kubeconfigs staging file")
 }

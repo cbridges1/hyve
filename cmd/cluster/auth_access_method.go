@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/kubeconfig"
 	mod "github.com/cbridges1/hyve/internal/module"
 )
 
@@ -52,15 +53,21 @@ func runAccessMethodAuthCluster(name, accessMethodRef, accessMethodClusterID str
 		log.Fatalf("Failed to mint kubeconfig via access method %q: %v", accessMethodRef, err)
 	}
 
-	kcPath, err := mod.KubeconfigPathForCluster(name)
+	// Merged directly, no ~/.hyve/kubeconfigs/<name>.yaml staging file —
+	// unlike the module-auth paths, nothing local ever ran a script that
+	// needed somewhere concrete to write to; the kubeconfig arrives
+	// pre-formed as bytes in the mint response, same shape as the
+	// server-minted GetKubeconfig path (authClusterAPI's tunnel/
+	// module-auth-override branch), which already skips the staging file
+	// for the same reason.
+	kcPath, err := mod.DefaultKubeconfigPath()
 	if err != nil {
-		log.Fatalf("Failed to resolve per-cluster kubeconfig path: %v", err)
+		log.Fatalf("Failed to resolve local kubeconfig path: %v", err)
 	}
-	if err := os.WriteFile(kcPath, []byte(resp.Kubeconfig), 0600); err != nil {
-		log.Fatalf("Failed to write kubeconfig for cluster %q: %v", name, err)
+	if err := kubeconfig.MergeKubeconfigEntry(kcPath, []byte(resp.Kubeconfig), name); err != nil {
+		log.Fatalf("Failed to merge kubeconfig: %v", err)
 	}
 
-	mergeAuthResultIntoDefaultKubeconfig(name, kcPath)
 	fmt.Printf("kubectl context for '%s' configured (via access method '%s')\n", name, accessMethodRef)
 	return true
 }
