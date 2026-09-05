@@ -1,6 +1,13 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
 
+/* Class-based dark mode (`.dark` on <html>, toggled by src/lib/themeStore.ts)
+   instead of Tailwind v4's default `prefers-color-scheme` media strategy —
+   needed so an explicit light/dark choice can override the OS preference,
+   not just mirror it. 'system' mode resolves to a concrete class the same
+   way, so this one variant covers all three. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   color-scheme: light dark;
 }
@@ -26,8 +33,6 @@ body {
   background: rgb(212 212 216 / 0.8);
   border-radius: 9999px;
 }
-@media (prefers-color-scheme: dark) {
-  ::-webkit-scrollbar-thumb {
-    background: rgb(63 63 70 / 0.8);
-  }
+:root.dark ::-webkit-scrollbar-thumb {
+  background: rgb(63 63 70 / 0.8);
 }

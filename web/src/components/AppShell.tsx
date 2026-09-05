@@ -4,6 +4,7 @@ import { logout, RoleAdmin } from '../lib/api/auth'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
 import { Logo } from './Logo'
+import { ThemeToggle } from './ThemeToggle'
 import {
   AccountsIcon,
   ClustersIcon,
@@ -55,6 +56,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         )}
       </nav>
       <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
+        <div className="mb-2">
+          <ThemeToggle />
+        </div>
         {who && (
           <div className="mb-2 flex items-center justify-between rounded-lg px-2 py-1.5">
             <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{who.username}</span>

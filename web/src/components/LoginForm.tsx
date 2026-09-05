@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { login } from '../lib/api/auth'
 import { ApiError } from '../lib/api/client'
 import { Logo } from './Logo'
+import { ThemeToggle } from './ThemeToggle'
 
 const inputClass =
   'w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:border-neutral-500 dark:focus:ring-white/10'
@@ -26,7 +27,10 @@ export function LoginForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
+    <div className="relative flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
+      <div className="absolute top-4 right-4 w-32">
+        <ThemeToggle />
+      </div>
       <form
         onSubmit={onSubmit}
         className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-7 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
