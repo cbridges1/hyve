@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
+import { environmentsApi } from '../lib/api/environments'
 import { logout, RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
+import { useActAs } from '../lib/useActAs'
+import { useApi } from '../lib/useApi'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
 import { Logo } from './Logo'
@@ -36,14 +39,47 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
       : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800/70'
   }`
 
+// Lets a superadmin view/act within a chosen tenant without a separate
+// HyveAccessBinding of their own there — see Server.TenantNamespace's own
+// doc comment for why the header this drives is the actual mechanism.
+// Independent of, and never changes, the real session identity shown at
+// the bottom of the sidebar (that's who's actually logged in; this is
+// which tenant's data every /api/* request currently resolves against).
+function EnvironmentSwitcher() {
+  const [actAs, setActAs] = useActAs()
+  const { data: environments } = useApi(() => environmentsApi.list())
+
+  return (
+    <div className="px-2.5 pb-2">
+      <label className="mb-1 block px-0.5 text-xs font-medium tracking-wide text-neutral-500 uppercase dark:text-neutral-500">
+        Viewing
+      </label>
+      <select
+        value={actAs ?? ''}
+        onChange={(e) => setActAs(e.target.value || null)}
+        className="w-full rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+      >
+        <option value="">Control plane</option>
+        {environments?.map((env) => (
+          <option key={env.name} value={env.namespace}>
+            {env.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const who = useWhoami().data
+  const [actAs] = useActAs()
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center px-4 py-4">
         <Logo className="h-5" />
       </div>
+      {who?.role === RoleSuperadmin && <EnvironmentSwitcher />}
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-2.5">
         {navItems.map((item) => (
           <NavLink key={item.to} to={item.to} className={linkClass} onClick={onNavigate}>
@@ -51,13 +87,21 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             {item.label}
           </NavLink>
         ))}
-        {who?.role === RoleAdmin && (
+        {/* Accounts always follows whichever environment "Viewing" is
+            currently set to (see Server.TenantNamespace) — a superadmin
+            managing hyve-system's own accounts is just "Viewing: Control
+            plane" + Accounts, the same page a tenant admin already uses,
+            not a separate mechanism. */}
+        {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <NavLink to="/accounts" className={linkClass} onClick={onNavigate}>
             <AccountsIcon />
             Accounts
           </NavLink>
         )}
-        {who?.role === RoleSuperadmin && (
+        {/* Environments (creating/listing tenants) is a control-plane-only
+            action — it isn't scoped to any one tenant, so it only makes
+            sense while Viewing: Control plane, unlike Accounts above. */}
+        {who?.role === RoleSuperadmin && actAs === null && (
           <NavLink to="/environments" className={linkClass} onClick={onNavigate}>
             <EnvironmentsIcon />
             Environments

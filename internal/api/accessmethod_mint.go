@@ -136,7 +136,7 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	authScript, err := s.resolveAccessMethodAuthScript(r.Context(), name, &am)
+	authScript, err := s.resolveAccessMethodAuthScript(r.Context(), tenantNS, name, &am)
 	if err != nil {
 		log.Printf("api: failed to resolve access method %q's auth script: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "failed to resolve access method auth script")
@@ -314,7 +314,7 @@ func (s *Server) handleAccessMethodMintRelay(w http.ResponseWriter, r *http.Requ
 // one of InlineAuth/Driver must be set; validated here rather than at the
 // CRD-schema level (kubebuilder oneOf across two top-level fields is
 // possible but adds real complexity for a check this simple to do in Go).
-func (s *Server) resolveAccessMethodAuthScript(ctx context.Context, name string, am *hyvev1alpha1.AccessMethod) (string, error) {
+func (s *Server) resolveAccessMethodAuthScript(ctx context.Context, namespace, name string, am *hyvev1alpha1.AccessMethod) (string, error) {
 	hasInline := am.Spec.InlineAuth != ""
 	hasDriver := am.Spec.Driver.Source != ""
 	switch {
@@ -331,7 +331,7 @@ func (s *Server) resolveAccessMethodAuthScript(ctx context.Context, name string,
 		return "", fmt.Errorf("load hyve.lock: %w", err)
 	}
 	locked := lf.GetLocked(am.Spec.Driver.Source, am.Spec.Driver.Version)
-	resolved, err := module.ResolveWithToken(am.Spec.Driver.Source, am.Spec.Driver.Version, locked, s.ModulesDir, s.githubToken(ctx))
+	resolved, err := module.ResolveWithToken(am.Spec.Driver.Source, am.Spec.Driver.Version, locked, s.ModulesDir, s.githubToken(ctx, namespace))
 	if err != nil {
 		return "", fmt.Errorf("resolve driver module %s@%s: %w", am.Spec.Driver.Source, am.Spec.Driver.Version, err)
 	}

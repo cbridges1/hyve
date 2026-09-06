@@ -351,7 +351,7 @@ func TestHandleAccessMethodMint_AccessMethodInOtherTenantNamespace_NotFound(t *t
 func TestResolveAccessMethodAuthScript_InlineAuth(t *testing.T) {
 	s := &Server{}
 	am := &hyvev1alpha1.AccessMethod{Spec: hyvev1alpha1.AccessMethodSpec{InlineAuth: "echo hi"}}
-	script, err := s.resolveAccessMethodAuthScript(context.Background(), "corp-rancher", am)
+	script, err := s.resolveAccessMethodAuthScript(context.Background(), testNamespace, "corp-rancher", am)
 	require.NoError(t, err)
 	assert.Equal(t, "echo hi", script)
 }
@@ -362,14 +362,14 @@ func TestResolveAccessMethodAuthScript_BothSet_Error(t *testing.T) {
 		InlineAuth: "echo hi",
 		Driver:     hyvev1alpha1.DriverRef{Source: "github.com/example/mod"},
 	}}
-	_, err := s.resolveAccessMethodAuthScript(context.Background(), "corp-rancher", am)
+	_, err := s.resolveAccessMethodAuthScript(context.Background(), testNamespace, "corp-rancher", am)
 	assert.Error(t, err)
 }
 
 func TestResolveAccessMethodAuthScript_NeitherSet_Error(t *testing.T) {
 	s := &Server{}
 	am := &hyvev1alpha1.AccessMethod{}
-	_, err := s.resolveAccessMethodAuthScript(context.Background(), "corp-rancher", am)
+	_, err := s.resolveAccessMethodAuthScript(context.Background(), testNamespace, "corp-rancher", am)
 	assert.Error(t, err)
 }
 

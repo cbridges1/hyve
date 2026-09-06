@@ -91,10 +91,11 @@ type AccessMethodSpec struct {
 // decoupled from which module provisioned that cluster. Namespaced, for the
 // same reason HyveAccessBinding is: a cluster-scoped object here would let
 // one tenant's ClusterDefinition reference (and, depending on RBAC, list)
-// another tenant's access-service config. Read-only from this API's own
-// perspective — admins create/update these directly via kubectl, the same
-// stance HyveConfig's controller.hyveConfig.create: false default already
-// takes for a different singleton object; see
+// another tenant's access-service config. Manageable both ways: directly
+// via kubectl, or through the API's own admin-gated POST/PATCH/DELETE
+// /access-methods (internal/api/accessmethods.go) — its mint operation is
+// fully tenant-isolated, so API-side create/update carries no more
+// sensitivity than Template/Workflow already do. See
 // HYVE-ACCESS-METHOD-DESIGN.md for the full design.
 type AccessMethod struct {
 	metav1.TypeMeta   `json:",inline"`

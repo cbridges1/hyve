@@ -1,8 +1,11 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, CodeBlock, Field } from '../components/Card'
+import { AdminOnly } from '../components/RoleGate'
+import { SpecEditor } from '../components/SpecEditor'
 import { accessMethodsApi } from '../lib/api/accessMethods'
 import { ApiError } from '../lib/api/client'
+import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
 
 const inputClass = 'w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800'
@@ -117,7 +120,27 @@ function MintPanel({ name, requiredEnv }: { name: string; requiredEnv: string[] 
 
 export function AccessMethodDetailPage() {
   const { name = '' } = useParams()
-  const { data: am, loading, error } = useApi(() => accessMethodsApi.get(name), [name])
+  const navigate = useNavigate()
+  const confirm = useConfirm()
+  const { data: am, loading, error, reload } = useApi(() => accessMethodsApi.get(name), [name])
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function onDelete() {
+    const ok = await confirm({
+      title: `Delete access method "${name}"?`,
+      message: 'This cannot be undone. Any cluster still referencing this access method by name will fail to resolve it.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    setDeleteError(null)
+    try {
+      await accessMethodsApi.delete(name)
+      navigate('/access-methods')
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete access method')
+    }
+  }
 
   if (loading) return <p className="text-sm text-neutral-500">Loading…</p>
   if (error || !am) return <p className="text-sm text-red-600 dark:text-red-400">{error ?? 'Not found'}</p>
@@ -126,7 +149,19 @@ export function AccessMethodDetailPage() {
     <div className="space-y-4">
       <BackLink to="/access-methods" label="Access methods" />
 
-      <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{am.name}</h1>
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="truncate text-lg font-semibold text-neutral-900 dark:text-neutral-100">{am.name}</h1>
+        <AdminOnly>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="shrink-0 rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/40"
+          >
+            Delete
+          </button>
+        </AdminOnly>
+      </div>
+      {deleteError && <p className="text-sm text-red-600 dark:text-red-400">{deleteError}</p>}
 
       <Card title="Overview">
         <Field label="Server URL">{am.spec.serverURL}</Field>
@@ -148,6 +183,10 @@ export function AccessMethodDetailPage() {
           <CodeBlock>{am.spec.inlineAuth}</CodeBlock>
         </Card>
       )}
+
+      <AdminOnly>
+        <SpecEditor spec={am.spec} onSave={(spec) => accessMethodsApi.update(name, spec).then(reload)} />
+      </AdminOnly>
 
       <MintPanel name={am.name} requiredEnv={am.requiredEnv ?? []} />
     </div>

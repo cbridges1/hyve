@@ -198,8 +198,9 @@ export type AuthContext = {
 }
 
 // ── Access methods (internal/api/accessmethods.go's accessMethodDTO) ────
-// Read-only from this console — admins own writes via kubectl apply
-// directly, same stance HyveConfig already takes.
+// Namespace-scoped and admin-creatable through this console, same as
+// templates/workflows/resources — its mint operation is fully
+// tenant-isolated, so there's no extra sensitivity over those.
 
 export type AccessMethodSpec = {
   driver?: DriverRef
@@ -209,6 +210,7 @@ export type AccessMethodSpec = {
   runner?: RunnerSpec
 }
 export type AccessMethod = { name: string; spec: AccessMethodSpec; requiredEnv?: string[] }
+export type CreateAccessMethodRequest = { name: string; spec: AccessMethodSpec }
 export type MintAccessMethodRequest = {
   clusterName: string
   accessMethodClusterID: string

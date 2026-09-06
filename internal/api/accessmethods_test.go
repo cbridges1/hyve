@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,9 +22,17 @@ func newAccessMethodMux(s *Server) *http.ServeMux {
 	return mux
 }
 
-func doAccessMethodRequest(t *testing.T, s *Server, role, method, path string) *httptest.ResponseRecorder {
+func doAccessMethodRequest(t *testing.T, s *Server, role, method, path string, body ...interface{}) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, path, nil)
+	var reader *bytes.Reader
+	if len(body) > 0 && body[0] != nil {
+		data, err := json.Marshal(body[0])
+		require.NoError(t, err)
+		reader = bytes.NewReader(data)
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, reader)
 	req = req.WithContext(contextWithRole(req.Context(), role))
 	rec := httptest.NewRecorder()
 	newAccessMethodMux(s).ServeHTTP(rec, req)
@@ -150,5 +159,73 @@ func TestHandleGetAccessMethod_OtherNamespaceInvisible(t *testing.T) {
 	}
 	s := &Server{Client: newFakeClient(t, other), Namespace: testNamespace}
 	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/access-methods/corp-rancher")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleCreateAccessMethod_ReadOnlyForbidden(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodPost, "/access-methods", createAccessMethodRequest{Name: "am1"})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleCreateAccessMethod_AdminAllowed(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/access-methods", createAccessMethodRequest{
+		Name: "am1",
+		Spec: hyvev1alpha1.AccessMethodSpec{
+			InlineAuth: "echo hi",
+			ServerURL:  "https://rancher.example.com",
+		},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var dto accessMethodDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "am1", dto.Name)
+}
+
+func TestHandleCreateAccessMethod_AlreadyExists(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newAccessMethodDef("am1")), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/access-methods", createAccessMethodRequest{Name: "am1"})
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestHandleUpdateAccessMethod_AdminAllowed(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newAccessMethodDef("am1")), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/access-methods/am1", updateAccessMethodRequest{
+		Spec: hyvev1alpha1.AccessMethodSpec{InlineAuth: "echo updated", ServerURL: "https://updated.example.com"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var dto accessMethodDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "https://updated.example.com", dto.Spec.ServerURL)
+}
+
+func TestHandleUpdateAccessMethod_ReadOnlyForbidden(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newAccessMethodDef("am1")), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodPatch, "/access-methods/am1", updateAccessMethodRequest{})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleUpdateAccessMethod_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/access-methods/missing", updateAccessMethodRequest{})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleDeleteAccessMethod_AdminAllowed(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newAccessMethodDef("am1")), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/access-methods/am1")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestHandleDeleteAccessMethod_ReadOnlyForbidden(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newAccessMethodDef("am1")), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodDelete, "/access-methods/am1")
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleDeleteAccessMethod_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	rec := doAccessMethodRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/access-methods/missing")
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }

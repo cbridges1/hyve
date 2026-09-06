@@ -129,3 +129,30 @@ func TestRequireRole_DistinguishesAdminFromReadOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestTenantNamespace_SuperadminActAsHeader_Honored(t *testing.T) {
+	s := &Server{Namespace: testNamespace}
+	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
+	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin))
+	req.Header.Set(actAsNamespaceHeader, "acme")
+
+	require.Equal(t, "acme", s.TenantNamespace(req))
+}
+
+func TestTenantNamespace_SuperadminNoHeader_FallsBackToControlPlane(t *testing.T) {
+	s := &Server{Namespace: testNamespace}
+	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
+	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin))
+
+	require.Equal(t, testNamespace, s.TenantNamespace(req))
+}
+
+func TestTenantNamespace_OrdinaryAdminActAsHeader_NeverHonored(t *testing.T) {
+	s := &Server{Namespace: testNamespace}
+	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
+	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleAdmin))
+	req = req.WithContext(contextWithNamespace(req.Context(), "own-tenant"))
+	req.Header.Set(actAsNamespaceHeader, "acme")
+
+	require.Equal(t, "own-tenant", s.TenantNamespace(req), "an ordinary admin's own session namespace must win, never the header")
+}

@@ -181,6 +181,16 @@ func NamespaceFromContext(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
+// actAsNamespaceHeader lets a superadmin caller view/act within a chosen
+// tenant namespace without a separate HyveAccessBinding of their own there
+// — a superadmin's session otherwise has no tenant namespace at all (see
+// RoleSuperadmin's doc comment), and re-login with --org doesn't work for
+// them either (their identity binding only exists in the control-plane
+// namespace). Honored ONLY when the caller's already-resolved role is
+// RoleSuperadmin — see TenantNamespace below for why this is safe even
+// though requireRole itself calls TenantNamespace before role is known.
+const actAsNamespaceHeader = "X-Hyve-Act-As-Namespace"
+
 // TenantNamespace resolves the namespace a request's own CRUD should be
 // scoped to — the token's own namespace when the request carries one
 // (the normal case, threaded by requireAuth from the verified access
@@ -194,7 +204,22 @@ func NamespaceFromContext(ctx context.Context) (string, bool) {
 // now fixed per-install control-plane bookkeeping only (HyveConfig, the
 // primary ClusterDefinition, HyveEnvironment, HyveSession storage), not a
 // tenant's own namespace, which varies per login.
+//
+// A superadmin caller may override this via actAsNamespaceHeader — checked
+// only when RoleFromContext already resolves to RoleSuperadmin, which is
+// what makes this safe to check unconditionally here rather than gating it
+// per call site: requireRole's own internal call to TenantNamespace (to
+// look up the caller's own binding, before role is known) runs before
+// contextKeyRole is ever set, so RoleFromContext returns ok=false there and
+// the header is correctly ignored for that call — a non-superadmin, or a
+// not-yet-role-resolved request, can never have this header honored, under
+// any circumstance.
 func (s *Server) TenantNamespace(r *http.Request) string {
+	if role, ok := RoleFromContext(r.Context()); ok && role == hyvev1alpha1.RoleSuperadmin {
+		if actAs := r.Header.Get(actAsNamespaceHeader); actAs != "" {
+			return actAs
+		}
+	}
 	if ns, ok := NamespaceFromContext(r.Context()); ok && ns != "" {
 		return ns
 	}

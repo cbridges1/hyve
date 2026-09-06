@@ -71,9 +71,14 @@ type authToolRequirement struct {
 // var for (almost certainly also unset here) — the same "not configured
 // yet is fine, let the actual git clone fail with its own clear error"
 // stance used everywhere else this token is threaded through.
-func (s *Server) githubToken(ctx context.Context) string {
+//
+// namespace is the caller's own TenantNamespace(r), threaded in by every
+// call site rather than derived here — this Secret is per-tenant (see
+// secrets.go's own doc comment on cliSecretsName), and this function has no
+// *http.Request of its own to resolve it from.
+func (s *Server) githubToken(ctx context.Context, namespace string) string {
 	var secret corev1.Secret
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: cliSecretsName}, &secret); err != nil {
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cliSecretsName}, &secret); err != nil {
 		return ""
 	}
 	return string(secret.Data["GITHUB_TOKEN"])
@@ -121,7 +126,7 @@ func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	locked := lf.GetLocked(cd.Spec.Driver.Source, cd.Spec.Driver.Version)
-	resolved, err := module.ResolveWithToken(cd.Spec.Driver.Source, cd.Spec.Driver.Version, locked, s.ModulesDir, s.githubToken(r.Context()))
+	resolved, err := module.ResolveWithToken(cd.Spec.Driver.Source, cd.Spec.Driver.Version, locked, s.ModulesDir, s.githubToken(r.Context(), s.TenantNamespace(r)))
 	if err != nil {
 		log.Printf("api: failed to resolve driver module %s@%s for auth-context %q: %v", cd.Spec.Driver.Source, cd.Spec.Driver.Version, name, err)
 		writeError(w, http.StatusInternalServerError, "failed to resolve driver module")

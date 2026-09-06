@@ -1,4 +1,16 @@
+import { getActAsNamespace } from '../actAsStore'
 import { ensureValidAccessToken, setSession } from '../authStore'
+
+// Read directly from the store (not the useActAs hook — this file has no
+// component to re-render) so every request picks up the superadmin's
+// currently-selected environment without threading it through every call
+// site. Ignored server-side for anyone but a superadmin (see
+// Server.TenantNamespace) — sending it is harmless for an ordinary admin,
+// just inert.
+function actAsHeaders(): Record<string, string> {
+  const ns = getActAsNamespace()
+  return ns ? { 'X-Hyve-Act-As-Namespace': ns } : {}
+}
 
 export class ApiError extends Error {
   status: number
@@ -33,6 +45,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      ...actAsHeaders(),
       ...(options.headers ?? {}),
     },
   })
@@ -62,7 +75,7 @@ export async function apiFetchText(path: string, options: RequestInit = {}): Pro
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: { Authorization: `Bearer ${token}`, ...(options.headers ?? {}) },
+    headers: { Authorization: `Bearer ${token}`, ...actAsHeaders(), ...(options.headers ?? {}) },
   })
 
   if (res.status === 401) {

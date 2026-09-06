@@ -76,13 +76,13 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["modules"]
     verbs: ["get", "list", "watch"]
-  # Read-only, same reasoning as modules above: AccessMethod is
-  # admin-managed via kubectl apply directly (see accessmethod_types.go's
-  # own doc comment) — this is purely for `hyve cluster auth` to resolve a
-  # ClusterDefinition's accessMethodRef in cluster mode.
+  # AccessMethod is namespace-scoped and admin-creatable through the API
+  # now, same as templates/workflows/resources above — its mint operation
+  # is fully tenant-isolated (see accessmethod_mint.go), so there's no
+  # extra sensitivity here beyond what those already have.
   - apiGroups: ["hyve.io"]
     resources: ["accessmethods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
   # Same read-only reasoning as modules above — only the controller writes
   # these (upsertWorkflowRefStatusCR/upsertResourceRefStatusCR); the API
   # merges them into `hyve workflow list`/`resource list`'s output

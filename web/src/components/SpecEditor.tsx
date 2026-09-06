@@ -4,12 +4,11 @@ import { ApiError } from '../lib/api/client'
 
 /**
  * Generic "edit this CR's spec as raw JSON" panel — one component reused
- * across every editable detail page (Cluster/Template/Workflow/Resource;
- * deliberately not AccessMethod, which stays kubectl-apply-managed only,
- * see accessMethodDTO's own doc comment) rather than a bespoke structured
- * form per type. Mirrors this codebase's own "a CR is just YAML" model —
- * same mental shape as `kubectl edit`, just JSON instead of YAML since
- * that's what the API already speaks.
+ * across every editable detail page (Cluster/Template/Workflow/Resource/
+ * AccessMethod) rather than a bespoke structured form per type. Mirrors
+ * this codebase's own "a CR is just YAML" model — same mental shape as
+ * `kubectl edit`, just JSON instead of YAML since that's what the API
+ * already speaks.
  *
  * Collapsed to a single "Edit" button by default so a detail page reading
  * naturally doesn't lead with a wall of JSON — expands into a textarea +
