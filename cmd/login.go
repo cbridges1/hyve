@@ -17,6 +17,7 @@ var (
 	loginAPIURL   string
 	loginUsername string
 	loginPassword string
+	loginOrg      string
 )
 
 var loginCmd = &cobra.Command{
@@ -69,6 +70,7 @@ func init() {
 	loginCmd.Flags().StringVar(&loginAPIURL, "api-url", "", "Base URL of the hyve API server, e.g. https://hyve-api.example.com (default: the current environment's --api-url, see 'hyve env create')")
 	loginCmd.Flags().StringVar(&loginUsername, "username", "", "Username (omit to be prompted)")
 	loginCmd.Flags().StringVar(&loginPassword, "password", "", "Password (scripting only — omit to be prompted without echo)")
+	loginCmd.Flags().StringVar(&loginOrg, "org", "", "Tenant to log into (omit for the control-plane/superadmin tier) — resolved to a namespace client-side, see cmd/shared.ResolveOrgToNamespace")
 
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(logoutCmd)
@@ -99,8 +101,10 @@ func runLogin() {
 		}
 	}
 
+	namespace := shared.ResolveOrgToNamespace(loginOrg)
+
 	apiURL := strings.TrimRight(apiURLFlag, "/")
-	sess, err := shared.PerformLogin(apiURL, username, password)
+	sess, err := shared.PerformLogin(apiURL, username, password, namespace)
 	if err != nil {
 		log.Fatal(err)
 	}

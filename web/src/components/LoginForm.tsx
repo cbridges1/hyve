@@ -10,6 +10,7 @@ const inputClass =
 export function LoginForm() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [org, setOrg] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -18,7 +19,7 @@ export function LoginForm() {
     setError(null)
     setSubmitting(true)
     try {
-      await login(username, password)
+      await login(username, password, org)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to reach server')
     } finally {
@@ -52,7 +53,7 @@ export function LoginForm() {
           />
         </label>
 
-        <label className="mb-5 block text-sm">
+        <label className="mb-3.5 block text-sm">
           <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">Password</span>
           <input
             type="password"
@@ -60,6 +61,20 @@ export function LoginForm() {
             onChange={(e) => setPassword(e.target.value)}
             required
             autoComplete="current-password"
+            className={inputClass}
+          />
+        </label>
+
+        <label className="mb-5 block text-sm">
+          <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">
+            Organization <span className="font-normal text-neutral-400 dark:text-neutral-500">(optional)</span>
+          </span>
+          <input
+            type="text"
+            value={org}
+            onChange={(e) => setOrg(e.target.value)}
+            placeholder="leave blank for a superadmin login"
+            autoComplete="organization"
             className={inputClass}
           />
         </label>

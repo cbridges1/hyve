@@ -55,7 +55,7 @@ func (s *Server) registerAccessMethodRoutes(mux *http.ServeMux) {
 
 func (s *Server) handleListAccessMethods(w http.ResponseWriter, r *http.Request) {
 	var list hyvev1alpha1.AccessMethodList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
 		log.Printf("api: failed to list access methods: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list access methods")
 		return
@@ -70,7 +70,7 @@ func (s *Server) handleListAccessMethods(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleGetAccessMethod(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.AccessMethod
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "access method not found")
 			return

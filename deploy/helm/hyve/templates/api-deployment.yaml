@@ -36,8 +36,8 @@ spec:
             {{- if .Values.api.publicBaseURL }}
             - --public-base-url={{ .Values.api.publicBaseURL }}
             {{- end }}
-            {{- if .Values.api.primaryClusterName }}
-            - --primary-cluster-name={{ .Values.api.primaryClusterName }}
+            {{- if .Values.api.hostServiceAccount }}
+            - --host-service-account={{ .Values.api.hostServiceAccount }}
             {{- end }}
             - --proxy-target={{ .Values.api.proxyTarget }}
             - --relay-bind-address={{ .Values.api.relayBindAddress }}

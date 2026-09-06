@@ -9,6 +9,18 @@ const (
 	RoleAdmin    = "admin"
 	RoleReadOnly = "read-only"
 	RoleCustom   = "custom"
+
+	// RoleSuperadmin is the one intentionally cluster-scoped role in an
+	// otherwise namespace-scoped system (see HYVE-MULTI-TENANCY-PLAN.md's
+	// "Phase 2" section). A superadmin's own HyveAccessBinding lives in
+	// the install's control-plane namespace (conventionally hyve-system,
+	// whatever Server.Namespace is set to) rather than any tenant
+	// namespace — logging in with no --org/namespace resolves there,
+	// which is what gives a superadmin a home without inventing a second,
+	// parallel cluster-scoped binding type. Only a superadmin can create
+	// new environments (POST /environments) or reach a ClusterDefinition
+	// whose access.method is "primary" (the host cluster itself).
+	RoleSuperadmin = "superadmin"
 )
 
 // SubjectType values for HyveAccessBindingSubject.Type.

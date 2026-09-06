@@ -192,3 +192,46 @@ export type AuthContext = {
   authFileContent: string
   tools?: { name: string; description?: string }[]
 }
+
+// ── Access methods (internal/api/accessmethods.go's accessMethodDTO) ────
+// Read-only from this console — admins own writes via kubectl apply
+// directly, same stance HyveConfig already takes.
+
+export type AccessMethodSpec = {
+  driver?: DriverRef
+  inlineAuth?: string
+  requiredEnv?: string[]
+  serverURL: string
+  runner?: RunnerSpec
+}
+export type AccessMethod = { name: string; spec: AccessMethodSpec; requiredEnv?: string[] }
+export type MintAccessMethodRequest = {
+  clusterName: string
+  accessMethodClusterID: string
+  credentialEnv?: Record<string, string>
+}
+export type MintAccessMethodResponse = { kubeconfig: string }
+
+// ── Workflow runs (internal/api/workflowruns.go) — cluster mode's `hyve
+// workflow run` execution surface. No list endpoint exists (single-name
+// lookup only), so this console only ever trigger-and-polls one at a time.
+
+export type CreateWorkflowRunRequest = {
+  workflow?: string
+  source?: string
+  path?: string
+  cluster: string
+  params?: Record<string, string>
+}
+export type WorkflowRunStatus = {
+  phase: string
+  message?: string
+  output?: string
+  startedAt?: string
+  completedAt?: string
+}
+
+// ── Environments (internal/api/environments.go) — superadmin-only, one
+// per tenant namespace (see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2").
+
+export type Environment = { name: string; namespace: string }

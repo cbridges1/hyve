@@ -8,7 +8,6 @@ import (
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -19,13 +18,23 @@ func (s *Server) registerKubeconfigRoutes(mux *http.ServeMux) {
 }
 
 // handleKubeconfig resolves ?cluster=<name> and dispatches to the right
-// AccessProvider — PrimaryProvider when <name> is this API's own cluster
-// (s.PrimaryClusterName), otherwise TunnelProvider or ModuleAuthProvider
+// AccessProvider — PrimaryProvider, TunnelProvider, or ModuleAuthProvider —
 // per the target ClusterDefinition's spec.access.method. Unset (the
 // default) isn't served here at all — see ClusterDefinitionSpec.Access's
 // doc comment: that case is client-side auth, served by
 // GET /api/clusters/<name>/auth-context instead. See
 // HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5.
+//
+// The host ClusterDefinition (access.method: primary) always lives in
+// s.Namespace (the install's control-plane namespace), never a tenant
+// namespace. Looked up here via s.TenantNamespace(r), same as any other
+// cluster — which already resolves to s.Namespace for a superadmin caller
+// (they have no tenant namespace of their own, see RoleSuperadmin's doc
+// comment) and to the caller's own tenant namespace otherwise, so an
+// ordinary tenant admin's lookup simply never finds it: invisible by
+// construction, not merely by the role check PrimaryClusterProvider itself
+// also enforces (see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access"
+// section).
 func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("cluster")
 	if name == "" {
@@ -33,13 +42,8 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.PrimaryClusterName != "" && name == s.PrimaryClusterName {
-		s.respondKubeconfig(w, r, s.PrimaryProvider, &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: name}})
-		return
-	}
-
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cd); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -51,6 +55,8 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 
 	var provider AccessProvider
 	switch cd.Spec.Access.Method {
+	case hyvev1alpha1.AccessMethodPrimary:
+		provider = s.PrimaryProvider
 	case hyvev1alpha1.AccessMethodTunnel:
 		provider = s.TunnelProvider
 	case hyvev1alpha1.AccessMethodModuleAuth:

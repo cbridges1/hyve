@@ -22,9 +22,14 @@ import (
 // (used to silently refresh it — see internal/api's HyveSession/
 // AccessTokenTTL/SessionTTL doc comments). Username is carried onto the
 // returned Session purely for display (e.g. `hyve whoami`'s local-only
-// summary before its own server round trip).
-func PerformLogin(apiURL, username, password string) (*session.Session, error) {
-	body, err := json.Marshal(map[string]string{"username": username, "password": password})
+// summary before its own server round trip). namespace is the already-
+// resolved tenant to log into (empty for the control-plane/superadmin
+// namespace) — see ResolveOrgToNamespace for how --org gets here; this
+// function itself only ever deals in "namespace", never "org", per
+// HYVE-MULTI-TENANCY-PLAN.md's explicit design intent that the API (and
+// everything below it) never learns the concept of "org" at all.
+func PerformLogin(apiURL, username, password, namespace string) (*session.Session, error) {
+	body, err := json.Marshal(map[string]string{"username": username, "password": password, "namespace": namespace})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
@@ -97,6 +102,18 @@ func PromptSecret(label string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// ResolveOrgToNamespace maps a `--org` value to the namespace `hyve login`
+// actually sends. Today this is a trivial identity mapping — org name *is*
+// namespace name — deliberately kept as its own isolated function rather
+// than inlined at the call site: see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2"
+// section — a future hosted directory swaps this one function's body for a
+// real `org -> {apiURL, namespace}` lookup without touching anything else
+// in the login path, since /auth/login itself was never taught "org" as a
+// concept, only "namespace".
+func ResolveOrgToNamespace(org string) string {
+	return org
 }
 
 // UniqueEnvironmentName returns base, or base-2, base-3, ... — whichever is

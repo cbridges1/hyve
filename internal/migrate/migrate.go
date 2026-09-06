@@ -11,6 +11,7 @@ package migrate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	hyveapi "github.com/cbridges1/hyve/internal/api"
@@ -18,6 +19,8 @@ import (
 	"github.com/cbridges1/hyve/internal/controller"
 	"github.com/cbridges1/hyve/internal/crdconv"
 	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/template"
+	"github.com/cbridges1/hyve/internal/workflow"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -337,4 +340,201 @@ func copyCredentialsSecret(ctx context.Context, source, dest client.Client, name
 	default:
 		return fmt.Errorf("create credentials secret %s: %w", secretName, err)
 	}
+}
+
+// convertViaJSON round-trips src (a local-format Spec, e.g.
+// template.TemplateSpec/workflow.WorkflowSpec) through JSON into dst (the
+// corresponding CRD Spec type) — the same trick cmd/migrate.go's own
+// migrateTemplates/migrateWorkflows already rely on when they marshal a
+// local Spec and let the API's create handler unmarshal the bytes directly
+// into its CRD Spec field (see internal/api/templates.go's
+// createTemplateRequest). Confirms the two shapes are already JSON-
+// compatible in practice; used here to avoid a second, hand-written
+// field-by-field converter for what's already a proven-safe conversion.
+func convertViaJSON(src, dst interface{}) error {
+	b, err := json.Marshal(src)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	if err := json.Unmarshal(b, dst); err != nil {
+		return fmt.Errorf("unmarshal: %w", err)
+	}
+	return nil
+}
+
+// TemplatesFromDir copies every Template a local directory (templates/) has
+// into dest's namespace — client.Client-direct, no API/login round-trip,
+// used by `to-cluster` (bootstrapping a target cluster from local files).
+// See HYVE-MULTI-TENANCY-PLAN.md's "Bootstrap and migration flow" section
+// for why this exists: to-cluster previously had no way to carry Templates/
+// Workflows at all, only ClusterDefinition/HyveConfig.
+func TemplatesFromDir(ctx context.Context, localPath string, dest client.Client, destNamespace string, dryRun, force bool) (*Summary, error) {
+	mgr := template.NewManager(localPath)
+	tpls, err := mgr.ListTemplates()
+	if err != nil {
+		return nil, fmt.Errorf("list local templates: %w", err)
+	}
+	summary := newSummary()
+	for _, tpl := range tpls {
+		name := tpl.Metadata.Name
+		var spec hyvev1alpha1.TemplateSpec
+		if err := convertViaJSON(tpl.Spec, &spec); err != nil {
+			summary.Failed[name] = fmt.Errorf("convert template %q: %w", name, err)
+			continue
+		}
+		if err := createOrSkipTemplate(ctx, dest, name, destNamespace, spec, dryRun, force, summary); err != nil {
+			summary.Failed[name] = err
+		}
+	}
+	return summary, nil
+}
+
+// WorkflowsFromDir is TemplatesFromDir's workflow equivalent — see its own
+// doc comment.
+func WorkflowsFromDir(ctx context.Context, localPath string, dest client.Client, destNamespace string, dryRun, force bool) (*Summary, error) {
+	mgr, err := workflow.NewManager(localPath)
+	if err != nil {
+		return nil, fmt.Errorf("create local workflow manager: %w", err)
+	}
+	wfs, err := mgr.ListWorkflows()
+	if err != nil {
+		return nil, fmt.Errorf("list local workflows: %w", err)
+	}
+	summary := newSummary()
+	for _, wf := range wfs {
+		name := wf.Metadata.Name
+		var spec hyvev1alpha1.WorkflowSpec
+		if err := convertViaJSON(wf.Spec, &spec); err != nil {
+			summary.Failed[name] = fmt.Errorf("convert workflow %q: %w", name, err)
+			continue
+		}
+		if err := createOrSkipWorkflow(ctx, dest, name, destNamespace, spec, dryRun, force, summary); err != nil {
+			summary.Failed[name] = err
+		}
+	}
+	return summary, nil
+}
+
+// Templates copies every Template CRD source has (in namespace) onto dest
+// — cluster-to-cluster, used by `migrate cluster` (moving the primary/host
+// cluster, which needs the same Templates the old one had, not just tenant
+// ClusterDefinition/HyveConfig/HyveAccessBinding data).
+func Templates(ctx context.Context, source, dest client.Client, namespace string, dryRun, force bool) (*Summary, error) {
+	var list hyvev1alpha1.TemplateList
+	if err := source.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list source templates: %w", err)
+	}
+	summary := newSummary()
+	for i := range list.Items {
+		name := list.Items[i].Name
+		if err := createOrSkipTemplate(ctx, dest, name, namespace, list.Items[i].Spec, dryRun, force, summary); err != nil {
+			summary.Failed[name] = err
+		}
+	}
+	return summary, nil
+}
+
+// Workflows is Templates' workflow equivalent — see its own doc comment.
+func Workflows(ctx context.Context, source, dest client.Client, namespace string, dryRun, force bool) (*Summary, error) {
+	var list hyvev1alpha1.WorkflowList
+	if err := source.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list source workflows: %w", err)
+	}
+	summary := newSummary()
+	for i := range list.Items {
+		name := list.Items[i].Name
+		if err := createOrSkipWorkflow(ctx, dest, name, namespace, list.Items[i].Spec, dryRun, force, summary); err != nil {
+			summary.Failed[name] = err
+		}
+	}
+	return summary, nil
+}
+
+func createOrSkipTemplate(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.TemplateSpec, dryRun, force bool, summary *Summary) error {
+	exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &hyvev1alpha1.Template{})
+	if err != nil {
+		return err
+	}
+	if exists && !force {
+		summary.Skipped = append(summary.Skipped, name)
+		return nil
+	}
+	if dryRun {
+		summary.Created = append(summary.Created, name)
+		return nil
+	}
+	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: spec}
+	err = dest.Create(ctx, cr)
+	switch {
+	case err == nil:
+		summary.Created = append(summary.Created, name)
+		return nil
+	case apierrors.IsAlreadyExists(err) && force:
+		var existing hyvev1alpha1.Template
+		if getErr := dest.Get(ctx, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &existing); getErr != nil {
+			return fmt.Errorf("get existing template %s for --force update: %w", name, getErr)
+		}
+		existing.Spec = spec
+		if updErr := dest.Update(ctx, &existing); updErr != nil {
+			return fmt.Errorf("update existing template %s for --force: %w", name, updErr)
+		}
+		summary.Created = append(summary.Created, name)
+		return nil
+	case apierrors.IsAlreadyExists(err):
+		summary.Skipped = append(summary.Skipped, name)
+		return nil
+	default:
+		return fmt.Errorf("create template %s: %w", name, err)
+	}
+}
+
+func createOrSkipWorkflow(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.WorkflowSpec, dryRun, force bool, summary *Summary) error {
+	exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &hyvev1alpha1.Workflow{})
+	if err != nil {
+		return err
+	}
+	if exists && !force {
+		summary.Skipped = append(summary.Skipped, name)
+		return nil
+	}
+	if dryRun {
+		summary.Created = append(summary.Created, name)
+		return nil
+	}
+	cr := &hyvev1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: spec}
+	err = dest.Create(ctx, cr)
+	switch {
+	case err == nil:
+		summary.Created = append(summary.Created, name)
+		return nil
+	case apierrors.IsAlreadyExists(err) && force:
+		var existing hyvev1alpha1.Workflow
+		if getErr := dest.Get(ctx, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &existing); getErr != nil {
+			return fmt.Errorf("get existing workflow %s for --force update: %w", name, getErr)
+		}
+		existing.Spec = spec
+		if updErr := dest.Update(ctx, &existing); updErr != nil {
+			return fmt.Errorf("update existing workflow %s for --force: %w", name, updErr)
+		}
+		summary.Created = append(summary.Created, name)
+		return nil
+	case apierrors.IsAlreadyExists(err):
+		summary.Skipped = append(summary.Skipped, name)
+		return nil
+	default:
+		return fmt.Errorf("create workflow %s: %w", name, err)
+	}
+}
+
+// Environments lists every HyveEnvironment in the install's control-plane
+// namespace (see HyveEnvironmentSpec's own doc comment on why this can't
+// be derived from which namespaces happen to have a ClusterDefinition) —
+// used by `migrate cluster --namespace hyve-system` to enumerate every
+// tenant to also migrate.
+func Environments(ctx context.Context, source client.Client, controlPlaneNamespace string) ([]hyvev1alpha1.HyveEnvironment, error) {
+	var list hyvev1alpha1.HyveEnvironmentList
+	if err := source.List(ctx, &list, client.InNamespace(controlPlaneNamespace)); err != nil {
+		return nil, fmt.Errorf("list source HyveEnvironments: %w", err)
+	}
+	return list.Items, nil
 }

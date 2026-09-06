@@ -28,8 +28,8 @@ func crdStateProviderFor(c client.Client, namespace, configName string) reconcil
 }
 
 var (
-	migrateClusterFrom               string
 	migrateClusterTo                 string
+	migrateClusterToName             string
 	migrateClusterNamespace          string
 	migrateClusterConfigName         string
 	migrateClusterWrite              bool
@@ -50,10 +50,23 @@ var migrateClusterCmd = &cobra.Command{
 	Short: "Copy ClusterDefinitions, HyveConfig, and HyveAccessBindings from one primary cluster to another",
 	Long: `Copies ClusterDefinitions (spec + status), the singleton HyveConfig, and every
 HyveAccessBinding (+ its paired credentials Secret, for local users) from
---from's cluster to --to's — moving which cluster hosts hyve's controller
-+ API. Both sides are read/written directly via their kubeconfigs, not
-through either cluster's API — this has to work even before the target
-has its own API reachable yet.
+the current host to --to's (or --to-cluster's) — moving which cluster
+hosts hyve's controller + API. There is no --from: the source is always
+"the current host" — whatever 'hyve env current' resolves to (the
+ClusterDefinition with access.method: primary on the cluster you're
+logged into via cluster mode, or the default kubeconfig in local mode).
+Both sides are read/written directly via their kubeconfigs, not through
+either cluster's API — this has to work even before the target has its
+own API reachable yet.
+
+--namespace scopes what gets copied: a tenant namespace copies only that
+tenant's ClusterDefinitions/HyveAccessBindings (+ credentials Secrets) —
+moving one tenant to a different cluster, leaving everything else on the
+source untouched. The special value "hyve-system" (the default) copies
+everything: every HyveEnvironment-registered tenant namespace in turn,
+plus hyve-system's own control-plane objects (HyveConfig, the
+access.method: primary host ClusterDefinition, superadmin bindings) —
+moving the whole control plane, today's original use case.
 
 This command does NOT redeploy the controller/API onto the target, and
 does NOT stop the source cluster's controller — both are deliberately
@@ -80,16 +93,14 @@ the target unless --force is passed.`,
 }
 
 func init() {
-	migrateClusterCmd.Flags().StringVar(&migrateClusterFrom, "from", "", "Path to the source primary cluster's kubeconfig (required)")
-	migrateClusterCmd.Flags().StringVar(&migrateClusterTo, "to", "", "Path to the target primary cluster's kubeconfig (required)")
-	migrateClusterCmd.Flags().StringVar(&migrateClusterNamespace, "namespace", "hyve-system", "Namespace on both clusters holding ClusterDefinition/HyveConfig/HyveAccessBinding objects")
+	migrateClusterCmd.Flags().StringVar(&migrateClusterTo, "to", "", "Path to the target primary cluster's kubeconfig (fallback for ad hoc cases — prefer --to-cluster)")
+	migrateClusterCmd.Flags().StringVar(&migrateClusterToName, "to-cluster", "", "Name of a ClusterDefinition hyve already knows about — resolved to a kubeconfig the same way `hyve cluster auth` would. Exactly one of --to/--to-cluster is required.")
+	migrateClusterCmd.Flags().StringVar(&migrateClusterNamespace, "namespace", "hyve-system", `Scope: a tenant namespace copies only that tenant; "hyve-system" (default) copies every tenant plus the control plane's own objects — see this command's long help`)
 	migrateClusterCmd.Flags().StringVar(&migrateClusterConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object")
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterWrite, "write", false, "Actually create resources on the target (default is a dry run)")
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterForce, "force", false, "Overwrite an existing object with the same name on the target instead of skipping it")
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterAckSourceStopped, "i-have-stopped-the-source-controller", false, "Required alongside --write: confirms the source cluster's controller is already stopped, avoiding dual-reconciliation (see this command's long help)")
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterSkipAccessBindings, "skip-access-bindings", false, "Skip copying HyveAccessBindings + their credentials Secrets — only ClusterDefinitions/HyveConfig")
-	_ = migrateClusterCmd.MarkFlagRequired("from")
-	_ = migrateClusterCmd.MarkFlagRequired("to")
 	migrateCmd.AddCommand(migrateClusterCmd)
 }
 
@@ -104,46 +115,86 @@ func runMigrateCluster() {
 			"for why — running both controllers at once means dual-reconciliation of the same " +
 			"downstream clusters).")
 	}
+	if migrateClusterTo == "" && migrateClusterToName == "" {
+		log.Fatal("Exactly one of --to or --to-cluster is required")
+	}
+	if migrateClusterTo != "" && migrateClusterToName != "" {
+		log.Fatal("--to and --to-cluster are mutually exclusive")
+	}
 
-	source, err := migrate.BuildClient(migrateClusterFrom)
+	sourcePath, sourceCleanup, err := resolveCurrentHostKubeconfigPath()
 	if err != nil {
-		log.Fatalf("Failed to build client for source cluster (--from): %v", err)
+		log.Fatalf("Failed to resolve the current host's kubeconfig: %v", err)
 	}
-	dest, err := migrate.BuildClient(migrateClusterTo)
+	defer sourceCleanup()
+	source, err := migrate.BuildClient(sourcePath)
 	if err != nil {
-		log.Fatalf("Failed to build client for target cluster (--to): %v", err)
+		log.Fatalf("Failed to build client for the current host: %v", err)
 	}
 
-	sourceProvider := crdStateProviderFor(source, migrateClusterNamespace, migrateClusterConfigName)
-
-	log.Printf("Migrating clusters into namespace %q on the target cluster...", migrateClusterNamespace)
-	clusterSummary, err := migrate.ClusterDefinitions(ctx, sourceProvider, dest, migrateClusterNamespace, dryRun, migrateClusterForce)
-	if err != nil {
-		log.Fatalf("Failed to migrate cluster definitions: %v", err)
-	}
-	printMigrateSummary("cluster", clusterSummary, dryRun)
-
-	skipped, err := migrate.HyveConfig(ctx, sourceProvider, dest, migrateClusterNamespace, migrateClusterConfigName, dryRun)
-	if err != nil {
-		log.Fatalf("Failed to migrate HyveConfig: %v", err)
-	}
-	switch {
-	case skipped:
-		log.Printf("[hyveconfig] %s — already exists, left untouched", migrateClusterConfigName)
-	case dryRun:
-		log.Printf("[hyveconfig] %s — would create", migrateClusterConfigName)
-	default:
-		log.Printf("[hyveconfig] %s — created", migrateClusterConfigName)
-	}
-
-	allOK := clusterSummary.OK()
-	if !migrateClusterSkipAccessBindings {
-		bindingSummary, err := migrate.AccessBindings(ctx, source, dest, migrateClusterNamespace, dryRun, migrateClusterForce)
+	toPath := migrateClusterTo
+	if migrateClusterToName != "" {
+		resolved, cleanup, err := resolveClusterKubeconfigPath(migrateClusterToName)
 		if err != nil {
-			log.Fatalf("Failed to migrate HyveAccessBindings: %v", err)
+			log.Fatalf("Failed to resolve kubeconfig for %q: %v", migrateClusterToName, err)
 		}
-		printMigrateSummary("accessbinding", bindingSummary, dryRun)
-		allOK = allOK && bindingSummary.OK()
+		defer cleanup()
+		toPath = resolved
+	}
+	dest, err := migrate.BuildClient(toPath)
+	if err != nil {
+		log.Fatalf("Failed to build client for target cluster: %v", err)
+	}
+
+	allOK := true
+
+	if migrateClusterNamespace == "hyve-system" {
+		envs, err := migrate.Environments(ctx, source, migrateClusterNamespace)
+		if err != nil {
+			log.Fatalf("Failed to list HyveEnvironments on the current host: %v", err)
+		}
+		log.Printf("Found %d tenant environment(s) to migrate alongside the control plane.", len(envs))
+		for _, env := range envs {
+			log.Printf("--- Tenant %q (namespace %q) ---", env.Name, env.Spec.Namespace)
+			if !migrateOneNamespace(ctx, source, dest, env.Spec.Namespace, dryRun) {
+				allOK = false
+			}
+		}
+		log.Printf("--- Control plane (namespace %q) ---", migrateClusterNamespace)
+	}
+
+	if !migrateOneNamespace(ctx, source, dest, migrateClusterNamespace, dryRun) {
+		allOK = false
+	}
+
+	if migrateClusterNamespace == "hyve-system" {
+		sourceProvider := crdStateProviderFor(source, migrateClusterNamespace, migrateClusterConfigName)
+		skipped, err := migrate.HyveConfig(ctx, sourceProvider, dest, migrateClusterNamespace, migrateClusterConfigName, dryRun)
+		if err != nil {
+			log.Fatalf("Failed to migrate HyveConfig: %v", err)
+		}
+		switch {
+		case skipped:
+			log.Printf("[hyveconfig] %s — already exists, left untouched", migrateClusterConfigName)
+		case dryRun:
+			log.Printf("[hyveconfig] %s — would create", migrateClusterConfigName)
+		default:
+			log.Printf("[hyveconfig] %s — created", migrateClusterConfigName)
+		}
+
+		templateSummary, err := migrate.Templates(ctx, source, dest, migrateClusterNamespace, dryRun, migrateClusterForce)
+		if err != nil {
+			log.Fatalf("Failed to migrate templates: %v", err)
+		}
+		printMigrateSummary("template", templateSummary, dryRun)
+
+		workflowSummary, err := migrate.Workflows(ctx, source, dest, migrateClusterNamespace, dryRun, migrateClusterForce)
+		if err != nil {
+			log.Fatalf("Failed to migrate workflows: %v", err)
+		}
+		printMigrateSummary("workflow", workflowSummary, dryRun)
+
+		allOK = allOK && templateSummary.OK() && workflowSummary.OK()
 	}
 
 	if dryRun {
@@ -159,4 +210,33 @@ func runMigrateCluster() {
 	log.Println("   3. (You've already confirmed the source controller is stopped.)")
 	log.Println("   4. Cut over DNS / whatever 'hyve login' sessions point at.")
 	log.Println("   5. Only then treat the target as the authoritative primary cluster.")
+}
+
+// migrateOneNamespace copies one namespace's ClusterDefinitions (+ status)
+// and, unless --skip-access-bindings, HyveAccessBindings (+ credentials
+// Secrets) from source to dest — the primitive both the per-tenant loop and
+// the control-plane namespace itself (under --namespace hyve-system) share,
+// and the whole behavior for an ordinary tenant --namespace (see
+// HYVE-MULTI-TENANCY-PLAN.md's "migrations are per-environment" refinement:
+// a single tenant's scope is deliberately narrower than hyve-system's —
+// no HyveConfig/Templates/Workflows, which are control-plane-wide, not
+// per-tenant).
+func migrateOneNamespace(ctx context.Context, source, dest client.Client, namespace string, dryRun bool) bool {
+	sourceProvider := crdStateProviderFor(source, namespace, migrateClusterConfigName)
+	clusterSummary, err := migrate.ClusterDefinitions(ctx, sourceProvider, dest, namespace, dryRun, migrateClusterForce)
+	if err != nil {
+		log.Fatalf("Failed to migrate cluster definitions in namespace %q: %v", namespace, err)
+	}
+	printMigrateSummary("cluster", clusterSummary, dryRun)
+
+	ok := clusterSummary.OK()
+	if !migrateClusterSkipAccessBindings {
+		bindingSummary, err := migrate.AccessBindings(ctx, source, dest, namespace, dryRun, migrateClusterForce)
+		if err != nil {
+			log.Fatalf("Failed to migrate HyveAccessBindings in namespace %q: %v", namespace, err)
+		}
+		printMigrateSummary("accessbinding", bindingSummary, dryRun)
+		ok = ok && bindingSummary.OK()
+	}
+	return ok
 }

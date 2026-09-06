@@ -221,7 +221,25 @@ type ClusterSpec struct {
 	// afterCreate hook writing it into DriverOutputs) is a natural later
 	// addition, not required for this to work.
 	AccessMethodClusterID string `yaml:"accessMethodClusterID,omitempty" json:"accessMethodClusterID,omitempty"`
+
+	// AccessMethod mirrors the CRD-only AccessSpec.Method (module-auth/
+	// tunnel/primary) — despite the doc comment above this struct once
+	// saying that field never needed to reach internal/types, "primary"
+	// specifically does: it's the one access method with no driver at all
+	// (see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access" section), and
+	// this same reconcile code (internal/reconcile) is what enforces "a
+	// cluster must have a driver" — confirmed live, a primary-access
+	// ClusterDefinition otherwise sits permanently in an error Condition
+	// ("no driver specified") even though it's not misconfigured at all.
+	// module-auth/tunnel still don't need this — they keep a real driver,
+	// so ordinary reconciliation is correct for them.
+	AccessMethod string `yaml:"accessMethod,omitempty" json:"accessMethod,omitempty"`
 }
+
+// AccessMethodPrimary mirrors hyvev1alpha1.AccessMethodPrimary — duplicated
+// rather than imported, same "internal/types stays independent of the CRD
+// package" precedent as every other mirrored constant/type in this file.
+const AccessMethodPrimary = "primary"
 
 // ClusterMetadata represents cluster metadata
 type ClusterMetadata struct {

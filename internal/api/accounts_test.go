@@ -192,3 +192,66 @@ func TestHandleDeleteAccount_NotFound(t *testing.T) {
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodDelete, "/accounts/missing", nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
+
+// doAccountRequestAs mirrors doAccountRequest but also sets the caller's
+// own session namespace (via contextWithNamespace) — needed to exercise
+// the superadmin explicit-namespace carve-out, where "the caller's own
+// namespace" and "the namespace they're targeting" must be able to differ.
+func doAccountRequestAs(t *testing.T, s *Server, callerNamespace, role, method, path string, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		require.NoError(t, err)
+		reader = bytes.NewReader(data)
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	ctx := contextWithRole(req.Context(), role)
+	ctx = contextWithNamespace(ctx, callerNamespace)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	newAccountsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// TestHandleCreateAccount_SuperadminExplicitNamespace is the regression
+// test for the one carve-out HYVE-MULTI-TENANCY-PLAN.md's "New endpoint:
+// POST /environments" section calls for: a superadmin has no namespace of
+// their own (RoleSuperadmin's whole point), so they must be able to target
+// an explicit tenant namespace — e.g. creating a brand new tenant's first
+// admin right after POST /environments.
+func TestHandleCreateAccount_SuperadminExplicitNamespace(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doAccountRequestAs(t, s, "", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "acme-admin", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "acme"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var binding hyvev1alpha1.HyveAccessBinding
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "acme-admin", Namespace: "acme"}, &binding),
+		"the binding must land in the explicitly-requested namespace, not the control-plane namespace")
+
+	var secret corev1.Secret
+	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: "acme", Name: "acme-admin-credentials"}, &secret))
+}
+
+// TestHandleCreateAccount_OrdinaryAdminCannotTargetOtherNamespace proves the
+// carve-out is superadmin-only: an ordinary tenant admin passing an
+// explicit Namespace for some OTHER tenant must be silently confined to
+// their own namespace instead, exactly as before this field existed.
+func TestHandleCreateAccount_OrdinaryAdminCannotTargetOtherNamespace(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doAccountRequestAs(t, s, "tenant-a", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "sneaky", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "tenant-b"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var binding hyvev1alpha1.HyveAccessBinding
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky", Namespace: "tenant-a"}, &binding),
+		"an ordinary admin's explicit Namespace field must be ignored — the account belongs in their own session namespace")
+
+	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky", Namespace: "tenant-b"}, &hyvev1alpha1.HyveAccessBinding{})
+	assert.True(t, apierrors.IsNotFound(err), "must not have been created in the requested-but-unauthorized namespace")
+}

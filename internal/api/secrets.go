@@ -17,10 +17,12 @@ import (
 )
 
 // cliSecretsName is the single Kubernetes Secret every cluster-mode `hyve
-// env secrets` command reads/writes — one shared object per hyve-api
-// deployment, not one per caller/environment, matching this system's
-// existing flat authorization model (no per-caller data isolation exists
-// anywhere else — see internal/api/server.go's role model).
+// env secrets` command reads/writes — one object per *tenant namespace*
+// (see Server.TenantNamespace), not a single object shared across every
+// tenant on a Phase 2 shared install. Under Phase 1 (one install per
+// tenant), "one shared object per hyve-api deployment" and "one per
+// tenant" were the same thing; they aren't anymore, so this now resolves
+// per-request like every other tenant-scoped object.
 const cliSecretsName = "hyve-cli-secrets"
 
 // secretKeyPattern matches valid environment variable names — mirrors
@@ -41,11 +43,12 @@ func (s *Server) registerSecretsRoutes(mux *http.ServeMux) {
 // call, mirroring internal/repository's own "configured but doesn't exist
 // yet" stance for the local env store.
 func (s *Server) getCliSecret(r *http.Request) (*corev1.Secret, error) {
+	tenantNS := s.TenantNamespace(r)
 	var secret corev1.Secret
-	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: cliSecretsName}, &secret)
+	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		return &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: s.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: tenantNS},
 			Data:       map[string][]byte{},
 		}, nil
 	}
@@ -131,11 +134,12 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	tenantNS := s.TenantNamespace(r)
 	var secret corev1.Secret
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: cliSecretsName}, &secret)
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		secret = corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: s.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: tenantNS},
 			Data:       map[string][]byte{key: []byte(req.Value)},
 		}
 		if err := s.Client.Create(ctx, &secret); err != nil {
@@ -172,7 +176,7 @@ func (s *Server) handleUnsetSecret(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	var secret corev1.Secret
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: cliSecretsName}, &secret)
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.TenantNamespace(r), Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		w.WriteHeader(http.StatusNoContent) // nothing to unset — idempotent, matches local UnsetSecret
 		return

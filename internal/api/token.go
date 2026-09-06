@@ -33,10 +33,20 @@ const SessionTTL = 30 * 24 * time.Hour
 // tokenPayload is the signed portion of an access token.
 type tokenPayload struct {
 	Subject string `json:"sub"`
-	Expires int64  `json:"exp"`
+	// Namespace is which tenant namespace this token was issued for (see
+	// HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section) — empty means the
+	// install's own control-plane namespace (a superadmin token). Baked
+	// into the signed payload, unlike role: which namespace a session
+	// belongs to is fixed at login time (a new login is required to
+	// switch it), whereas role is deliberately re-resolved fresh on every
+	// request instead (see this function's own doc comment on why role
+	// itself is never carried here).
+	Namespace string `json:"ns,omitempty"`
+	Expires   int64  `json:"exp"`
 }
 
-// IssueAccessToken returns a signed access token for subject (a username),
+// IssueAccessToken returns a signed access token for subject (a username)
+// scoped to namespace (empty for the control-plane/superadmin namespace),
 // valid for AccessTokenTTL from now. The token is intentionally not a
 // standards-compliant JWT — just a minimal signed-payload scheme
 // (base64url(payload) + "." + base64url(HMAC-SHA256(payload, key))) hyve
@@ -49,47 +59,47 @@ type tokenPayload struct {
 // from, an individual access token can't be revoked early — that's the
 // trade for not needing a Kubernetes round trip on every request. Keeping
 // AccessTokenTTL short is what bounds that window.
-func IssueAccessToken(signingKey []byte, subject string) (string, error) {
-	payload := tokenPayload{Subject: subject, Expires: time.Now().Add(AccessTokenTTL).Unix()}
+func IssueAccessToken(signingKey []byte, subject, namespace string) (string, error) {
+	payload := tokenPayload{Subject: subject, Namespace: namespace, Expires: time.Now().Add(AccessTokenTTL).Unix()}
 	return signPayload(signingKey, payload)
 }
 
 // VerifyToken checks an access token's signature and expiry and returns
-// its subject (username). A tampered, expired, or malformed token returns
-// an error — callers must treat any error as "unauthenticated," never fall
-// back to a default identity.
-func VerifyToken(signingKey []byte, token string) (subject string, err error) {
+// its subject (username) and namespace. A tampered, expired, or malformed
+// token returns an error — callers must treat any error as
+// "unauthenticated," never fall back to a default identity.
+func VerifyToken(signingKey []byte, token string) (subject, namespace string, err error) {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return "", fmt.Errorf("malformed token")
+		return "", "", fmt.Errorf("malformed token")
 	}
 	payloadB64, sigB64 := parts[0], parts[1]
 
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
-		return "", fmt.Errorf("malformed token payload: %w", err)
+		return "", "", fmt.Errorf("malformed token payload: %w", err)
 	}
 	gotSig, err := base64.RawURLEncoding.DecodeString(sigB64)
 	if err != nil {
-		return "", fmt.Errorf("malformed token signature: %w", err)
+		return "", "", fmt.Errorf("malformed token signature: %w", err)
 	}
 
 	wantSig := sign(signingKey, payloadJSON)
 	if !hmac.Equal(gotSig, wantSig) {
-		return "", fmt.Errorf("invalid token signature")
+		return "", "", fmt.Errorf("invalid token signature")
 	}
 
 	var payload tokenPayload
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return "", fmt.Errorf("malformed token payload: %w", err)
+		return "", "", fmt.Errorf("malformed token payload: %w", err)
 	}
 	if payload.Subject == "" {
-		return "", fmt.Errorf("token has no subject")
+		return "", "", fmt.Errorf("token has no subject")
 	}
 	if time.Now().Unix() > payload.Expires {
-		return "", fmt.Errorf("token expired")
+		return "", "", fmt.Errorf("token expired")
 	}
-	return payload.Subject, nil
+	return payload.Subject, payload.Namespace, nil
 }
 
 func signPayload(signingKey []byte, payload tokenPayload) (string, error) {

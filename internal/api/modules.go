@@ -40,7 +40,7 @@ func (s *Server) registerModuleRoutes(mux *http.ServeMux) {
 
 func (s *Server) handleListModules(w http.ResponseWriter, r *http.Request) {
 	var list hyvev1alpha1.ModuleList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
 		log.Printf("api: failed to list modules: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list modules")
 		return
@@ -55,7 +55,7 @@ func (s *Server) handleListModules(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetModule(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.Module
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "module not found")
 			return

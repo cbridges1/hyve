@@ -1,13 +1,147 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, CodeBlock, Field } from '../components/Card'
 import { RefStatusBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
 import { ApiError } from '../lib/api/client'
 import { workflowsApi } from '../lib/api/workflows'
-import type { WorkflowJob, WorkflowStep } from '../lib/api/types'
+import { workflowRunsApi } from '../lib/api/workflowRuns'
+import type { WorkflowJob, WorkflowRunStatus, WorkflowStep } from '../lib/api/types'
 import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
+
+// Mirrors cmd/workflow/run_cluster_mode.go's own constants exactly, so the
+// browser and CLI feel the same running the identical WorkflowRun.
+const RUN_POLL_INTERVAL_MS = 2000
+const RUN_POLL_TIMEOUT_MS = 10 * 60 * 1000
+
+function RunWorkflowPanel({ workflowName }: { workflowName: string }) {
+  const [cluster, setCluster] = useState('')
+  const [params, setParams] = useState<{ key: string; value: string }[]>([])
+  const [status, setStatus] = useState<WorkflowRunStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [running, setRunning] = useState(false)
+  const stopRef = useRef(false)
+
+  useEffect(() => {
+    return () => {
+      stopRef.current = true
+    }
+  }, [])
+
+  function paramsObject(): Record<string, string> | undefined {
+    const entries = params.filter((p) => p.key.trim() !== '')
+    return entries.length ? Object.fromEntries(entries.map((p) => [p.key.trim(), p.value])) : undefined
+  }
+
+  async function run() {
+    setError(null)
+    setStatus(null)
+    setRunning(true)
+    stopRef.current = false
+    try {
+      const created = await workflowRunsApi.create({ workflow: workflowName, cluster, params: paramsObject() })
+      const deadline = Date.now() + RUN_POLL_TIMEOUT_MS
+      while (!stopRef.current) {
+        const current = await workflowRunsApi.get(created.name)
+        setStatus(current)
+        if (current.phase === 'Succeeded' || current.phase === 'Failed') break
+        if (Date.now() > deadline) {
+          setError(`Timed out after ${RUN_POLL_TIMEOUT_MS / 60000}m waiting for this run to complete.`)
+          break
+        }
+        await new Promise((r) => setTimeout(r, RUN_POLL_INTERVAL_MS))
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to run workflow')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <Card title="Run against a cluster">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row">
+        <input
+          value={cluster}
+          onChange={(e) => setCluster(e.target.value)}
+          placeholder="cluster name"
+          className="flex-1 rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+        />
+        <button
+          type="button"
+          disabled={!cluster || running}
+          onClick={run}
+          className="shrink-0 rounded-lg bg-neutral-900 px-3.5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+        >
+          {running ? 'Running…' : 'Run'}
+        </button>
+      </div>
+
+      <div className="mb-3">
+        <span className="mb-1 block text-sm text-neutral-600 dark:text-neutral-400">Params (optional)</span>
+        <div className="space-y-2">
+          {params.map((p, i) => (
+            <div key={i} className="flex gap-2">
+              <input
+                value={p.key}
+                onChange={(e) => setParams(params.map((row, j) => (j === i ? { ...row, key: e.target.value } : row)))}
+                placeholder="key"
+                className="w-1/2 rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              />
+              <input
+                value={p.value}
+                onChange={(e) => setParams(params.map((row, j) => (j === i ? { ...row, value: e.target.value } : row)))}
+                placeholder="value"
+                className="w-1/2 rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              />
+              <button
+                type="button"
+                onClick={() => setParams(params.filter((_, j) => j !== i))}
+                aria-label="Remove param"
+                className="shrink-0 rounded-lg px-2 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setParams([...params, { key: '', value: '' }])}
+          className="mt-2 rounded-lg px-2.5 py-1 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700"
+        >
+          + Add param
+        </button>
+      </div>
+
+      {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {status && (
+        <div>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="text-xs font-medium tracking-wide text-neutral-500 uppercase dark:text-neutral-500">
+              Status
+            </span>
+            <span
+              className={`rounded px-2 py-0.5 text-xs font-medium ${
+                status.phase === 'Succeeded'
+                  ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+                  : status.phase === 'Failed'
+                    ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+                    : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
+              }`}
+            >
+              {status.phase}
+            </span>
+          </div>
+          {status.message && <p className="mb-2 text-sm text-neutral-600 dark:text-neutral-400">{status.message}</p>}
+          {status.output && <CodeBlock>{status.output}</CodeBlock>}
+        </div>
+      )}
+    </Card>
+  )
+}
 
 function StepView({ step }: { step: WorkflowStep }) {
   return (
@@ -162,6 +296,10 @@ export function WorkflowDetailPage() {
           </>
         )
       )}
+
+      <AdminOnly>
+        <RunWorkflowPanel workflowName={wf.name} />
+      </AdminOnly>
     </div>
   )
 }

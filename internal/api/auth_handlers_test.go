@@ -64,7 +64,7 @@ func TestHandleLogin_Success(t *testing.T) {
 	assert.NotEmpty(t, resp.AccessTokenExpiresAt)
 	assert.NotEmpty(t, resp.SessionExpiresAt)
 
-	subject, err := VerifyToken(s.SigningKey, resp.AccessToken)
+	subject, _, err := VerifyToken(s.SigningKey, resp.AccessToken)
 	require.NoError(t, err)
 	assert.Equal(t, "cedric", subject)
 }
@@ -182,7 +182,7 @@ func TestHandleRefresh_Success(t *testing.T) {
 	var resp refreshResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.NotEmpty(t, resp.AccessToken)
-	subject, err := VerifyToken(s.SigningKey, resp.AccessToken)
+	subject, _, err := VerifyToken(s.SigningKey, resp.AccessToken)
 	require.NoError(t, err)
 	assert.Equal(t, "cedric", subject)
 }

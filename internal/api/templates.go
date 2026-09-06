@@ -41,7 +41,7 @@ func (s *Server) registerTemplateRoutes(mux *http.ServeMux) {
 
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	var list hyvev1alpha1.TemplateList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
 		log.Printf("api: failed to list templates: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list templates")
 		return
@@ -56,7 +56,7 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.Template
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
 			return
@@ -90,7 +90,7 @@ func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cr := &hyvev1alpha1.Template{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.TenantNamespace(r)},
 		Spec:       req.Spec,
 	}
 	if err := s.Client.Create(r.Context(), cr); err != nil {
@@ -109,7 +109,7 @@ func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}}
+	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.TenantNamespace(r)}}
 	if err := s.Client.Delete(r.Context(), cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
@@ -142,7 +142,7 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.Template
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
 			return

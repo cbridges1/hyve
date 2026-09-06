@@ -73,7 +73,7 @@ func (s *Server) handleCreateWorkflowRun(w http.ResponseWriter, r *http.Request)
 		base = "run"
 	}
 	cr := &hyvev1alpha1.WorkflowRun{
-		ObjectMeta: metav1.ObjectMeta{Name: base + "-" + name, Namespace: s.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: base + "-" + name, Namespace: s.TenantNamespace(r)},
 		Spec: hyvev1alpha1.WorkflowRunSpec{
 			WorkflowRef: hyvev1alpha1.WorkflowRef{Name: req.Workflow, Source: req.Source, Path: req.Path},
 			ClusterRef:  req.Cluster,
@@ -103,7 +103,7 @@ type workflowRunStatusDTO struct {
 func (s *Server) handleGetWorkflowRun(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cr hyvev1alpha1.WorkflowRun
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cr); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "workflow run not found")
 			return

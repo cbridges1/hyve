@@ -240,6 +240,11 @@ export function ClustersListPage() {
                 <div className="truncate text-xs text-neutral-500 dark:text-neutral-500">{c.driver}</div>
               </div>
               <div className="flex shrink-0 items-center gap-3">
+                {c.accessMethod === 'primary' && (
+                  <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                    Host cluster
+                  </span>
+                )}
                 <span className="text-xs text-neutral-500 dark:text-neutral-500">{c.accessMethod || 'client-side (default)'}</span>
                 <ReadyBadge conditions={c.conditions} />
               </div>

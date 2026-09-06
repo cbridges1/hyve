@@ -37,11 +37,20 @@ type clusterDTO struct {
 
 func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 	return clusterDTO{
-		Name:                  cd.Name,
-		Driver:                cd.Spec.Driver.Source,
-		Conditions:            cd.Status.Conditions,
-		ObservedGeneration:    cd.Status.ObservedGeneration,
-		AccessMethod:          cd.Status.Access.Method,
+		Name:               cd.Name,
+		Driver:             cd.Spec.Driver.Source,
+		Conditions:         cd.Status.Conditions,
+		ObservedGeneration: cd.Status.ObservedGeneration,
+		// Spec, not Status: this reflects the *declared* access method
+		// (module-auth/tunnel/primary), always known immediately — Status.
+		// Access.Method is a separate, rarely-populated status echo (see
+		// AccessStatus's own doc comment) that every real consumer of this
+		// DTO field (the web UI's host-cluster badge, cmd/migrate_resolve.go's
+		// current-host lookup, cmd/cluster/api.go's display) actually needs
+		// the spec value for — confirmed live: reading Status here left the
+		// UI badge never showing and migrate's host-resolution never
+		// matching, for every access method including the new primary one.
+		AccessMethod:          cd.Spec.Access.Method,
 		AccessLastMinted:      cd.Status.Access.LastMinted,
 		AccessMethodRef:       cd.Spec.Access.AccessMethodRef,
 		AccessMethodClusterID: cd.Spec.Access.AccessMethodClusterID,
@@ -67,7 +76,7 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 	// that Role can never satisfy regardless of what it grants within
 	// s.Namespace. Confirmed live: this exact mismatch 500'd every request
 	// with no server-side log line at all until the error below was added.
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
 		log.Printf("api: failed to list clusters: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list clusters")
 		return
@@ -82,7 +91,7 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cd); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -106,7 +115,7 @@ type clusterResourcesDTO struct {
 func (s *Server) handleGetClusterResources(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cd); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -159,7 +168,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	spec := req.Spec
 	if req.Template != nil {
 		var tpl hyvev1alpha1.Template
-		if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: req.Template.Name}, &tpl); err != nil {
+		if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: req.Template.Name}, &tpl); err != nil {
 			if apierrors.IsNotFound(err) {
 				writeError(w, http.StatusNotFound, fmt.Sprintf("template %q not found", req.Template.Name))
 				return
@@ -191,7 +200,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cd := &hyvev1alpha1.ClusterDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.TenantNamespace(r)},
 		Spec:       spec,
 	}
 	if err := s.Client.Create(r.Context(), cd); err != nil {
@@ -210,7 +219,7 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	cd := &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}}
+	cd := &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.TenantNamespace(r)}}
 	if err := s.Client.Delete(r.Context(), cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")

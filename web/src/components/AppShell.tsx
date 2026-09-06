@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { logout, RoleAdmin } from '../lib/api/auth'
+import { logout, RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
 import { Logo } from './Logo'
 import { ThemeToggle } from './ThemeToggle'
 import {
+  AccessMethodsIcon,
   AccountsIcon,
   ClustersIcon,
   CloseIcon,
+  EnvironmentsIcon,
   MenuIcon,
   ModulesIcon,
   ResourcesIcon,
@@ -21,6 +23,7 @@ const navItems = [
   { to: '/clusters', label: 'Clusters', Icon: ClustersIcon },
   { to: '/templates', label: 'Templates', Icon: TemplatesIcon },
   { to: '/workflows', label: 'Workflows', Icon: WorkflowsIcon },
+  { to: '/access-methods', label: 'Access methods', Icon: AccessMethodsIcon },
   { to: '/resources', label: 'Resources', Icon: ResourcesIcon },
   { to: '/modules', label: 'Modules', Icon: ModulesIcon },
   { to: '/secrets', label: 'Secrets', Icon: SecretsIcon },
@@ -52,6 +55,12 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <NavLink to="/accounts" className={linkClass} onClick={onNavigate}>
             <AccountsIcon />
             Accounts
+          </NavLink>
+        )}
+        {who?.role === RoleSuperadmin && (
+          <NavLink to="/environments" className={linkClass} onClick={onNavigate}>
+            <EnvironmentsIcon />
+            Environments
           </NavLink>
         )}
       </nav>

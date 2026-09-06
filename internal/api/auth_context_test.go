@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func newAuthContextMux(s *Server) *http.ServeMux {
@@ -128,7 +129,11 @@ func TestHandleAuthContext_NotFound(t *testing.T) {
 }
 
 func TestHandleAuthContext_RejectsPrimaryCluster(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace, PrimaryClusterName: "local"}
+	hostCD := &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary}},
+	}
+	s := &Server{Client: newFakeClient(t, hostCD), Namespace: testNamespace}
 
 	req := httptest.NewRequest(http.MethodGet, "/clusters/local/auth-context", nil)
 	rec := httptest.NewRecorder()

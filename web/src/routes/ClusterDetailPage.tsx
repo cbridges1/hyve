@@ -110,7 +110,14 @@ export function ClusterDetailPage() {
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold text-neutral-900 dark:text-neutral-100">{cluster.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="truncate text-lg font-semibold text-neutral-900 dark:text-neutral-100">{cluster.name}</h1>
+            {cluster.accessMethod === 'primary' && (
+              <span className="shrink-0 rounded bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                Host cluster
+              </span>
+            )}
+          </div>
           <p className="text-sm text-neutral-500">{cluster.driver}</p>
         </div>
         <div className="flex shrink-0 items-center gap-3">

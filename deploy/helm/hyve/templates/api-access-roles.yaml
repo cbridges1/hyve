@@ -85,4 +85,36 @@ roleRef:
   name: view
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
+---
+# hyve-host-admin backs the host-cluster access path (spec.access.method:
+# primary — see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access"
+# section): the cluster hyve-controller/hyve-api themselves run on. Always
+# a standing ClusterRoleBinding to cluster-admin, unconditionally — this is
+# deliberately NOT gated by accessRoles.clusterScoped like hyve-access-
+# admin/hyve-access-readonly above: the host cluster IS the entire control
+# plane (every tenant namespace, every controller/API pod, every Secret),
+# so "manage it the same way as other clusters" genuinely means
+# unrestricted access once you're allowed in at all. The safety comes
+# entirely from PrimaryClusterProvider.Kubeconfig requiring the caller's
+# resolved role to be superadmin before it will ever mint a token against
+# this ServiceAccount — never from narrowing what the ServiceAccount
+# itself can do.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hyve-host-admin
+  namespace: {{ .Values.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyve-host-admin
+subjects:
+  - kind: ServiceAccount
+    name: hyve-host-admin
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
 {{- end }}

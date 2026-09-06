@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func newSecretsMux(s *Server) *http.ServeMux {
@@ -179,4 +180,55 @@ func TestHandleUnsetSecret_MissingSecretIsNoOp(t *testing.T) {
 
 	rec := doSecretsRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/secrets/FOO", nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// doSecretsRequestAs mirrors doSecretsRequest but also sets the caller's
+// tenant namespace in context — needed to prove hyve-cli-secrets is
+// per-tenant, not the single shared object it was before this fix.
+func doSecretsRequestAs(t *testing.T, s *Server, namespace, role, method, path string, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		require.NoError(t, err)
+		reader = bytes.NewReader(data)
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	ctx := contextWithRole(req.Context(), role)
+	ctx = contextWithNamespace(ctx, namespace)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	newSecretsMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// TestSecrets_ScopedPerTenantNamespace is the regression test for the fix
+// closing secrets.go's cross-tenant leak: hyve-cli-secrets used to be one
+// object shared across every caller regardless of tenant — under Phase 2
+// (one shared install, many tenants) that meant any tenant's admin could
+// read/overwrite every other tenant's secrets. Setting a key in one
+// tenant's namespace must not be visible from another's.
+func TestSecrets_ScopedPerTenantNamespace(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	setRec := doSecretsRequestAs(t, s, "tenant-a", hyvev1alpha1.RoleAdmin, http.MethodPut, "/secrets/FOO", setSecretRequest{Value: "tenant-a-value"})
+	require.Equal(t, http.StatusNoContent, setRec.Code)
+
+	// Tenant A reads its own value back.
+	getOwnRec := doSecretsRequestAs(t, s, "tenant-a", hyvev1alpha1.RoleAdmin, http.MethodGet, "/secrets/FOO", nil)
+	require.Equal(t, http.StatusOK, getOwnRec.Code)
+	assert.Contains(t, getOwnRec.Body.String(), "tenant-a-value")
+
+	// Tenant B, a completely different namespace, must see nothing.
+	getOtherRec := doSecretsRequestAs(t, s, "tenant-b", hyvev1alpha1.RoleAdmin, http.MethodGet, "/secrets/FOO", nil)
+	assert.Equal(t, http.StatusNotFound, getOtherRec.Code, "tenant B must not see tenant A's secret")
+
+	// The control-plane namespace (s.Namespace) must not have received it
+	// either — confirms this landed in "tenant-a", not the old fixed
+	// s.Namespace this handler used before the fix.
+	var controlPlaneSecret corev1.Secret
+	err := s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: cliSecretsName}, &controlPlaneSecret)
+	assert.Error(t, err, "must not have created hyve-cli-secrets in the control-plane namespace")
 }

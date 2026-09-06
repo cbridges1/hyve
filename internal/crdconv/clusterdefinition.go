@@ -44,6 +44,7 @@ func ToTypesClusterDefinition(cr *hyvev1alpha1.ClusterDefinition) types.ClusterD
 			DependsOn:             cr.Spec.DependsOn,
 			AccessMethodRef:       cr.Spec.Access.AccessMethodRef,
 			AccessMethodClusterID: cr.Spec.Access.AccessMethodClusterID,
+			AccessMethod:          cr.Spec.Access.Method,
 		},
 	}
 }

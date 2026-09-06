@@ -69,13 +69,58 @@ type PrimaryClusterProvider struct {
 	// TokenTTL defaults to 24h when zero — no refresh endpoint yet (v1); a
 	// caller re-requests a fresh kubeconfig once this expires.
 	TokenTTL time.Duration
+
+	// HostServiceAccountRef is the dedicated, standing ServiceAccount
+	// (e.g. hyve-host-admin, bound to the built-in cluster-admin
+	// ClusterRole — see deploy/helm/hyve/templates/api-access-roles.yaml)
+	// this mints a token against when cd.Spec.Access.Method is
+	// AccessMethodPrimary — deliberately separate from whatever
+	// ServiceAccountRefFromContext resolves for an ordinary tenant role,
+	// so host-cluster privilege is its own narrowly-granted, auditable
+	// binding, never incidentally inherited from a tenant-scoped role. See
+	// HYVE-MULTI-TENANCY-PLAN.md's "Which ServiceAccount (resolved)"
+	// section. Left zero-value, the primary/host access path 500s with a
+	// clear message rather than falling back to anything.
+	HostServiceAccountRef ServiceAccountRefConfig
+
+	// HostTokenTTL defaults to 1h when zero — deliberately shorter than
+	// TokenTTL's own 24h default, given what a host-cluster-admin
+	// kubeconfig grants (see the doc section above).
+	HostTokenTTL time.Duration
 }
 
-// Kubeconfig ignores cd (the primary cluster isn't represented by a driver
-// module) and instead mints a token for the caller's own resolved
-// ServiceAccountRef — see ServiceAccountRefFromContext, set by
-// requireRole from the caller's matched HyveAccessBinding.
-func (p *PrimaryClusterProvider) Kubeconfig(ctx context.Context, _ *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
+// ServiceAccountRefConfig names a ServiceAccount by namespace/name —
+// distinct from hyvev1alpha1.ServiceAccountRef only in that this one is a
+// server-startup configuration value, not something resolved per-caller
+// from a HyveAccessBinding.
+type ServiceAccountRefConfig struct {
+	Namespace string
+	Name      string
+}
+
+// Kubeconfig mints a token for either the caller's own resolved
+// ServiceAccountRef (see ServiceAccountRefFromContext, set by requireRole
+// from the caller's matched HyveAccessBinding) or — when cd's
+// access.method is AccessMethodPrimary — the dedicated HostServiceAccountRef
+// instead, gated to RoleSuperadmin only. cd is nil for the (deprecated)
+// no-ClusterDefinition call shape some tests still exercise; treated the
+// same as any non-primary cd.
+func (p *PrimaryClusterProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
+	if cd != nil && cd.Spec.Access.Method == hyvev1alpha1.AccessMethodPrimary {
+		role, _ := RoleFromContext(ctx)
+		if role != hyvev1alpha1.RoleSuperadmin {
+			return nil, fmt.Errorf("cluster %q is the host cluster (access.method: primary) — only a superadmin may access it", cd.Name)
+		}
+		if p.HostServiceAccountRef.Name == "" {
+			return nil, fmt.Errorf("no host ServiceAccount configured for the primary/host access path")
+		}
+		ttl := p.HostTokenTTL
+		if ttl <= 0 {
+			ttl = time.Hour
+		}
+		return p.mintKubeconfig(ctx, p.HostServiceAccountRef.Namespace, p.HostServiceAccountRef.Name, ttl)
+	}
+
 	saRef, ok := ServiceAccountRefFromContext(ctx)
 	if !ok {
 		return nil, fmt.Errorf("no service account resolved for this caller")
@@ -85,15 +130,17 @@ func (p *PrimaryClusterProvider) Kubeconfig(ctx context.Context, _ *hyvev1alpha1
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	expSeconds := int64(ttl.Seconds())
+	return p.mintKubeconfig(ctx, saRef.Namespace, saRef.Name, ttl)
+}
 
-	tr, err := p.Clientset.CoreV1().ServiceAccounts(saRef.Namespace).CreateToken(ctx, saRef.Name, &authenticationv1.TokenRequest{
+func (p *PrimaryClusterProvider) mintKubeconfig(ctx context.Context, namespace, name string, ttl time.Duration) ([]byte, error) {
+	expSeconds := int64(ttl.Seconds())
+	tr, err := p.Clientset.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, name, &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{ExpirationSeconds: &expSeconds},
 	}, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("mint token for %s/%s: %w", saRef.Namespace, saRef.Name, err)
+		return nil, fmt.Errorf("mint token for %s/%s: %w", namespace, name, err)
 	}
-
 	return buildKubeconfig(strings.TrimRight(p.PublicBaseURL, "/")+"/proxy", p.CA, tr.Status.Token)
 }
 

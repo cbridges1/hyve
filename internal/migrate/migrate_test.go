@@ -308,3 +308,208 @@ func TestClusterDefinitions_FailurePerCluster_DoesNotAbortTheRest(t *testing.T) 
 	summary.Failed["x"] = apierrors.NewNotFound(hyvev1alpha1.GroupVersion.WithResource("clusterdefinitions").GroupResource(), "x")
 	assert.False(t, summary.OK())
 }
+
+// ── TemplatesFromDir / WorkflowsFromDir (local dir -> cluster) ───────────
+
+// newLocalTemplatesAndWorkflows writes one Template and one Workflow file
+// under localPath's templates/ and workflows/ subdirectories — the literal
+// on-disk shape template.Manager/workflow.Manager expect.
+func newLocalTemplatesAndWorkflows(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	templatesDir := filepath.Join(root, "templates")
+	require.NoError(t, os.MkdirAll(templatesDir, 0755))
+	tpl := "apiVersion: hyve.io/v1alpha1\nkind: Template\nmetadata:\n  name: my-template\nspec:\n  driver:\n    source: github.com/example/civo-k3s\n    version: 1.0.0\n  region: PHX1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(templatesDir, "my-template.yaml"), []byte(tpl), 0644))
+
+	workflowsDir := filepath.Join(root, "workflows")
+	require.NoError(t, os.MkdirAll(workflowsDir, 0755))
+	wf := "apiVersion: hyve.io/v1alpha1\nkind: Workflow\nmetadata:\n  name: my-workflow\nspec:\n  jobs:\n    - name: main\n      steps:\n        - name: hello\n          script: echo hi\n"
+	require.NoError(t, os.WriteFile(filepath.Join(workflowsDir, "my-workflow.yaml"), []byte(wf), 0644))
+
+	return root
+}
+
+func TestTemplatesFromDir_CreatesTemplate(t *testing.T) {
+	localPath := newLocalTemplatesAndWorkflows(t)
+	dest := newFakeClient(t)
+
+	summary, err := TemplatesFromDir(context.Background(), localPath, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-template"}, summary.Created)
+
+	var tpl hyvev1alpha1.Template
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-template"}, &tpl))
+	assert.Equal(t, "github.com/example/civo-k3s", tpl.Spec.Driver.Source)
+	assert.Equal(t, "PHX1", tpl.Spec.Region)
+}
+
+func TestTemplatesFromDir_DryRun_WritesNothing(t *testing.T) {
+	localPath := newLocalTemplatesAndWorkflows(t)
+	dest := newFakeClient(t)
+
+	summary, err := TemplatesFromDir(context.Background(), localPath, dest, testNamespace, true, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-template"}, summary.Created)
+
+	var list hyvev1alpha1.TemplateList
+	require.NoError(t, dest.List(context.Background(), &list, client.InNamespace(testNamespace)))
+	assert.Empty(t, list.Items)
+}
+
+func TestTemplatesFromDir_SkipsExistingWithoutForce(t *testing.T) {
+	localPath := newLocalTemplatesAndWorkflows(t)
+	existing := &hyvev1alpha1.Template{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-template", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.TemplateSpec{Region: "original-region"},
+	}
+	dest := newFakeClient(t, existing)
+
+	summary, err := TemplatesFromDir(context.Background(), localPath, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-template"}, summary.Skipped)
+
+	var tpl hyvev1alpha1.Template
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-template"}, &tpl))
+	assert.Equal(t, "original-region", tpl.Spec.Region, "must not overwrite an existing template without --force")
+}
+
+func TestTemplatesFromDir_ForceOverwritesExisting(t *testing.T) {
+	localPath := newLocalTemplatesAndWorkflows(t)
+	existing := &hyvev1alpha1.Template{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-template", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.TemplateSpec{Region: "original-region"},
+	}
+	dest := newFakeClient(t, existing)
+
+	summary, err := TemplatesFromDir(context.Background(), localPath, dest, testNamespace, false, true)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-template"}, summary.Created)
+
+	var tpl hyvev1alpha1.Template
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-template"}, &tpl))
+	assert.Equal(t, "PHX1", tpl.Spec.Region, "--force must overwrite the existing template")
+}
+
+func TestWorkflowsFromDir_CreatesWorkflow(t *testing.T) {
+	localPath := newLocalTemplatesAndWorkflows(t)
+	dest := newFakeClient(t)
+
+	summary, err := WorkflowsFromDir(context.Background(), localPath, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-workflow"}, summary.Created)
+
+	var wf hyvev1alpha1.Workflow
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-workflow"}, &wf))
+	require.Len(t, wf.Spec.Jobs, 1)
+	assert.Equal(t, "main", wf.Spec.Jobs[0].Name)
+}
+
+func TestWorkflowsFromDir_SkipsExistingWithoutForce(t *testing.T) {
+	localPath := newLocalTemplatesAndWorkflows(t)
+	existing := &hyvev1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "my-workflow", Namespace: testNamespace}}
+	dest := newFakeClient(t, existing)
+
+	summary, err := WorkflowsFromDir(context.Background(), localPath, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-workflow"}, summary.Skipped)
+}
+
+// ── Templates / Workflows (cluster -> cluster) ───────────────────────────
+
+func TestTemplates_CopiesFromSourceToDest(t *testing.T) {
+	tpl := &hyvev1alpha1.Template{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-template", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.TemplateSpec{Region: "PHX1"},
+	}
+	source := newFakeClient(t, tpl)
+	dest := newFakeClient(t)
+
+	summary, err := Templates(context.Background(), source, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-template"}, summary.Created)
+
+	var got hyvev1alpha1.Template
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-template"}, &got))
+	assert.Equal(t, "PHX1", got.Spec.Region)
+}
+
+func TestTemplates_OnlyCopiesFromTheGivenNamespace(t *testing.T) {
+	mine := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: testNamespace}}
+	other := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: "not-mine", Namespace: "tenant-b"}}
+	source := newFakeClient(t, mine, other)
+	dest := newFakeClient(t)
+
+	summary, err := Templates(context.Background(), source, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mine"}, summary.Created)
+}
+
+func TestWorkflows_CopiesFromSourceToDest(t *testing.T) {
+	wf := &hyvev1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-workflow", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.WorkflowSpec{Description: "test workflow"},
+	}
+	source := newFakeClient(t, wf)
+	dest := newFakeClient(t)
+
+	summary, err := Workflows(context.Background(), source, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-workflow"}, summary.Created)
+
+	var got hyvev1alpha1.Workflow
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-workflow"}, &got))
+	assert.Equal(t, "test workflow", got.Spec.Description)
+}
+
+func TestWorkflows_ForceOverwritesExisting(t *testing.T) {
+	wf := &hyvev1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-workflow", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.WorkflowSpec{Description: "new description"},
+	}
+	source := newFakeClient(t, wf)
+	existing := &hyvev1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-workflow", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.WorkflowSpec{Description: "old description"},
+	}
+	dest := newFakeClient(t, existing)
+
+	summary, err := Workflows(context.Background(), source, dest, testNamespace, false, true)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-workflow"}, summary.Created)
+
+	var got hyvev1alpha1.Workflow
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-workflow"}, &got))
+	assert.Equal(t, "new description", got.Spec.Description)
+}
+
+// ── Environments ──────────────────────────────────────────────────────────
+
+func TestEnvironments_ListsOnlyControlPlaneNamespace(t *testing.T) {
+	acme := &hyvev1alpha1.HyveEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.HyveEnvironmentSpec{Namespace: "acme"},
+	}
+	// A HyveEnvironment object living somewhere other than the
+	// control-plane namespace must never happen in practice, but proves
+	// this really does filter by namespace rather than listing globally.
+	stray := &hyvev1alpha1.HyveEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "stray", Namespace: "not-control-plane"},
+		Spec:       hyvev1alpha1.HyveEnvironmentSpec{Namespace: "stray"},
+	}
+	source := newFakeClient(t, acme, stray)
+
+	envs, err := Environments(context.Background(), source, testNamespace)
+	require.NoError(t, err)
+	require.Len(t, envs, 1)
+	assert.Equal(t, "acme", envs[0].Name)
+	assert.Equal(t, "acme", envs[0].Spec.Namespace)
+}
+
+func TestEnvironments_EmptyWhenNoneExist(t *testing.T) {
+	source := newFakeClient(t)
+	envs, err := Environments(context.Background(), source, testNamespace)
+	require.NoError(t, err)
+	assert.Empty(t, envs)
+}

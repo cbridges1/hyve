@@ -43,7 +43,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list hyvev1alpha1.HyveAccessBindingList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
 		log.Printf("api: failed to list access bindings: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list accounts")
 		return
@@ -62,17 +62,26 @@ type createAccountRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Role     string `json:"role"`
+
+	// Namespace lets a superadmin caller target a tenant namespace other
+	// than their own (they have none — see RoleSuperadmin's doc comment)
+	// — e.g. creating a brand new tenant's first admin right after POST
+	// /environments. Ignored for a non-superadmin caller, who is always
+	// confined to their own session's namespace regardless of what this
+	// field says, same as before this field existed.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // handleCreateAccount only supports the two built-in roles (admin,
 // read-only), each with a fixed, well-known ServiceAccountRef
 // (hyve-access-admin/hyve-access-readonly — see deploy/helm/hyve's
-// api-access-roles.yaml) — a `custom` role needs an operator-defined
-// ServiceAccountRef this endpoint has no field for, and still goes through
-// `hyve cluster-config api create-user --role custom --service-account
-// <name>` + kubectl, unchanged.
+// api-access-roles.yaml, or POST /environments' own programmatic
+// equivalent for a Phase-2 tenant) — a `custom` role needs an
+// operator-defined ServiceAccountRef this endpoint has no field for, and
+// still goes through `hyve cluster-config api create-user --role custom
+// --service-account <name>` + kubectl, unchanged.
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
-	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
 		return
 	}
 	var req createAccountRequest
@@ -83,6 +92,11 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	if req.Username == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
+	}
+
+	ns := s.TenantNamespace(r)
+	if role, _ := RoleFromContext(r.Context()); role == hyvev1alpha1.RoleSuperadmin && req.Namespace != "" {
+		ns = req.Namespace
 	}
 
 	var serviceAccount string
@@ -96,7 +110,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, req.Username); err == nil {
+	if _, err := FindBindingBySubject(r.Context(), s.Client, ns, hyvev1alpha1.SubjectTypeLocal, req.Username); err == nil {
 		writeError(w, http.StatusConflict, "an account with this username already exists")
 		return
 	}
@@ -109,7 +123,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(req.Username), Namespace: s.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(req.Username), Namespace: ns},
 		StringData: map[string]string{passwordHashDataKey: hash},
 	}
 	if err := s.Client.Create(r.Context(), secret); err != nil {
@@ -119,11 +133,11 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Username, Namespace: s.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: req.Username, Namespace: ns},
 		Spec: hyvev1alpha1.HyveAccessBindingSpec{
 			Subject:           hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: req.Username},
 			Role:              req.Role,
-			ServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: serviceAccount, Namespace: s.Namespace},
+			ServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: serviceAccount, Namespace: ns},
 		},
 	}
 	if err := s.Client.Create(r.Context(), binding); err != nil {
@@ -159,7 +173,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	binding, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, username)
+	binding, err := FindBindingBySubject(r.Context(), s.Client, s.TenantNamespace(r), hyvev1alpha1.SubjectTypeLocal, username)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
@@ -170,7 +184,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(binding.Name), Namespace: s.Namespace}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(binding.Name), Namespace: binding.Namespace}}
 	if err := s.Client.Delete(r.Context(), secret); err != nil && !apierrors.IsNotFound(err) {
 		// The binding (the actual access grant) is already gone, which is
 		// what matters for security — an orphaned credentials Secret left

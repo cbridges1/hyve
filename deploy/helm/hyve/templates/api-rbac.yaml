@@ -6,6 +6,18 @@ metadata:
   namespace: {{ .Values.namespace }}
 {{- end }}
 ---
+# api.multiTenant.enabled (default false, HYVE-MULTI-TENANCY-PLAN.md's
+# "Phase 2") switches this from a namespaced Role (Phase 1's one-install-
+# per-tenant model, confirmed live: hyve-api's own ServiceAccount can only
+# List/Get inside its own bound namespace, matching s.Namespace) to a
+# ClusterRole — required once a single install serves many tenant
+# namespaces chosen per-login (see internal/api.Server.TenantNamespace):
+# hyve-api's own client needs to reach whichever namespace a given
+# request resolves to, not just one fixed one. Tenant-level isolation
+# still comes entirely from the app layer (HyveAccessBinding + per-request
+# TenantNamespace scoping), never from this Kubernetes RBAC grant — same
+# as Phase 1's tenant-admin roles already work via api-access-roles.yaml.
+#
 # Namespace-scoped: ClusterDefinition/Template/Workflow CRUD, Secrets
 # (credentials + tunnel kubeconfigs), TokenRequest (minting on behalf of a
 # caller's matched HyveAccessBinding — see internal/api/access.go's
@@ -13,10 +25,12 @@ metadata:
 # future log-streaming endpoint (Phase 6.7, not yet implemented — granted
 # now so a later rollout of that feature needs no RBAC change).
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: {{ if .Values.api.multiTenant.enabled }}ClusterRole{{ else }}Role{{ end }}
 metadata:
   name: hyve-api
+  {{- if not .Values.api.multiTenant.enabled }}
   namespace: {{ .Values.namespace }}
+  {{- end }}
 rules:
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions"]
@@ -83,6 +97,39 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["workflowruns/status"]
     verbs: ["get"]
+  # HyveEnvironment backs POST /environments (internal/api/environments.go,
+  # HYVE-MULTI-TENANCY-PLAN.md's "Phase 2") — the authoritative per-tenant
+  # registry a full `migrate cluster --namespace hyve-system` enumerates.
+  - apiGroups: ["hyve.io"]
+    resources: ["hyveenvironments"]
+    verbs: ["get", "list", "watch", "create"]
+  # Namespace/ServiceAccount/RoleBinding: POST /environments creates a new
+  # tenant's namespace and its hyve-access-admin/hyve-access-readonly
+  # ServiceAccount+RoleBinding pair programmatically (the same objects
+  # api-access-roles.yaml would otherwise create once per Helm install
+  # under Phase 1 — Phase 2 has exactly one install, so this endpoint does
+  # it instead). Namespace is cluster-scoped by nature; get is needed for
+  # this endpoint's own "does it already exist" idempotency check.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "create"]
+  # Kubernetes RBAC refuses to let a subject create a RoleBinding
+  # referencing permissions it doesn't itself hold ("attempting to grant
+  # RBAC permissions not currently held") unless it also has bind on that
+  # specific ClusterRole — confirmed live, the RoleBinding create above
+  # 403's without this. Scoped to exactly the two built-in ClusterRoles
+  # ensureAccessRoleScaffolding ever references — not a blanket bind-anything
+  # grant.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["cluster-admin", "view"]
+    verbs: ["bind"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
@@ -139,15 +186,17 @@ rules:
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: {{ if .Values.api.multiTenant.enabled }}ClusterRoleBinding{{ else }}RoleBinding{{ end }}
 metadata:
   name: hyve-api
+  {{- if not .Values.api.multiTenant.enabled }}
   namespace: {{ .Values.namespace }}
+  {{- end }}
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
     namespace: {{ .Values.namespace }}
 roleRef:
-  kind: Role
+  kind: {{ if .Values.api.multiTenant.enabled }}ClusterRole{{ else }}Role{{ end }}
   name: hyve-api
   apiGroup: rbac.authorization.k8s.io

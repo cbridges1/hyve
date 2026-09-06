@@ -28,13 +28,11 @@ type Server struct {
 	Namespace  string // hyve-system by convention — where credentials Secrets/ClusterDefinitions live
 	SigningKey []byte
 
-	// PrimaryClusterName, when set, is the name handleKubeconfig matches
-	// against ?cluster=<name> to dispatch to PrimaryProvider instead of
-	// looking up a ClusterDefinition. Left empty, the primary-cluster path
-	// is simply never reachable (every request falls through to
-	// ModuleAuthProvider/TunnelProvider) — safe to leave unset in a
-	// deployment with no primary-cluster access story configured yet.
-	PrimaryClusterName string
+	// PrimaryProvider serves any ClusterDefinition whose access.method is
+	// AccessMethodPrimary (see kubeconfig_handler.go's switch) — nil is
+	// fine for a deployment with no host-cluster access story configured
+	// yet, that case just 500s with a clear message rather than being
+	// unreachable by construction like the old name-matching shortcut was.
 	PrimaryProvider    AccessProvider
 	ModuleAuthProvider AccessProvider
 	TunnelProvider     AccessProvider
@@ -117,6 +115,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerAccessMethodMintRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 	s.registerAccountRoutes(apiMux)
+	s.registerEnvironmentRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
@@ -154,6 +153,7 @@ type contextKey string
 
 const (
 	contextKeyUsername          contextKey = "hyve-api-username"
+	contextKeyNamespace         contextKey = "hyve-api-namespace"
 	contextKeyRole              contextKey = "hyve-api-role"
 	contextKeyServiceAccountRef contextKey = "hyve-api-service-account-ref"
 )
@@ -169,6 +169,39 @@ func UsernameFromContext(ctx context.Context) (string, bool) {
 func RoleFromContext(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(contextKeyRole).(string)
 	return v, ok
+}
+
+// NamespaceFromContext returns the tenant namespace the caller's access
+// token was issued for (set by requireAuth) — empty string is a valid,
+// meaningful value (the control-plane/superadmin namespace), not "unset";
+// ok is false only when no token was ever verified at all (shouldn't
+// happen for anything behind requireAuth).
+func NamespaceFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(contextKeyNamespace).(string)
+	return v, ok
+}
+
+// TenantNamespace resolves the namespace a request's own CRUD should be
+// scoped to — the token's own namespace when the request carries one
+// (the normal case, threaded by requireAuth from the verified access
+// token), falling back to s.Namespace (this install's control-plane
+// namespace) only for requests with no verified token in context at all,
+// which shouldn't occur for anything mounted behind requireAuth. Handlers
+// that manage tenant-scoped objects (ClusterDefinition, Template,
+// Workflow, Resource, HyveAccessBinding, credentials Secrets, etc.) call
+// this instead of reading s.Namespace directly — see
+// HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section for why: s.Namespace is
+// now fixed per-install control-plane bookkeeping only (HyveConfig, the
+// primary ClusterDefinition, HyveEnvironment, HyveSession storage), not a
+// tenant's own namespace, which varies per login.
+func (s *Server) TenantNamespace(r *http.Request) string {
+	if ns, ok := NamespaceFromContext(r.Context()); ok && ns != "" {
+		return ns
+	}
+	// Empty (a superadmin's own login) means "the control-plane
+	// namespace" — the same value s.Namespace already holds, not a
+	// distinct third namespace.
+	return s.Namespace
 }
 
 // ServiceAccountRefFromContext returns the caller's matched binding's
@@ -191,12 +224,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 		token := strings.TrimPrefix(authHeader, prefix)
-		username, err := VerifyToken(s.SigningKey, token)
+		username, namespace, err := VerifyToken(s.SigningKey, token)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid or expired session")
 			return
 		}
 		ctx := context.WithValue(r.Context(), contextKeyUsername, username)
+		ctx = context.WithValue(ctx, contextKeyNamespace, namespace)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -213,7 +247,7 @@ func (s *Server) requireRole(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		binding, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, username)
+		binding, err := FindBindingBySubject(r.Context(), s.Client, s.TenantNamespace(r), hyvev1alpha1.SubjectTypeLocal, username)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "no access binding for this identity")
 			return

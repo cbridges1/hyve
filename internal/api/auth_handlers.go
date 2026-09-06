@@ -25,6 +25,14 @@ func constantTimeEqual(a, b string) bool {
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+
+	// Namespace is which tenant to log into (see
+	// HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section) — empty means the
+	// install's own control-plane namespace (s.Namespace), the superadmin
+	// tier's home. The CLI's --org flag resolves to this field client-side
+	// (see cmd/shared.PerformLogin) — this API never needs to know about
+	// "org" as a concept, only "namespace".
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // loginResponse carries two distinct credentials — see HyveSession's own
@@ -59,7 +67,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	binding, err := FindBindingBySubject(r.Context(), s.Client, s.Namespace, hyvev1alpha1.SubjectTypeLocal, req.Username)
+	ns := req.Namespace
+	if ns == "" {
+		ns = s.Namespace
+	}
+
+	binding, err := FindBindingBySubject(r.Context(), s.Client, ns, hyvev1alpha1.SubjectTypeLocal, req.Username)
 	if err != nil {
 		// Deliberately the same error as a wrong password below — a login
 		// endpoint shouldn't reveal which usernames exist.
@@ -67,7 +80,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := LoadPasswordHash(r.Context(), s.Client, s.Namespace, binding.Name)
+	hash, err := LoadPasswordHash(r.Context(), s.Client, ns, binding.Name)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
@@ -78,7 +91,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.issueSession(r.Context(), req.Username)
+	// req.Namespace (possibly empty), not the resolved ns — issueSession
+	// stores/re-derives "empty means control-plane namespace" itself, so
+	// what's persisted stays a faithful record of what was actually
+	// requested rather than baking in today's s.Namespace value.
+	resp, err := s.issueSession(r.Context(), req.Username, req.Namespace)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -91,7 +108,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // by handleLogin (a fresh session) and used as the template for what
 // handleRefresh returns (an existing session's new access token; the
 // session token itself is not reissued — see handleRefresh).
-func (s *Server) issueSession(ctx context.Context, subject string) (loginResponse, error) {
+func (s *Server) issueSession(ctx context.Context, subject, namespace string) (loginResponse, error) {
 	secret, err := GenerateSessionSecret()
 	if err != nil {
 		return loginResponse{}, err
@@ -104,16 +121,17 @@ func (s *Server) issueSession(ctx context.Context, subject string) (loginRespons
 			Namespace:    s.Namespace,
 		},
 		Spec: hyvev1alpha1.HyveSessionSpec{
-			Subject:   subject,
-			TokenHash: HashSessionSecret(secret),
-			ExpiresAt: expiresAt,
+			Subject:         subject,
+			TenantNamespace: namespace,
+			TokenHash:       HashSessionSecret(secret),
+			ExpiresAt:       expiresAt,
 		},
 	}
 	if err := s.Client.Create(ctx, session); err != nil {
 		return loginResponse{}, err
 	}
 
-	accessToken, err := IssueAccessToken(s.SigningKey, subject)
+	accessToken, err := IssueAccessToken(s.SigningKey, subject, namespace)
 	if err != nil {
 		return loginResponse{}, err
 	}
@@ -186,7 +204,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, err := IssueAccessToken(s.SigningKey, session.Spec.Subject)
+	accessToken, err := IssueAccessToken(s.SigningKey, session.Spec.Subject, session.Spec.TenantNamespace)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to issue access token")
 		return

@@ -196,6 +196,18 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string) error {
 	name := def.Metadata.Name
 
+	// access.method: primary has no driver by design (see
+	// HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access" section) — it
+	// represents the cluster hyve itself already runs on, not something
+	// this reconciler creates/deletes/status-checks. Skip driver-based
+	// reconciliation entirely rather than erroring on "no driver
+	// specified" — confirmed live, that error otherwise sits permanently
+	// on an object that isn't actually misconfigured.
+	if def.Spec.AccessMethod == types.AccessMethodPrimary {
+		r.logf("[%s] access.method: primary — no driver reconciliation needed", name)
+		return nil
+	}
+
 	if err := validateDriverModuleLocked(def, lf); err != nil {
 		return err
 	}

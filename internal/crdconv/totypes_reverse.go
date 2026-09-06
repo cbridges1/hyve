@@ -25,6 +25,7 @@ func FromTypesClusterDefinitionSpec(def *types.ClusterDefinition) hyvev1alpha1.C
 		Access: hyvev1alpha1.AccessSpec{
 			AccessMethodRef:       def.Spec.AccessMethodRef,
 			AccessMethodClusterID: def.Spec.AccessMethodClusterID,
+			Method:                def.Spec.AccessMethod,
 		},
 	}
 }

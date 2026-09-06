@@ -72,17 +72,21 @@ api:
   modulesDir: /var/lib/hyve/modules
 
   # publicBaseURL is this API's own public address, e.g.
-  # https://hyve-api.example.com — required for the primary-cluster
-  # kubeconfig path's server: field. Left empty, that path stays disabled
-  # (see primaryClusterName below).
+  # https://hyve-api.example.com — required for the host-cluster
+  # kubeconfig path's server: field (see hostServiceAccount below and
+  # HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access" section). Left
+  # empty, that path stays disabled.
   publicBaseURL: ""
 
-  # primaryClusterName, when set, is the name GET /api/kubeconfig?cluster=<name>
-  # matches to serve a self-service kubeconfig for the cluster this API
-  # itself runs on (via TokenRequest + /proxy) rather than looking up a
-  # ClusterDefinition. Leave empty to disable this path entirely (safe
-  # default; every other /api/kubeconfig request still works).
-  primaryClusterName: ""
+  # hostServiceAccount names the dedicated ServiceAccount (in .namespace,
+  # created by api-access-roles.yaml) a superadmin's host-cluster
+  # kubeconfig mints a token against, for a ClusterDefinition with
+  # spec.access.method: primary — replaces the old, pre-Phase-2
+  # primaryClusterName name-matching shortcut, which required no real
+  # ClusterDefinition at all. Matches --host-service-account's own default
+  # in cmd/api/run.go; only needs setting here if the ServiceAccount name
+  # is customized away from "hyve-host-admin".
+  hostServiceAccount: ""
 
   proxyTarget: "https://kubernetes.default.svc"
 
@@ -146,6 +150,15 @@ api:
     # true only for a genuinely single-tenant cluster where cluster-wide
     # cluster-admin/view for these roles is actually intended.
     clusterScoped: false
+
+  # multiTenant.enabled (default false, HYVE-MULTI-TENANCY-PLAN.md's
+  # "Phase 2") switches hyve-api's own RBAC (api-rbac.yaml) from a
+  # namespaced Role bound to just .Values.namespace to a ClusterRole,
+  # needed once a single install serves many tenant namespaces resolved
+  # per-login instead of one install per tenant. Leave false for Phase 1's
+  # one-install-per-tenant model (the default, least-privilege choice).
+  multiTenant:
+    enabled: false
 
 # ui deploys the optional web/ frontend (see HYVE-IMPLEMENTATION-PLAN.md's
 # Phase 11) — disabled by default, same "a real install makes its own

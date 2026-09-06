@@ -31,11 +31,11 @@ var (
 	apiModulesDir         string
 	apiBindAddress        string
 	apiPublicBaseURL      string
-	apiPrimaryClusterName string
 	apiProxyTarget        string
 	apiInClusterCAPath    string
 	apiRelayBindAddress   string
 	apiRelayBaseURL       string
+	apiHostServiceAccount string
 )
 
 // Cmd is the api command.
@@ -65,11 +65,11 @@ func init() {
 	runCmd.Flags().StringVar(&apiModulesDir, "modules-dir", "/var/lib/hyve/modules", "Directory containing the baked-in hyve.lock and resolved modules — see cmd/controller's --modules-dir")
 	runCmd.Flags().StringVar(&apiBindAddress, "bind-address", ":8090", "Address the API binds to")
 	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the primary-cluster kubeconfig path's server: field")
-	runCmd.Flags().StringVar(&apiPrimaryClusterName, "primary-cluster-name", "", "ClusterDefinition name that identifies \"this API's own cluster\" for GET /api/kubeconfig — leave unset to disable the primary-cluster path entirely")
 	runCmd.Flags().StringVar(&apiProxyTarget, "proxy-target", "https://kubernetes.default.svc", "Upstream /proxy/* forwards to")
 	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the primary-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
 	runCmd.Flags().StringVar(&apiRelayBindAddress, "relay-bind-address", ":8091", "Address the access-method mint relay listener binds to — never expose this via Ingress; in-cluster pod network only")
 	runCmd.Flags().StringVar(&apiRelayBaseURL, "relay-base-url", "", "This API's own in-cluster address for the relay listener (e.g. http://hyve-api-internal.hyve-system.svc.cluster.local:8091) — required for POST /api/access-methods/<name>/mint; leave unset to disable access-method minting entirely")
+	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -113,7 +113,6 @@ func runAPI() {
 		Client:             c,
 		Namespace:          apiNamespace,
 		SigningKey:         signingKey,
-		PrimaryClusterName: apiPrimaryClusterName,
 		ModuleAuthProvider: moduleAuthProvider,
 		TunnelProvider:     tunnelProvider,
 		ModulesDir:         apiModulesDir,
@@ -123,14 +122,13 @@ func runAPI() {
 
 	caData, caErr := os.ReadFile(apiInClusterCAPath)
 	if caErr != nil {
-		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the primary-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
-	} else if apiPrimaryClusterName == "" {
-		log.Printf("ℹ️  --primary-cluster-name not set — primary-cluster kubeconfig path disabled")
+		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the primary/host-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
 	} else {
 		server.PrimaryProvider = &hyveapi.PrimaryClusterProvider{
-			Clientset:     clientset,
-			CA:            caData,
-			PublicBaseURL: apiPublicBaseURL,
+			Clientset:             clientset,
+			CA:                    caData,
+			PublicBaseURL:         apiPublicBaseURL,
+			HostServiceAccountRef: hyveapi.ServiceAccountRefConfig{Namespace: apiNamespace, Name: apiHostServiceAccount},
 		}
 		proxy, pErr := hyveapi.BuildProxy(apiProxyTarget, caData)
 		if pErr != nil {

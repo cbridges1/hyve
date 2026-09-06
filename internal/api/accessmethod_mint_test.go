@@ -251,6 +251,103 @@ func TestHandleAccessMethodMint_InlineAuth_Success(t *testing.T) {
 	assert.Equal(t, testMintKubeconfig, out.Kubeconfig)
 }
 
+// TestHandleAccessMethodMint_ScopesToTenantNamespace is the regression test
+// for the fix closing accessmethod_mint.go's cross-tenant gap: the
+// AccessMethod lookup, the dispatched Job, and its credentials Secret must
+// all resolve to the CALLER's own tenant namespace (via
+// Server.TenantNamespace), never the fixed control-plane s.Namespace a
+// Phase 2 shared install no longer scopes tenant data to.
+func TestHandleAccessMethodMint_ScopesToTenantNamespace(t *testing.T) {
+	const tenantNS = "acme"
+	am := &hyvev1alpha1.AccessMethod{
+		ObjectMeta: metav1.ObjectMeta{Name: "corp-rancher", Namespace: tenantNS},
+		Spec: hyvev1alpha1.AccessMethodSpec{
+			ServerURL:   "https://rancher.example.com",
+			InlineAuth:  "echo mint-via $HYVE_ACCESS_METHOD_SERVER_URL > \"$KUBECONFIG\"",
+			RequiredEnv: []string{"RANCHER_TOKEN"},
+		},
+	}
+	s := &Server{
+		Client:       newFakeClient(t, am),
+		Namespace:    testNamespace, // the control-plane namespace — must NOT be where anything below lands
+		Clientset:    fake.NewClientset(),
+		RelayBaseURL: "http://relay.internal",
+		MintTimeout:  2 * time.Second,
+	}
+
+	relaySrv := httptest.NewServer(newRelayMux(s))
+	defer relaySrv.Close()
+
+	reqBody, err := json.Marshal(map[string]any{
+		"clusterName":           "my-cluster",
+		"accessMethodClusterID": "c-abc123",
+		"credentialEnv":         map[string]string{"RANCHER_TOKEN": "tok"},
+	})
+	require.NoError(t, err)
+
+	type mintResult struct {
+		code int
+		body []byte
+	}
+	resultCh := make(chan mintResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/access-methods/corp-rancher/mint", bytes.NewReader(reqBody))
+		req = req.WithContext(contextWithNamespace(req.Context(), tenantNS))
+		rec := httptest.NewRecorder()
+		newMintMux(s).ServeHTTP(rec, req)
+		resultCh <- mintResult{code: rec.Code, body: rec.Body.Bytes()}
+	}()
+
+	requestID, entry := findPendingMint(t, s)
+
+	// The Job and its credentials Secret must land in the tenant's own
+	// namespace, never s.Namespace.
+	tenantJobs, err := s.Clientset.BatchV1().Jobs(tenantNS).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, tenantJobs.Items, 1, "the mint Job must be dispatched into the caller's tenant namespace")
+
+	controlPlaneJobs, err := s.Clientset.BatchV1().Jobs(testNamespace).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, controlPlaneJobs.Items, "no mint Job may land in the control-plane namespace")
+
+	container := tenantJobs.Items[0].Spec.Template.Spec.Containers[0]
+	secretName := container.EnvFrom[0].SecretRef.Name
+	_, err = s.Clientset.CoreV1().Secrets(tenantNS).Get(context.Background(), secretName, metav1.GetOptions{})
+	require.NoError(t, err, "the credentials Secret must land in the tenant namespace")
+	_, err = s.Clientset.CoreV1().Secrets(testNamespace).Get(context.Background(), secretName, metav1.GetOptions{})
+	assert.Error(t, err, "the credentials Secret must not also exist in the control-plane namespace")
+
+	relayReq, err := http.NewRequest(http.MethodPost, relaySrv.URL+"/relay/"+requestID, bytes.NewReader([]byte(testMintKubeconfig)))
+	require.NoError(t, err)
+	relayReq.Header.Set("Authorization", "Bearer "+entry.token)
+	relayReq.Header.Set("X-Hyve-Status", "ok")
+	relayResp, err := http.DefaultClient.Do(relayReq)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, relayResp.StatusCode)
+
+	res := <-resultCh
+	require.Equal(t, http.StatusOK, res.code, string(res.body))
+}
+
+// TestHandleAccessMethodMint_AccessMethodInOtherTenantNamespace_NotFound
+// proves the lookup itself is tenant-scoped, not just the Job/Secret: a
+// caller in tenant "other" must not be able to reference tenant "acme"'s
+// AccessMethod by name.
+func TestHandleAccessMethodMint_AccessMethodInOtherTenantNamespace_NotFound(t *testing.T) {
+	am := &hyvev1alpha1.AccessMethod{
+		ObjectMeta: metav1.ObjectMeta{Name: "corp-rancher", Namespace: "acme"},
+		Spec:       hyvev1alpha1.AccessMethodSpec{ServerURL: "https://rancher.example.com", InlineAuth: "echo hi"},
+	}
+	s := &Server{Client: newFakeClient(t, am), Namespace: testNamespace, Clientset: fake.NewClientset(), RelayBaseURL: "http://relay.internal"}
+
+	req := httptest.NewRequest(http.MethodPost, "/access-methods/corp-rancher/mint", bytes.NewReader([]byte(`{"clusterName":"x","accessMethodClusterID":"y"}`)))
+	req = req.WithContext(contextWithNamespace(req.Context(), "other"))
+	rec := httptest.NewRecorder()
+	newMintMux(s).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestResolveAccessMethodAuthScript_InlineAuth(t *testing.T) {
 	s := &Server{}
 	am := &hyvev1alpha1.AccessMethod{Spec: hyvev1alpha1.AccessMethodSpec{InlineAuth: "echo hi"}}

@@ -14,6 +14,7 @@ import (
 
 var (
 	migrateToClusterKubeconfig string
+	migrateToClusterName       string
 	migrateToClusterDir        string
 	migrateToClusterNamespace  string
 	migrateToClusterConfigName string
@@ -58,13 +59,13 @@ acting on the same downstream clusters. Stop doing that once migrated.`,
 }
 
 func init() {
-	migrateToClusterCmd.Flags().StringVar(&migrateToClusterKubeconfig, "to", "", "Path to the target cluster's kubeconfig (required)")
+	migrateToClusterCmd.Flags().StringVar(&migrateToClusterKubeconfig, "to", "", "Path to the target cluster's kubeconfig (fallback for ad hoc cases with no convenient ClusterDefinition — prefer --to-cluster)")
+	migrateToClusterCmd.Flags().StringVar(&migrateToClusterName, "to-cluster", "", "Name of a ClusterDefinition hyve already knows about — resolved to a kubeconfig the same way `hyve cluster auth` would, local-mode or cluster-mode. Exactly one of --to/--to-cluster is required.")
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterDir, "dir", "", "Local directory to migrate from (defaults to the active environment's registered directory)")
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterNamespace, "namespace", "hyve-system", "Namespace on the target cluster to create ClusterDefinition/HyveConfig objects in")
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object to create on the target")
 	migrateToClusterCmd.Flags().BoolVar(&migrateToClusterWrite, "write", false, "Actually create resources on the target (default is a dry run)")
 	migrateToClusterCmd.Flags().BoolVar(&migrateToClusterForce, "force", false, "Overwrite an existing object with the same name on the target instead of skipping it")
-	_ = migrateToClusterCmd.MarkFlagRequired("to")
 	migrateCmd.AddCommand(migrateToClusterCmd)
 }
 
@@ -73,6 +74,13 @@ func runMigrateToCluster() {
 	dryRun := !migrateToClusterWrite
 	if dryRun {
 		log.Println("🔍 Dry run — nothing will be written. Pass --write to actually migrate.")
+	}
+
+	if migrateToClusterKubeconfig == "" && migrateToClusterName == "" {
+		log.Fatal("Exactly one of --to or --to-cluster is required")
+	}
+	if migrateToClusterKubeconfig != "" && migrateToClusterName != "" {
+		log.Fatal("--to and --to-cluster are mutually exclusive")
 	}
 
 	var source *state.Manager
@@ -86,7 +94,17 @@ func runMigrateToCluster() {
 		source, _ = shared.CreateStateManagerFromRepository(ctx)
 	}
 
-	dest, err := migrate.BuildClient(migrateToClusterKubeconfig)
+	kcPath := migrateToClusterKubeconfig
+	if migrateToClusterName != "" {
+		resolved, cleanup, err := resolveClusterKubeconfigPath(migrateToClusterName)
+		if err != nil {
+			log.Fatalf("Failed to resolve kubeconfig for %q: %v", migrateToClusterName, err)
+		}
+		defer cleanup()
+		kcPath = resolved
+	}
+
+	dest, err := migrate.BuildClient(kcPath)
 	if err != nil {
 		log.Fatalf("Failed to build client for target cluster: %v", err)
 	}
@@ -111,12 +129,25 @@ func runMigrateToCluster() {
 		log.Printf("[hyveconfig] %s — created", migrateToClusterConfigName)
 	}
 
+	localPath := source.LocalPath()
+	templateSummary, err := migrate.TemplatesFromDir(ctx, localPath, dest, migrateToClusterNamespace, dryRun, migrateToClusterForce)
+	if err != nil {
+		log.Fatalf("Failed to migrate templates: %v", err)
+	}
+	printMigrateSummary("template", templateSummary, dryRun)
+
+	workflowSummary, err := migrate.WorkflowsFromDir(ctx, localPath, dest, migrateToClusterNamespace, dryRun, migrateToClusterForce)
+	if err != nil {
+		log.Fatalf("Failed to migrate workflows: %v", err)
+	}
+	printMigrateSummary("workflow", workflowSummary, dryRun)
+
 	if dryRun {
 		log.Println("\nRe-run with --write to actually create these on the target cluster.")
 		return
 	}
-	if !clusterSummary.OK() {
-		log.Fatalf("Migration completed with %d failure(s) — see above.", len(clusterSummary.Failed))
+	if !clusterSummary.OK() || !templateSummary.OK() || !workflowSummary.OK() {
+		log.Fatal("Migration completed with failures — see above.")
 	}
 
 	log.Println("\n⚠️  This command does NOT touch your local directory. If you continue running")

@@ -49,7 +49,7 @@ func TestRequireAuth_InvalidToken_401(t *testing.T) {
 func TestRequireAuth_ValidToken_PassesUsernameToContext(t *testing.T) {
 	key := []byte("key")
 	s := &Server{SigningKey: key}
-	token, err := IssueAccessToken(key, "cedric")
+	token, err := IssueAccessToken(key, "cedric", "")
 	require.NoError(t, err)
 
 	var gotUsername string

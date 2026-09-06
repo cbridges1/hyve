@@ -57,17 +57,24 @@ func init() {
 func runCreateUser(username string) {
 	role := createUserRole
 	switch role {
-	case hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleReadOnly, hyvev1alpha1.RoleCustom:
+	case hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleReadOnly, hyvev1alpha1.RoleCustom, hyvev1alpha1.RoleSuperadmin:
 	case "":
-		log.Fatal("--role is required (admin, read-only, or custom)")
+		log.Fatal("--role is required (admin, read-only, superadmin, or custom)")
 	default:
-		log.Fatalf("--role must be admin, read-only, or custom, got %q", role)
+		log.Fatalf("--role must be admin, read-only, superadmin, or custom, got %q", role)
 	}
 
 	saName := createUserServiceAccount
 	if saName == "" {
 		switch role {
-		case hyvev1alpha1.RoleAdmin:
+		case hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin:
+			// superadmin's own cross-namespace endpoints (POST/GET
+			// /environments, the host-cluster kubeconfig path) are gated by
+			// HyveAccessBindingSpec.Role alone, not by ServiceAccountRef —
+			// this SA only matters if a superadmin also fetches an ordinary
+			// GET /api/kubeconfig for some tenant's cluster, so reusing
+			// hyve-access-admin (already created in this namespace) is fine
+			// rather than needing a role-specific ServiceAccount of its own.
 			saName = "hyve-access-admin"
 		case hyvev1alpha1.RoleReadOnly:
 			saName = "hyve-access-readonly"

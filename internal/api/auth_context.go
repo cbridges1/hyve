@@ -87,24 +87,20 @@ func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
 
 // handleAuthContext only serves clusters using the default client-side auth
 // method (spec.access.method unset) — a cluster that's opted into the
-// AccessMethodModuleAuth override or AccessMethodTunnel is server-minted
-// via GET /api/kubeconfig instead, and returning driver secrets here for
-// those would just be a second, weaker-guaranteed way to reach the same
-// access (no authorization check baked in, unlike the override path's
-// module-side check — see moduleEnvForClusterDefinition). The API's own
-// primary cluster (s.PrimaryClusterName) has no driver module at all —
-// its kubeconfig is always server-minted via TokenRequest — so it's
-// likewise rejected here.
+// AccessMethodModuleAuth override, AccessMethodTunnel, or AccessMethodPrimary
+// (the API's own host cluster — no driver module at all, always
+// server-minted via TokenRequest, see PrimaryClusterProvider) is
+// server-minted via GET /api/kubeconfig instead, and returning driver
+// secrets here for those would just be a second, weaker-guaranteed way to
+// reach the same access (no authorization check baked in, unlike the
+// override path's module-side check — see moduleEnvForClusterDefinition).
+// The generic access.method != "" rejection below already covers all three
+// non-default cases uniformly — no special-casing needed per method.
 func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	if s.PrimaryClusterName != "" && name == s.PrimaryClusterName {
-		writeError(w, http.StatusConflict, fmt.Sprintf("cluster %q is this API's own primary cluster — fetch its kubeconfig via GET /api/kubeconfig instead", name))
-		return
-	}
-
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &cd); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return

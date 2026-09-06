@@ -1,0 +1,79 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: hyveenvironments.hyve.io
+spec:
+  group: hyve.io
+  names:
+    kind: HyveEnvironment
+    listKind: HyveEnvironmentList
+    plural: hyveenvironments
+    shortNames:
+    - henv
+    singular: hyveenvironment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HyveEnvironment is the Schema for the hyveenvironments API — one object
+          per tenant, living centrally in the install's control-plane namespace
+          (hyve-system by convention, alongside HyveConfig), not namespaced-per-
+          tenant itself (which would recreate the original cross-tenant-listing
+          problem HyveAccessBinding already had before it was made namespaced —
+          see HYVE-MULTI-TENANCY-PLAN.md's Part B). Created by POST /environments
+          (internal/api/environments.go) as the authoritative answer to "what
+          tenants exist" — deliberately not derived from which namespaces happen
+          to have a ClusterDefinition, since a freshly-created tenant with no
+          cluster yet would otherwise be invisible to a full `migrate cluster
+          --namespace hyve-system` run. No status subresource: metadata.creationTimestamp
+          already answers "when was this created," and there's nothing else to
+          report yet.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HyveEnvironmentSpec is deliberately minimal — see HYVE-MULTI-TENANCY-PLAN.md's
+              "New object: HyveEnvironment" section.
+            properties:
+              namespace:
+                description: |-
+                  Namespace this environment maps to. Usually equal to the object's
+                  own name, kept as a separate field only because org-name and
+                  namespace-name aren't guaranteed to always be the same value (see
+                  cmd/shared.ResolveOrgToNamespace's own doc comment).
+                type: string
+            required:
+            - namespace
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

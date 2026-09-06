@@ -10,44 +10,44 @@ import (
 
 func TestIssueAndVerifyToken_RoundTrip(t *testing.T) {
 	key := []byte("test-signing-key")
-	token, err := IssueAccessToken(key, "cedric")
+	token, err := IssueAccessToken(key, "cedric", "")
 	require.NoError(t, err)
 
-	subject, err := VerifyToken(key, token)
+	subject, _, err := VerifyToken(key, token)
 	require.NoError(t, err)
 	assert.Equal(t, "cedric", subject)
 }
 
 func TestVerifyToken_WrongKeyRejected(t *testing.T) {
-	token, err := IssueAccessToken([]byte("key-a"), "cedric")
+	token, err := IssueAccessToken([]byte("key-a"), "cedric", "")
 	require.NoError(t, err)
 
-	_, err = VerifyToken([]byte("key-b"), token)
+	_, _, err = VerifyToken([]byte("key-b"), token)
 	assert.Error(t, err)
 }
 
 func TestVerifyToken_TamperedPayloadRejected(t *testing.T) {
 	key := []byte("test-signing-key")
-	token, err := IssueAccessToken(key, "cedric")
+	token, err := IssueAccessToken(key, "cedric", "")
 	require.NoError(t, err)
 
 	// Flip the token's subject by swapping in another valid-looking
 	// payload segment (still base64-decodable, just re-signed under a
 	// *different* key so it fails signature verification against key).
-	forged, err := IssueAccessToken([]byte("attacker-key"), "admin")
+	forged, err := IssueAccessToken([]byte("attacker-key"), "admin", "")
 	require.NoError(t, err)
 	parts := splitToken(t, forged)
 	original := splitToken(t, token)
 	tampered := parts[0] + "." + original[1] // forged payload, original signature
 
-	_, err = VerifyToken(key, tampered)
+	_, _, err = VerifyToken(key, tampered)
 	assert.Error(t, err)
 }
 
 func TestVerifyToken_MalformedRejected(t *testing.T) {
 	key := []byte("test-signing-key")
 	for _, bad := range []string{"", "not-a-token", "onlyonepart", "a.b.c", "!!!.!!!"} {
-		_, err := VerifyToken(key, bad)
+		_, _, err := VerifyToken(key, bad)
 		assert.Error(t, err, "expected error for malformed token %q", bad)
 	}
 }
@@ -58,7 +58,7 @@ func TestVerifyToken_ExpiredRejected(t *testing.T) {
 	token, err := signPayload(key, payload)
 	require.NoError(t, err)
 
-	_, err = VerifyToken(key, token)
+	_, _, err = VerifyToken(key, token)
 	assert.ErrorContains(t, err, "expired")
 }
 

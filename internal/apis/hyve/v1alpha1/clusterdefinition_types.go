@@ -96,6 +96,22 @@ const (
 	// Secret instead of a live fetch — for clusters with no cloud-native
 	// reachable endpoint (self-hosted/on-prem/home-NAT'd). See TunnelSpec.
 	AccessMethodTunnel = "tunnel"
+
+	// AccessMethodPrimary marks a ClusterDefinition as representing the
+	// cluster hyve-controller/hyve-api themselves run on (the "host"
+	// cluster — see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access"
+	// section). No driver/create/delete lifecycle applies — it already
+	// exists by definition. Routes to PrimaryClusterProvider, which mints
+	// a cluster-admin-bound token via TokenRequest and points server: at
+	// this API's own /proxy path rather than any external address (works
+	// identically whether the host cluster has a public IP, a LAN-only
+	// address, or sits behind NAT with no inbound path at all — the proxy
+	// runs from inside the cluster, so it never needs one). Gated to
+	// RoleSuperadmin only; every other role is refused outright, since
+	// this credential reaches the cluster every tenant's workload actually
+	// runs on. Should live in the install's control-plane namespace
+	// (hyve-system by convention), never a tenant namespace.
+	AccessMethodPrimary = "primary"
 )
 
 // TunnelProvider values for TunnelSpec.Provider.

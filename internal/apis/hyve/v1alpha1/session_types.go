@@ -15,6 +15,16 @@ type HyveSessionSpec struct {
 	// Subject is the authenticated username this session belongs to.
 	Subject string `json:"subject"`
 
+	// TenantNamespace is which namespace this login was authenticated
+	// into (see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section) — NOT the
+	// same thing as this object's own metadata.namespace, which is always
+	// the install's control-plane namespace (hyve-system by convention)
+	// regardless of which tenant logged in. Empty means the
+	// control-plane namespace itself (a superadmin login). Carried here
+	// so POST /auth/refresh can re-issue an access token for the same
+	// namespace without the caller needing to resend it.
+	TenantNamespace string `json:"tenantNamespace,omitempty"`
+
 	// TokenHash is hex(SHA-256(the raw session secret)) — compared against
 	// on every POST /auth/refresh call. See internal/api/token.go's
 	// HashSessionSecret.

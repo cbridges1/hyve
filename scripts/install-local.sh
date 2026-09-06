@@ -55,7 +55,12 @@ NAMESPACE="${1:-hyve-system}"
 IMAGE_TAG="hyve:dev"
 UI_IMAGE_TAG="hyve-ui:dev"
 INSTALL_UI="${HYVE_INSTALL_UI:-true}"
-PRIMARY_CLUSTER_NAME="${HYVE_INSTALL_PRIMARY_CLUSTER_NAME:-local}"
+# See api-rbac.yaml's own doc comment: false (default) keeps hyve-api's
+# ServiceAccount scoped to just NAMESPACE (Phase 1's one-install-per-tenant
+# model); true switches it to a ClusterRole so a single install can serve
+# multiple tenant namespaces resolved per-login (Phase 2) — needed for
+# POST /environments to create/reach an arbitrary new tenant namespace.
+MULTI_TENANT="${HYVE_INSTALL_MULTI_TENANT:-false}"
 INGRESS_HOST="${HYVE_INSTALL_INGRESS_HOST:-hyve-api.127.0.0.1.nip.io}"
 PUBLIC_BASE_URL="${HYVE_INSTALL_PUBLIC_BASE_URL:-http://$INGRESS_HOST}"
 
@@ -149,13 +154,13 @@ COMPONENTS="controller + api"
 if [[ "$INSTALL_UI" == "true" ]]; then
   COMPONENTS="$COMPONENTS + ui"
 fi
-log "Installing hyve ($COMPONENTS, image.pullPolicy=$PULL_POLICY, primary-cluster-name=$PRIMARY_CLUSTER_NAME, public-base-url=$PUBLIC_BASE_URL)"
+log "Installing hyve ($COMPONENTS, image.pullPolicy=$PULL_POLICY, public-base-url=$PUBLIC_BASE_URL, multi-tenant=$MULTI_TENANT)"
 helm upgrade --install hyve "$ROOT_DIR/deploy/helm/hyve" \
   --namespace "$NAMESPACE" \
   --set image.repository=hyve --set image.tag=dev --set image.pullPolicy="$PULL_POLICY" \
   --set namespace="$NAMESPACE" \
-  --set api.primaryClusterName="$PRIMARY_CLUSTER_NAME" \
   --set api.publicBaseURL="$PUBLIC_BASE_URL" \
+  --set api.multiTenant.enabled="$MULTI_TENANT" \
   --set api.ingress.enabled=true \
   --set api.ingress.host="$INGRESS_HOST" \
   "${UI_SET_FLAGS[@]}" >/dev/null
@@ -180,12 +185,19 @@ fi
 echo ""
 echo "Next steps:"
 echo ""
-echo "  1. Create a user:"
-echo "     (cd $ROOT_DIR && go run . cluster-config api create-user <username> --role admin --namespace $NAMESPACE) | kubectl apply -f -"
+echo "  1. Create a superadmin user:"
+echo "     (cd $ROOT_DIR && go run . cluster-config api create-user <username> --role superadmin --namespace $NAMESPACE) | kubectl apply -f -"
 echo ""
-echo "  2. Log in:"
+echo "  2. Log in (no --org — a superadmin has no tenant namespace):"
 echo "     hyve login --api-url $PUBLIC_BASE_URL"
 echo ""
-echo "  3. Try the primary-cluster kubeconfig path:"
-echo "     hyve cluster auth $PRIMARY_CLUSTER_NAME"
-echo "     kubectl --kubeconfig ~/.hyve/kubeconfigs/$PRIMARY_CLUSTER_NAME.yaml get pods -n $NAMESPACE"
+echo "  3. Self-register this cluster as the host, then try the host-cluster kubeconfig path"
+echo "     (see HYVE-MULTI-TENANCY-PLAN.md's \"Host cluster access\" section):"
+echo "     kubectl apply -f - <<'EOF'"
+echo "     apiVersion: hyve.io/v1alpha1"
+echo "     kind: ClusterDefinition"
+echo "     metadata: {name: local, namespace: $NAMESPACE}"
+echo "     spec: {access: {method: primary}}"
+echo "     EOF"
+echo "     hyve cluster auth local"
+echo "     kubectl --kubeconfig ~/.hyve/kubeconfigs/local.yaml get pods -n $NAMESPACE"

@@ -130,6 +130,68 @@ func TestPrimaryClusterProvider_NoServiceAccountInContext_Errors(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// ── PrimaryClusterProvider: host cluster access (access.method: primary) ──
+
+func newHostClusterDef() *hyvev1alpha1.ClusterDefinition {
+	return &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "primary"},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary}},
+	}
+}
+
+func TestPrimaryClusterProvider_HostAccess_RequiresSuperadmin(t *testing.T) {
+	p := &PrimaryClusterProvider{
+		Clientset:             fake.NewClientset(),
+		HostServiceAccountRef: ServiceAccountRefConfig{Name: "hyve-host-admin", Namespace: testNamespace},
+	}
+	ctx := contextWithRole(context.Background(), hyvev1alpha1.RoleAdmin)
+	_, err := p.Kubeconfig(ctx, newHostClusterDef())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "superadmin")
+}
+
+func TestPrimaryClusterProvider_HostAccess_SuperadminMintsAgainstHostServiceAccount(t *testing.T) {
+	clientset := fake.NewClientset()
+	var requestedSA string
+	clientset.PrependReactor("create", "serviceaccounts", func(action ktesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(ktesting.CreateActionImpl)
+		if !ok || createAction.GetSubresource() != "token" {
+			return false, nil, nil
+		}
+		requestedSA = createAction.Name
+		return true, &authenticationv1.TokenRequest{Status: authenticationv1.TokenRequestStatus{Token: "host-admin-token"}}, nil
+	})
+
+	p := &PrimaryClusterProvider{
+		Clientset:             clientset,
+		CA:                    []byte("fake-ca-data"),
+		PublicBaseURL:         "https://hyve-api.example.com",
+		HostServiceAccountRef: ServiceAccountRefConfig{Name: "hyve-host-admin", Namespace: testNamespace},
+	}
+
+	// A superadmin caller with an ordinary tenant ServiceAccountRef also
+	// resolved in context (as requireRole would for any authenticated
+	// caller) must still mint against the dedicated host ServiceAccount,
+	// never the one an ordinary role would have gotten — proving the two
+	// paths are genuinely separate, not "host falls back to whatever's in
+	// context."
+	ctx := context.WithValue(context.Background(), contextKeyServiceAccountRef, hyvev1alpha1.ServiceAccountRef{Name: "hyve-access-admin", Namespace: testNamespace})
+	ctx = contextWithRole(ctx, hyvev1alpha1.RoleSuperadmin)
+
+	kc, err := p.Kubeconfig(ctx, newHostClusterDef())
+	require.NoError(t, err)
+	assert.Equal(t, "hyve-host-admin", requestedSA, "must mint against the dedicated host ServiceAccount, not whatever an ordinary role resolves to")
+	assert.Contains(t, string(kc), "host-admin-token")
+}
+
+func TestPrimaryClusterProvider_HostAccess_NoHostServiceAccountConfigured_Errors(t *testing.T) {
+	p := &PrimaryClusterProvider{Clientset: fake.NewClientset()}
+	ctx := contextWithRole(context.Background(), hyvev1alpha1.RoleSuperadmin)
+	_, err := p.Kubeconfig(ctx, newHostClusterDef())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no host ServiceAccount configured")
+}
+
 // ── handleKubeconfig dispatch ────────────────────────────────────────────
 
 // recordingProvider is an AccessProvider test double that records whether
@@ -166,10 +228,13 @@ func TestHandleKubeconfig_UnknownCluster(t *testing.T) {
 func TestHandleKubeconfig_DispatchesToPrimaryProvider(t *testing.T) {
 	primary := &recordingProvider{kc: []byte("primary-kubeconfig")}
 	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
+	hostCD := &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "primary", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary}},
+	}
 	s := &Server{
-		Client:             newFakeClient(t),
+		Client:             newFakeClient(t, hostCD),
 		Namespace:          testNamespace,
-		PrimaryClusterName: "primary",
 		PrimaryProvider:    primary,
 		ModuleAuthProvider: moduleAuth,
 	}

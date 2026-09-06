@@ -123,8 +123,10 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	tenantNS := s.TenantNamespace(r)
+
 	var am hyvev1alpha1.AccessMethod
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &am); err != nil {
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: tenantNS, Name: name}, &am); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "access method not found")
 			return
@@ -175,7 +177,7 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 
 	createdJobName, jobUID, err := k8sjob.PushJob(r.Context(), s.Clientset, k8sjob.PushJobRequest{
 		Name:                  "am-mint-" + name,
-		Namespace:             s.Namespace,
+		Namespace:             tenantNS,
 		Image:                 image,
 		Script:                buildMintWrapperScript(authScript),
 		Env:                   env,
@@ -192,7 +194,7 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		policy := metav1.DeletePropagationBackground
-		_ = s.Clientset.BatchV1().Jobs(s.Namespace).Delete(cleanupCtx, createdJobName, metav1.DeleteOptions{PropagationPolicy: &policy})
+		_ = s.Clientset.BatchV1().Jobs(tenantNS).Delete(cleanupCtx, createdJobName, metav1.DeleteOptions{PropagationPolicy: &policy})
 	}
 
 	// The Secret is created only after the Job, so its ownerReference can
@@ -208,7 +210,7 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
-			Namespace: s.Namespace,
+			Namespace: tenantNS,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: "batch/v1",
 				Kind:       "Job",
@@ -218,7 +220,7 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 		},
 		StringData: req.CredentialEnv,
 	}
-	if _, err := s.Clientset.CoreV1().Secrets(s.Namespace).Create(r.Context(), secret, metav1.CreateOptions{}); err != nil {
+	if _, err := s.Clientset.CoreV1().Secrets(tenantNS).Create(r.Context(), secret, metav1.CreateOptions{}); err != nil {
 		log.Printf("api: failed to create mint credentials secret for access method %q: %v", name, err)
 		cleanup()
 		writeError(w, http.StatusInternalServerError, "failed to dispatch access method job")
@@ -234,7 +236,7 @@ func (s *Server) handleAccessMethodMint(w http.ResponseWriter, r *http.Request) 
 	select {
 	case result = <-entry.result:
 	case <-time.After(timeout):
-		result = mintPushResult{Status: "error", Message: s.describeMintTimeout(r.Context(), createdJobName)}
+		result = mintPushResult{Status: "error", Message: s.describeMintTimeout(r.Context(), tenantNS, createdJobName)}
 	case <-r.Context().Done():
 		cleanup()
 		return
@@ -408,8 +410,8 @@ fi
 // describeMintTimeout best-effort inspects the Job's pod for a clearer
 // timeout message (e.g. an image pull failure) than a bare "timed out" —
 // purely diagnostic, never a source of the kubeconfig itself.
-func (s *Server) describeMintTimeout(ctx context.Context, jobName string) string {
-	pods, err := s.Clientset.CoreV1().Pods(s.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "job-name=" + jobName})
+func (s *Server) describeMintTimeout(ctx context.Context, namespace, jobName string) string {
+	pods, err := s.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "job-name=" + jobName})
 	if err != nil || len(pods.Items) == 0 {
 		return "timed out waiting for access method job to report a result"
 	}
