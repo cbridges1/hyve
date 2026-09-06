@@ -66,6 +66,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /workflows/{name}", s.handleGetWorkflow)
 	mux.HandleFunc("POST /workflows", s.handleCreateWorkflow)
+	mux.HandleFunc("PATCH /workflows/{name}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /workflows/{name}", s.handleDeleteWorkflow)
 }
 
@@ -161,6 +162,47 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toWorkflowDTO(cr))
+}
+
+// updateWorkflowRequest mirrors createWorkflowRequest's Spec shape — a
+// full-spec replace, not a merge-patch.
+type updateWorkflowRequest struct {
+	Spec hyvev1alpha1.WorkflowSpec `json:"spec"`
+}
+
+// handleUpdateWorkflow only ever finds a real Workflow CR named `name` —
+// a git-ref-backed workflow lives under a derived name as a
+// WorkflowRefStatus, never as a Workflow CR itself (see toWorkflowRefStatusDTO's
+// doc comment), so this naturally 404s for that case with no separate
+// detection needed, the same way handleDeleteWorkflow's identical Get-by-name
+// already does today.
+func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+		return
+	}
+	name := r.PathValue("name")
+	var req updateWorkflowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var cr hyvev1alpha1.Workflow
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "workflow not found")
+			return
+		}
+		log.Printf("api: failed to get workflow %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get workflow")
+		return
+	}
+	cr.Spec = req.Spec
+	if err := s.Client.Update(r.Context(), &cr); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update workflow: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
 }
 
 func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {

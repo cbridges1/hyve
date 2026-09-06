@@ -35,6 +35,7 @@ func (s *Server) registerTemplateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /templates", s.handleListTemplates)
 	mux.HandleFunc("GET /templates/{name}", s.handleGetTemplate)
 	mux.HandleFunc("POST /templates", s.handleCreateTemplate)
+	mux.HandleFunc("PATCH /templates/{name}", s.handleUpdateTemplate)
 	mux.HandleFunc("DELETE /templates/{name}", s.handleDeleteTemplate)
 	mux.HandleFunc("POST /templates/{name}/render", s.handleRenderTemplate)
 }
@@ -102,6 +103,41 @@ func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toTemplateDTO(cr))
+}
+
+// updateTemplateRequest mirrors createTemplateRequest's Spec shape — a
+// full-spec replace, not a merge-patch.
+type updateTemplateRequest struct {
+	Spec hyvev1alpha1.TemplateSpec `json:"spec"`
+}
+
+func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+		return
+	}
+	name := r.PathValue("name")
+	var req updateTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var cr hyvev1alpha1.Template
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "template not found")
+			return
+		}
+		log.Printf("api: failed to get template %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get template")
+		return
+	}
+	cr.Spec = req.Spec
+	if err := s.Client.Update(r.Context(), &cr); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update template: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, toTemplateDTO(&cr))
 }
 
 func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {

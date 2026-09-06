@@ -34,13 +34,18 @@ metadata:
 rules:
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions/status"]
     verbs: ["get"]
+  # update backs PATCH /clusters, /templates, /workflows, /resources (raw-
+  # spec editing from the web UI) — confirmed live, missing here 403's the
+  # update call with no indication beforehand (fake-clientset-backed tests
+  # don't enforce RBAC at all, so this was invisible short of a real
+  # cluster).
   - apiGroups: ["hyve.io"]
     resources: ["templates", "workflows", "resources"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
   # HyveAccessBinding is namespaced (one install = one tenant = one
   # namespace — see hyveaccessbinding_types.go), so this lives in the same
   # namespaced Role as everything else above rather than a ClusterRole.

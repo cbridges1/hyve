@@ -33,14 +33,25 @@ type clusterDTO struct {
 	// before deciding whether to fall back to GetAuthContext/GetKubeconfig.
 	AccessMethodRef       string `json:"accessMethodRef,omitempty"`
 	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
+
+	// Spec is the full declared spec — added for PATCH /clusters/<name>'s
+	// sake (the web console's generic edit panel needs to seed itself with
+	// the current spec, same as templateDTO/workflowDTO/resourceDTO already
+	// do). Not the same concern the doc comment above warns about: that's
+	// about *status*-level data (driverOutputs, kubeconfig-equivalent
+	// results), not the user-declared spec, which is no more sensitive here
+	// than it already is on every other exposed CRD type.
+	Spec *hyvev1alpha1.ClusterDefinitionSpec `json:"spec,omitempty"`
 }
 
 func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
+	spec := cd.Spec
 	return clusterDTO{
 		Name:               cd.Name,
 		Driver:             cd.Spec.Driver.Source,
 		Conditions:         cd.Status.Conditions,
 		ObservedGeneration: cd.Status.ObservedGeneration,
+		Spec:               &spec,
 		// Spec, not Status: this reflects the *declared* access method
 		// (module-auth/tunnel/primary), always known immediately — Status.
 		// Access.Method is a separate, rarely-populated status echo (see
@@ -63,6 +74,7 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /clusters", s.handleListClusters)
 	mux.HandleFunc("GET /clusters/{name}", s.handleGetCluster)
 	mux.HandleFunc("POST /clusters", s.handleCreateCluster)
+	mux.HandleFunc("PATCH /clusters/{name}", s.handleUpdateCluster)
 	mux.HandleFunc("DELETE /clusters/{name}", s.handleDeleteCluster)
 	mux.HandleFunc("GET /clusters/{name}/resources", s.handleGetClusterResources)
 }
@@ -212,6 +224,43 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toClusterDTO(cd))
+}
+
+// updateClusterRequest reuses hyvev1alpha1.ClusterDefinitionSpec directly,
+// same precedent as createClusterRequest — a generic raw-spec PATCH, not a
+// partial/merge-patch (the whole spec is replaced), matching this
+// console's "a CR is just YAML" edit model across every type.
+type updateClusterRequest struct {
+	Spec hyvev1alpha1.ClusterDefinitionSpec `json:"spec"`
+}
+
+func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+		return
+	}
+	name := r.PathValue("name")
+	var req updateClusterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var cd hyvev1alpha1.ClusterDefinition
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		log.Printf("api: failed to get cluster %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
+	cd.Spec = req.Spec
+	if err := s.Client.Update(r.Context(), &cd); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update cluster: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, toClusterDTO(&cd))
 }
 
 func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {

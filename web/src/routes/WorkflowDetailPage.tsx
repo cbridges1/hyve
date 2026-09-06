@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, CodeBlock, Field } from '../components/Card'
 import { RefStatusBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
+import { SpecEditor } from '../components/SpecEditor'
 import { ApiError } from '../lib/api/client'
 import { workflowsApi } from '../lib/api/workflows'
 import { workflowRunsApi } from '../lib/api/workflowRuns'
@@ -196,7 +197,7 @@ export function WorkflowDetailPage() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
   const confirm = useConfirm()
-  const { data: wf, loading, error } = useApi(() => workflowsApi.get(name), [name])
+  const { data: wf, loading, error, reload } = useApi(() => workflowsApi.get(name), [name])
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   async function onDelete() {
@@ -293,6 +294,10 @@ export function WorkflowDetailPage() {
                 ))}
               </div>
             </Card>
+
+            <AdminOnly>
+              <SpecEditor spec={wf.spec} onSave={(spec) => workflowsApi.update(wf.name, spec).then(reload)} />
+            </AdminOnly>
           </>
         )
       )}

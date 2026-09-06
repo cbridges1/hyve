@@ -69,6 +69,10 @@ export type ClusterSummary = {
   observedGeneration: number
   accessMethod?: string
   accessLastMinted?: string
+  // Added for PATCH /clusters/<name>'s sake — see clusterDTO's own doc
+  // comment on why this isn't the same concern as the driverOutputs/
+  // kubeconfig exclusion right above.
+  spec?: ClusterDefinitionSpec
 }
 
 export type ClusterDefinitionSpec = {

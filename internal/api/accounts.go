@@ -39,9 +39,10 @@ func (s *Server) registerAccountRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
-	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
 		return
 	}
+	callerRole, _ := RoleFromContext(r.Context())
 	var list hyvev1alpha1.HyveAccessBindingList
 	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
 		log.Printf("api: failed to list access bindings: %v", err)
@@ -51,6 +52,15 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	dtos := make([]accountDTO, 0, len(list.Items))
 	for i := range list.Items {
 		if list.Items[i].Spec.Subject.Type != hyvev1alpha1.SubjectTypeLocal {
+			continue
+		}
+		// A superadmin binding is never visible to an ordinary admin, even
+		// one sharing its namespace (e.g. hyve-system, which today holds
+		// both) — confirmed live: without this, any tenant admin could see
+		// AND delete a superadmin account purely by co-locating in the same
+		// namespace. Superadmin privilege is cluster-wide; only another
+		// superadmin gets to see or manage it.
+		if list.Items[i].Spec.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
 			continue
 		}
 		dtos = append(dtos, toAccountDTO(&list.Items[i]))
@@ -163,7 +173,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 // account first), just a guard against a stray click locking out the only
 // session currently open, with no other admin account to fix it from.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
-	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
 		return
 	}
 	username := r.PathValue("username")
@@ -175,6 +185,15 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	binding, err := FindBindingBySubject(r.Context(), s.Client, s.TenantNamespace(r), hyvev1alpha1.SubjectTypeLocal, username)
 	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	// Same rule as the list endpoint: an ordinary admin can never delete a
+	// superadmin account, even one sharing its namespace — reported as
+	// "not found" rather than "forbidden" so it's indistinguishable from a
+	// truly nonexistent account, matching the list endpoint's own "never
+	// visible" stance rather than confirming a superadmin account exists.
+	if callerRole, _ := RoleFromContext(r.Context()); binding.Spec.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}

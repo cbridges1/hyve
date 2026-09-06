@@ -292,3 +292,35 @@ func TestHandleGetClusterResources_Empty(t *testing.T) {
 	assert.Empty(t, dto.Resources)
 	assert.Empty(t, dto.AppliedResources)
 }
+
+func TestHandleUpdateCluster_AdminAllowed(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/clusters/c1", updateClusterRequest{
+		Spec: hyvev1alpha1.ClusterDefinitionSpec{Driver: hyvev1alpha1.DriverRef{Source: "./modules/updated", Version: "v2"}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "./modules/updated", dto.Driver)
+
+	rec2 := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/clusters/c1", nil)
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &dto))
+	require.NotNil(t, dto.Spec)
+	assert.Equal(t, "v2", dto.Spec.Driver.Version)
+}
+
+func TestHandleUpdateCluster_ReadOnlyForbidden(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodPatch, "/clusters/c1", updateClusterRequest{})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleUpdateCluster_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/clusters/missing", updateClusterRequest{})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}

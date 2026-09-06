@@ -61,7 +61,7 @@ export async function logout(): Promise<void> {
   setSession(null)
 }
 
-export type Whoami = { username: string; role: string }
+export type Whoami = { username: string; role: string; namespace: string }
 
 export const whoami = () => apiFetch<Whoami>('/whoami')
 

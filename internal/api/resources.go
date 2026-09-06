@@ -59,6 +59,7 @@ func (s *Server) registerResourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /resources", s.handleListResources)
 	mux.HandleFunc("GET /resources/{name}", s.handleGetResource)
 	mux.HandleFunc("POST /resources", s.handleCreateResource)
+	mux.HandleFunc("PATCH /resources/{name}", s.handleUpdateResource)
 	mux.HandleFunc("DELETE /resources/{name}", s.handleDeleteResource)
 }
 
@@ -153,6 +154,45 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toResourceDTO(cr))
+}
+
+// updateResourceRequest mirrors createResourceRequest's Spec shape — a
+// full-spec replace, not a merge-patch.
+type updateResourceRequest struct {
+	Spec hyvev1alpha1.ResourceSpec `json:"spec"`
+}
+
+// handleUpdateResource mirrors handleUpdateWorkflow's Get-by-name stance —
+// a git-ref-backed resource has no real Resource CR under `name` (see
+// toResourceRefStatusDTO), so this naturally 404s for that case, same as
+// handleDeleteResource already does.
+func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+		return
+	}
+	name := r.PathValue("name")
+	var req updateResourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var cr hyvev1alpha1.Resource
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "resource not found")
+			return
+		}
+		log.Printf("api: failed to get resource %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get resource")
+		return
+	}
+	cr.Spec = req.Spec
+	if err := s.Client.Update(r.Context(), &cr); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update resource: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, toResourceDTO(&cr))
 }
 
 func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {

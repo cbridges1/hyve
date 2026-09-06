@@ -144,3 +144,29 @@ func TestHandleRenderTemplate_NotFound(t *testing.T) {
 	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/templates/missing/render", nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
+
+func TestHandleUpdateTemplate_AdminAllowed(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newTemplateDef("t1")), Namespace: testNamespace}
+
+	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/templates/t1", updateTemplateRequest{
+		Spec: hyvev1alpha1.TemplateSpec{Driver: hyvev1alpha1.DriverRef{Source: "github.com/example/civo", Version: "v2.0.0"}, Region: "NYC1"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto templateDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "NYC1", dto.Spec.Region)
+	assert.Equal(t, "v2.0.0", dto.Spec.Driver.Version)
+}
+
+func TestHandleUpdateTemplate_ReadOnlyForbidden(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newTemplateDef("t1")), Namespace: testNamespace}
+	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodPatch, "/templates/t1", updateTemplateRequest{})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleUpdateTemplate_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/templates/missing", updateTemplateRequest{})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}

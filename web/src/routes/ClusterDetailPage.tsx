@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, EmptyState } from '../components/Card'
 import { ReadyBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
+import { SpecEditor } from '../components/SpecEditor'
 import { clustersApi } from '../lib/api/clusters'
 import { ApiError } from '../lib/api/client'
 import { authContextApi, kubeconfigApi } from '../lib/api/kubeconfig'
@@ -166,6 +167,12 @@ export function ClusterDetailPage() {
           )
         })}
       </Card>
+
+      {cluster.spec && (
+        <AdminOnly>
+          <SpecEditor spec={cluster.spec} onSave={(spec) => clustersApi.update(name, spec).then(() => undefined)} />
+        </AdminOnly>
+      )}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, CodeBlock, Field } from '../components/Card'
 import { RefStatusBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
+import { SpecEditor } from '../components/SpecEditor'
 import { ApiError } from '../lib/api/client'
 import { resourcesApi } from '../lib/api/resources'
 import { useConfirm } from '../lib/confirm'
@@ -12,7 +13,7 @@ export function ResourceDetailPage() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
   const confirm = useConfirm()
-  const { data: res, loading, error } = useApi(() => resourcesApi.get(name), [name])
+  const { data: res, loading, error, reload } = useApi(() => resourcesApi.get(name), [name])
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   async function onDelete() {
@@ -76,9 +77,14 @@ export function ResourceDetailPage() {
         </Card>
       ) : (
         res.spec && (
-          <Card title="Manifest">
-            <CodeBlock>{res.spec.manifest}</CodeBlock>
-          </Card>
+          <>
+            <Card title="Manifest">
+              <CodeBlock>{res.spec.manifest}</CodeBlock>
+            </Card>
+            <AdminOnly>
+              <SpecEditor spec={res.spec} onSave={(spec) => resourcesApi.update(name, spec).then(reload)} />
+            </AdminOnly>
+          </>
         )
       )}
     </div>

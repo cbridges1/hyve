@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, Field } from '../components/Card'
 import { ResourceRefList } from '../components/ResourceRefList'
 import { AdminOnly } from '../components/RoleGate'
+import { SpecEditor } from '../components/SpecEditor'
 import { WorkflowHooks } from '../components/WorkflowHooks'
 import { ApiError } from '../lib/api/client'
 import { templatesApi } from '../lib/api/templates'
@@ -70,7 +71,7 @@ export function TemplateDetailPage() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
   const confirm = useConfirm()
-  const { data: tpl, loading, error } = useApi(() => templatesApi.get(name), [name])
+  const { data: tpl, loading, error, reload } = useApi(() => templatesApi.get(name), [name])
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   async function onDelete() {
@@ -147,6 +148,10 @@ export function TemplateDetailPage() {
       </Card>
 
       <RenderPreview name={tpl.name} />
+
+      <AdminOnly>
+        <SpecEditor spec={tpl.spec} onSave={(spec) => templatesApi.update(tpl.name, spec).then(reload)} />
+      </AdminOnly>
     </div>
   )
 }

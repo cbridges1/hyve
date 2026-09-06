@@ -69,10 +69,19 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <ThemeToggle />
         </div>
         {who && (
-          <div className="mb-2 flex items-center justify-between rounded-lg px-2 py-1.5">
-            <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{who.username}</span>
-            <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
-              {who.role}
+          <div className="mb-2 rounded-lg px-2 py-1.5">
+            <div className="flex items-center justify-between">
+              <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{who.username}</span>
+              <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+                {who.role}
+              </span>
+            </div>
+            {/* A superadmin's own namespace is control-plane bookkeeping
+                (see RoleSuperadmin's doc comment), not a tenant they'd
+                recognize as "their org" — label it distinctly rather than
+                implying they're scoped to one tenant among many. */}
+            <span className="mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-500">
+              {who.role === RoleSuperadmin ? 'Control plane' : who.namespace}
             </span>
           </div>
         )}

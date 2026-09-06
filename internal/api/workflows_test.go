@@ -87,3 +87,46 @@ func TestHandleDeleteWorkflow_AdminAllowed(t *testing.T) {
 	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/workflows/w1", nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
+
+func TestHandleUpdateWorkflow_AdminAllowed(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newWorkflowDef("w1")), Namespace: testNamespace}
+
+	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/workflows/w1", updateWorkflowRequest{
+		Spec: hyvev1alpha1.WorkflowSpec{
+			Jobs: []hyvev1alpha1.WorkflowJob{{Name: "updated", Steps: []hyvev1alpha1.WorkflowStep{{Name: "s", Command: "echo bye"}}}},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto workflowDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	require.NotNil(t, dto.Spec)
+	require.Len(t, dto.Spec.Jobs, 1)
+	assert.Equal(t, "updated", dto.Spec.Jobs[0].Name)
+}
+
+func TestHandleUpdateWorkflow_ReadOnlyForbidden(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newWorkflowDef("w1")), Namespace: testNamespace}
+	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodPatch, "/workflows/w1", updateWorkflowRequest{})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleUpdateWorkflow_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/workflows/missing", updateWorkflowRequest{})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// A git-ref-backed workflow has no real Workflow CR named "gitref" — only a
+// WorkflowRefStatus mirrored under a derived metadata.name — so PATCH must
+// 404 rather than finding and overwriting anything, the same way DELETE
+// already behaves for this case today.
+func TestHandleUpdateWorkflow_GitRefBacked_NotFound(t *testing.T) {
+	refStatus := &hyvev1alpha1.WorkflowRefStatus{
+		ObjectMeta: metav1.ObjectMeta{Name: "derived-slug", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.WorkflowRefStatusSpec{Name: "gitref", Source: "github.com/example/repo//workflows/gitref"},
+	}
+	s := &Server{Client: newFakeClient(t, refStatus), Namespace: testNamespace}
+	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/workflows/gitref", updateWorkflowRequest{})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
