@@ -107,19 +107,26 @@ Required workflow inputs that are not already in the environment must be supplie
   hyve workflow run provision-network --set HYVE_CLUSTER_NAME=my-cluster --set HYVE_CLUSTER_REGION=eastus`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		if _, ok := shared.UseClusterMode(); ok {
-			log.Fatal("`hyve workflow run` is not supported in cluster mode yet — workflow *execution* (job dispatch, log streaming) isn't wired up over the API, only workflow definition CRUD is. Run it against a local checkout, or trigger it as a ClusterDefinition lifecycle hook instead.")
-		}
-
 		cluster, _ := cmd.Flags().GetString("cluster")
-		showLogs, _ := cmd.Flags().GetBool("logs")
 		showOutput, _ := cmd.Flags().GetBool("output")
+		showLogs, _ := cmd.Flags().GetBool("logs")
 		setStrs, _ := cmd.Flags().GetStringArray("set")
 		pathFlag, _ := cmd.Flags().GetString("path")
 
 		setVars, err := parseSetVars(setStrs)
 		if err != nil {
 			log.Fatalf("Invalid --set flag: %v", err)
+		}
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			// Cluster mode has no separate "step logs" stream to gate behind
+			// --output specifically — a WorkflowRun's status.output is one
+			// combined capture. --logs (default true, matching local mode's
+			// own default-visible behavior) is the flag that actually
+			// determines whether a caller sees anything at all; --output
+			// alone would leave `hyve workflow run` silent by default.
+			runWorkflowClusterMode(shared.NewAPIClient(sess), args[0], pathFlag, cluster, showLogs, setVars)
+			return
 		}
 
 		runWorkflowByRef(args[0], pathFlag, cluster, showLogs, showOutput, setVars)

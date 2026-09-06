@@ -11,9 +11,11 @@ package k8sjob
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -177,8 +179,10 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 		}
 	}
 
-	envVars := make([]corev1.EnvVar, 0, len(req.Env))
-	for _, kv := range req.Env {
+	reqEnv, script := inlineLocalKubeconfig(req.Env, script)
+
+	envVars := make([]corev1.EnvVar, 0, len(reqEnv))
+	for _, kv := range reqEnv {
 		if idx := strings.IndexByte(kv, '='); idx > 0 {
 			envVars = append(envVars, corev1.EnvVar{Name: kv[:idx], Value: kv[idx+1:]})
 		}
@@ -265,6 +269,69 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 		runErr = fmt.Errorf("%q failed (job %s, exit code %d)", req.Name, created.Name, code)
 	}
 	return logs, code, runErr
+}
+
+// inlineKubeconfigJobPath is where the preamble inlineLocalKubeconfig
+// injects writes the materialized kubeconfig inside the dispatched Job's
+// own container — arbitrary, just needs to be a writable path no step
+// script is likely to collide with.
+const inlineKubeconfigJobPath = "/tmp/hyve-kubeconfig/config"
+
+// inlineLocalKubeconfig rewrites a KUBECONFIG=<path> entry in env into
+// something the Job it's about to be attached to can actually use.
+//
+// Run always executes in the controller's own pod, but the Job it creates
+// gets a brand new pod with its own, entirely separate filesystem — no
+// volume shared with the controller. A KUBECONFIG env var naming a path on
+// the controller's local disk (written earlier by that cluster's module
+// auth operation — see module.KubeconfigPathForCluster) is therefore
+// meaningless inside the Job: confirmed live, kubectl found no file at that
+// path and silently fell back to the Job pod's own in-cluster
+// ServiceAccount instead of erroring, authenticating against the wrong
+// cluster entirely (the one hosting hyve itself, not the intended target).
+//
+// The fix: read the file's bytes here, where they're actually reachable,
+// and thread its *content* through instead — base64-encoded to survive
+// shell quoting untouched, written back out to a real file by a small
+// preamble that runs before the caller's own script, inside the Job's own
+// container. Mirrors the ImageInstalls prepend just above this function's
+// only call site, and the same base64-relay idiom module.Executor's own
+// dispatched-auth wrapper already uses for the reverse direction (getting a
+// kubeconfig's bytes *out* of a Job).
+//
+// If the KUBECONFIG value isn't a readable local file, it's left
+// untouched — most callers (module status/create/delete, or a workflow
+// step with no secretsFrom/auth dependency at all) never set KUBECONFIG in
+// the first place, and a future caller that already deliberately points it
+// at a path baked into its own image shouldn't be broken by this.
+func inlineLocalKubeconfig(env []string, script string) ([]string, string) {
+	const prefix = "KUBECONFIG="
+	out := make([]string, 0, len(env))
+	var kcPath string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			kcPath = strings.TrimPrefix(kv, prefix)
+			continue
+		}
+		out = append(out, kv)
+	}
+	if kcPath == "" {
+		return env, script
+	}
+	content, err := os.ReadFile(kcPath)
+	if err != nil {
+		// Not inlinable (already a container-local path, or simply gone) —
+		// pass the original entry through unchanged rather than dropping it
+		// silently; whatever previously happened when KUBECONFIG couldn't
+		// be resolved still happens, no worse off than before this fix.
+		return env, script
+	}
+	out = append(out, "HYVE_KUBECONFIG_B64="+base64.StdEncoding.EncodeToString(content))
+	preamble := fmt.Sprintf(
+		"mkdir -p %q && echo \"$HYVE_KUBECONFIG_B64\" | base64 -d > %q && export KUBECONFIG=%q || { echo \"hyve: failed to materialize kubeconfig for job dispatch\" >&2; exit 1; }\n",
+		strings.TrimSuffix(inlineKubeconfigJobPath, "/config"), inlineKubeconfigJobPath, inlineKubeconfigJobPath,
+	)
+	return out, preamble + script
 }
 
 type jobOutcome struct {

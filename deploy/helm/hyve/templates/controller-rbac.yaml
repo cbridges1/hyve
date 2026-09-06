@@ -61,6 +61,17 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["workflowrefstatuses/status", "resourcerefstatuses/status"]
     verbs: ["get", "update", "patch"]
+  # workflowruns is WorkflowRunReconciler's own watch target (see
+  # internal/controller/workflowrun_reconciler.go) — a WorkflowRun is
+  # created by the API (see api-rbac.yaml) and driven to completion here.
+  # No delete — this reconciler never removes a WorkflowRun itself (see
+  # that kind's own doc comment on why it's never garbage-collected).
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]

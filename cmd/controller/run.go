@@ -176,6 +176,17 @@ func runController() {
 		log.Fatalf("❌ Failed to set up ClusterDefinition controller: %v", err)
 	}
 
+	workflowRunReconciler := &internalcontroller.WorkflowRunReconciler{
+		Client:        mgr.GetClient(),
+		APIReader:     mgr.GetAPIReader(),
+		Reconciler:    hyveReconciler,
+		StateProvider: stateProvider,
+		Namespace:     namespace,
+	}
+	if err := workflowRunReconciler.SetupWithManager(mgr); err != nil {
+		log.Fatalf("❌ Failed to set up WorkflowRun controller: %v", err)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		log.Fatalf("❌ Failed to set up health check: %v", err)
 	}

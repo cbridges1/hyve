@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/session"
@@ -587,6 +588,53 @@ func (c *APIClient) MintAccessMethodKubeconfig(name, clusterName, accessMethodCl
 
 	var out MintAccessMethodKubeconfigResponse
 	if err := c.do(http.MethodPost, "/api/access-methods/"+url.PathEscape(name)+"/mint", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateWorkflowRunResponse mirrors internal/api's createWorkflowRunResponse.
+type CreateWorkflowRunResponse struct {
+	Name string `json:"name"`
+}
+
+// CreateWorkflowRun calls POST /api/workflow-runs — the cluster-mode entry
+// point for `hyve workflow run` (see internal/api/workflowruns.go). Exactly
+// one of workflowName (a local name) or source (a remote ref string) should
+// be non-empty, matching local mode's own runWorkflowByRef resolution.
+func (c *APIClient) CreateWorkflowRun(workflowName, source, path, cluster string, params map[string]string) (*CreateWorkflowRunResponse, error) {
+	body, err := json.Marshal(struct {
+		Workflow string            `json:"workflow,omitempty"`
+		Source   string            `json:"source,omitempty"`
+		Path     string            `json:"path,omitempty"`
+		Cluster  string            `json:"cluster"`
+		Params   map[string]string `json:"params,omitempty"`
+	}{Workflow: workflowName, Source: source, Path: path, Cluster: cluster, Params: params})
+	if err != nil {
+		return nil, fmt.Errorf("marshal workflow run request: %w", err)
+	}
+
+	var out CreateWorkflowRunResponse
+	if err := c.do(http.MethodPost, "/api/workflow-runs", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WorkflowRunStatusDTO mirrors internal/api's workflowRunStatusDTO.
+type WorkflowRunStatusDTO struct {
+	Phase       string     `json:"phase"`
+	Message     string     `json:"message,omitempty"`
+	Output      string     `json:"output,omitempty"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+// GetWorkflowRun calls GET /api/workflow-runs/<name> — polled by the CLI
+// until Phase is Succeeded/Failed.
+func (c *APIClient) GetWorkflowRun(name string) (*WorkflowRunStatusDTO, error) {
+	var out WorkflowRunStatusDTO
+	if err := c.do(http.MethodGet, "/api/workflow-runs/"+url.PathEscape(name), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

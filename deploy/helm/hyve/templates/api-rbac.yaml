@@ -71,6 +71,18 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["workflowrefstatuses", "resourcerefstatuses"]
     verbs: ["get", "list", "watch"]
+  # WorkflowRun is `hyve workflow run`'s cluster-mode execution surface
+  # (internal/api/workflowruns.go) — the API only ever creates one (POST)
+  # and polls its status (GET); WorkflowRunReconciler (in hyve-controller,
+  # see controller-rbac.yaml) does the actual work. No update/delete here —
+  # a WorkflowRun is a one-shot request the API never mutates after
+  # creation.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns/status"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]

@@ -244,8 +244,17 @@ func (r *ClusterDefinitionReconciler) fetchCLISecrets(ctx context.Context) map[s
 	if reader == nil {
 		reader = r.Client
 	}
+	return fetchCLISecretsFrom(ctx, reader, r.Namespace)
+}
+
+// fetchCLISecretsFrom is the shared implementation behind
+// ClusterDefinitionReconciler.fetchCLISecrets and
+// WorkflowRunReconciler.fetchCLISecrets — see the former's doc comment for
+// why an uncached reader is used and why this is a live, once-per-reconcile
+// fetch rather than a cached field.
+func fetchCLISecretsFrom(ctx context.Context, reader client.Reader, namespace string) map[string]string {
 	var secret corev1.Secret
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: r.Namespace, Name: cliSecretsName}, &secret); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: cliSecretsName}, &secret); err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Printf("Warning: failed to read %s Secret: %v", cliSecretsName, err)
 		}
