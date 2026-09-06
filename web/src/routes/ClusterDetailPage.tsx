@@ -118,6 +118,11 @@ export function ClusterDetailPage() {
                 Host cluster
               </span>
             )}
+            {cluster.pendingDeletion && (
+              <span className="shrink-0 rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                Pending deletion
+              </span>
+            )}
           </div>
           <p className="text-sm text-neutral-500">{cluster.driver}</p>
         </div>
@@ -127,14 +132,21 @@ export function ClusterDetailPage() {
             <button
               type="button"
               onClick={onDelete}
-              disabled={deleting}
+              disabled={deleting || cluster.pendingDeletion}
+              title={cluster.pendingDeletion ? 'Already marked for deletion — will be removed on the next reconcile' : undefined}
               className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/40"
             >
-              {deleting ? 'Deleting…' : 'Delete'}
+              {deleting ? 'Deleting…' : cluster.pendingDeletion ? 'Pending deletion' : 'Delete'}
             </button>
           </AdminOnly>
         </div>
       </div>
+      {cluster.pendingDeletion && (
+        <p className="text-sm text-amber-700 dark:text-amber-400">
+          Marked for deletion — the controller will run any onDelete hooks, tear down the underlying infrastructure, and
+          remove this cluster on its next reconcile. This can take a few minutes.
+        </p>
+      )}
       {deleteError && <p className="text-sm text-red-600 dark:text-red-400">{deleteError}</p>}
 
       <Card title="Conditions">
@@ -168,7 +180,7 @@ export function ClusterDetailPage() {
         })}
       </Card>
 
-      {cluster.spec && (
+      {cluster.spec && !cluster.pendingDeletion && (
         <AdminOnly>
           <SpecEditor spec={cluster.spec} onSave={(spec) => clustersApi.update(name, spec).then(() => undefined)} />
         </AdminOnly>

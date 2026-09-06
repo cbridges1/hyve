@@ -34,6 +34,16 @@ type clusterDTO struct {
 	AccessMethodRef       string `json:"accessMethodRef,omitempty"`
 	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
 
+	// PendingDeletion reflects metadata.deletionTimestamp != nil — DELETE
+	// /clusters/<name> only ever sets this (see handleDeleteCluster), it
+	// never removes the object outright: ClusterDefinitionFinalizer keeps
+	// it around, visible via GET, until the controller finishes OnDelete
+	// hooks + the driver's own delete + AfterDelete and removes the
+	// finalizer itself — confirmed live, this could otherwise sit
+	// unnoticed for a full reconcile cycle with nothing in the API
+	// response to tell a caller a delete is even in flight.
+	PendingDeletion bool `json:"pendingDeletion,omitempty"`
+
 	// Spec is the full declared spec — added for PATCH /clusters/<name>'s
 	// sake (the web console's generic edit panel needs to seed itself with
 	// the current spec, same as templateDTO/workflowDTO/resourceDTO already
@@ -51,6 +61,7 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 		Driver:             cd.Spec.Driver.Source,
 		Conditions:         cd.Status.Conditions,
 		ObservedGeneration: cd.Status.ObservedGeneration,
+		PendingDeletion:    cd.DeletionTimestamp != nil,
 		Spec:               &spec,
 		// Spec, not Status: this reflects the *declared* access method
 		// (module-auth/tunnel/primary), always known immediately — Status.

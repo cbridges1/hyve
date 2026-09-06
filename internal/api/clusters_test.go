@@ -109,6 +109,36 @@ func TestHandleGetCluster_Found(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "should-never-appear-in-dto")
 }
 
+// TestHandleGetCluster_PendingDeletion proves the DTO surfaces a pending
+// delete — confirmed live this was previously invisible: DELETE
+// /clusters/<name> only ever sets metadata.deletionTimestamp
+// (ClusterDefinitionFinalizer keeps the object around for the controller's
+// own OnDelete/driver-delete/AfterDelete sequence), but nothing in the API
+// response said so until this field existed.
+func TestHandleGetCluster_PendingDeletion(t *testing.T) {
+	cd := newClusterDef("doomed")
+	cd.Finalizers = []string{hyvev1alpha1.ClusterDefinitionFinalizer}
+	now := metav1.Now()
+	cd.DeletionTimestamp = &now
+	s := &Server{Client: newFakeClient(t, cd), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/clusters/doomed", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var dto clusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.True(t, dto.PendingDeletion)
+}
+
+func TestHandleGetCluster_NotPendingDeletion(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newClusterDef("healthy")), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/clusters/healthy", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var dto clusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.False(t, dto.PendingDeletion)
+}
+
 func TestHandleCreateCluster_ReadOnlyForbidden(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
 

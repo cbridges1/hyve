@@ -246,6 +246,11 @@ export function ClustersListPage() {
                   </span>
                 )}
                 <span className="text-xs text-neutral-500 dark:text-neutral-500">{c.accessMethod || 'client-side (default)'}</span>
+                {c.pendingDeletion && (
+                  <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    Pending deletion
+                  </span>
+                )}
                 <ReadyBadge conditions={c.conditions} />
               </div>
             </div>

@@ -69,6 +69,11 @@ export type ClusterSummary = {
   observedGeneration: number
   accessMethod?: string
   accessLastMinted?: string
+  // metadata.deletionTimestamp != nil — DELETE only ever sets this
+  // (ClusterDefinitionFinalizer keeps the object around until the
+  // controller finishes OnDelete/driver-delete/AfterDelete), so a cluster
+  // can sit in this state for a while.
+  pendingDeletion?: boolean
   // Added for PATCH /clusters/<name>'s sake — see clusterDTO's own doc
   // comment on why this isn't the same concern as the driverOutputs/
   // kubeconfig exclusion right above.
