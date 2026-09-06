@@ -297,6 +297,24 @@ func RequireRole(w http.ResponseWriter, r *http.Request, allowed ...string) bool
 		if role == a {
 			return true
 		}
+		// A superadmin can do anything an admin can, everywhere an admin
+		// call site checks RoleAdmin — this is what makes the "act as"
+		// environment switcher (TenantNamespace's X-Hyve-Act-As-Namespace
+		// handling) actually usable: without it, every one of the ~20
+		// RoleAdmin-only mutation endpoints (clusters/templates/workflows/
+		// resources/accessmethods/secrets/workflow-runs) rejected a
+		// superadmin outright before namespace resolution ever mattered,
+		// confirmed live. Centralized here rather than listing
+		// RoleSuperadmin at every call site individually, so a future
+		// RoleAdmin-gated endpoint gets this for free instead of silently
+		// missing it. The reverse never holds — an admin passing
+		// RequireRole(..., RoleSuperadmin) alone is not granted anything;
+		// superadmin-exclusive endpoints (POST/GET /environments, the
+		// host-cluster kubeconfig path) never list RoleAdmin at all, so
+		// this rule never fires for them.
+		if a == hyvev1alpha1.RoleAdmin && role == hyvev1alpha1.RoleSuperadmin {
+			return true
+		}
 	}
 	writeError(w, http.StatusForbidden, fmt.Sprintf("role %q is not permitted to perform this action", role))
 	return false

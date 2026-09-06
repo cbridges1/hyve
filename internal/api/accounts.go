@@ -82,14 +82,17 @@ type createAccountRequest struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// handleCreateAccount only supports the two built-in roles (admin,
-// read-only), each with a fixed, well-known ServiceAccountRef
-// (hyve-access-admin/hyve-access-readonly — see deploy/helm/hyve's
-// api-access-roles.yaml, or POST /environments' own programmatic
-// equivalent for a Phase-2 tenant) — a `custom` role needs an
-// operator-defined ServiceAccountRef this endpoint has no field for, and
-// still goes through `hyve cluster-config api create-user --role custom
-// --service-account <name>` + kubectl, unchanged.
+// handleCreateAccount supports admin/read-only (both fixed, well-known
+// ServiceAccountRefs — hyve-access-admin/hyve-access-readonly, see
+// deploy/helm/hyve's api-access-roles.yaml, or POST /environments' own
+// programmatic equivalent for a Phase-2 tenant) and, for a superadmin
+// caller only, superadmin itself — a role can already create more of its
+// own role everywhere else in this system (an admin already creates more
+// admins), so a superadmin creating another superadmin isn't a new kind of
+// escalation, just the same principle at the top tier. A `custom` role
+// needs an operator-defined ServiceAccountRef this endpoint has no field
+// for, and still goes through `hyve cluster-config api create-user --role
+// custom --service-account <name>` + kubectl, unchanged.
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
 		return
@@ -104,19 +107,45 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ns := s.TenantNamespace(r)
-	if role, _ := RoleFromContext(r.Context()); role == hyvev1alpha1.RoleSuperadmin && req.Namespace != "" {
-		ns = req.Namespace
+	callerRole, _ := RoleFromContext(r.Context())
+
+	if req.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
+		writeError(w, http.StatusForbidden, "only a superadmin can create another superadmin")
+		return
+	}
+
+	// A new superadmin's binding must land in the control-plane namespace
+	// no matter what — that's the one place login ever looks for it (a
+	// superadmin has no tenant of their own), and the one place the list/
+	// delete handlers above already expect to find it. This overrides
+	// both req.Namespace and whatever the caller's own "act as" selection
+	// currently is — confirmed live this matters: creating a superadmin
+	// while "Viewing" some tenant would otherwise silently create an
+	// account that can never log in.
+	var ns string
+	if req.Role == hyvev1alpha1.RoleSuperadmin {
+		ns = s.Namespace
+	} else {
+		ns = s.TenantNamespace(r)
+		if callerRole == hyvev1alpha1.RoleSuperadmin && req.Namespace != "" {
+			ns = req.Namespace
+		}
 	}
 
 	var serviceAccount string
 	switch req.Role {
-	case hyvev1alpha1.RoleAdmin:
+	case hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin:
+		// Same reasoning as cmd/api/create_user.go's own superadmin case:
+		// this ServiceAccountRef only matters if the account also fetches
+		// an ordinary GET /api/kubeconfig for some tenant's cluster —
+		// superadmin's real privilege (host-cluster access, cross-tenant
+		// account/environment management) is gated by HyveAccessBindingSpec.
+		// Role alone, not this field.
 		serviceAccount = "hyve-access-admin"
 	case hyvev1alpha1.RoleReadOnly:
 		serviceAccount = "hyve-access-readonly"
 	default:
-		writeError(w, http.StatusBadRequest, `role must be "admin" or "read-only" (a custom role needs 'hyve cluster-config api create-user --role custom' instead)`)
+		writeError(w, http.StatusBadRequest, `role must be "admin", "read-only", or "superadmin" (a custom role needs 'hyve cluster-config api create-user --role custom' instead)`)
 		return
 	}
 

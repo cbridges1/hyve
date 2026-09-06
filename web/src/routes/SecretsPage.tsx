@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AdminOnly } from '../components/RoleGate'
-import { RoleAdmin } from '../lib/api/auth'
+import { RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
 import { ApiError } from '../lib/api/client'
 import { secretsApi } from '../lib/api/secrets'
 import { useConfirm } from '../lib/confirm'
@@ -9,7 +9,7 @@ import { useWhoami } from '../lib/useWhoami'
 
 export function SecretsPage() {
   const { data: who } = useWhoami()
-  const isAdmin = who?.role === RoleAdmin
+  const isAdmin = who?.role === RoleAdmin || who?.role === RoleSuperadmin
   const confirm = useConfirm()
   const { data: names, loading, error, reload } = useApi(() => secretsApi.listNames())
   const [values, setValues] = useState<Record<string, string> | null>(null)

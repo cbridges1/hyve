@@ -255,3 +255,54 @@ func TestHandleCreateAccount_OrdinaryAdminCannotTargetOtherNamespace(t *testing.
 	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky", Namespace: "tenant-b"}, &hyvev1alpha1.HyveAccessBinding{})
 	assert.True(t, apierrors.IsNotFound(err), "must not have been created in the requested-but-unauthorized namespace")
 }
+
+// TestHandleCreateAccount_SuperadminCanCreateSuperadmin proves a superadmin
+// can create another superadmin — the same "a role can create more of its
+// own role" principle already true for admin/admin, not a new escalation.
+func TestHandleCreateAccount_SuperadminCanCreateSuperadmin(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doAccountRequestAs(t, s, "", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "second-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var binding hyvev1alpha1.HyveAccessBinding
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "second-super", Namespace: testNamespace}, &binding))
+	assert.Equal(t, hyvev1alpha1.RoleSuperadmin, binding.Spec.Role)
+}
+
+// TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin is the actual
+// escalation-prevention boundary: only an existing superadmin may ever set
+// role: superadmin, regardless of what namespace they're otherwise
+// confined to.
+func TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "sneaky-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky-super", Namespace: testNamespace}, &hyvev1alpha1.HyveAccessBinding{})
+	assert.True(t, apierrors.IsNotFound(err), "must not have been created at all")
+}
+
+// TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace is the
+// regression test for the one wrinkle this design has to get right: a new
+// superadmin's binding must always land in the control-plane namespace,
+// never wherever the creating superadmin's "act as" selection currently
+// points — otherwise the new account would be created somewhere login can
+// never find it.
+func TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doAccountRequestAs(t, s, "acme", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "third-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin, Namespace: "acme"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var binding hyvev1alpha1.HyveAccessBinding
+	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "third-super", Namespace: testNamespace}, &binding),
+		"a superadmin binding must land in the control-plane namespace regardless of act-as or an explicit Namespace field")
+
+	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "third-super", Namespace: "acme"}, &hyvev1alpha1.HyveAccessBinding{})
+	assert.True(t, apierrors.IsNotFound(err), "must not have been created in the acted-as tenant namespace")
+}

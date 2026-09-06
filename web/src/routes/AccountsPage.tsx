@@ -1,13 +1,15 @@
 import { useState } from 'react'
-import { RoleAdmin, RoleReadOnly } from '../lib/api/auth'
+import { RoleAdmin, RoleReadOnly, RoleSuperadmin } from '../lib/api/auth'
 import { Modal } from '../components/Modal'
 import { accountsApi } from '../lib/api/accounts'
 import { ApiError } from '../lib/api/client'
 import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
 import { useSession } from '../lib/useAuth'
+import { useWhoami } from '../lib/useWhoami'
 
 function NewAccountForm({ onCreated }: { onCreated: () => void }) {
+  const who = useWhoami().data
   const [open, setOpen] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -75,9 +77,16 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
           >
             <option value={RoleReadOnly}>read-only</option>
             <option value={RoleAdmin}>admin</option>
+            {who?.role === RoleSuperadmin && <option value={RoleSuperadmin}>superadmin</option>}
           </select>
         </label>
       </div>
+      {role === RoleSuperadmin && (
+        <p className="mb-3 text-xs text-neutral-500">
+          Always created in the control plane, regardless of what "Viewing" is currently set to — a superadmin has no
+          tenant of their own.
+        </p>
+      )}
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex justify-end gap-2">
         <button
@@ -97,8 +106,8 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
         </button>
       </div>
       <p className="mt-3 text-xs text-neutral-500">
-        Only the built-in admin/read-only roles are supported here — a custom role with its own ServiceAccount still
-        needs <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">hyve cluster-config api create-user --role custom</code>.
+        A custom role with its own ServiceAccount still needs{' '}
+        <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">hyve cluster-config api create-user --role custom</code>.
       </p>
     </Modal>
   )

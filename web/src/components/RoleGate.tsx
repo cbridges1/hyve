@@ -3,14 +3,19 @@ import { RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
 import { useWhoami } from '../lib/useWhoami'
 
 /**
- * Renders children only for an admin caller. Every mutation (create/delete
- * on clusters/templates/workflows/resources, and secret writes) is gated
- * RoleAdmin server-side (see internal/api's RequireRole calls) — this hides
- * the control instead of letting a read-only caller click through to a 403.
+ * Renders children for an admin OR superadmin caller. Every mutation
+ * (create/delete/update on clusters/templates/workflows/resources/access
+ * methods, secret writes, workflow runs) is gated RoleAdmin server-side —
+ * server.go's RequireRole treats a superadmin as satisfying any RoleAdmin
+ * gate (see its own doc comment), so this must mirror that exactly, not
+ * just check RoleAdmin — confirmed live: without the RoleSuperadmin branch
+ * here, a superadmin could already do all of this via the API, but every
+ * button/panel for it stayed invisible in the console regardless of which
+ * environment they were "Viewing".
  */
 export function AdminOnly({ children }: { children: ReactNode }) {
   const { data: who } = useWhoami()
-  if (who?.role !== RoleAdmin) return null
+  if (who?.role !== RoleAdmin && who?.role !== RoleSuperadmin) return null
   return <>{children}</>
 }
 

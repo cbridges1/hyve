@@ -117,6 +117,17 @@ func TestRequireRole_DistinguishesAdminFromReadOnly(t *testing.T) {
 		{hyvev1alpha1.RoleAdmin, []string{hyvev1alpha1.RoleAdmin}, true},
 		{hyvev1alpha1.RoleReadOnly, []string{hyvev1alpha1.RoleAdmin}, false},
 		{hyvev1alpha1.RoleReadOnly, []string{hyvev1alpha1.RoleReadOnly, hyvev1alpha1.RoleAdmin}, true},
+		// A superadmin satisfies any RoleAdmin-only gate — confirmed live
+		// this is required: the "act as" environment switcher is useless
+		// if every RoleAdmin-gated mutation (clusters/templates/workflows/
+		// resources/accessmethods/secrets/workflow-runs) still rejects
+		// superadmin outright regardless of which tenant it's acting as.
+		{hyvev1alpha1.RoleSuperadmin, []string{hyvev1alpha1.RoleAdmin}, true},
+		// The reverse never holds — an ordinary admin gets nothing extra
+		// from a superadmin-exclusive gate (POST/GET /environments, the
+		// host-cluster kubeconfig path).
+		{hyvev1alpha1.RoleAdmin, []string{hyvev1alpha1.RoleSuperadmin}, false},
+		{hyvev1alpha1.RoleReadOnly, []string{hyvev1alpha1.RoleSuperadmin}, false},
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
 		req = req.WithContext(contextWithRole(req.Context(), tc.role))
