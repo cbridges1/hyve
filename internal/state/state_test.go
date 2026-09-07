@@ -107,6 +107,39 @@ func TestLoadRepoConfig_InvalidYAML(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestResolveEnvFile_NoHyveYAML_DefaultsToHyveEnv confirms a repo with no
+// hyve.yaml at all (the whole point of DefaultEnvFileName's rename from the
+// prior godotenv-matching ".env" to "hyve.env" — a repo that only ever
+// needed hyve.yaml for its env.file field no longer needs the file at all).
+func TestResolveEnvFile_NoHyveYAML_DefaultsToHyveEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	assert.Equal(t, filepath.Join(tmpDir, "hyve.env"), ResolveEnvFile(tmpDir))
+}
+
+// TestResolveEnvFile_HyveYAML_HonorsExplicitEnvFile confirms env.file is
+// still honored when a repo does keep a hyve.yaml around (e.g. for a
+// non-default file name) — DefaultEnvFileName only changes what's used when
+// nothing else is configured.
+func TestResolveEnvFile_HyveYAML_HonorsExplicitEnvFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	content := "env:\n  file: custom.env\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "hyve.yaml"), []byte(content), 0644))
+
+	assert.Equal(t, filepath.Join(tmpDir, "custom.env"), ResolveEnvFile(tmpDir))
+}
+
+// TestResolveEnvFile_HyveYAML_NoEnvFileSet_DefaultsToHyveEnv confirms a
+// hyve.yaml kept around for other fields (e.g. strictResourceDelete), but
+// with no env.file set, still resolves to the new default rather than
+// erroring or falling back to the old ".env".
+func TestResolveEnvFile_HyveYAML_NoEnvFileSet_DefaultsToHyveEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	content := "reconcile:\n  strictResourceDelete: true\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "hyve.yaml"), []byte(content), 0644))
+
+	assert.Equal(t, filepath.Join(tmpDir, "hyve.env"), ResolveEnvFile(tmpDir))
+}
+
 func TestLoadClusterDefinitions_MissingDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, "clusters") // directory never created

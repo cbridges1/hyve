@@ -55,9 +55,11 @@ type RepoConfig struct {
 }
 
 // DefaultEnvFileName is what's loaded when hyve.yaml has no env.file set
-// (or doesn't exist at all yet) — matches godotenv's own built-in default,
-// preserving prior behavior for repos that never configured this.
-const DefaultEnvFileName = ".env"
+// (or doesn't exist at all yet). Deliberately hyve's own name rather than
+// godotenv's plain ".env" default: a repo that only ever needs this one
+// field no longer has any reason to keep a hyve.yaml around at all — just
+// name the file hyve.env and it's picked up with zero config.
+const DefaultEnvFileName = "hyve.env"
 
 // ResolveEnvFile returns the dotenv file path to load for repoRoot,
 // honoring hyve.yaml's env.file if set. Called from main() before any
