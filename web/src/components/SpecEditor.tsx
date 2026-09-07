@@ -1,17 +1,18 @@
 import { useState } from 'react'
+import { dump as dumpYaml, load as loadYaml } from 'js-yaml'
 import { Card } from './Card'
 import { ApiError } from '../lib/api/client'
 
 /**
- * Generic "edit this CR's spec as raw JSON" panel — one component reused
+ * Generic "edit this CR's spec as raw YAML" panel — one component reused
  * across every editable detail page (Cluster/Template/Workflow/Resource/
  * AccessMethod) rather than a bespoke structured form per type. Mirrors
  * this codebase's own "a CR is just YAML" model — same mental shape as
- * `kubectl edit`, just JSON instead of YAML since that's what the API
- * already speaks.
+ * `kubectl edit`, and the same js-yaml load()/dump() pair the "create from
+ * YAML" flows (ClustersListPage/TemplatesPage/WorkflowsPage) already use.
  *
  * Collapsed to a single "Edit" button by default so a detail page reading
- * naturally doesn't lead with a wall of JSON — expands into a textarea +
+ * naturally doesn't lead with a wall of YAML — expands into a textarea +
  * Save/Cancel on click.
  */
 export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => Promise<void> }) {
@@ -21,7 +22,7 @@ export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => 
   const [saving, setSaving] = useState(false)
 
   function startEditing() {
-    setText(JSON.stringify(spec, null, 2))
+    setText(dumpYaml(spec))
     setError(null)
     setEditing(true)
   }
@@ -35,9 +36,9 @@ export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => 
     setError(null)
     let parsed: T
     try {
-      parsed = JSON.parse(text)
-    } catch {
-      setError('Not valid JSON — fix the syntax and try again.')
+      parsed = (loadYaml(text) ?? {}) as T
+    } catch (err) {
+      setError(err instanceof Error ? `Invalid YAML: ${err.message}` : 'Invalid YAML')
       return
     }
     setSaving(true)

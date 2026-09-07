@@ -82,11 +82,27 @@ func (r *Reconciler) RunAdHocWorkflow(ctx context.Context, cluster types.Cluster
 		return "", fmt.Errorf("create workflow manager: %w", err)
 	}
 
-	injected := make(map[string]string, len(env))
+	injected := make(map[string]string, len(env)+len(adHocParams))
 	for _, kv := range env {
 		if idx := strings.IndexByte(kv, '='); idx > 0 {
 			injected[kv[:idx]] = kv[idx+1:]
 		}
+	}
+	// Also inject adHocParams under their own bare names: local mode's
+	// `hyve workflow run --set KEY=VALUE` calls executor.InjectVars(setVars)
+	// directly with bare names (cmd/workflow/cmd.go's runWorkflow), and
+	// that's what a workflow's own declared spec.inputs are validated
+	// against (workflow.Executor.validateInputs checks e.variables[input.
+	// Name] — never the HYVE_PARAM_ prefix env above carries cluster params
+	// under). Without this, an ad hoc --set override for a workflow whose
+	// inputs are named after template params (e.g. register-with-rancher's
+	// RANCHER_SERVER_URL, read in its steps as $HYVE_PARAM_RANCHER_SERVER_URL)
+	// could never satisfy validateInputs no matter what was passed —
+	// confirmed live: `hyve workflow run register-with-rancher --cluster
+	// acme-worker --set RANCHER_SERVER_URL=...` failed with "requires ...
+	// RANCHER_SERVER_URL" even though it was set.
+	for k, v := range adHocParams {
+		injected[k] = v
 	}
 
 	executor, err := workflow.NewExecutor(wfMgr, "")
