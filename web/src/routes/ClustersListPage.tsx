@@ -213,6 +213,10 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
 export function ClustersListPage() {
   const navigate = useNavigate()
   const { data: clusters, loading, error, reload } = useApi(() => clustersApi.list())
+  // accessMethod: 'primary' is the host/local cluster (see ClusterDetailPage's
+  // "Host cluster" badge) — pinned first regardless of API order. Array.sort
+  // is stable, so everything else keeps whatever order the API returned.
+  const sorted = clusters?.slice().sort((a, b) => Number(b.accessMethod === 'primary') - Number(a.accessMethod === 'primary'))
 
   return (
     <div>
@@ -227,9 +231,9 @@ export function ClustersListPage() {
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
       <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        {clusters?.length === 0 && <p className="p-6 text-center text-sm text-neutral-500">No clusters yet.</p>}
+        {sorted?.length === 0 && <p className="p-6 text-center text-sm text-neutral-500">No clusters yet.</p>}
         <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-          {clusters?.map((c) => (
+          {sorted?.map((c) => (
             <div
               key={c.name}
               onClick={() => navigate(`/clusters/${encodeURIComponent(c.name)}`)}

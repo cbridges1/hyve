@@ -36,3 +36,59 @@ body {
 :root.dark ::-webkit-scrollbar-thumb {
   background: rgb(63 63 70 / 0.8);
 }
+
+/* YAML token colors for SpecEditor's prismjs-highlighted editor — hand-
+   picked to sit alongside this app's existing neutral/indigo/amber/red
+   accent palette rather than pulling in one of prismjs's own bundled
+   theme stylesheets, which would bring its own unrelated color choices
+   (and no light/dark split) into an app that otherwise themes everything
+   itself via :root.dark. */
+.token.key {
+  color: rgb(79 70 229); /* indigo-600 */
+}
+:root.dark .token.key {
+  color: rgb(165 180 252); /* indigo-300 */
+}
+.token.string,
+.token.scalar {
+  color: rgb(5 150 105); /* emerald-600 */
+}
+:root.dark .token.string,
+:root.dark .token.scalar {
+  color: rgb(110 231 183); /* emerald-300 */
+}
+.token.number,
+.token.boolean,
+.token.null,
+.token.datetime {
+  color: rgb(180 83 9); /* amber-700 */
+}
+:root.dark .token.number,
+:root.dark .token.boolean,
+:root.dark .token.null,
+:root.dark .token.datetime {
+  color: rgb(252 211 77); /* amber-300 */
+}
+.token.comment {
+  color: rgb(163 163 163); /* neutral-400 */
+  font-style: italic;
+}
+:root.dark .token.comment {
+  color: rgb(115 115 115); /* neutral-500 */
+}
+.token.punctuation {
+  color: rgb(115 115 115); /* neutral-500 */
+}
+:root.dark .token.punctuation {
+  color: rgb(163 163 163); /* neutral-400 */
+}
+.token.tag,
+.token.directive,
+.token.important {
+  color: rgb(220 38 38); /* red-600 */
+}
+:root.dark .token.tag,
+:root.dark .token.directive,
+:root.dark .token.important {
+  color: rgb(248 113 113); /* red-400 */
+}

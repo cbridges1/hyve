@@ -1,7 +1,24 @@
 import { useState } from 'react'
 import { dump as dumpYaml, load as loadYaml } from 'js-yaml'
+import EditorImport from 'react-simple-code-editor'
+import Prism from 'prismjs'
+import 'prismjs/components/prism-yaml'
 import { Card } from './Card'
 import { ApiError } from '../lib/api/client'
+
+// react-simple-code-editor's CJS build (lib/index.js) does `exports.default
+// = Editor` with no `__esModule` interop marker — under Vite/esbuild's
+// default CJS interop (no marker = "treat the whole exports object as the
+// default"), a plain `import Editor from 'react-simple-code-editor'`
+// resolves Editor to the *exports object* itself, not the component
+// function, and React throws "Element type is invalid ... but got: object"
+// the moment it tries to render it. Unwrap defensively so this works
+// whichever way a given bundler happens to interop it.
+const Editor = (EditorImport as unknown as { default?: typeof EditorImport }).default ?? EditorImport
+
+function highlightYaml(code: string) {
+  return Prism.highlight(code, Prism.languages.yaml, 'yaml')
+}
 
 /**
  * Generic "edit this CR's spec as raw YAML" panel — one component reused
@@ -10,9 +27,13 @@ import { ApiError } from '../lib/api/client'
  * this codebase's own "a CR is just YAML" model — same mental shape as
  * `kubectl edit`, and the same js-yaml load()/dump() pair the "create from
  * YAML" flows (ClustersListPage/TemplatesPage/WorkflowsPage) already use.
+ * Syntax-highlighted via react-simple-code-editor + prismjs's YAML grammar
+ * (see index.css's .token.* rules) rather than a plain textarea — cheap
+ * enough for this small a panel that a full editor dependency (CodeMirror/
+ * Monaco) isn't warranted.
  *
  * Collapsed to a single "Edit" button by default so a detail page reading
- * naturally doesn't lead with a wall of YAML — expands into a textarea +
+ * naturally doesn't lead with a wall of YAML — expands into an editor +
  * Save/Cancel on click.
  */
 export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => Promise<void> }) {
@@ -68,13 +89,21 @@ export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => 
 
   return (
     <Card title="Edit spec">
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        spellCheck={false}
-        rows={16}
-        className="w-full rounded-lg border border-neutral-300 bg-neutral-50 p-3 font-mono text-xs text-neutral-800 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200"
-      />
+      <div className="max-h-96 overflow-auto rounded-lg border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-950">
+        <Editor
+          value={text}
+          onValueChange={setText}
+          highlight={highlightYaml}
+          padding={12}
+          textareaClassName="focus:outline-none"
+          style={{
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            fontSize: '12px',
+            minHeight: '260px',
+          }}
+          className="text-neutral-800 dark:text-neutral-200"
+        />
+      </div>
       {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="mt-3 flex gap-2">
         <button
