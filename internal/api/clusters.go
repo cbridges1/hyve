@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
@@ -15,6 +16,28 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// clusterActivityDTO is GET /clusters/<name>/events's response shape — the
+// only place a create/delete script's actual output survives at all
+// (k8sjob.Run always deletes its dispatched Job immediately after fetching
+// logs), plus the Kubernetes Events a reconcile emits at each lifecycle
+// milestone (see internal/reconcile.ReconcileHooks/internal/controller.
+// ClusterDefinitionReconciler.Recorder) — bundled into one response since a
+// caller asking "what happened to this cluster" wants both together, not two
+// round trips.
+type clusterActivityDTO struct {
+	Events           []clusterEventDTO `json:"events"`
+	LastCreateOutput string            `json:"lastCreateOutput,omitempty"`
+	LastDeleteOutput string            `json:"lastDeleteOutput,omitempty"`
+}
+
+type clusterEventDTO struct {
+	Type     string `json:"type"`
+	Reason   string `json:"reason"`
+	Message  string `json:"message"`
+	Count    int32  `json:"count"`
+	LastSeen string `json:"lastSeen"`
+}
 
 // clusterDTO is the response shape for GET /api/clusters and
 // GET /api/clusters/<name> — deliberately excludes driverOutputs and any
@@ -88,6 +111,7 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /clusters/{name}", s.handleUpdateCluster)
 	mux.HandleFunc("DELETE /clusters/{name}", s.handleDeleteCluster)
 	mux.HandleFunc("GET /clusters/{name}/resources", s.handleGetClusterResources)
+	mux.HandleFunc("GET /clusters/{name}/events", s.handleGetClusterEvents)
 }
 
 func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +172,65 @@ func (s *Server) handleGetClusterResources(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, clusterResourcesDTO{Resources: cd.Spec.Resources, AppliedResources: cd.Status.AppliedResources})
+}
+
+// handleGetClusterEvents answers "I see no logs that indicate the job
+// responsible for creating/deleting this cluster does anything" — until
+// this endpoint existed there was genuinely nowhere to look: k8sjob.Run
+// always deletes its dispatched Job immediately after fetching logs, and the
+// module operation's own raw stdout was previously discarded entirely,
+// never even reaching log.Printf (see module.Executor.executeScript before
+// OperationResult.RawOutput existed). Uses s.Clientset (a raw client-go
+// Interface, not the cached controller-runtime s.Client) specifically so
+// the involvedObject.name field selector below is evaluated by the real API
+// server — a cached client has no such capability without a manager-level
+// field indexer this API server doesn't register.
+func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ns := s.TenantNamespace(r)
+
+	var cd hyvev1alpha1.ClusterDefinition
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		log.Printf("api: failed to get cluster %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
+
+	dto := clusterActivityDTO{
+		Events:           []clusterEventDTO{},
+		LastCreateOutput: cd.Status.LastCreateOutput,
+		LastDeleteOutput: cd.Status.LastDeleteOutput,
+	}
+
+	if s.Clientset != nil {
+		selector := fmt.Sprintf("involvedObject.kind=ClusterDefinition,involvedObject.name=%s", name)
+		list, err := s.Clientset.CoreV1().Events(ns).List(r.Context(), metav1.ListOptions{FieldSelector: selector})
+		if err != nil {
+			log.Printf("api: failed to list events for cluster %q: %v", name, err)
+			writeError(w, http.StatusInternalServerError, "failed to list cluster events")
+			return
+		}
+		for _, ev := range list.Items {
+			lastSeen := ev.LastTimestamp.Time
+			if lastSeen.IsZero() {
+				lastSeen = ev.EventTime.Time
+			}
+			dto.Events = append(dto.Events, clusterEventDTO{
+				Type:     ev.Type,
+				Reason:   ev.Reason,
+				Message:  ev.Message,
+				Count:    ev.Count,
+				LastSeen: lastSeen.Format(time.RFC3339),
+			})
+		}
+		sort.Slice(dto.Events, func(i, j int) bool { return dto.Events[i].LastSeen < dto.Events[j].LastSeen })
+	}
+
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // createClusterRequest reuses hyvev1alpha1.ClusterDefinitionSpec directly

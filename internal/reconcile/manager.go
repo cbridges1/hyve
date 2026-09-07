@@ -156,7 +156,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		name := next.Metadata.Name
 		processed[name] = true
 
-		if err := r.ReconcileOne(ctx, *next, lf, dryRun, nil); err != nil {
+		if err := r.ReconcileOne(ctx, *next, lf, dryRun, nil, nil); err != nil {
 			r.logf("[%s] reconcile error: %v", name, err)
 		}
 
@@ -169,6 +169,48 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 	}
 
 	return currentDefs
+}
+
+// ReconcileHooks bundles optional callbacks a caller can set to observe
+// lifecycle events and captured operation output as ReconcileOne runs.
+// Threaded as an explicit parameter through ReconcileOne/reconcileCluster/
+// createCluster/deleteCluster — never a Reconciler field — for the same
+// reason secretsEnv is (see ReconcileOne's own doc comment):
+// MaxConcurrentReconciles reconciles different ClusterDefinitions
+// concurrently against the same shared Reconciler instance, so anything
+// per-reconcile can't live on a shared mutable field. A nil *ReconcileHooks,
+// or a nil field within a non-nil one, is always safe — see emitEvent/
+// recordOutput below. Local/CLI mode (ReconcileAll, cmd/shared/state.go)
+// passes nil throughout, so file-mode reconcile behavior is unchanged; only
+// internal/controller/reconciler.go constructs a real one, freshly per
+// Reconcile(ctx, req) call, scoped to that one ClusterDefinition object via
+// a real record.EventRecorder.
+type ReconcileHooks struct {
+	// OnEvent fires at each lifecycle milestone this package already logs
+	// via r.logf (status resolved, create/delete started/succeeded/failed,
+	// auth failures) — eventType is "Normal" or "Warning" (matching
+	// corev1.EventTypeNormal/EventTypeWarning as plain strings, so this
+	// mode-agnostic package never imports client-go).
+	OnEvent func(eventType, reason, message string)
+
+	// OnOperationOutput fires once per completed create/delete operation
+	// with that operation's captured raw stdout (module.OperationResult.
+	// RawOutput) — cluster mode persists this onto ClusterDefinitionStatus,
+	// since k8sjob.Run always deletes its Job immediately after fetching
+	// logs, so nothing else survives to inspect after the fact.
+	OnOperationOutput func(op module.OperationType, output string)
+}
+
+func (h *ReconcileHooks) emitEvent(eventType, reason, message string) {
+	if h != nil && h.OnEvent != nil {
+		h.OnEvent(eventType, reason, message)
+	}
+}
+
+func (h *ReconcileHooks) recordOutput(op module.OperationType, output string) {
+	if h != nil && h.OnOperationOutput != nil {
+		h.OnOperationOutput(op, output)
+	}
 }
 
 // ReconcileOne reconciles a single cluster definition — the pause check,
@@ -193,7 +235,7 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 // always passes nil here: its module/workflow child processes already
 // inherit the CLI's own os.Environ() directly, the same secrets flow
 // that's always existed for local mode.
-func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string) error {
+func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string, hooks *ReconcileHooks) error {
 	name := def.Metadata.Name
 
 	// access.method: primary has no driver by design (see
@@ -245,7 +287,7 @@ func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefiniti
 		return nil
 	}
 
-	return r.reconcileCluster(ctx, def, lf, dryRun, secretsEnv)
+	return r.reconcileCluster(ctx, def, lf, dryRun, secretsEnv, hooks)
 }
 
 // effectiveStatus applies the authOnly default: an authOnly module's status
@@ -261,7 +303,7 @@ func effectiveStatus(status string, isAuthOnly bool) string {
 	return status
 }
 
-func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string) error {
+func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
 	resolved, err := module.Resolve(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
@@ -307,6 +349,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	}
 	status := effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
 	r.logf("[%s] status: %s", name, status)
+	hooks.emitEvent("Normal", "StatusChecked", fmt.Sprintf("Status: %s", status))
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
@@ -314,7 +357,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] DRY RUN: would delete cluster", name)
 			return nil
 		}
-		return r.deleteCluster(ctx, cluster, exec, env, lf)
+		return r.deleteCluster(ctx, cluster, exec, env, lf, hooks)
 
 	case cluster.Spec.Delete && status == "NOT_FOUND":
 		if dryRun {
@@ -329,7 +372,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] DRY RUN: would create cluster", name)
 			return nil
 		}
-		return r.createCluster(ctx, cluster, exec, env, lf, secretsEnv)
+		return r.createCluster(ctx, cluster, exec, env, lf, secretsEnv, hooks)
 
 	case status == "ACTIVE" && !cluster.Spec.Delete:
 		// Hoisted out of the paramsChanged branch: resource reconciliation
@@ -344,6 +387,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		authResult, authErr := exec.Execute(ctx, module.OperationAuth)
 		if authErr != nil {
 			r.logf("[%s] Warning: auth failed: %v", name, authErr)
+			hooks.emitEvent("Warning", "AuthFailed", authErr.Error())
 		} else {
 			if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
 				env = append(env, "KUBECONFIG="+kc)
@@ -383,9 +427,10 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	return nil
 }
 
-func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, secretsEnv map[string]string) error {
+func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, secretsEnv map[string]string, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Creating cluster...", name)
+	hooks.emitEvent("Normal", "Creating", "Cluster create operation starting")
 
 	hookVars := r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
 	for k, v := range hookVars {
@@ -394,7 +439,11 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	exec.Env = env
 
 	result, err := exec.Execute(ctx, module.OperationCreate)
+	if result != nil {
+		hooks.recordOutput(module.OperationCreate, result.RawOutput)
+	}
 	if err != nil {
+		hooks.emitEvent("Warning", "CreateFailed", err.Error())
 		return fmt.Errorf("create operation failed: %w", err)
 	}
 
@@ -411,6 +460,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	}
 
 	r.logf("[%s] ✅ Cluster created", name)
+	hooks.emitEvent("Normal", "Created", "Cluster created successfully")
 
 	// Rebuild env so onCreate workflows see the new driverOutputs.
 	env = buildModuleEnv(cluster, secretsEnv)
@@ -419,6 +469,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
 	if authErr != nil {
 		r.logf("[%s] Warning: auth failed: %v", name, authErr)
+		hooks.emitEvent("Warning", "AuthFailed", authErr.Error())
 	} else {
 		if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
 			env = append(env, "KUBECONFIG="+kc)
@@ -451,13 +502,15 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	return nil
 }
 
-func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
+func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Deleting cluster...", name)
+	hooks.emitEvent("Normal", "Deleting", "Cluster delete operation starting")
 
 	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
 	if authErr != nil {
 		r.logf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
+		hooks.emitEvent("Warning", "AuthFailed", authErr.Error())
 	} else {
 		if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
 			env = append(env, "KUBECONFIG="+kc)
@@ -468,11 +521,17 @@ func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDef
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
 
-	if _, err := exec.Execute(ctx, module.OperationDelete); err != nil {
+	result, err := exec.Execute(ctx, module.OperationDelete)
+	if result != nil {
+		hooks.recordOutput(module.OperationDelete, result.RawOutput)
+	}
+	if err != nil {
+		hooks.emitEvent("Warning", "DeleteFailed", err.Error())
 		return fmt.Errorf("delete operation failed: %w", err)
 	}
 
 	r.logf("[%s] ✅ Cluster deleted", name)
+	hooks.emitEvent("Normal", "Deleted", "Cluster deleted successfully")
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env, lf)
 

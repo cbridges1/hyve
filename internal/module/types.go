@@ -169,4 +169,16 @@ const ModuleTypeAuthOnly = "authOnly"
 type OperationResult struct {
 	Outputs  map[string]string
 	ExitCode int
+
+	// RawOutput is the operation's full raw stdout (capped — see
+	// capRawOutput in executor.go), for callers that need more than the
+	// parsed HYVE_KEY=value subset — e.g. internal/reconcile's create/delete
+	// paths, which persist it onto ClusterDefinitionStatus so a failed or
+	// unexpected script run is diagnosable without shelling into a Job pod
+	// that k8sjob.Run has already deleted by the time anyone looks. Set by
+	// executeScript/executeScriptViaJob/executeWorkflow; left empty by
+	// executeAuth (which returns a purpose-built result of its own, never a
+	// generic script's raw output — that path already has kubeconfig-marker
+	// extraction, which is the auth contract's own richer signal).
+	RawOutput string
 }

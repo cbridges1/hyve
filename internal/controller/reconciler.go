@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -84,6 +85,16 @@ type ClusterDefinitionReconciler struct {
 	// []string threaded through reconcile/resources.go) — see
 	// KubeconfigPathForCluster and workflow.Executor.HookOutputVars.
 	MaxConcurrentReconciles int
+
+	// Recorder, when set, is used to emit Kubernetes Events (visible via
+	// `kubectl describe clusterdefinition <name>` and `kubectl get events`,
+	// and via GET /api/clusters/{name}/events) for the lifecycle milestones
+	// internal/reconcile.ReconcileHooks.OnEvent fires at — status checks,
+	// create/delete start/success/failure, auth failures. cmd/controller/
+	// run.go sets this from mgr.GetEventRecorderFor(...); left nil in tests
+	// that construct ClusterDefinitionReconciler directly, in which case
+	// event emission is silently skipped (see the hooks closures below).
+	Recorder record.EventRecorder
 }
 
 // Reconcile implements the controller-runtime reconcile loop for one
@@ -123,7 +134,23 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	lf = r.resolveWorkflowIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 	lf = r.resolveResourceIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 
-	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv)
+	var lastCreateOutput, lastDeleteOutput string
+	hooks := &reconcile.ReconcileHooks{
+		OnEvent: func(eventType, reason, message string) {
+			if r.Recorder != nil {
+				r.Recorder.Event(&cr, eventType, reason, message)
+			}
+		},
+		OnOperationOutput: func(op module.OperationType, output string) {
+			switch op {
+			case module.OperationCreate:
+				lastCreateOutput = output
+			case module.OperationDelete:
+				lastDeleteOutput = output
+			}
+		},
+	}
+	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv, hooks)
 
 	// Re-fetch before the status update: ReconcileOne may have driven a
 	// SaveClusterDefinition call (via CRDStateProvider) that already
@@ -138,6 +165,17 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("re-get ClusterDefinition before status update: %w", err)
+	}
+
+	// Only overwrite whichever of these actually fired this cycle — most
+	// reconciles hit neither (an ACTIVE, unchanged cluster runs no create/
+	// delete op at all), and re-fetched cr above already carries whatever
+	// was persisted on a previous cycle that did.
+	if lastCreateOutput != "" {
+		cr.Status.LastCreateOutput = lastCreateOutput
+	}
+	if lastDeleteOutput != "" {
+		cr.Status.LastDeleteOutput = lastDeleteOutput
 	}
 
 	cond := metav1.Condition{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Reconciled", Message: "last reconcile succeeded"}
@@ -182,8 +220,28 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 	lf = r.resolveWorkflowIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 	lf = r.resolveResourceIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 
-	if err := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv); err != nil {
-		return ctrl.Result{}, fmt.Errorf("delete cleanup: %w", err)
+	var lastDeleteOutput string
+	hooks := &reconcile.ReconcileHooks{
+		OnEvent: func(eventType, reason, message string) {
+			if r.Recorder != nil {
+				r.Recorder.Event(cr, eventType, reason, message)
+			}
+		},
+		OnOperationOutput: func(op module.OperationType, output string) {
+			if op == module.OperationDelete {
+				lastDeleteOutput = output
+			}
+		},
+	}
+
+	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv, hooks)
+	if lastDeleteOutput != "" {
+		if err := r.recordDeleteOutput(ctx, client.ObjectKeyFromObject(cr), lastDeleteOutput, reconcileErr); err != nil {
+			log.Printf("[%s] Warning: failed to record delete output: %v", cr.Name, err)
+		}
+	}
+	if reconcileErr != nil {
+		return ctrl.Result{}, fmt.Errorf("delete cleanup: %w", reconcileErr)
 	}
 
 	// Re-fetch: the object may already be gone if ReconcileOne's delete
@@ -202,6 +260,33 @@ func (r *ClusterDefinitionReconciler) reconcileDelete(ctx context.Context, cr *h
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// recordDeleteOutput persists a captured OperationDelete raw output (see
+// module.OperationResult.RawOutput, threaded here via ReconcileHooks.
+// OnOperationOutput) onto key's own ClusterDefinitionStatus.LastDeleteOutput
+// — re-fetching first since reconcileDelete's own cr may be stale by the
+// time ReconcileOne returns (mirrors Reconcile()'s identical re-fetch-
+// before-status-update reasoning). deleteErr, when non-nil, also upserts an
+// Error condition via setCondition (which performs the actual Status()
+// .Update(), covering LastDeleteOutput in the same write) so a delete that
+// fails — and so never clears its finalizer, leaving the object stuck
+// indefinitely — is diagnosable through status/conditions, not just the
+// Warning event hooks.OnEvent already emitted.
+func (r *ClusterDefinitionReconciler) recordDeleteOutput(ctx context.Context, key client.ObjectKey, output string, deleteErr error) error {
+	var fresh hyvev1alpha1.ClusterDefinition
+	if err := r.Client.Get(ctx, key, &fresh); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	fresh.Status.LastDeleteOutput = output
+	if deleteErr != nil {
+		cond := metav1.Condition{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionTrue, Reason: "DeleteFailed", Message: deleteErr.Error()}
+		return r.setCondition(ctx, &fresh, fresh.Generation, cond)
+	}
+	return r.Client.Status().Update(ctx, &fresh)
 }
 
 // setCondition upserts cond into cr.Status.Conditions (replacing any
@@ -591,6 +676,9 @@ func (r *ClusterDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	maxConcurrent := r.MaxConcurrentReconciles
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("hyve-controller")
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyvev1alpha1.ClusterDefinition{}).

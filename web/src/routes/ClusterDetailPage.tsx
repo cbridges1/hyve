@@ -80,6 +80,7 @@ export function ClusterDetailPage() {
   const confirm = useConfirm()
   const { data: cluster, error } = usePolledApi(() => clustersApi.get(name), POLL_INTERVAL_MS, [name])
   const { data: resources } = usePolledApi(() => clustersApi.resources(name), POLL_INTERVAL_MS, [name])
+  const { data: activity } = usePolledApi(() => clustersApi.events(name), POLL_INTERVAL_MS, [name])
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
@@ -166,6 +167,51 @@ export function ClusterDetailPage() {
       </Card>
 
       <KubeconfigPanel name={name} />
+
+      <Card title="Recent activity">
+        {!activity?.events?.length && <EmptyState>No events recorded yet.</EmptyState>}
+        {activity?.events?.map((ev, i) => (
+          <div
+            key={`${ev.reason}-${ev.lastSeen}-${i}`}
+            className="flex flex-col gap-0.5 border-t border-neutral-100 py-2 text-sm first:border-t-0 sm:flex-row sm:items-center sm:justify-between dark:border-neutral-800/70"
+          >
+            <span
+              className={
+                ev.type === 'Warning'
+                  ? 'font-medium text-amber-700 dark:text-amber-400'
+                  : 'font-medium text-neutral-900 dark:text-neutral-100'
+              }
+            >
+              {ev.reason}
+              {ev.count > 1 ? ` (×${ev.count})` : ''}
+            </span>
+            <span className="text-neutral-400 sm:max-w-md sm:truncate" title={ev.message}>
+              {ev.message}
+            </span>
+            <span className="shrink-0 text-neutral-400">{ev.lastSeen}</span>
+          </div>
+        ))}
+        {(activity?.lastCreateOutput || activity?.lastDeleteOutput) && (
+          <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800/70">
+            {activity?.lastCreateOutput && (
+              <div>
+                <p className="mb-1 text-xs font-medium text-neutral-500">Last create output</p>
+                <pre className="max-h-64 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
+                  {activity.lastCreateOutput}
+                </pre>
+              </div>
+            )}
+            {activity?.lastDeleteOutput && (
+              <div>
+                <p className="mb-1 text-xs font-medium text-neutral-500">Last delete output</p>
+                <pre className="max-h-64 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
+                  {activity.lastDeleteOutput}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
 
       <Card title="Resources">
         {!resources?.resources?.length && <EmptyState>No resources declared.</EmptyState>}

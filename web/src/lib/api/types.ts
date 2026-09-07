@@ -99,6 +99,24 @@ export type ClusterResources = {
   appliedResources: Record<string, AppliedResource> | null
 }
 
+export type ClusterEvent = {
+  type: string
+  reason: string
+  message: string
+  count: number
+  lastSeen: string
+}
+
+// Mirrors internal/api's clusterActivityDTO — GET /clusters/<name>/events'
+// response shape. The only place a create/delete operation's actual output
+// survives (k8sjob.Run always deletes its dispatched Job right after
+// fetching logs), plus the lifecycle Events a reconcile emits.
+export type ClusterActivity = {
+  events: ClusterEvent[] | null
+  lastCreateOutput?: string
+  lastDeleteOutput?: string
+}
+
 export type CreateClusterFromTemplateRef = { name: string; region?: string; params?: Record<string, string> }
 export type CreateClusterRequest = {
   name: string

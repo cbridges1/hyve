@@ -190,6 +190,20 @@ type ClusterDefinitionStatus struct {
 	// cluster — useful for GET /api/clusters to give an honest signal
 	// about how a caller's kubeconfig request will be served.
 	Access AccessStatus `json:"access,omitempty"`
+
+	// LastCreateOutput/LastDeleteOutput hold the most recent create/delete
+	// operation's full captured stdout (module.OperationResult.RawOutput,
+	// capped at 256KiB) — the only place this output survives at all:
+	// k8sjob.Run always deletes its dispatched Job immediately after
+	// fetching its logs, so without this, a create/delete script's actual
+	// output (as opposed to just its parsed HYVE_KEY=value outputs or a bare
+	// exit code) was never visible anywhere, in the CLI or the UI, once the
+	// Job that ran it was gone. Each is overwritten only when that
+	// operation actually runs again — see internal/controller/reconciler.go's
+	// hooks wiring, which only touches whichever of the two fields fired
+	// this cycle.
+	LastCreateOutput string `json:"lastCreateOutput,omitempty"`
+	LastDeleteOutput string `json:"lastDeleteOutput,omitempty"`
 }
 
 // AccessStatus records which access method is currently active for a

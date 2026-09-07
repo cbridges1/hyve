@@ -163,6 +163,34 @@ func (c *APIClient) GetClusterResources(name string) (*ClusterResourcesDTO, erro
 	return &out, nil
 }
 
+// ClusterEventDTO/ClusterActivityDTO mirror internal/api's clusterEventDTO/
+// clusterActivityDTO exactly — see handleGetClusterEvents's own doc comment
+// for why this exists: it's the only place a create/delete operation's
+// actual output survives (k8sjob.Run always deletes its dispatched Job
+// right after fetching logs), plus the Kubernetes Events emitted at each
+// reconcile lifecycle milestone.
+type ClusterEventDTO struct {
+	Type     string `json:"type"`
+	Reason   string `json:"reason"`
+	Message  string `json:"message"`
+	Count    int32  `json:"count"`
+	LastSeen string `json:"lastSeen"`
+}
+
+type ClusterActivityDTO struct {
+	Events           []ClusterEventDTO `json:"events"`
+	LastCreateOutput string            `json:"lastCreateOutput,omitempty"`
+	LastDeleteOutput string            `json:"lastDeleteOutput,omitempty"`
+}
+
+func (c *APIClient) GetClusterEvents(name string) (*ClusterActivityDTO, error) {
+	var out ClusterActivityDTO
+	if err := c.do(http.MethodGet, "/api/clusters/"+name+"/events", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateClusterFromTemplate posts {name, template: {name, region, params}}
 // to POST /api/clusters — the cluster-mode counterpart to local mode's
 // --template flow, rendered server-side via the same

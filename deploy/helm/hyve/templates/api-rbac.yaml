@@ -189,6 +189,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # GET /clusters/{name}/events (see internal/api/clusters.go's
+  # handleGetClusterEvents) reads the Events the controller emits at each
+  # reconcile lifecycle milestone (internal/controller.
+  # ClusterDefinitionReconciler.Recorder) via a raw client-go
+  # involvedObject.name field selector, not the cached controller-runtime
+  # client — read-only.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: {{ if .Values.api.multiTenant.enabled }}ClusterRoleBinding{{ else }}RoleBinding{{ end }}

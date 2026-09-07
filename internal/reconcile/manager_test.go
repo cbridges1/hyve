@@ -289,7 +289,7 @@ spec:
 
 	t.Run("local mode: missing tool is a hard error", func(t *testing.T) {
 		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
-		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil)
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "definitely-not-a-real-tool-xyz-123")
 	})
@@ -297,7 +297,7 @@ spec:
 	t.Run("cluster mode: tool check is skipped, module dispatches to its own runner.image instead", func(t *testing.T) {
 		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
 		r.ModuleRunner = &module.JobRunner{} // never actually invoked — this authOnly module has no auth/create/status/delete files to dispatch
-		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil)
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
 		assert.NoError(t, err)
 	})
 }

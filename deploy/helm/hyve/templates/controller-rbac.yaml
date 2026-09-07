@@ -95,6 +95,14 @@ rules:
     resources: ["secrets"]
     verbs: ["get"]
     resourceNames: ["hyve-cli-secrets"]
+  # record.EventRecorder (see reconciler.go's Recorder field, wired via
+  # mgr.GetEventRecorderFor in SetupWithManager) creates a fresh Event object
+  # per emitted event — patch is also needed since client-go's recorder
+  # implementation batches near-identical repeated events onto one object via
+  # a patch rather than a fresh Create every time.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 {{- if .Values.controller.leaderElection }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

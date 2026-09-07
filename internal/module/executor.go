@@ -216,7 +216,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte, name string
 			// non-zero — mirrors executeScriptViaJob's identical handling.
 			return nil, fmt.Errorf("workflow %s: %w", name, runErr)
 		}
-		return &OperationResult{Outputs: parseOutputs([]byte(stdout)), ExitCode: exitCode}, nil
+		return &OperationResult{Outputs: parseOutputs([]byte(stdout)), ExitCode: exitCode, RawOutput: capRawOutput(stdout)}, nil
 	}
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", combined)
@@ -230,9 +230,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte, name string
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		}
-		return &OperationResult{Outputs: parseOutputs(out), ExitCode: exitCode}, err
+		return &OperationResult{Outputs: parseOutputs(out), ExitCode: exitCode, RawOutput: capRawOutput(string(out))}, err
 	}
-	return &OperationResult{Outputs: parseOutputs(out), ExitCode: 0}, nil
+	return &OperationResult{Outputs: parseOutputs(out), ExitCode: 0, RawOutput: capRawOutput(string(out))}, nil
 }
 
 func pickScript(run, script, command string) string {
@@ -429,8 +429,9 @@ func (e *Executor) executeScript(ctx context.Context, scriptPath string) (*Opera
 		}
 	}
 	return &OperationResult{
-		Outputs:  parseOutputs(out),
-		ExitCode: exitCode,
+		Outputs:   parseOutputs(out),
+		ExitCode:  exitCode,
+		RawOutput: capRawOutput(string(out)),
 	}, nil
 }
 
@@ -452,8 +453,9 @@ func (e *Executor) executeScriptViaJob(ctx context.Context, scriptPath string) (
 		return nil, fmt.Errorf("script %s: %w", scriptPath, runErr)
 	}
 	return &OperationResult{
-		Outputs:  parseOutputs([]byte(stdout)),
-		ExitCode: exitCode,
+		Outputs:   parseOutputs([]byte(stdout)),
+		ExitCode:  exitCode,
+		RawOutput: capRawOutput(stdout),
 	}, nil
 }
 
@@ -470,6 +472,23 @@ func (e *Executor) runShellScriptWithEnv(ctx context.Context, script string, ext
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// maxRawOutputBytes caps OperationResult.RawOutput the same way
+// internal/reconcile/adhoc_workflow.go's maxAdHocWorkflowOutputBytes caps
+// captured ad-hoc workflow output — kept as its own constant rather than
+// exported/shared since the two are independent call sites with no reason to
+// change in lockstep.
+const maxRawOutputBytes = 256 << 10 // 256KiB
+
+// capRawOutput truncates s to maxRawOutputBytes, appending a note when it
+// does — mirrors internal/reconcile/adhoc_workflow.go's identical truncation
+// convention for captured ad-hoc workflow output.
+func capRawOutput(s string) string {
+	if len(s) > maxRawOutputBytes {
+		return s[:maxRawOutputBytes] + "\n... (truncated)"
+	}
+	return s
 }
 
 func parseOutputs(stdout []byte) map[string]string {
