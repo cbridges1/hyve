@@ -46,6 +46,58 @@ func TestHandleCreateEnvironment_MissingName_400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestHandleCreateEnvironment_RejectsReservedNames covers both reserved
+// names end to end (not just validateEnvironmentName in isolation): the
+// control plane's own namespace (testNamespace, "hyve-system") and every
+// casing/spacing form of "control plane" — the always-present pseudo-
+// environment EnvironmentSwitcher shows for "no tenant selected".
+func TestHandleCreateEnvironment_RejectsReservedNames(t *testing.T) {
+	for _, name := range []string{
+		"hyve-system", "Hyve-System", "HYVE-SYSTEM",
+		"control plane", "Control plane", "CONTROL PLANE", "control-plane",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+			rec := doEnvironmentRequest(t, s, hyvev1alpha1.RoleSuperadmin, createEnvironmentRequest{Name: name})
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+			// Must reject before creating anything — a caller retrying with
+			// a real name afterward shouldn't find a half-created "acme"-
+			// shaped mess left over from the rejected attempt.
+			var ns corev1.Namespace
+			err := s.Client.Get(t.Context(), types.NamespacedName{Name: name}, &ns)
+			assert.Error(t, err, "no namespace should have been created for a rejected name")
+		})
+	}
+}
+
+func TestValidateEnvironmentName(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"acme", false},
+		{"controlling", false}, // must not false-positive-match on a substring
+		{"control-planning", false},
+		{"hyve-system", true},
+		{"HYVE-SYSTEM", true},
+		{"control plane", true},
+		{"Control Plane", true},
+		{"control-plane", true},
+		{"CONTROL-PLANE", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateEnvironmentName(c.name, testNamespace)
+			if c.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestHandleCreateEnvironment_CreatesNamespaceRBACAndRegistryObject(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
 	rec := doEnvironmentRequest(t, s, hyvev1alpha1.RoleSuperadmin, createEnvironmentRequest{Name: "acme"})

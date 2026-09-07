@@ -20,6 +20,40 @@ function highlightYaml(code: string) {
   return Prism.highlight(code, Prism.languages.yaml, 'yaml')
 }
 
+// Shared with the line-number gutter below so its rows line up exactly
+// with the editor's own text lines — font/size/line-height/top-padding
+// all have to match precisely, since they're two independent elements
+// rather than one gutter+editor widget.
+const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+const EDITOR_FONT_SIZE = '12px'
+const EDITOR_LINE_HEIGHT = '18px'
+const EDITOR_PADDING = 12
+
+// Plain numbered gutter, not part of react-simple-code-editor itself (it
+// doesn't have one) — a same-height sibling column inside the shared
+// scroll container below rather than its own scrollable element, so it
+// tracks the editor's scroll position for free instead of needing to be
+// synced by hand.
+function LineNumbers({ lineCount }: { lineCount: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="shrink-0 border-r border-neutral-200 bg-neutral-100/60 pr-2 pl-3 text-right text-neutral-400 select-none dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-600"
+      style={{
+        fontFamily: MONO_FONT,
+        fontSize: EDITOR_FONT_SIZE,
+        lineHeight: EDITOR_LINE_HEIGHT,
+        paddingTop: EDITOR_PADDING,
+        paddingBottom: EDITOR_PADDING,
+      }}
+    >
+      {Array.from({ length: lineCount }, (_, i) => (
+        <div key={i}>{i + 1}</div>
+      ))}
+    </div>
+  )
+}
+
 /**
  * Generic "edit this CR's spec as raw YAML" panel — one component reused
  * across every editable detail page (Cluster/Template/Workflow/Resource/
@@ -89,19 +123,21 @@ export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => 
 
   return (
     <Card title="Edit spec">
-      <div className="max-h-96 overflow-auto rounded-lg border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-950">
+      <div className="flex max-h-96 overflow-auto rounded-lg border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-950">
+        <LineNumbers lineCount={text.split('\n').length} />
         <Editor
           value={text}
           onValueChange={setText}
           highlight={highlightYaml}
-          padding={12}
+          padding={EDITOR_PADDING}
           textareaClassName="focus:outline-none"
           style={{
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-            fontSize: '12px',
+            fontFamily: MONO_FONT,
+            fontSize: EDITOR_FONT_SIZE,
+            lineHeight: EDITOR_LINE_HEIGHT,
             minHeight: '260px',
           }}
-          className="text-neutral-800 dark:text-neutral-200"
+          className="min-w-0 flex-1 text-neutral-800 dark:text-neutral-200"
         />
       </div>
       {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}

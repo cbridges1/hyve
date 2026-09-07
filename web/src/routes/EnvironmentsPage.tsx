@@ -4,6 +4,24 @@ import { environmentsApi } from '../lib/api/environments'
 import { ApiError } from '../lib/api/client'
 import { useApi } from '../lib/useApi'
 
+// Mirrors internal/api's validateEnvironmentName — client-side so a
+// reserved name is rejected before a round trip, not instead of the
+// server-side check (a direct API/CLI caller still hits that). "hyve-
+// system" is hardcoded here (unlike the server's own check against its
+// actual configured s.Namespace) since the console has no other way to
+// know the control plane's namespace short of asking the API for it —
+// every real deployment uses this name by convention anyway.
+function reservedEnvironmentNameError(name: string): string | null {
+  if (name.toLowerCase() === 'hyve-system') {
+    return `"${name}" is the control plane's own namespace — choose a different environment name`
+  }
+  const normalized = name.toLowerCase().trim().replace(/[\s-]+/g, '-')
+  if (normalized === 'control-plane') {
+    return `"${name}" is reserved for the control plane — choose a different environment name`
+  }
+  return null
+}
+
 function CreateEnvironmentForm({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = useState('')
   const [message, setMessage] = useState<string | null>(null)
@@ -14,6 +32,11 @@ function CreateEnvironmentForm({ onCreated }: { onCreated: () => void }) {
     e.preventDefault()
     setError(null)
     setMessage(null)
+    const reserved = reservedEnvironmentNameError(name)
+    if (reserved) {
+      setError(reserved)
+      return
+    }
     setSubmitting(true)
     try {
       await environmentsApi.create(name)

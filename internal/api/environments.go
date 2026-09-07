@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 
@@ -82,6 +83,10 @@ func (s *Server) handleCreateEnvironment(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if err := validateEnvironmentName(req.Name, s.Namespace); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	ctx := r.Context()
 	name := req.Name
 
@@ -102,6 +107,38 @@ func (s *Server) handleCreateEnvironment(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusCreated, environmentDTO{Name: name, Namespace: name})
+}
+
+// validateEnvironmentName rejects the two names that would collide with, or
+// be confused with, the control plane itself:
+//   - controlPlaneNamespace (s.Namespace — "hyve-system" in every real
+//     deployment, but checked against the actual configured value rather
+//     than that literal, since it's a --namespace flag/Helm value, not a
+//     hardcoded constant): creating an environment with this name would
+//     make ensureNamespace/ensureAccessRoleScaffolding operate directly on
+//     the control plane's own namespace instead of a new tenant one,
+//     injecting tenant-style ServiceAccounts into it and listing it
+//     alongside real tenants.
+//   - "control plane" (any case/spacing): not a real collision — Kubernetes
+//     namespace names can't contain a space or uppercase letter, so the
+//     literal EnvironmentSwitcher label could never collide at the
+//     namespace level — but confusingly duplicates the always-present
+//     "Control plane" entry in that same dropdown, and would otherwise
+//     surface as an unhelpful raw Kubernetes "invalid name" error instead
+//     of an explanation.
+//
+// Case-insensitive both ways: nothing about a namespace/environment name
+// makes case load-bearing here, and a caller typing "Hyve-System" clearly
+// means the same reserved thing as "hyve-system".
+func validateEnvironmentName(name, controlPlaneNamespace string) error {
+	if strings.EqualFold(name, controlPlaneNamespace) {
+		return fmt.Errorf("%q is the control plane's own namespace — choose a different environment name", name)
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.ReplaceAll(name, "-", " ")), "-"))
+	if normalized == "control-plane" {
+		return fmt.Errorf("%q is reserved for the control plane — choose a different environment name", name)
+	}
+	return nil
 }
 
 func (s *Server) ensureNamespace(ctx context.Context, name string) error {
