@@ -177,12 +177,15 @@ the real design questions, not to pre-answer all of them.
   signal — no separate polling needed); optionally, lightweight periodic
   self-checks (node count, API server reachability) folded into the
   heartbeat payload rather than a separate mechanism.
-- When `proxy` is enabled for its cluster: accept multiplexed proxy requests
-  from the control plane over the standing connection and forward them to
-  `https://kubernetes.default.svc` inside its own cluster (mirroring exactly
-  what `internal/api/proxy.go`'s `BuildProxy` already does for the primary
-  cluster — the agent is that same reverse proxy, just reachable over a
-  tunnel instead of being co-located).
+- When `proxy` is enabled for its cluster: accept multiplexed dial requests
+  from the control plane over the standing connection and, per request, open
+  a real TCP connection to `https://kubernetes.default.svc` inside its own
+  cluster, piping bytes in both directions (see "Tunnel protocol" below —
+  this is a raw connection-level proxy, not an HTTP-level one, precisely so
+  `kubectl exec`/`port-forward`/`logs -f`/`get --watch` — all of which
+  upgrade the connection to SPDY or WebSocket *at the Kubernetes API server*
+  — work transparently without the agent needing to understand any of
+  that).
 - When `proxy` is disabled: connection stays up for status only; the control
   plane's proxy handler refuses to route to it (a clear "proxy disabled for
   this cluster" error, not a silent hang).
@@ -201,6 +204,45 @@ the real design questions, not to pre-answer all of them.
   already exactly the right shape for this to slot into as a fifth
   implementation (`AgentProvider`) *first*, before anything is removed —
   see rollout plan below.
+
+### Tunnel protocol (resolves the open question below)
+
+The stated goal — tunnel through hyve-api to run real `kubectl` commands
+against the cluster, not just fetch a one-time kubeconfig — settles this:
+**a WebSocket-based multiplexed reverse dialer, the same shape as Rancher's
+own [`remotedialer`](https://github.com/rancher/remotedialer)**, not raw
+gRPC streaming and not a simpler agent-long-polls model. Reasoning:
+
+- `kubectl exec`, `port-forward`, `logs -f`, and `get --watch` all upgrade
+  their connection to SPDY or WebSocket *at the Kubernetes API server
+  itself* — that upgrade happens on top of whatever transport carries the
+  bytes there. A model where the agent long-polls for "pending requests" is
+  fundamentally request/response and can't carry any of these at all; only a
+  truly persistent, bidirectional stream can. This alone rules out long-polling
+  for the stated goal.
+- `remotedialer`'s actual model fits directly: the agent opens *one*
+  outbound WebSocket to the control plane and keeps it open; the control
+  plane can then ask the agent to open new logical "sessions" multiplexed
+  over that single WebSocket, each behaving like an ordinary `net.Conn` on
+  the control-plane side — Rancher's `cattle-cluster-agent` (the exact thing
+  this session hand-wired `acme-worker` into) uses precisely this to let
+  Rancher's own UI/CLI run `kubectl` against clusters it has no direct
+  network path to.
+- This is a near-drop-in fit for hyve's *existing* proxy code, not new
+  proxying logic: `internal/api/proxy.go`'s `BuildProxy` already builds an
+  `httputil.ReverseProxy` with a custom `http.Transport` (today its
+  `TLSClientConfig` trusts the in-cluster CA and it dials
+  `https://kubernetes.default.svc` directly, since it only ever proxies to
+  the one cluster hyve-api itself runs on). The agent path only needs that
+  same `Transport`'s `DialContext` swapped to dial through the connected
+  agent's remotedialer session instead of a direct network dial — the
+  `ReverseProxy` plumbing above it (header handling, streaming response
+  bodies, everything `BuildProxy` already gets right) is unchanged.
+- Raw gRPC bidirectional streaming could technically be forced into this
+  same shape, but buys nothing over WebSocket here and costs proto codegen
+  plus HTTP/2 framing overhead for what's fundamentally "a multiplexed byte
+  pipe," not an RPC. WebSocket is the lighter-weight fit, and it's what the
+  proven prior art already uses.
 
 ### Agent identity / authentication
 
@@ -334,10 +376,12 @@ Concretely, per existing path:
 - Bootstrap-token vs. mTLS vs. something else for agent identity (see
   above) — this is the decision most worth getting right before writing
   code, since it's the hardest to change later.
-- Does the control plane need a real multiplexed tunnel protocol (gRPC
-  streams, WebSocket + custom framing, `remotedialer`-style), or is a
-  simpler "agent long-polls for pending proxy requests" model good enough
-  for v1's traffic volume?
+- ~~Does the control plane need a real multiplexed tunnel protocol...~~
+  **Resolved: yes — a `remotedialer`-style multiplexed WebSocket reverse
+  dialer** (see "Tunnel protocol" above), driven directly by the stated goal
+  of running real `kubectl` commands (including `exec`/`port-forward`/
+  `logs -f`/`watch`) through the tunnel, not just fetching a one-time
+  kubeconfig.
 - Where does agent *version* live relative to the `hyve` binary's own
   version — pinned per HyveConfig, per-Template, or always-latest with its
   own upgrade workflow?
