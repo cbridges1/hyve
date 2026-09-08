@@ -296,21 +296,78 @@ proves far less than `kubectl exec` working.
   purpose-built toggle control in the UI is a nice-to-have polish item for
   this milestone, not a blocker for it.
 
-## Milestone 8: start the deprecation clock
+## Milestone 8: deprecation notice + migration guide
 
-Doc-only for this plan's scope, matching the proposal's own "not an
-instant breaking change" stance:
+Doc-only, matching the proposal's own "not an instant breaking change"
+stance — this milestone's job is to give anyone still on the old paths a
+real window and a real guide before milestone 9 deletes anything:
 
 - Mark `access.method: primary`/`tunnel` and `AccessMethod` deprecated in
-  `docs/ARCHITECTURE.md` and their own type doc comments.
+  `docs/ARCHITECTURE.md` and their own type doc comments, naming the
+  release/milestone 9 is targeted for.
 - Publish a migration guide for anyone on a `rancher-civo`-shaped setup
-  (this session's own `acme-worker` included) — how to move from an
-  `AccessMethod`-mediated cluster to an agent-mediated one.
-- Actual code removal (the CRD, `accessmethod_mint.go`,
-  `PrimaryClusterProvider`'s primary-specific branch, `TunnelProvider`, the
-  relay listener) is explicitly **not** scheduled as part of this plan —
-  it's a later, separate effort once the migration window has actually
-  run, not a milestone with a defined "done" here.
+  (this session's own `acme-worker` included) — concretely, how to move
+  from an `AccessMethod`-mediated cluster to an agent-mediated one: enable
+  `spec.access.agent`, confirm it connects and proxies correctly, *then*
+  clear `accessMethodRef`/`accessMethodClusterID`.
+- **Definition of done for this milestone is not "docs merged," it's "the
+  known live case is actually migrated."** Concretely: `acme-worker` itself
+  moved off `rancher-civo` onto the agent, verified working, before
+  milestone 9 starts — the plan doesn't get to remove a mechanism while its
+  own reference deployment still depends on it.
+
+## Milestone 9: remove `AccessMethod`, `primary`, and `tunnel`
+
+The actual removal — scheduled, not deferred. Only starts once milestone
+8's definition of done (the known live case migrated, not just docs
+published) is met.
+
+**Files removed:**
+
+- `internal/apis/hyve/v1alpha1/accessmethod_types.go` (the whole CRD type).
+- `internal/api/accessmethods.go`, `internal/api/accessmethod_mint.go` (CRUD
+  handlers, the mint-Job-dispatch-plus-relay machinery, the relay listener
+  registration).
+- `internal/api/access.go`: `TunnelProvider` deleted outright.
+  `PrimaryClusterProvider`'s `AccessMethodPrimary`-specific branch in
+  `Kubeconfig` removed — but audit the rest of `PrimaryClusterProvider`
+  (specifically the non-primary path that mints a caller's own resolved
+  `ServiceAccountRef`) before assuming the whole type goes: confirm nothing
+  besides the primary/host-cluster case still depends on it before deleting
+  more than that one branch. Don't remove code this milestone hasn't
+  actually confirmed is dead.
+- `internal/apis/hyve/v1alpha1/clusterdefinition_types.go`: remove
+  `AccessMethodRef`/`AccessMethodClusterID` from `AccessSpec`, remove
+  `TunnelSpec`/`TunnelProviderRancher`/`TunnelProviderTeleport`, remove the
+  `AccessMethodPrimary` constant and `Method`'s primary/tunnel values —
+  regenerate `zz_generated.deepcopy.go` and
+  `deploy/helm/hyve/crds/hyve.io_clusterdefinitions.yaml` (same
+  `controller-gen` step milestone 1 used to add fields, now removing them —
+  diff before applying, same discipline).
+- `deploy/helm/hyve/crds/hyve.io_accessmethods.yaml` deleted; any
+  `AccessMethod`-specific RBAC rules in `deploy/helm/hyve/templates/*rbac*.yaml`
+  pruned (audit these directly rather than assuming which rules exist —
+  this doc hasn't re-verified their current exact shape).
+- Web console: `AccessMethodsPage.tsx`, `AccessMethodDetailPage.tsx`,
+  `web/src/lib/api/accessmethods.ts`, the "Access methods" nav entry in
+  `AppShell.tsx`'s `navGroups`.
+- CLI: whatever in `cmd/cluster/auth.go` and `cmd/shared/apiclient.go`
+  implements the `accessMethodRef`/mint request path.
+
+**Tests:** delete the corresponding `*_test.go` files/cases outright
+rather than leaving them testing removed code; any test fixture elsewhere
+in the suite that happens to set `AccessMethodRef` on a `ClusterDefinition`
+(a real risk — this field has been used as convenient sample data in
+tests unrelated to access methods themselves) needs auditing and updating,
+not just the access-method-specific test files.
+
+**Manual verification:** `go build ./...` clean confirms nothing else in
+the tree still references the removed types (the compiler does this audit
+for free); a full redeploy to `k3d-hyve-local`; confirm the web console's
+Access Methods nav entry and pages are actually gone, not just unlinked;
+confirm `acme-worker` (migrated in milestone 8) is still working
+post-removal, since that's the one live proof this milestone didn't just
+delete code nobody was using.
 
 ## Cross-cutting
 
@@ -337,3 +394,10 @@ Milestones 1–3 are the ones worth landing well ahead of 4–5: they carry
 the highest technical uncertainty (a new dependency, new crypto, a
 protocol hyve has never spoken) and de-risking them in isolation, with zero
 behavior change to anything existing, is worth more than sequencing speed.
+
+Milestone 9 is the one PR in this list that isn't purely additive — it's
+the actual removal, gated on milestone 8's definition of done (the live
+case migrated, not just the docs published), not on calendar time. If
+milestone 8 finds the migration doesn't hold up cleanly for some real
+setup, that's a reason to fix the agent's own migration path, not to
+schedule milestone 9 anyway.
