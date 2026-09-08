@@ -22,10 +22,13 @@ The proxy half is togglable per cluster (`spec.access.agent.proxy: true/false`
 or similar) — a cluster can run the agent purely for status reporting without
 exposing itself to control-plane-mediated `kubectl` access.
 
-This would sit alongside, and eventually replace most of, the access-method
-machinery built this session (`AccessMethod`, the primary/host-cluster path,
-the unimplemented tunnel path) — see "Relationship to existing access paths"
-below.
+This is a full replacement for, not a complement to, the access-method
+machinery built this session: `AccessMethod` (the CRD, the `Job`+relay mint
+mechanism, `accessMethodRef`), the primary/host-cluster path, and the
+unimplemented tunnel path all go away once the agent exists — see
+"Relationship to existing access paths" below. Going the agent route means
+committing to *one* connectivity mechanism, not adding a fifth alongside the
+other four.
 
 ## Why this is being considered
 
@@ -39,7 +42,7 @@ needs this capability often enough to be worth wiring up Rancher for it, it's
 worth asking whether hyve should just have it natively instead of asking
 users to run a second control plane to get it.
 
-Separately, the access model that exists today is genuinely complex — four
+Separately, the access model that exists today is genuinely complex — five
 independent code paths, all reachable from the same `hyve cluster auth`
 command, each with a different mental model:
 
@@ -51,25 +54,31 @@ command, each with a different mental model:
 | `access.method: tunnel` | N/A — reads a pre-existing Secret | A kubeconfig some other process (a workflow, or a human) put in a Secret ahead of time | `internal/api/access.go`'s `TunnelProvider` — the write side (`workflows/mint-tunnel-access.yaml`) is documented as needing "a real Rancher or Teleport deployment", and doesn't exist yet |
 | `spec.access.accessMethodRef` (`AccessMethod` CRD) | Server-side, in a short-lived `Job`, result pushed back over an internal-only relay listener | A kubeconfig, streamed back through `POST /relay/{id}` | `internal/api/accessmethod_mint.go` — ~450 lines: `Job` dispatch, a one-shot credential `Secret` with an owner reference for GC, a `sync.Map` of pending requests keyed by a random ID, a bearer-token-gated relay endpoint on a *separate* unauthenticated listener, and a timeout path that inspects pod state for a better error message |
 
-Four different answers to "get me a kubeconfig for this cluster," each
+Five different answers to "get me a kubeconfig for this cluster," each
 correct for the case it was built for, but genuinely a lot of surface area —
-and the two paths that don't need a locally-reachable driver (`primary` and
-`tunnel`) both work around the same underlying gap: **hyve has no standing,
-authenticated channel to a cluster it doesn't already have direct network
-access to.** `primary` sidesteps this by only ever supporting the one cluster
-hyve-api itself runs in. `tunnel`/`AccessMethod` sidestep it by asking
-something else (a workflow script, an admin, Rancher) to have already solved
-connectivity and handed hyve a working kubeconfig.
+and the three paths that don't need a locally-reachable driver (`primary`,
+`tunnel`, and `AccessMethod`) all work around the same underlying gap:
+**hyve has no standing, authenticated channel to a cluster it doesn't
+already have direct network access to.** `primary` sidesteps this by only
+ever supporting the one cluster hyve-api itself runs in. `tunnel`/
+`AccessMethod` sidestep it by asking something else (a workflow script, an
+admin, an already-running Rancher) to have already solved connectivity and
+handed hyve a working kubeconfig.
 
 An agent that dials out and stays connected is a direct answer to the actual
-gap, not another provider bolted onto the same four-provider list.
+gap, not another provider bolted onto the same five-provider list — which is
+exactly why it should *replace* the three paths that exist only because that
+gap wasn't solved yet, rather than sit alongside them as a sixth option.
 
 ## Pros
 
-- **One connectivity story instead of four.** A single "does this cluster
-  have an agent connected" question replaces "which of four access methods
+- **One connectivity story instead of five.** A single "does this cluster
+  have an agent connected" question replaces "which of five access methods
   does this ClusterDefinition use, and does today's caller's environment
-  satisfy it."
+  satisfy it." No `AccessMethod` CRD, no per-cluster `accessMethodRef`/
+  `accessMethodClusterID` bookkeeping, no separate mental model for "a
+  cluster with an externally-managed identity service" — every cluster is
+  either agent-connected or it isn't.
 - **No host/primary cluster required.** Today, `access.method: primary`
   requires designating one specific cluster as *the* cluster hyve-api runs
   on, and only that one cluster gets the `/proxy` reverse-proxy convenience —
@@ -147,6 +156,11 @@ gap, not another provider bolted onto the same four-provider list.
   handles this, but it means the fleet is permanently split between
   agent-managed and not, and every feature built on the agent (proxy, live
   status) needs a defined fallback for clusters that never opted in.
+- **Retiring `AccessMethod` has a real migration cost, not just a design
+  cost.** This session's `rancher-civo` `AccessMethod` and
+  `template-civo-rancher-agent.yaml` are live, working setups (`acme-worker`
+  included) — going the agent route means an actual migration path for
+  them, not just deleting the CRD and its handlers once the agent exists.
 
 ## Architecture sketch
 
@@ -228,53 +242,92 @@ type AgentSpec struct {
 }
 ```
 
-Installing the agent itself is naturally an `afterCreate` workflow step
-(exactly the shape `register-with-rancher.yaml` already is) or a first-class
-reconcile step alongside the driver's own `create` op — the latter is
-probably right long-term (it's core hyve behavior, not a bolt-on a
-particular template opts into), but starting as a workflow (as this
-session's Rancher integration did) is the lower-risk way to prove the
-mechanism before it's load-bearing.
+Agent lifecycle is a first-class reconcile concern, not a lifecycle-hook
+workflow — deliberately not modeled on `register-with-rancher.yaml`, despite
+that being the closest existing precedent. `Agent.Enabled`/`Agent.Proxy` are
+spec fields the reconcile loop itself acts on directly, the same way it
+already acts on `spec.driver`/`spec.pause`/`spec.delete` — install/
+reconcile/uninstall the agent as its own step in
+`internal/reconcile.Reconciler`'s per-cluster reconcile pass (alongside the
+existing create/status/delete dispatch in `reconcileCluster`), never as
+something a Template's `workflows.afterCreate` opts into or a user has to
+know to wire up. The distinction matters: an `afterCreate` hook only ever
+runs once, at creation time, and is invisible to `ClusterDefinitionSpec`
+itself (you'd have to read the Template/Workflow to know a cluster has one)
+— a first-class field is visible on the `ClusterDefinition` directly,
+reconciled continuously (so flipping `Agent.Enabled` on an *existing*
+cluster installs the agent on the next reconcile, not only at creation), and
+uninstalled the same way if turned back off.
 
 ### Relationship to existing access paths
 
-Nothing here should delete `ModuleAuthProvider`, the default client-side
-path, or `AccessMethod` outright:
+This is the one point in this doc that isn't a tradeoff to weigh — it's a
+decision already made: **going the agent route means `AccessMethod` stops
+being a thing.** Not "kept for the external-service case" — retired, CRD and
+all, once the agent covers what it covered. The reasoning: `AccessMethod`'s
+entire reason to exist is "hyve needs a working kubeconfig for a cluster it
+can't reach directly, and something else (Rancher, Teleport, a hand-written
+`inlineAuth` script) already solved connectivity." An agent solves
+connectivity itself, unconditionally, for every cluster that has one — there
+is no remaining case where deferring to an external identity/access service
+is the *only* way to reach a cluster, only cases where someone already runs
+one for unrelated reasons. That's not a reason for hyve to keep a second,
+parallel mechanism alive; it's a reason for that external service to sit
+downstream of the agent (or be irrelevant to it) rather than upstream of
+hyve's own access model.
+
+Concretely, per existing path:
 
 - **Client-side default** stays exactly as-is — it needs no server
   infrastructure at all and is the right answer for someone who already has
-  `civo`/`aws`/`gcloud` configured locally.
-- **`access.method: primary`** becomes redundant once every cluster can run
-  an agent — the host cluster's own agent (talking to itself) is a special
-  case of the general mechanism, not a separate code path. Worth deprecating
-  once the agent exists, not before.
-- **`access.method: tunnel`** was already documented as needing exactly this
-  kind of external dial-out mechanism — an agent *is* the missing write side
-  `workflows/mint-tunnel-access.yaml` was waiting on. Superseded directly.
-- **`AccessMethod` (`accessMethodRef`)** stays relevant for the case an
-  agent doesn't cover: a genuinely external identity/access service
-  (a Rancher or Teleport a user already runs for other reasons, independent
-  of hyve) that hyve should defer to rather than compete with. The
-  `rancher-civo` `AccessMethod` built this session is exactly that case, and
-  should keep working unmodified.
+  `civo`/`aws`/`gcloud` configured locally, agent or no agent.
+- **`ModuleAuthProvider` (`access.method: module-auth`)** stays too — it's
+  orthogonal to connectivity (it just runs the driver's own `auth` op
+  server-side instead of client-side) and doesn't compete with the agent at
+  all.
+- **`access.method: primary`** is retired. The host cluster's own agent
+  (talking to itself) is the general mechanism's special case, not a reason
+  to keep a second one around.
+- **`access.method: tunnel`** is retired outright — it was a stub waiting on
+  exactly this capability (its own doc comment says as much) and never
+  shipped a real write side. The agent *is* what it was going to be.
+- **`AccessMethod` (`accessMethodRef`, `internal/apis/hyve/v1alpha1/accessmethod_types.go`,
+  `internal/api/accessmethods.go`, `accessmethod_mint.go`) is deleted**:
+  the CRD, the mint-Job-plus-relay-listener machinery, `spec.access.accessMethodRef`/
+  `accessMethodClusterID` on `ClusterDefinitionSpec`, the web console's
+  Access Methods page, all of it. The `rancher-civo` `AccessMethod` and
+  `template-civo-rancher-agent.yaml` built this session were the concrete
+  proof that this mechanism works, but they were also proof of exactly the
+  complexity this proposal exists to remove — they get replaced by the
+  agent doing the same job natively, not preserved as a legacy escape
+  hatch.
 
 ## Rollout plan (sketch)
 
 1. Land `AgentProvider` as a fifth `AccessProvider`, entirely additive —
    no existing path changes behavior.
 2. Ship `hyve-agent` as a new image (`cmd/agent`, mirroring `cmd/api`/
-   `cmd/controller`'s existing split) and a workflow that installs it
-   (`install-hyve-agent`, modeled directly on `register-with-rancher.yaml`).
-3. Prove it end-to-end against one template (a new `civo-agent` template,
-   the same "make a new template instead" pattern already used for
-   `civo-rancher-agent` this session) before touching any existing one.
+   `cmd/controller`'s existing split). Add `Agent.Enabled`/`Agent.Proxy` to
+   `ClusterDefinitionSpec.Access` and wire agent install/reconcile/uninstall
+   directly into `internal/reconcile.Reconciler`'s per-cluster pass
+   (alongside the existing create/status/delete dispatch) from the start —
+   no intermediate workflow-hook version, per the "first-class field, not a
+   lifecycle hook" decision above.
+3. Prove it end-to-end against one template with `Agent.Enabled: true` set
+   directly in its rendered spec (a new `civo-agent` template, the same
+   "make a new template instead" pattern already used for
+   `civo-rancher-agent` this session, as a safe, isolated testbed) before
+   touching any existing one — the mechanism under test is the reconcile
+   step itself, not a workflow.
 4. Add live status surfacing (CLI + web console "Recent activity" panel,
    extending this session's work) once the connection/heartbeat mechanism
    is proven.
-5. Only after the above is solid: consider folding agent-install into the
-   driver's own `create` op / reconcile loop as a first-class step, and
-   deprecating `access.method: primary`/`tunnel` in docs (never a hard
-   removal without a real migration path for whoever's using them).
+5. Start the deprecation clock on `access.method: primary`/`tunnel` and
+   `AccessMethod` itself — announced, with a migration path for anyone with
+   a live `rancher-civo`-shaped setup (this session's own `acme-worker`
+   included), not an instant breaking change. The end state has none of the
+   three left; the only question this rollout plan is actually sequencing
+   is how to get there without breaking whoever's mid-migration.
 
 ## Open questions
 
