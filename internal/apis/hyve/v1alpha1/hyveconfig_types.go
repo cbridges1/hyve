@@ -57,6 +57,21 @@ type HyveConfigSpec struct {
 	// local/CLI mode always runs modules inline, never via a Job.
 	DefaultModuleImage string `json:"defaultModuleImage,omitempty"`
 
+	// DefaultAgentImage is hyve-agent's image, installed onto every cluster
+	// with spec.access.agent.enabled: true. Empty uses the controller's own
+	// built-in default — the hyve-agent version that controller release was
+	// actually built and tested against, not a moving "latest" tag — so an
+	// unconfigured install still gets a known-compatible agent without an
+	// operator having to track version pairings by hand. Set this to run a
+	// different version deliberately (a newer agent for a feature the
+	// running controller doesn't need but the agent does, a custom build,
+	// pinning during a rollout) — same override stance
+	// DefaultModuleImage/DefaultWorkflowImage already take, just for the
+	// one image that isn't per-operation. See
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Agent image/version" for
+	// why the default is pinned rather than always-latest.
+	DefaultAgentImage string `json:"defaultAgentImage,omitempty"`
+
 	// ImageInstalls declares, per exact image reference, a shell script to
 	// run once at the start of every Job dispatched with that image —
 	// module and workflow Jobs alike, matched against whichever image a

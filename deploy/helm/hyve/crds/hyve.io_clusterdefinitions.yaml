@@ -103,6 +103,32 @@ spec:
                       reachable from the API pod, not the caller's own machine — deferred,
                       not removed).
                     type: string
+                  agent:
+                    description: |-
+                      Agent configures hyve-agent for this cluster — see
+                      docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel/
+                      AccessMethodRef above (those are being phased out in favor of this,
+                      per that doc's "Relationship to existing access paths" section, but
+                      nothing here removes them yet).
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled installs/keeps hyve-agent running on this cluster, reporting
+                          connection status (ClusterDefinitionStatus.Agent) back to the control
+                          plane. Proxy below requires this to also be true; flipping Enabled
+                          back to false uninstalls the agent (and, transitively, disables
+                          Proxy).
+                        type: boolean
+                      proxy:
+                        description: |-
+                          Proxy additionally lets the control plane route kubectl/API traffic
+                          to this cluster through its agent's own tunnel — see "Proxy
+                          authorization model" in the architecture proposal for the
+                          impersonation-based authorization this relies on. Independently
+                          toggleable from Enabled so a cluster can report live status without
+                          ever accepting proxied traffic.
+                        type: boolean
+                    type: object
                   method:
                     type: string
                   tunnel:
@@ -421,6 +447,38 @@ spec:
                       nothing meaningful to record here for it).
                     type: string
                   method:
+                    type: string
+                type: object
+              agent:
+                description: |-
+                  Agent reflects hyve-agent's current connection state for this
+                  cluster — written directly by the API process that owns the agent
+                  connection registry (internal/api), not by the controller; see
+                  docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Control-plane side".
+                properties:
+                  connected:
+                    description: |-
+                      Connected is true only while a live tunnel session for this cluster
+                      is currently held in the connection registry — not a "was it ever
+                      installed" flag.
+                    type: boolean
+                  lastConnectedAt:
+                    description: |-
+                      LastConnectedAt/LastDisconnectedAt are RFC 3339 timestamps of the
+                      most recent transition, whichever happened more recently — both are
+                      kept (rather than overwriting one on every transition) so a caller
+                      can tell how long a currently-connected agent has been up, or how
+                      long a currently-disconnected one has been down.
+                    type: string
+                  lastDisconnectedAt:
+                    type: string
+                  version:
+                    description: |-
+                      Version is the agent's own self-reported version at last connect —
+                      distinct from HyveConfig.spec.defaultAgentImage (what the control
+                      plane would install today), so a mismatch here is a direct, visible
+                      signal of version skew rather than something an operator has to
+                      infer.
                     type: string
                 type: object
               appliedResources:

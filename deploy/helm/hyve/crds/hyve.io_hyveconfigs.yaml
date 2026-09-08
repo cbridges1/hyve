@@ -54,6 +54,22 @@ spec:
               container/Secret mounts, not a dotenv file loaded at CLI startup. Only
               the fields ReconcileOne's call graph actually consumes are carried over.
             properties:
+              defaultAgentImage:
+                description: |-
+                  DefaultAgentImage is hyve-agent's image, installed onto every cluster
+                  with spec.access.agent.enabled: true. Empty uses the controller's own
+                  built-in default — the hyve-agent version that controller release was
+                  actually built and tested against, not a moving "latest" tag — so an
+                  unconfigured install still gets a known-compatible agent without an
+                  operator having to track version pairings by hand. Set this to run a
+                  different version deliberately (a newer agent for a feature the
+                  running controller doesn't need but the agent does, a custom build,
+                  pinning during a rollout) — same override stance
+                  DefaultModuleImage/DefaultWorkflowImage already take, just for the
+                  one image that isn't per-operation. See
+                  docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Agent image/version" for
+                  why the default is pinned rather than always-latest.
+                type: string
               defaultModuleImage:
                 description: |-
                   DefaultModuleImage is the container image module.JobRunner falls back

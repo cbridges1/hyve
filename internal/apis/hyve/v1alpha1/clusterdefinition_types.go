@@ -146,6 +146,36 @@ type AccessSpec struct {
 	// doc comment and types.ClusterSpec.AccessMethodClusterID (the local-
 	// mode equivalent).
 	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
+
+	// Agent configures hyve-agent for this cluster — see
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel/
+	// AccessMethodRef above (those are being phased out in favor of this,
+	// per that doc's "Relationship to existing access paths" section, but
+	// nothing here removes them yet).
+	Agent *AgentSpec `json:"agent,omitempty"`
+}
+
+// AgentSpec controls hyve-agent's lifecycle for one cluster — see
+// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Per-cluster toggle". Acted on
+// directly by the reconcile loop (internal/reconcile), not a Template
+// afterCreate hook — see that doc's own reasoning for why the distinction
+// matters (a hook only ever runs once, at creation time; this field is
+// reconciled continuously).
+type AgentSpec struct {
+	// Enabled installs/keeps hyve-agent running on this cluster, reporting
+	// connection status (ClusterDefinitionStatus.Agent) back to the control
+	// plane. Proxy below requires this to also be true; flipping Enabled
+	// back to false uninstalls the agent (and, transitively, disables
+	// Proxy).
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Proxy additionally lets the control plane route kubectl/API traffic
+	// to this cluster through its agent's own tunnel — see "Proxy
+	// authorization model" in the architecture proposal for the
+	// impersonation-based authorization this relies on. Independently
+	// toggleable from Enabled so a cluster can report live status without
+	// ever accepting proxied traffic.
+	Proxy bool `json:"proxy,omitempty"`
 }
 
 // TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml
@@ -204,6 +234,39 @@ type ClusterDefinitionStatus struct {
 	// this cycle.
 	LastCreateOutput string `json:"lastCreateOutput,omitempty"`
 	LastDeleteOutput string `json:"lastDeleteOutput,omitempty"`
+
+	// Agent reflects hyve-agent's current connection state for this
+	// cluster — written directly by the API process that owns the agent
+	// connection registry (internal/api), not by the controller; see
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Control-plane side".
+	Agent AgentStatus `json:"agent,omitempty"`
+}
+
+// AgentStatus is written by whichever process holds the live agent
+// connection registry (the API pod's tunnel listener) on every
+// connect/disconnect — not reconciler-owned the way the rest of
+// ClusterDefinitionStatus is, but still written only via the status
+// subresource, same convention.
+type AgentStatus struct {
+	// Connected is true only while a live tunnel session for this cluster
+	// is currently held in the connection registry — not a "was it ever
+	// installed" flag.
+	Connected bool `json:"connected,omitempty"`
+
+	// LastConnectedAt/LastDisconnectedAt are RFC 3339 timestamps of the
+	// most recent transition, whichever happened more recently — both are
+	// kept (rather than overwriting one on every transition) so a caller
+	// can tell how long a currently-connected agent has been up, or how
+	// long a currently-disconnected one has been down.
+	LastConnectedAt    string `json:"lastConnectedAt,omitempty"`
+	LastDisconnectedAt string `json:"lastDisconnectedAt,omitempty"`
+
+	// Version is the agent's own self-reported version at last connect —
+	// distinct from HyveConfig.spec.defaultAgentImage (what the control
+	// plane would install today), so a mismatch here is a direct, visible
+	// signal of version skew rather than something an operator has to
+	// infer.
+	Version string `json:"version,omitempty"`
 }
 
 // AccessStatus records which access method is currently active for a
