@@ -129,14 +129,12 @@ gap wasn't solved yet, rather than sit alongside them as a sixth option.
   matters a lot more here than it does for the current model, where the
   blast radius of any one path is naturally bounded by the short-lived Job
   it runs in.
-- **Protocol choice is a real decision, not a detail.** A naive
-  implementation (agent opens a persistent gRPC or WebSocket stream, control
-  plane multiplexes proxied HTTP requests over it) is exactly what Rancher's
-  own [`remotedialer`](https://github.com/rancher/remotedialer) library
-  does — reusing (or closely modeling on) prior art here is worth serious
-  consideration before building this from scratch, precisely because getting
-  reconnect/backoff/multiplexing/backpressure right is easy to get subtly
-  wrong.
+- **Protocol choice is a real decision, not a detail.** Getting
+  reconnect/backoff/multiplexing/backpressure right for a persistent
+  reverse tunnel is easy to get subtly wrong — worth resolving deliberately
+  rather than picking whatever's closest to hand. See "Tunnel protocol"
+  below for the resolution (SSH's own native multiplexing, not a
+  hand-rolled protocol or a niche library).
 - **Multi-tenancy interaction.** This session's multi-tenancy work made
   `TenantNamespace` (namespace-scoped `HyveAccessBinding`, per-tenant RBAC)
   the core isolation primitive. An agent-mediated proxy needs to slot into
@@ -208,63 +206,276 @@ the real design questions, not to pre-answer all of them.
 ### Tunnel protocol (resolves the open question below)
 
 The stated goal — tunnel through hyve-api to run real `kubectl` commands
-against the cluster, not just fetch a one-time kubeconfig — settles this:
-**a WebSocket-based multiplexed reverse dialer, the same shape as Rancher's
-own [`remotedialer`](https://github.com/rancher/remotedialer)**, not raw
-gRPC streaming and not a simpler agent-long-polls model. Reasoning:
+against the cluster, not just fetch a one-time kubeconfig — settles the
+*shape* needed: a persistent, bidirectional, multiplexed stream, not a
+request/response model. It does *not*, on its own, settle *which*
+transport — that took a second pass.
+
+**First pass, reconsidered:** a WebSocket-based multiplexed reverse dialer
+modeled on Rancher's own [`remotedialer`](https://github.com/rancher/remotedialer)
+library was the initial answer, since it's exactly this shape and is
+proven at scale inside Rancher. But adopting the library itself, rather
+than just its shape, doesn't hold up: checking actual adoption turned up
+real usage confined to Rancher's own projects (`rancher/rancher`,
+`rancher/rke`, `rancher/steve`, `rancher/wrangler`) plus a single small,
+unaffiliated hobby project — not something independent tools commonly
+build on. Taking on a dependency maintained by another organization for
+its own internal purposes, with essentially no adoption outside that
+organization, is a real, avoidable risk for a mechanism this central to
+hyve's own architecture.
+
+**Resolved: SSH's own reverse port-forwarding and channel multiplexing,
+via `golang.org/x/crypto/ssh`** — not a custom protocol, and not gRPC.
+Reasoning:
 
 - `kubectl exec`, `port-forward`, `logs -f`, and `get --watch` all upgrade
   their connection to SPDY or WebSocket *at the Kubernetes API server
   itself* — that upgrade happens on top of whatever transport carries the
   bytes there. A model where the agent long-polls for "pending requests" is
-  fundamentally request/response and can't carry any of these at all; only a
-  truly persistent, bidirectional stream can. This alone rules out long-polling
-  for the stated goal.
-- `remotedialer`'s actual model fits directly: the agent opens *one*
-  outbound WebSocket to the control plane and keeps it open; the control
-  plane can then ask the agent to open new logical "sessions" multiplexed
-  over that single WebSocket, each behaving like an ordinary `net.Conn` on
-  the control-plane side — Rancher's `cattle-cluster-agent` (the exact thing
-  this session hand-wired `acme-worker` into) uses precisely this to let
-  Rancher's own UI/CLI run `kubectl` against clusters it has no direct
-  network path to.
-- This is a near-drop-in fit for hyve's *existing* proxy code, not new
+  fundamentally request/response and can't carry any of these at all; only
+  a truly persistent, bidirectional stream can. This alone rules out
+  long-polling for the stated goal, independent of the transport question.
+- **"Agent behind NAT, server needs to reach it" is the exact problem SSH's
+  own remote port-forwarding (`-R`) was built to solve**, and has solved
+  since long before any of the alternatives here existed. SSH's `Channel`
+  abstraction is *natively* a multiplexed logical connection over one
+  transport connection — hyve doesn't need to invent framing, session IDs,
+  or backpressure handling on top of a lower-level transport (WebSocket or
+  otherwise); the protocol already has all of that built in and proven.
+- `golang.org/x/crypto/ssh` gives Go-native access to both sides directly:
+  the agent is an SSH client (`ssh.Dial`, then requests a remote listener
+  via the `tcpip-forward` global request, the same primitive `ssh -R` uses)
+  and hyve-api is an SSH server (`ssh.NewServerConn`) — no protobuf
+  codegen, no hand-rolled wire format, and the dependency itself is
+  maintained by the Go team as part of the extended standard library, about
+  as low bus-factor risk as an external dependency gets.
+- Still a near-drop-in fit for hyve's *existing* proxy code, not new
   proxying logic: `internal/api/proxy.go`'s `BuildProxy` already builds an
   `httputil.ReverseProxy` with a custom `http.Transport` (today its
   `TLSClientConfig` trusts the in-cluster CA and it dials
   `https://kubernetes.default.svc` directly, since it only ever proxies to
   the one cluster hyve-api itself runs on). The agent path only needs that
-  same `Transport`'s `DialContext` swapped to dial through the connected
-  agent's remotedialer session instead of a direct network dial — the
-  `ReverseProxy` plumbing above it (header handling, streaming response
+  same `Transport`'s `DialContext` swapped to open a new SSH channel
+  through the connected agent's session instead of a direct network dial —
+  the `ReverseProxy` plumbing above it (header handling, streaming response
   bodies, everything `BuildProxy` already gets right) is unchanged.
-- Raw gRPC bidirectional streaming could technically be forced into this
-  same shape, but buys nothing over WebSocket here and costs proto codegen
-  plus HTTP/2 framing overhead for what's fundamentally "a multiplexed byte
-  pipe," not an RPC. WebSocket is the lighter-weight fit, and it's what the
-  proven prior art already uses.
+- gRPC bidirectional streaming was the other real candidate — genuinely
+  common for new agent-style tools, unlike `remotedialer` — but needs a
+  bespoke adapter layer to present a gRPC stream as a `net.Conn`-shaped
+  thing `DialContext` can use, plus protobuf codegen as a new build-time
+  dependency hyve doesn't otherwise have. SSH gives the same multiplexed-
+  connection shape natively, with less custom code on top and a narrower,
+  more mature dependency underneath.
 
-### Agent identity / authentication
+### Agent identity / authentication (resolves the open question below)
 
-This is the single most important open question. Candidates, roughly in
-order of how much new infrastructure they need:
+**Resolved: SSH certificates — hyve-api's own SSH CA signs short-lived
+host and user certificates — with a short-lived bootstrap token only for
+the one-time step of obtaining the agent's first certificate, not a
+standing bootstrap token used as the ongoing credential.**
 
-1. **A per-cluster bootstrap token**, generated at agent-install time
-   (mirrors exactly how `register-with-rancher.yaml`'s `clusterregistrationtoken`
-   dance works today, and how most agent-based systems — Rancher, Teleport,
-   Tailscale — solve this). Simple, no new PKI, but the token itself becomes
-   a credential that needs the same care `AccessMethodSpec`'s doc comments
-   already give the mint-time credential `Secret`.
-2. **mTLS**, with the control plane acting as a small internal CA, issuing
-   the agent a short-lived client cert at install time and rotating it over
-   the standing connection before expiry. More moving parts up front, no
-   long-lived shared secret sitting in a cluster's `Secret` store
-   indefinitely.
-3. Piggyback on the cluster's own driver-minted credentials somehow (e.g.
-   the agent authenticates using something the `create` op already produced)
-   — probably not worth the coupling this implies between "how a cluster was
-   provisioned" and "how its agent authenticates," but worth ruling out
-   explicitly rather than silently.
+This is a direct consequence of "Tunnel protocol" above landing on SSH
+rather than a TLS-carried transport: SSH has its *own* transport-layer
+handshake, entirely separate from TLS, so mutual TLS doesn't compose with
+it the way it would have with a WebSocket — there's no TLS layer underneath
+an SSH connection to attach a client cert to. SSH has a native equivalent
+that gives every property mTLS was chosen for, just in SSH's own
+certificate format instead of X.509: `golang.org/x/crypto/ssh`'s
+`ssh.CertChecker`/`ssh.Certificate` types let hyve-api's own SSH CA sign
+short-lived *user* certificates (for the agent, presented during its SSH
+handshake) and short-lived *host* certificates (for hyve-api itself, so the
+agent can verify it's really talking to hyve-api and not an on-path
+impersonator) — the SSH analogue of mutual TLS, off one internal CA, native
+to the transport actually being used:
+
+- **A standing bootstrap token is a long-lived bearer secret.** Whatever
+  form it takes, it either has to be the credential the agent presents on
+  *every* reconnect (in which case it's sitting in that cluster's `Secret`
+  store indefinitely — read access to that namespace is read access to
+  "impersonate this cluster's agent"), or hyve has to build a whole separate
+  rotation/expiry mechanism to stop being one — at which point it's not
+  simpler than certificate-based auth, just a worse version of it.
+- **SSH certificates give short-lived, automatically-rotated credentials
+  for free** — the control plane (a small internal SSH CA) issues the agent
+  a user certificate with a short TTL (hours-to-days, not indefinite), and
+  the agent renews it over its own already-open connection before expiry,
+  the same shape Kubernetes' own kubelet client-cert rotation already uses.
+  A stolen cert has a bounded exploitation window instead of being valid
+  until someone notices and manually rotates it.
+- **Mutual, not one-directional.** A bearer token only proves the agent's
+  identity to the server — the agent still needs a *separate* mechanism to
+  know it's really talking to hyve-api and not something on-path
+  impersonating it. SSH host certificates (the agent's `ssh.Dial` validates
+  hyve-api's host certificate via the same internal CA, using
+  `ssh.CertChecker.CheckHostKey`) answer that direction with the same CA
+  that signs the agent's own user certificate — one trust root, both
+  directions.
+- **The private key never has to be transmitted anywhere.** The agent
+  generates its own SSH keypair locally and sends only the *public* half to
+  the control plane for signing — unlike a token, which is a secret that
+  has to reach the cluster intact from wherever it was generated, and is
+  compromised the moment it leaks in transit or at rest.
+
+None of that eliminates needing *some* one-time credential to authenticate
+the agent's very first signing request before it has a certificate of its
+own — that's what the bootstrap token is actually for here, and it's a
+materially smaller thing to get right: single-use, short expiry, and
+irrelevant to security the moment the first certificate is issued, rather
+than the thing standing between an attacker and cluster access for the
+agent's entire lifetime. This is the same two-phase shape as Kubernetes'
+own kubelet TLS bootstrapping (`kubeadm`'s bootstrap-token →
+`CertificateSigningRequest` → kubelet client cert), just carried over SSH's
+own certificate format instead of X.509: `register-with-rancher.yaml`'s
+`clusterregistrationtoken` dance is the closest thing already in this
+codebase, but the kubelet flow is the more precise model for "one-time
+token proves identity once, then a rotated certificate takes over."
+
+Piggybacking on the cluster's own driver-minted credentials (the agent
+authenticating using something the `create` op already produced) was
+considered and set aside — it couples "how a cluster was provisioned" to
+"how its agent authenticates" for no real benefit over the bootstrap-token
+step above, which is already driver-agnostic.
+
+### Proxy authorization model (resolves the open question below)
+
+Everything above ("Agent identity / authentication") is about the agent
+authenticating *to the control plane* — a separate question is what happens
+on the *other* end: once a request is flowing through the tunnel, what
+identity does it carry on the target cluster's own API server, and who gets
+to send one at all? This deserved more than the one-line "gate it behind a
+role" the open question below originally posed, because there are really
+two different authorization layers being conflated there, and the agent
+model changes the relationship between them in a way the existing
+`primary`/`AccessMethod` paths didn't have to confront.
+
+**The two layers:**
+
+1. **hyve's own role gate** — who's *allowed to ask* for a proxy session at
+   all. This is the thing `RequireRole`/`TenantNamespace` already govern for
+   every other endpoint, and it's what the original question was really
+   asking about.
+2. **The target cluster's own RBAC** — what a granted session can actually
+   *do*, once traffic reaches the real kube-apiserver. This is a completely
+   separate authorization system, on a completely separate cluster, that
+   hyve doesn't own.
+
+Today, these two layers are naturally kept distinct for every existing
+`AccessProvider`: `ModuleAuthProvider` and `AccessMethod`'s mint flow both
+produce a kubeconfig scoped to *that specific request*, and
+`PrimaryClusterProvider` mints a fresh `ServiceAccount` token *per caller*
+(`saRef` resolved from `ServiceAccountRefFromContext`) — so whatever the
+target cluster's own RBAC grants that identity is already a second,
+independent boundary underneath hyve's own role check. **An agent-mediated
+proxy doesn't get this for free.** The agent is a single, standing identity
+on its cluster (whatever `ServiceAccount`/permissions it was installed
+with) — unless something more is built, *every* proxied request rides on
+that same identity regardless of which hyve user sent it. That collapses
+the two layers into one: hyve's own role gate becomes the *entire*
+authorization boundary, with zero differentiation once past it — a tenant
+`admin` and a tenant `read-only` user would get identical `kubectl` access
+once either is allowed to proxy at all, because the target cluster's own
+RBAC never sees a difference between them.
+
+**Closing that gap** means the agent needs to forward *caller identity*,
+not just caller traffic. The direct mechanism for this already exists in
+Kubernetes: [impersonation](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#user-impersonation) —
+hyve-api attaches `Impersonate-User`/`Impersonate-Group` headers (derived
+from the caller's resolved hyve identity/role) to the proxied request; the
+agent's own `ServiceAccount` is granted *only* the `impersonate` verb (not
+broad access itself); and the target cluster's own RBAC — `RoleBinding`s the
+agent provisions at install — makes the real decision. This is a direct
+extension of a mapping hyve already has: `deploy/helm/hyve/templates/api-access-roles.yaml`
+already binds `admin`→`cluster-admin` and `read-only`→`view` for the
+primary/host cluster; an agent-installed cluster would provision the exact
+same two `RoleBinding`s locally and let impersonation carry hyve's role
+across the tunnel, rather than inventing a new mapping. Without this, `proxy`
+access is necessarily all-or-nothing per cluster, no matter what role gate
+sits in front of it.
+
+**Prior art confirms the mechanism.** This is exactly how Rancher's own
+`cattle-cluster-agent` tunnel handles the identical problem: `cattle-cluster-agent`'s
+own standing identity on the downstream cluster is *not* what authorizes a
+user's proxied request. Rancher resolves the caller's identity against
+*Rancher's own* auth (independent of the downstream cluster entirely),
+attaches `Impersonate-User`/`Impersonate-Group` headers before forwarding
+through the tunnel, and lets the downstream cluster's own native RBAC —
+`RoleBinding`s Rancher's own controllers keep synced there — make the real
+authorization decision. The agent's own `ServiceAccount` only needs the
+`impersonate` verb, not broad access used directly for user traffic.
+
+**Resolved, with that precedent as the model:**
+
+1. **Impersonation is the mechanism** — hyve-api resolves the caller's
+   identity/role the same way it already does for every other endpoint
+   (`RequireRole`), attaches `Impersonate-User`/`Impersonate-Group` before
+   forwarding through the tunnel. The agent's `ServiceAccount` is granted
+   the `impersonate` verb specifically, not broad access.
+2. **Static role mapping, not Rancher's dynamic sync layer.** Rancher needs
+   a `RoleTemplate`-sync controller because its permission model is rich
+   (multiple templates, project scoping, custom roles); hyve's three flat
+   roles don't need that. Two `RoleBinding`s per cluster, provisioned once
+   at agent-install time (part of the same first-class reconcile step that
+   installs the agent — see "Per-cluster toggle" below, not a separate
+   mechanism), identical in shape to what `api-access-roles.yaml` already
+   creates for the primary cluster: `admin`→`cluster-admin`,
+   `read-only`→`view`.
+3. **The host/control-plane cluster keeps its own hardcoded exception on
+   top of the general rule, not folded into it.** `PrimaryClusterProvider`'s
+   existing superadmin-only gate stays exactly as-is — that cluster is
+   special because it holds *every tenant's* data, not because `kubectl`
+   access is inherently sensitive. Ordinary tenant `admin` gets
+   impersonation-scoped access to their *own* clusters under the general
+   rule; nobody except superadmin gets the host cluster, regardless.
+4. **`read-only` gets proxy access too** — impersonation maps it to the
+   `view` `ClusterRole`, so "read-only" stays genuinely true at the
+   `kubectl` level, not just hyve's own REST layer. No reason to withhold
+   it once the authorization actually holds.
+5. **Audit trail: connection-level for v1, not full command-level.** Emit
+   an Event (the same pattern this session's own cluster-lifecycle-visibility
+   work already established — `ClusterDefinitionStatus`'s events/output
+   fields) recording who proxied to which cluster and when. Parsing/logging
+   every proxied request (what `kubectl exec` actually ran) is a real,
+   documented future enhancement, not a v1 blocker.
+6. **Keep `Agent.Enabled`/`Agent.Proxy` and this authorization model
+   orthogonal.** The toggle controls whether the mechanism exists on a
+   cluster at all; impersonation + `RoleBinding`s control who can use it
+   and what they get, evaluated per request — don't conflate "is proxy on"
+   with "who's allowed."
+
+### Multi-tenancy scoping of the connection registry (resolves the open question below)
+
+**Resolved: not new design — a direct extension of `Server.TenantNamespace`,
+the same mechanism that already keeps every other endpoint from leaking
+across tenants.**
+
+- **The registry key is `(namespace, clusterName)`, never a bare cluster
+  name.** Two different tenants can each have a `ClusterDefinition` literally
+  named `prod` — that's exactly why `ClusterDefinition` is namespace-scoped
+  in the first place, and the connection registry has to respect the same
+  identity or it reintroduces the collision Kubernetes namespacing already
+  solved.
+- **The proxy handler resolves `TenantNamespace(r)` before it ever touches
+  the registry** — the same call every other handler
+  (`handleGetCluster`/`handleListClusters`/etc.) already makes first,
+  already handling the superadmin act-as override for free. It then does a
+  `Get` against `(that namespace, the requested name)` — the identical
+  existence check `handleGetCluster` already performs — and only *then*
+  looks up that same key in the connection registry. A caller structurally
+  cannot even *ask* to proxy outside their own tenant: the namespace half of
+  the lookup key comes from their own resolved identity via
+  `TenantNamespace`, never from anything they supply directly in the
+  request. This is the same property that already makes cross-tenant access
+  impossible for every other endpoint today, not a new isolation mechanism
+  invented for the agent.
+- **Agent registration ties back to "Agent identity."** Since the SSH user
+  certificate issued at bootstrap already encodes which `ClusterDefinition`
+  (namespace + name) the agent belongs to (bound as a certificate principal
+  at signing time), the agent registers into the connection registry under
+  that same cryptographically-asserted identity — the control plane never
+  has to trust an unauthenticated claim about which cluster is connecting,
+  closing the loop between "who is this agent" and "which tenant does it
+  belong to"
+  with the same certificate that already answers the first question.
 
 ### Per-cluster toggle
 
@@ -300,6 +511,49 @@ itself (you'd have to read the Template/Workflow to know a cluster has one)
 reconciled continuously (so flipping `Agent.Enabled` on an *existing*
 cluster installs the agent on the next reconcile, not only at creation), and
 uninstalled the same way if turned back off.
+
+### Agent image/version (resolves the open question below)
+
+**Resolved: a built-in default, baked into the controller binary and pinned
+to whatever agent version that controller release was actually tested
+against, overridable via `HyveConfig`** — the exact same shape
+`HyveConfigSpec.DefaultModuleImage`/`DefaultWorkflowImage` already
+establish for this codebase's other "what image do we run" questions (see
+their own doc comments in `internal/apis/hyve/v1alpha1/hyveconfig_types.go`
+for the precedent this mirrors).
+
+```go
+// DefaultAgentImage is hyve-agent's image, installed onto every cluster
+// with spec.access.agent.enabled: true. Empty uses the controller's own
+// built-in default — the hyve-agent version that controller release was
+// actually built and tested against, not a moving "latest" tag — so an
+// unconfigured install still gets a known-compatible agent without an
+// operator having to track version pairings by hand. Set this to run a
+// different version deliberately (a newer agent for a feature the running
+// controller doesn't need but the agent does, a custom build, pinning
+// during a rollout) — same override stance DefaultModuleImage/
+// DefaultWorkflowImage already take, just for the one image that isn't
+// per-operation.
+DefaultAgentImage string `json:"defaultAgentImage,omitempty"`
+```
+
+Why "baked-in default, tested against that specific controller release"
+rather than always-latest: this doc's own "Version skew" con already flags
+that an agent running its own release cadence is a real risk — floating to
+whatever's newest at install time makes that worse, not better, since two
+clusters installed a week apart could silently end up on different agent
+versions with no controller-side change at all. Pinning the *default* to a
+known-good, co-tested pairing (and requiring an explicit `HyveConfig` edit
+to deviate) keeps "what agent version is actually running" an intentional
+choice rather than an accident of install timing.
+
+This doesn't need a per-cluster override tier the way `DefaultModuleImage`
+sits below `ClusterDefinition.spec.runner.image` — nothing about *this*
+cluster's driver should determine what agent version it runs, unlike a
+module operation's image, which genuinely can vary per cluster. If a
+per-cluster override turns out to be needed later (piloting a new agent
+version on one cluster before a fleet-wide `HyveConfig` change), it's a
+natural, additive extension of `AgentSpec` — not a reason to add it now.
 
 ### Relationship to existing access paths
 
@@ -373,22 +627,55 @@ Concretely, per existing path:
 
 ## Open questions
 
-- Bootstrap-token vs. mTLS vs. something else for agent identity (see
-  above) — this is the decision most worth getting right before writing
-  code, since it's the hardest to change later.
+- ~~Bootstrap-token vs. certificate-based auth vs. something else for agent
+  identity...~~ **Resolved: SSH certificates (hyve-api's own SSH CA signs
+  short-lived host and user certs), with a short-lived bootstrap token used
+  only once** to authenticate the agent's first signing request (see "Agent
+  identity / authentication" above) — the two aren't actually competing
+  options, certificate-based auth still needs a one-time bootstrap step,
+  it's just a much smaller thing to secure than a standing bearer
+  credential.
 - ~~Does the control plane need a real multiplexed tunnel protocol...~~
-  **Resolved: yes — a `remotedialer`-style multiplexed WebSocket reverse
-  dialer** (see "Tunnel protocol" above), driven directly by the stated goal
-  of running real `kubectl` commands (including `exec`/`port-forward`/
-  `logs -f`/`watch`) through the tunnel, not just fetching a one-time
-  kubeconfig.
-- Where does agent *version* live relative to the `hyve` binary's own
-  version — pinned per HyveConfig, per-Template, or always-latest with its
-  own upgrade workflow?
-- Should `proxy: true` require a role above ordinary tenant `admin` (mirrors
-  `PrimaryClusterProvider`'s existing superadmin-only gate on the host
-  cluster), given what direct `kubectl` access to a tenant's cluster
-  implies?
-- Multi-tenancy scoping of the connection registry and the proxy handler
-  itself — needs explicit design against `Server.TenantNamespace`, not an
-  afterthought.
+  **Resolved: yes — SSH's own reverse port-forwarding and channel
+  multiplexing, via `golang.org/x/crypto/ssh`** (see "Tunnel protocol"
+  above), driven directly by the stated goal of running real `kubectl`
+  commands (including `exec`/`port-forward`/`logs -f`/`watch`) through the
+  tunnel, not just fetching a one-time kubeconfig. An initial WebSocket-
+  based design modeled on Rancher's `remotedialer` was reconsidered once
+  its real-world adoption turned out to be essentially Rancher-only, with
+  no meaningful use outside that one organization's own projects.
+- ~~Where does agent *version* live relative to the `hyve` binary's own
+  version...~~ **Resolved: a controller-built-in default, pinned to
+  whatever agent version that controller release was tested against,
+  overridable via a new `HyveConfig.spec.defaultAgentImage`** (see "Agent
+  image/version" above) — the same shape `DefaultModuleImage`/
+  `DefaultWorkflowImage` already establish, deliberately not
+  always-latest, since floating versions would make this doc's own
+  "Version skew" con worse rather than better.
+- ~~Should `proxy: true` require a role above ordinary tenant `admin`?~~
+  **Resolved: no elevated role needed beyond ordinary tenant `admin`/
+  `read-only`, provided the proxy carries per-caller identity via
+  Kubernetes impersonation** — the same mechanism Rancher's own
+  `cattle-cluster-agent` tunnel uses for this exact problem (see "Proxy
+  authorization model" above). A tenant's own `admin`/`read-only` role maps
+  to `cluster-admin`/`view` on their own cluster via `RoleBinding`s
+  provisioned at agent-install time (mirroring `api-access-roles.yaml`'s
+  existing mapping); the host/control-plane cluster keeps
+  `PrimaryClusterProvider`'s superadmin-only gate as a separate, hardcoded
+  exception on top of that general rule, not superseded by it.
+- ~~Multi-tenancy scoping of the connection registry and the proxy handler
+  itself...~~ **Resolved: not new design — a direct extension of
+  `Server.TenantNamespace`** (see "Multi-tenancy scoping of the connection
+  registry" above): the registry is keyed by `(namespace, clusterName)`,
+  never a bare name, and the proxy handler resolves `TenantNamespace(r)`
+  before ever touching the registry — the same first step every other
+  handler already takes — so a caller structurally cannot reach a
+  connection outside their own tenant, the same property that already
+  holds for every other endpoint today. Distinct from the impersonation
+  question above: that's about what a *granted* session can do on the
+  target cluster; this is about which callers can reach which cluster's
+  connection at all.
+
+All five open questions are resolved as of this revision — nothing left
+unaddressed here needs to block moving from proposal to an implementation
+plan.
