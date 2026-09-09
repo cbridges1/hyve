@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -152,38 +153,44 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv, hooks)
 
-	// Re-fetch before the status update: ReconcileOne may have driven a
-	// SaveClusterDefinition call (via CRDStateProvider) that already
-	// touched .status, and updating a stale copy here would silently
-	// revert that write (last-write-wins on a stale resourceVersion is
-	// exactly the API server rejects, but only if we bothered to check —
-	// re-fetching sidesteps needing to reconcile the two writes by hand).
-	if err := r.Client.Get(ctx, req.NamespacedName, &cr); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Deleted mid-reconcile (e.g. NOT_FOUND-status cleanup path
-			// removed it via RemoveClusterFile) — nothing left to update.
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, fmt.Errorf("re-get ClusterDefinition before status update: %w", err)
-	}
-
-	// Only overwrite whichever of these actually fired this cycle — most
-	// reconciles hit neither (an ACTIVE, unchanged cluster runs no create/
-	// delete op at all), and re-fetched cr above already carries whatever
-	// was persisted on a previous cycle that did.
-	if lastCreateOutput != "" {
-		cr.Status.LastCreateOutput = lastCreateOutput
-	}
-	if lastDeleteOutput != "" {
-		cr.Status.LastDeleteOutput = lastDeleteOutput
-	}
-
 	cond := metav1.Condition{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Reconciled", Message: "last reconcile succeeded"}
 	if reconcileErr != nil {
 		cond = metav1.Condition{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionTrue, Reason: "ReconcileFailed", Message: reconcileErr.Error()}
 	}
-	if err := r.setCondition(ctx, &cr, cr.Generation, cond); err != nil {
-		log.Printf("[%s] Warning: failed to update status: %v", cr.Name, err)
+
+	// retry.RetryOnConflict, not a single Get-then-Update: ReconcileOne can
+	// itself drive one or more SaveClusterDefinition calls mid-cycle (via
+	// CRDStateProvider — resources.go and, since milestone 4, agent.go
+	// both do this on real drift), each its own .status write against this
+	// same object. A single re-fetch immediately before this final write
+	// narrows that race but doesn't close it — confirmed live: milestone
+	// 4's own agent-install path hit "the object has been modified" here
+	// on its very first successful run, an entirely normal (not
+	// exceptional) sequence, not a rare edge case worth merely logging and
+	// moving on from. On IsNotFound (deleted mid-reconcile, e.g. the
+	// NOT_FOUND-status cleanup path already removed it via
+	// RemoveClusterFile) there's nothing left to update — return success
+	// immediately rather than treating that as a conflict to retry.
+	updateErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var fresh hyvev1alpha1.ClusterDefinition
+		if err := r.Client.Get(ctx, req.NamespacedName, &fresh); err != nil {
+			return err
+		}
+		// Only overwrite whichever of these actually fired this cycle —
+		// most reconciles hit neither (an ACTIVE, unchanged cluster runs
+		// no create/delete op at all), and the freshly re-fetched object
+		// already carries whatever was persisted on a previous cycle that
+		// did.
+		if lastCreateOutput != "" {
+			fresh.Status.LastCreateOutput = lastCreateOutput
+		}
+		if lastDeleteOutput != "" {
+			fresh.Status.LastDeleteOutput = lastDeleteOutput
+		}
+		return r.setCondition(ctx, &fresh, fresh.Generation, cond)
+	})
+	if updateErr != nil && !apierrors.IsNotFound(updateErr) {
+		log.Printf("[%s] Warning: failed to update status: %v", cr.Name, updateErr)
 	}
 
 	if reconcileErr != nil {

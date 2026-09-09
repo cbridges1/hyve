@@ -26,8 +26,22 @@ func FromTypesClusterDefinitionSpec(def *types.ClusterDefinition) hyvev1alpha1.C
 			AccessMethodRef:       def.Spec.AccessMethodRef,
 			AccessMethodClusterID: def.Spec.AccessMethodClusterID,
 			Method:                def.Spec.AccessMethod,
+			Agent:                 FromTypesAgentSpec(def.Spec.Agent),
 		},
 	}
+}
+
+// FromTypesAgentSpec is ToTypesAgentSpec's inverse — nil (spec.access.agent
+// left out of the rendered CRD entirely) when neither field is set, rather
+// than an always-present empty {} block, so a round-trip through file mode
+// (which has no way to distinguish "explicitly agent: {}" from "omitted
+// agent:" — both parse to the same zero-value types.AgentSpec) renders the
+// same CRD a caller who genuinely never mentioned agent: would get.
+func FromTypesAgentSpec(a types.AgentSpec) *hyvev1alpha1.AgentSpec {
+	if !a.Enabled && !a.Proxy {
+		return nil
+	}
+	return &hyvev1alpha1.AgentSpec{Enabled: a.Enabled, Proxy: a.Proxy}
 }
 
 // FromTypesClusterDefinitionStatus converts def's reconciler-owned fields
@@ -35,11 +49,23 @@ func FromTypesClusterDefinitionSpec(def *types.ClusterDefinition) hyvev1alpha1.C
 // cluster-state/<name>.state.yaml sidecar (the file-mode analogue of a real
 // ClusterDefinition's status subresource).
 func FromTypesClusterDefinitionStatus(def *types.ClusterDefinition) hyvev1alpha1.ClusterDefinitionStatus {
-	driverOutputs, applied := FromTypesStatus(def)
+	driverOutputs, applied, appliedAgent := FromTypesStatus(def)
 	return hyvev1alpha1.ClusterDefinitionStatus{
 		DriverOutputs:    driverOutputs,
 		AppliedResources: applied,
+		AppliedAgent:     appliedAgent,
 	}
+}
+
+// FromTypesAppliedAgent is FromTypesStatus's AppliedAgent half, split out
+// so callers that only need this one field (none today, but mirrors
+// AppliedResources' own per-field helper shape) don't have to discard the
+// rest of FromTypesStatus's return values.
+func FromTypesAppliedAgent(a *types.AppliedAgent) *hyvev1alpha1.AppliedAgent {
+	if a == nil {
+		return nil
+	}
+	return &hyvev1alpha1.AppliedAgent{ConfigHash: a.ConfigHash, AppliedAt: a.AppliedAt}
 }
 
 func FromTypesDriverRef(d types.DriverRef) hyvev1alpha1.DriverRef {

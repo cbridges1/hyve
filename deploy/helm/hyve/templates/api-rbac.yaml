@@ -35,9 +35,16 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # patch (beyond the original read-only get) backs
+  # internal/api/agent_listener.go's writeAgentStatus — confirmed live,
+  # missing here 403's every agent connect/disconnect status write
+  # silently from hyve-agent's own point of view (the tunnel itself stays
+  # up; only ClusterDefinitionStatus.Agent fails to update). No update:
+  # writeAgentStatus always uses a merge patch, deliberately, never a
+  # full-object Status().Update — see that function's own doc comment.
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions/status"]
-    verbs: ["get"]
+    verbs: ["get", "patch"]
   # update backs PATCH /clusters, /templates, /workflows, /resources (raw-
   # spec editing from the web UI) — confirmed live, missing here 403's the
   # update call with no indication beforehand (fake-clientset-backed tests

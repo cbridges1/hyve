@@ -61,6 +61,50 @@ type Reconciler struct {
 	// empty by the CLI; cmd/controller/run.go sets it from
 	// HyveConfig.spec.defaultModuleImage.
 	DefaultModuleImage string
+
+	// AgentTokenIssuer mints hyve-agent bootstrap tokens for milestone 4's
+	// agent-install step (see agent.go's reconcileAgent) — left nil by the
+	// CLI, which disables spec.access.agent.enabled entirely in local/file
+	// mode (see AgentTokenIssuer's own doc comment). cmd/controller/run.go
+	// is the only caller that sets this, to an *agentpki.TokenIssuer.
+	AgentTokenIssuer AgentTokenIssuer
+
+	// DefaultAgentImage mirrors DefaultModuleImage/DefaultWorkflowImage's
+	// own pattern for hyve-agent's own image — see
+	// HyveConfigSpec.DefaultAgentImage's doc comment. Left empty by the
+	// CLI; cmd/controller/run.go sets it from
+	// HyveConfig.spec.defaultAgentImage.
+	DefaultAgentImage string
+
+	// AgentControlPlaneNamespace is where hyve-agent bootstrap-token
+	// Secrets are stored (must match hyve-api's own --namespace) and,
+	// under today's one-namespace-per-install model, also the namespace
+	// half of the SSH certificate principal a freshly-bootstrapped agent
+	// is signed for (see agentpki.AgentPrincipal) — cmd/controller/run.go
+	// sets this from its own --namespace flag, the same value
+	// hyve-controller is already scoped to for every other CRD it
+	// watches. Kept as its own field (rather than reusing some other
+	// existing "namespace" the Reconciler already has, since it doesn't
+	// have one at all today — internal/reconcile is otherwise entirely
+	// namespace-agnostic) so a later multi-namespace-per-organization
+	// model (see docs/HYVE-ORGANIZATION-MODEL-PROPOSAL.md) can resolve
+	// this per-cluster instead of once at startup, without an interface
+	// change.
+	AgentControlPlaneNamespace string
+
+	// AgentControlPlaneURL is hyve-api's own externally-reachable base URL
+	// for POST /agent/bootstrap — the value hyve-agent's own
+	// --control-plane-url flag needs (see cmd/agent/main.go). Left empty,
+	// agent installation is skipped with a warning (see reconcileAgent) —
+	// there's no sensible built-in default the way DefaultAgentImage has
+	// one, since this is inherently install-specific.
+	AgentControlPlaneURL string
+
+	// AgentTunnelAddress is hyve-api's own externally-reachable SSH tunnel
+	// listener address (host:port) — hyve-agent's own --tunnel-address.
+	// Same "no sensible default, skip with a warning" stance as
+	// AgentControlPlaneURL.
+	AgentTunnelAddress string
 }
 
 // moduleImage resolves the image a module.Executor should use when
@@ -408,6 +452,23 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			}
 		} else {
 			r.logf("[%s] Up to date — no action needed", name)
+		}
+
+		// Runs unconditionally, like the auth call above — hyve-agent's own
+		// install state is independent of param drift, exactly like
+		// spec.resources below it. A failure here is logged, not returned:
+		// blocking resource reconciliation on an agent-install hiccup
+		// would conflate two independent concerns (matches this branch's
+		// own existing "warn and continue" stance for auth/scale
+		// failures, not reconcileResources' own hard-return convention).
+		// Skipped in dry-run mode — reconcileAgent has mutating side
+		// effects (kubectl apply/delete, a minted bootstrap token) with no
+		// read-only mode of its own, unlike reconcileResources' diff-based
+		// preview.
+		if dryRun {
+			r.logf("[%s] DRY RUN: skipping hyve-agent reconciliation", name)
+		} else if agentErr := r.reconcileAgent(ctx, &cluster, env); agentErr != nil {
+			r.logf("[%s] Warning: hyve-agent reconciliation failed: %v", name, agentErr)
 		}
 
 		repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -75,6 +76,20 @@ type Server struct {
 	// Proxy backs /proxy/* — see proxy.go. Left nil, /proxy/* 503s rather
 	// than panicking.
 	Proxy http.Handler
+
+	// AgentCA backs POST /agent/bootstrap (agent_bootstrap.go) — see
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Agent identity /
+	// authentication". Left nil, that endpoint 500s with a clear message
+	// rather than panicking, same stance Proxy/RelayBaseURL above take for
+	// their own not-yet-configured cases.
+	AgentCA *agentpki.CA
+
+	// AgentRegistry backs ServeAgentTunnel (agent_listener.go) — the
+	// in-memory (namespace, clusterName)-keyed map of currently live agent
+	// connections. Left nil, ServeAgentTunnel refuses to start (returns an
+	// error) rather than accepting connections it can't track, same
+	// fail-fast stance as the AgentCA check right above it.
+	AgentRegistry *AgentRegistry
 }
 
 // Routes returns the API's full handler: /auth/*, /healthz, /docs, and
@@ -99,6 +114,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /auth/refresh", s.handleRefresh)
+	s.registerAgentBootstrapRoutes(mux)
 	s.registerDocsRoutes(mux)
 
 	apiMux := http.NewServeMux()

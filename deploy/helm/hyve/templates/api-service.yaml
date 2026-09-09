@@ -16,3 +16,10 @@ spec:
       {{- if and (eq .Values.api.service.type "NodePort") .Values.api.service.nodePort }}
       nodePort: {{ .Values.api.service.nodePort }}
       {{- end }}
+    # A raw SSH TCP listener, not HTTP — see api.agentBindAddress's own
+    # comment in values.yaml for why this lives on the main Service
+    # (unlike relay's pod-network-only hyve-api-internal Service) despite
+    # never being routed through api-ingress.yaml.
+    - name: agent
+      port: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
+      targetPort: agent

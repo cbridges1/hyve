@@ -113,7 +113,22 @@ request.
   `CertificateSigningRequest` flow (the proposal doc's own cited
   precedent) with the same simplification — no separate approval step,
   since the bootstrap token itself is the one-time proof — carried over
-  SSH's own certificate format instead of X.509.
+  SSH's own certificate format instead of X.509. Mounted on `Routes()`'s
+  own top-level mux (alongside `/auth/login`), not `/api/` — no
+  `requireAuth`/`requireRole` applies, the token itself is the entire
+  authorization model.
+- `deploy/helm/hyve/templates/api-ingress.yaml`: add `/agent` to the
+  routed path list — found live, not anticipated up front: unlike the
+  relay listener (internal-only, no Ingress at all), `/agent/bootstrap`
+  has to be reachable from *outside* this cluster, since a real agent
+  runs on the managed cluster being bootstrapped, not this one. Confirmed
+  via a real 404 from nginx (not the Go handler) before this was added.
+- `cmd/api/run.go`: wire `agentpki.LoadOrCreateCA` into `Server.AgentCA`
+  at startup, using the same `clientset` already built there for
+  access-method minting — soft-fail (log a warning, leave `AgentCA` nil)
+  rather than `Fatal`, since hyve-agent is opt-in and an install that
+  never uses it shouldn't be unable to start over a transient CA-bootstrap
+  problem.
 
 **Tests:** `internal/agentpki/*_test.go` — sign round-trip (a submitted
 public key comes back as a valid certificate the CA's own public key
@@ -168,6 +183,17 @@ from "does authorization on top of it work."
 - `internal/api/agentregistry.go` — the `(namespace, name)`-keyed
   in-memory map of live SSH connections (each wrapping an `*ssh.ServerConn`
   that new channels get opened against per proxied request).
+- `deploy/helm/hyve/templates/api-deployment.yaml`, `api-service.yaml`,
+  `values.yaml` (new `api.agentBindAddress`, default `:8092`): a
+  `containerPort`/Service port for the tunnel listener, added to the
+  **main** `hyve-api` Service — unlike the relay listener's pod-network-
+  only `hyve-api-internal` Service, a real agent dials in from outside
+  this cluster's own pod network, so it needs the same kind of external
+  reachability `api.ingress.host` gives the HTTP API (though, being raw
+  SSH over TCP rather than HTTP, it can't actually go through
+  `api-ingress.yaml` itself — that's a real install's own exposure
+  decision, e.g. a `LoadBalancer` Service or a TCP-mode gateway, same
+  "chart doesn't decide this for you" stance as `api.ingress.enabled`).
 
 **Tests:** registry unit tests (register/lookup/remove-on-disconnect). A
 local integration test standing up the listener and a test agent
@@ -175,11 +201,64 @@ local integration test standing up the listener and a test agent
 CLI binary) confirming the registry reflects a real connect/disconnect
 cycle.
 
-**Manual verification:** run `cmd/agent` against a real `k3d-hyve-local`
-(as a pod in a throwaway kind/k3d cluster, or even locally against a port-
-forwarded listener for a first pass) and confirm `kubectl get
-clusterdefinition <name> -o yaml` shows `status.agent.connected: true`,
-then flips to `false` when the agent process is killed.
+**Live-discovered fixes** (none anticipated up front — the integration
+test and manual verification below caught all five):
+
+- `buildAgentServerConfig`'s host certificate had `ValidPrincipals`
+  hardcoded to `[]string{"hyve-api"}` — but `ssh.CertChecker.CheckHostKey`
+  checks that against the actual host portion of whatever address the
+  agent dials (an IP, an internal DNS name, a LoadBalancer host — never
+  literally the string "hyve-api" in practice). Confirmed by reading
+  `golang.org/x/crypto/ssh`'s own `CheckCert`: an *empty* `ValidPrincipals`
+  list means "valid for all hosts," which is the actually-correct value
+  here — there's no one fixed hostname to assert.
+- Both `internal/agent/connect.go`'s `connectOnce` and the test's own
+  `dialTestAgent` hardcoded the SSH client username to `"hyve-agent"` —
+  but `ssh.CertChecker.Authenticate` checks the *connection's own
+  username* against the certificate's `ValidPrincipals`
+  (`agentpki.AgentPrincipal(namespace, clusterName)`, e.g. `"acme/web"`),
+  so a fixed placeholder username could never match. Fixed by reading the
+  username back off `Identity.Certificate.ValidPrincipals[0]` instead of
+  hardcoding it — the certificate is the one place this value is already
+  correct.
+- `AgentStatus.Connected` was tagged `json:"connected,omitempty"` — since
+  `omitempty` drops a `false` bool entirely, `writeAgentStatus`'s merge
+  patch on disconnect never sent a `"connected"` key at all, so the merge
+  silently left the prior `true` in place. Every disconnect looked like a
+  no-op from `kubectl`'s point of view. Fixed by dropping `omitempty` on
+  this one field — `false` is exactly as meaningful as `true` here, unlike
+  most other status fields in this file.
+- `hyve-api`'s own RBAC (`api-rbac.yaml`) only ever granted `get` on
+  `clusterdefinitions/status`, never `patch` — nothing before this
+  milestone had hyve-api itself writing status (only the controller did).
+  `writeAgentStatus` 403'd on every connect/disconnect, silently from the
+  agent's own point of view (the tunnel itself stayed up fine). Added
+  `patch` to that rule.
+- `agent.Run`'s reconnect loop blocked in `conn.Wait()` with nothing
+  watching `ctx.Done()` — confirmed live: a plain `kill` (SIGTERM, what
+  Kubernetes actually sends first on pod termination) canceled the
+  context but left the goroutine parked in `Wait()` indefinitely, so
+  `status.agent.connected` stayed `true` until something eventually
+  force-killed the process. Fixed by having a small goroutine close `conn`
+  on `ctx.Done()`, so a graceful shutdown now unblocks `Wait()`
+  immediately instead of relying on a force-kill to ever notice.
+
+**Manual verification:** done live against `k3d-hyve-local` — the real
+`cmd/agent` binary run locally against `kubectl port-forward
+svc/hyve-api 8092:8092` (the "or even locally against a port-forwarded
+listener for a first pass" option), using a bootstrap token minted
+directly via `agentpki.GenerateBootstrapToken` against the real cluster
+(no CLI/reconcile-loop token issuance exists yet — that's milestone 4).
+Confirmed the full cycle: `kubectl get clusterdefinition agent-test -o
+yaml` showed `status.agent.connected: true` with `lastConnectedAt` set
+immediately after connect; a plain SIGTERM against the agent process
+flipped it to `false` with `lastDisconnectedAt` set within ~1s (after the
+`ctx.Done()` fix above — before it, only a force-kill worked at all,
+and only after the RBAC/omitempty fixes above did disconnect status
+writes take effect rather than silently failing or silently no-op'ing).
+Also confirmed a pod restart correctly reuses the persisted
+`hyve-agent-cert` Secret (no bootstrap token needed on the second
+connect).
 
 ## Milestone 4: reconcile-loop agent lifecycle (first-class, not a workflow)
 
@@ -212,17 +291,103 @@ Template's `afterCreate` hook.
   ACTIVE-status branch (installing an agent before a cluster is actually up
   makes no sense).
 
-**Tests:** `internal/reconcile/agent_test.go`, styled like
-`TestReconcileCluster_ToolRequirements_OnlyEnforcedInlineNotViaJobDispatch`
-(fake driver module, fake state provider) — assert the right manifests get
-applied when `Agent.Enabled` is true and removed when it's flipped back to
-false, and that `Agent.Proxy` alone (without `Enabled`) is rejected or
-ignored per the spec's own documented dependency.
+Also touched: `internal/types` (new `AgentSpec`/`AppliedAgent`, mirroring
+the CRD's own — `internal/reconcile` is mode-agnostic and needed these to
+reach it, same "primary needed to reach internal/types" precedent
+`AccessMethod` already established), `internal/apis/hyve/v1alpha1` (new
+`AppliedAgent` status type, CRD regenerated), `internal/crdconv` (wires
+`Agent`/`AppliedAgent` both directions), `internal/agentpki/issuer.go`
+(new — `TokenIssuer`, the concrete client-go-backed implementation of
+`reconcile.AgentTokenIssuer`, wired in by `cmd/controller/run.go` alongside
+the same clientset it already builds for `KubernetesJobStepRunner`/
+`JobRunner`), `deploy/helm/hyve` (new `controller.agent.controlPlaneURL`/
+`tunnelAddress` values, `controller.hyveConfig.defaultAgentImage`, a new
+RBAC `create` rule on Secrets for `TokenIssuer`), `deploy/Dockerfile.agent`
+(new — hyve-agent's own dev-build image, genuinely separate from the main
+`hyve` image per `cmd/agent/main.go`'s own standalone-binary precedent).
+
+**Tests:** `internal/reconcile/agent_test.go` — a fake "kubectl" script put
+first on `PATH` (this package has no Kubernetes client dependency at all;
+every mutating call already shells out to the real `kubectl` binary by
+name, so intercepting at the process-exec boundary is the only seam
+available, and the established convention here is unit-testing pure logic
+while leaving real `kubectl` calls to live verification — this test
+exercises the real `reconcileAgent` end-to-end instead, since the decision
+logic and the manifest rendering are exactly what's worth covering
+together). Covers: install when `Enabled`, no-op skip when config is
+unchanged (no token re-minted), removal when flipped back to `false`,
+`Agent.Proxy` alone (without `Enabled`) ignored rather than erroring per
+the spec's own documented dependency, proxy bindings applied/removed
+independently of the core install, and a soft no-op (not an error) when
+the controller has no `AgentTokenIssuer`/control-plane URL/tunnel address
+configured at all (local/CLI mode's own default).
 
 **Manual verification (the concrete proof this decision mattered):** flip
 `spec.access.agent.enabled: true` on an *already-existing* real cluster —
 not one just created — and confirm the agent installs and connects on the
-very next reconcile, with no recreation and no workflow to remember to run.
+very next reconcile, with no recreation and no workflow to remember to
+run. Done live against `k3d-hyve-local`, self-referentially (an `authOnly`
+fake-driver `ClusterDefinition` whose `auth` op exports a real, working
+in-cluster kubeconfig for the same cluster hyve-controller itself runs
+on — the only way to get a genuinely reachable target cluster without
+standing up a second one) — confirmed both a fresh-create-with-agent-
+enabled cluster and, separately, an already-ACTIVE cluster that had `agent:
+{enabled: true}` patched onto it after the fact both installed and
+connected on their very next reconcile, with `status.appliedAgent`/
+`status.agent.connected` populated correctly. Also confirmed a
+`proxy: true → false` toggle removes exactly the two proxy
+`ClusterRoleBinding`s while leaving the core install untouched.
+
+**Live-discovered fixes** (four, all real — three were reachable in
+completely ordinary, non-error operation, not edge cases):
+
+- `types.AppliedAgent.ConfigHash` (via `agentConfigHash`) originally hashed
+  only `(proxy, image)` — but `HYVE_CONTROL_PLANE_URL`/`HYVE_TUNNEL_ADDRESS`
+  are *also* embedded directly in every agent's rendered `Deployment` env,
+  so a real change to either (hyve-api migrating to a new address) would
+  never re-apply any already-installed agent — the "up to date, skip"
+  check had no way to notice. Fixed by folding both into the hash.
+- `internal/controller/reconciler.go`'s `Reconcile` did a single re-fetch
+  immediately before its own final `setCondition` status write, with a
+  comment explaining *why* the re-fetch was there (to avoid reverting
+  whatever `ReconcileOne` had already written mid-cycle via
+  `SaveClusterDefinition`) — but a single re-fetch only narrows that race,
+  it doesn't close it. Confirmed live: milestone 4's own agent-install path
+  (the first `ReconcileOne` step to routinely call `SaveClusterDefinition`
+  mid-cycle on a reconcile that previously wrote nothing else) hit "the
+  object has been modified" on its very first successful run — a real,
+  routinely-reachable sequence, not a rare edge case. Fixed by wrapping the
+  re-fetch-and-write in `retry.RetryOnConflict`, the standard client-go
+  pattern for exactly this, rather than a single attempt that just logs a
+  scary-looking warning on every success.
+- `deploy/helm/hyve/templates/controller-rbac.yaml` granted no `create` on
+  Secrets at all (only a narrowly-scoped `get` on `hyve-cli-secrets`) —
+  `agentpki.TokenIssuer.IssueBootstrapToken` needs to create a fresh
+  `hyve-agent-bootstrap-*` Secret per install/re-apply and would 403
+  without it. Added an unscoped `create` rule (RBAC `resourceNames` can't
+  scope `create` at all — same gotcha `api-rbac.yaml`'s own
+  `hyve-cli-secrets` comment already documents for the identical reason).
+- Self-inflicted test-methodology artifact, not a product bug, but worth
+  recording since it cost real debugging time: reusing the *same* physical
+  target cluster across several different `ClusterDefinition` test objects
+  (unavoidable for a self-referential live test with no second cluster
+  available) meant a later test's agent pod kept finding and reusing an
+  *earlier* test's persisted `hyve-agent-cert` Secret (fixed name, fixed
+  namespace, keyed by nothing test-specific) — silently asserting the
+  wrong identity rather than bootstrapping fresh. A real deployment never
+  hits this (one `ClusterDefinition` per physical cluster, for its whole
+  lifetime); only a repeated self-referential test does.
+
+**Confirmed, not fixed (deliberately out of scope):** deleting a
+`ClusterDefinition` outright (a real `kubectl delete`, not flipping
+`enabled` back to `false`) routes through `reconcileDelete`'s finalizer
+path, not the ACTIVE-status branch `reconcileAgent` lives on — so it never
+runs hyve-agent's own removal step. In real usage this is harmless (the
+driver's own delete operation destroys the whole underlying cluster,
+hyve-agent included, as a side effect); confirmed live only because this
+milestone's self-referential test deleted the `ClusterDefinition` *without*
+a real driver deleting anything underneath it, which is not how this ever
+happens outside of a test built this way.
 
 ## Milestone 5: proxy path — impersonation, tenant scoping, real `kubectl`
 

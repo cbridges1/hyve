@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cbridges1/hyve/internal/agentpki"
 	hyveapi "github.com/cbridges1/hyve/internal/api"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 
@@ -36,6 +37,7 @@ var (
 	apiRelayBindAddress   string
 	apiRelayBaseURL       string
 	apiHostServiceAccount string
+	apiAgentBindAddress   string
 )
 
 // Cmd is the api command.
@@ -70,6 +72,7 @@ func init() {
 	runCmd.Flags().StringVar(&apiRelayBindAddress, "relay-bind-address", ":8091", "Address the access-method mint relay listener binds to — never expose this via Ingress; in-cluster pod network only")
 	runCmd.Flags().StringVar(&apiRelayBaseURL, "relay-base-url", "", "This API's own in-cluster address for the relay listener (e.g. http://hyve-api-internal.hyve-system.svc.cluster.local:8091) — required for POST /api/access-methods/<name>/mint; leave unset to disable access-method minting entirely")
 	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
+	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -120,6 +123,19 @@ func runAPI() {
 		RelayBaseURL:       apiRelayBaseURL,
 	}
 
+	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)
+	// is an opt-in capability — an install that never uses it shouldn't be
+	// unable to start API just because CA bootstrap hit a transient
+	// problem. Server.AgentCA's own doc comment covers the left-nil case
+	// (POST /agent/bootstrap 500s with a clear message instead).
+	agentCA, agentCAErr := agentpki.LoadOrCreateCA(context.Background(), clientset, apiNamespace)
+	if agentCAErr != nil {
+		log.Printf("⚠️  Could not load/create hyve-agent's internal CA (%v) — POST /agent/bootstrap will be unavailable", agentCAErr)
+	} else {
+		server.AgentCA = agentCA
+		server.AgentRegistry = hyveapi.NewAgentRegistry()
+	}
+
 	caData, caErr := os.ReadFile(apiInClusterCAPath)
 	if caErr != nil {
 		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the primary/host-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
@@ -149,6 +165,21 @@ func runAPI() {
 			log.Printf("❌ Relay listener exited with error: %v", err)
 		}
 	}()
+
+	// The agent tunnel listener is a raw TCP+SSH listener, not an
+	// http.Handler — see Server.ServeAgentTunnel's own doc comment. Same
+	// "its own goroutine, logs rather than kills the whole API" stance as
+	// the relay listener above; skipped entirely if AgentCA/AgentRegistry
+	// never got configured (the soft-fail branch above already logged
+	// why).
+	if server.AgentCA != nil && server.AgentRegistry != nil {
+		go func() {
+			log.Printf("🚀 hyve agent tunnel listener starting — bind=%s", apiAgentBindAddress)
+			if err := server.ServeAgentTunnel(context.Background(), apiAgentBindAddress); err != nil {
+				log.Printf("❌ Agent tunnel listener exited with error: %v", err)
+			}
+		}()
+	}
 
 	log.Printf("🚀 hyve api starting — namespace=%s bind=%s", apiNamespace, apiBindAddress)
 	if err := http.ListenAndServe(apiBindAddress, server.Routes()); err != nil {

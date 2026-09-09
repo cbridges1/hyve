@@ -234,12 +234,40 @@ type ClusterSpec struct {
 	// module-auth/tunnel still don't need this — they keep a real driver,
 	// so ordinary reconciliation is correct for them.
 	AccessMethod string `yaml:"accessMethod,omitempty" json:"accessMethod,omitempty"`
+
+	// Agent mirrors the CRD-only AccessSpec.Agent (hyvev1alpha1.AgentSpec)
+	// — same "primary needed to reach internal/types" reasoning as
+	// AccessMethod above applies here too: internal/reconcile is the
+	// mode-agnostic engine that actually drives hyve-agent's install/
+	// removal (see internal/reconcile/agent.go), so this needs to reach
+	// this package rather than staying CRD-only. Meaningless in local/CLI
+	// mode today (there's no control-plane API process for an agent to
+	// dial into without cluster mode) — see Reconciler.AgentTokenIssuer's
+	// own doc comment for how that's enforced (a soft no-op, not an
+	// error).
+	Agent AgentSpec `yaml:"agent,omitempty" json:"agent,omitempty"`
+
+	// AppliedAgent is reconciler-owned state tracking hyve-agent's current
+	// installation, mirroring AppliedResources' own pattern one level up
+	// (a single record, not a map, since there's only ever one agent
+	// installation per cluster). nil means "not installed" — see
+	// AppliedAgent's own doc comment.
+	AppliedAgent *AppliedAgent `yaml:"appliedAgent,omitempty" json:"appliedAgent,omitempty"`
 }
 
 // AccessMethodPrimary mirrors hyvev1alpha1.AccessMethodPrimary — duplicated
 // rather than imported, same "internal/types stays independent of the CRD
 // package" precedent as every other mirrored constant/type in this file.
 const AccessMethodPrimary = "primary"
+
+// AgentSpec mirrors hyvev1alpha1.AgentSpec — see that type's own doc
+// comment (internal/apis/hyve/v1alpha1/clusterdefinition_types.go) for the
+// full Enabled/Proxy semantics; duplicated here rather than imported, same
+// precedent as every other mirrored type in this file.
+type AgentSpec struct {
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Proxy   bool `yaml:"proxy,omitempty" json:"proxy,omitempty"`
+}
 
 // ClusterMetadata represents cluster metadata
 type ClusterMetadata struct {

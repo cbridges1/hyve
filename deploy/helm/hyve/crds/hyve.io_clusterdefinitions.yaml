@@ -460,7 +460,11 @@ spec:
                     description: |-
                       Connected is true only while a live tunnel session for this cluster
                       is currently held in the connection registry — not a "was it ever
-                      installed" flag.
+                      installed" flag. Deliberately no `omitempty`: writeAgentStatus
+                      (internal/api/agent_listener.go) sends this via a JSON merge patch,
+                      where an omitted field means "leave unchanged," not "false" — an
+                      omitempty tag here would make every disconnect (Connected: false)
+                      silently no-op instead of clearing a stale "connected: true".
                     type: boolean
                   lastConnectedAt:
                     description: |-
@@ -480,6 +484,24 @@ spec:
                       signal of version skew rather than something an operator has to
                       infer.
                     type: string
+                required:
+                - connected
+                type: object
+              appliedAgent:
+                description: |-
+                  AppliedAgent is reconciler-owned state tracking hyve-agent's current
+                  installation for this cluster — see internal/types.AppliedAgent's
+                  own doc comment (internal/reconcile/agent.go is what actually
+                  writes this, via crdconv, the same as AppliedResources above). nil
+                  means "not installed."
+                properties:
+                  appliedAt:
+                    type: string
+                  configHash:
+                    type: string
+                required:
+                - appliedAt
+                - configHash
                 type: object
               appliedResources:
                 additionalProperties:

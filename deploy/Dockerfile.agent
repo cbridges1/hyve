@@ -1,0 +1,30 @@
+# hyve-agent's own image — see docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md and
+# cmd/agent/main.go's own header comment for why this is a genuinely
+# separate binary/image, not folded into the main hyve image the way
+# controller/api are (deploy/Dockerfile.dev's single image backs both of
+# those, selected by command+args at the Deployment level — hyve-agent runs
+# on a completely different cluster than hyve-controller/hyve-api, so
+# sharing an image would only mean shipping a much bigger image with a
+# cobra command tree hyve-agent never uses).
+#
+# Local-dev build, same "builds from THIS repo's own local source tree, not
+# a published module" stance as Dockerfile.dev — see that file's own header
+# comment for why that distinction matters. NOT for a real deployment
+# (there's no release/registry pipeline for this yet — see internal/
+# reconcile/agent.go's defaultAgentImage constant, a placeholder pending
+# one).
+#
+# Build context is THIS hyve source repo:
+#   docker build -f deploy/Dockerfile.agent -t hyve-agent:dev .
+FROM golang:1.26-alpine AS builder
+RUN apk add --no-cache git
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/hyve-agent ./cmd/agent
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /out/hyve-agent /usr/local/bin/hyve-agent
+ENTRYPOINT ["hyve-agent"]

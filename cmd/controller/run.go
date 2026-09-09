@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	internalcontroller "github.com/cbridges1/hyve/internal/controller"
 	"github.com/cbridges1/hyve/internal/k8sjob"
@@ -40,6 +41,8 @@ var (
 	probeAddr               string
 	leaderElect             bool
 	maxConcurrentReconciles int
+	agentControlPlaneURL    string
+	agentTunnelAddress      string
 )
 
 // Cmd is the controller command.
@@ -75,6 +78,8 @@ func init() {
 	runCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the health/readiness probe endpoint binds to")
 	runCmd.Flags().BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for controller manager HA")
 	runCmd.Flags().IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4, "Maximum ClusterDefinitions reconciled at once — without this, a single stuck cluster (e.g. a workflow step wedged on ImagePullBackOff) blocks every other cluster's reconcile in the namespace")
+	runCmd.Flags().StringVar(&agentControlPlaneURL, "agent-control-plane-url", "", "hyve-api's own externally-reachable base URL, for a newly-installed hyve-agent's POST /agent/bootstrap (e.g. https://hyve-api.example.com) — leave unset to disable hyve-agent installation entirely (spec.access.agent.enabled becomes a no-op, logged as a warning)")
+	runCmd.Flags().StringVar(&agentTunnelAddress, "agent-tunnel-address", "", "hyve-api's own externally-reachable SSH tunnel listener address, host:port (e.g. hyve-api.example.com:8092) — same disable-if-unset behavior as --agent-control-plane-url")
 
 	Cmd.AddCommand(runCmd)
 }
@@ -140,16 +145,17 @@ func runController() {
 	// mgr.GetAPIReader() reads directly from the API server, bypassing the
 	// cache entirely, which is exactly what a one-time startup read needs.
 	var startupCfg hyvev1alpha1.HyveConfig
-	var defaultWorkflowImage, defaultModuleImage string
+	var defaultWorkflowImage, defaultModuleImage, defaultAgentImage string
 	var imagePullSecrets []string
 	var imageInstalls []k8sjob.ImageInstall
 	if err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: namespace, Name: configName}, &startupCfg); err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/imagePullSecrets/imageInstalls at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
+			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/defaultAgentImage/imagePullSecrets/imageInstalls at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
 		}
 	} else {
 		defaultWorkflowImage = startupCfg.Spec.DefaultWorkflowImage
 		defaultModuleImage = startupCfg.Spec.DefaultModuleImage
+		defaultAgentImage = startupCfg.Spec.DefaultAgentImage
 		imagePullSecrets = startupCfg.Spec.ImagePullSecrets
 		imageInstalls = make([]k8sjob.ImageInstall, len(startupCfg.Spec.ImageInstalls))
 		for i, ii := range startupCfg.Spec.ImageInstalls {
@@ -162,6 +168,23 @@ func runController() {
 	hyveReconciler.DefaultWorkflowImage = defaultWorkflowImage
 	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets, ImageInstalls: imageInstalls}
 	hyveReconciler.DefaultModuleImage = defaultModuleImage
+
+	// hyve-agent installation (milestone 4 — see internal/reconcile/agent.go):
+	// soft-disabled, not fatal, when --agent-control-plane-url/
+	// --agent-tunnel-address are left unset, same "opt-in feature, missing
+	// config just disables it" stance as cmd/api/run.go's own AgentCA
+	// wiring. TargetNamespace and ControlPlaneNamespace happen to be the
+	// same value today (this controller's own --namespace) — see
+	// Reconciler.AgentControlPlaneNamespace's own doc comment for why
+	// that's not assumed permanent.
+	hyveReconciler.DefaultAgentImage = defaultAgentImage
+	hyveReconciler.AgentTokenIssuer = &agentpki.TokenIssuer{Clientset: clientset, ControlPlaneNamespace: namespace}
+	hyveReconciler.AgentControlPlaneNamespace = namespace
+	hyveReconciler.AgentControlPlaneURL = agentControlPlaneURL
+	hyveReconciler.AgentTunnelAddress = agentTunnelAddress
+	if agentControlPlaneURL == "" || agentTunnelAddress == "" {
+		log.Printf("ℹ️  --agent-control-plane-url/--agent-tunnel-address not set — spec.access.agent.enabled will be a no-op on every cluster")
+	}
 
 	reconciler := &internalcontroller.ClusterDefinitionReconciler{
 		Client:                  mgr.GetClient(),

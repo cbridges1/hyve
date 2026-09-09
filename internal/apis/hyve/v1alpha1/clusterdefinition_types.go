@@ -200,6 +200,13 @@ type ClusterDefinitionStatus struct {
 	// entries are currently applied, keyed by ResourceRef.Name.
 	AppliedResources map[string]*AppliedResource `json:"appliedResources,omitempty"`
 
+	// AppliedAgent is reconciler-owned state tracking hyve-agent's current
+	// installation for this cluster — see internal/types.AppliedAgent's
+	// own doc comment (internal/reconcile/agent.go is what actually
+	// writes this, via crdconv, the same as AppliedResources above). nil
+	// means "not installed."
+	AppliedAgent *AppliedAgent `json:"appliedAgent,omitempty"`
+
 	// Conditions follow the standard Kubernetes Condition[] convention.
 	// hyve sets "Ready" (True once the module reports ACTIVE),
 	// "Reconciling" (True while a reconcile is in progress for this
@@ -250,8 +257,12 @@ type ClusterDefinitionStatus struct {
 type AgentStatus struct {
 	// Connected is true only while a live tunnel session for this cluster
 	// is currently held in the connection registry — not a "was it ever
-	// installed" flag.
-	Connected bool `json:"connected,omitempty"`
+	// installed" flag. Deliberately no `omitempty`: writeAgentStatus
+	// (internal/api/agent_listener.go) sends this via a JSON merge patch,
+	// where an omitted field means "leave unchanged," not "false" — an
+	// omitempty tag here would make every disconnect (Connected: false)
+	// silently no-op instead of clearing a stale "connected: true".
+	Connected bool `json:"connected"`
 
 	// LastConnectedAt/LastDisconnectedAt are RFC 3339 timestamps of the
 	// most recent transition, whichever happened more recently — both are

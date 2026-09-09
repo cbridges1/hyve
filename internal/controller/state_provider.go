@@ -145,9 +145,10 @@ func (p *CRDStateProvider) SaveClusterDefinition(def *types.ClusterDefinition) e
 	if err := p.Client.Get(ctx, k8stypes.NamespacedName{Namespace: p.Namespace, Name: def.Metadata.Name}, &cr); err != nil {
 		return fmt.Errorf("get ClusterDefinition %s/%s: %w", p.Namespace, def.Metadata.Name, err)
 	}
-	driverOutputs, applied := crdconv.FromTypesStatus(def)
+	driverOutputs, applied, appliedAgent := crdconv.FromTypesStatus(def)
 	cr.Status.DriverOutputs = driverOutputs
 	cr.Status.AppliedResources = applied
+	cr.Status.AppliedAgent = appliedAgent
 	if err := p.Client.Status().Update(ctx, &cr); err != nil {
 		return fmt.Errorf("update status for ClusterDefinition %s/%s: %w", p.Namespace, def.Metadata.Name, err)
 	}

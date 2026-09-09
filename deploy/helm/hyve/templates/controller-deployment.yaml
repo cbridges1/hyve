@@ -66,6 +66,12 @@ spec:
             {{- if .Values.controller.leaderElection }}
             - --leader-elect
             {{- end }}
+            {{- if .Values.controller.agent.controlPlaneURL }}
+            - --agent-control-plane-url={{ .Values.controller.agent.controlPlaneURL }}
+            {{- end }}
+            {{- if .Values.controller.agent.tunnelAddress }}
+            - --agent-tunnel-address={{ .Values.controller.agent.tunnelAddress }}
+            {{- end }}
           # HOME=/data redirects module.CacheDir()'s hardcoded
           # $HOME/.hyve/module-cache (internal/module/cache.go — it doesn't
           # respect --home/HYVE_HOME) onto the same PVC --modules-dir lives

@@ -23,11 +23,37 @@ controller:
     strictResourceDelete: false
     defaultWorkflowImage: ""
     defaultModuleImage: ""
+    # See HyveConfigSpec.DefaultAgentImage's own doc comment — empty falls
+    # back to reconcile/agent.go's own built-in placeholder constant, not
+    # to nothing (hyve-agent installation itself is what's disabled by
+    # leaving controller.agent.controlPlaneURL/tunnelAddress below unset,
+    # not by leaving this empty).
+    defaultAgentImage: ""
     # Names of existing kubernetes.io/dockerconfigjson Secrets (in
     # namespace, above) for pulling private runner/container: images —
     # this chart never creates them, create yours first (e.g.
     # `kubectl create secret docker-registry`). e.g. ["ghcr-pull-secret"]
     imagePullSecrets: []
+
+  # agent configures hyve-agent installation (milestone 4 — see
+  # internal/reconcile/agent.go) — both values must be set together for
+  # spec.access.agent.enabled to do anything on any cluster; leaving
+  # either unset disables hyve-agent installation entirely, logged as an
+  # info line at controller startup rather than failing it (matches
+  # api.relayBaseURL's own "opt-in, soft-disabled when unset" stance).
+  agent:
+    # controlPlaneURL is hyve-api's own externally-reachable base URL for
+    # POST /agent/bootstrap — see cmd/controller/run.go's
+    # --agent-control-plane-url. Typically the same host as
+    # api.publicBaseURL/api.ingress.host, since a managed cluster's own
+    # hyve-agent dials in from outside this cluster's pod network, same as
+    # a user's browser.
+    controlPlaneURL: ""
+    # tunnelAddress is hyve-api's own externally-reachable SSH tunnel
+    # listener, host:port — see api.agentBindAddress's own comment in this
+    # file for why reaching it needs its own exposure (a raw TCP listener
+    # can't go through the same HTTP Ingress api.ingress.host uses).
+    tunnelAddress: ""
 
   resources:
     requests:
@@ -102,6 +128,18 @@ api:
   # nothing external ever needs to reach this address. Set explicitly only
   # if the internal Service is renamed via fullnameOverride or similar.
   relayBaseURL: ""
+
+  # agentBindAddress is hyve-agent's own SSH tunnel listener's port — see
+  # internal/api.Server.ServeAgentTunnel. Unlike relayBindAddress above,
+  # this is exposed on the MAIN hyve-api Service (api-service.yaml), not
+  # the pod-network-only internal one: a managed cluster's hyve-agent
+  # dials in from outside this cluster's own pod network, the same way a
+  # user's browser reaches api.ingress.host. A raw SSH TCP listener can't
+  # be routed through the same HTTP Ingress as the rest of the API, so
+  # reaching it from outside the cluster needs its own exposure (a
+  # LoadBalancer Service, a TCP-mode Ingress/gateway, or — for local dev —
+  # kubectl port-forward svc/hyve-api).
+  agentBindAddress: ":8092"
 
   resources:
     requests:

@@ -45,8 +45,30 @@ func ToTypesClusterDefinition(cr *hyvev1alpha1.ClusterDefinition) types.ClusterD
 			AccessMethodRef:       cr.Spec.Access.AccessMethodRef,
 			AccessMethodClusterID: cr.Spec.Access.AccessMethodClusterID,
 			AccessMethod:          cr.Spec.Access.Method,
+			Agent:                 ToTypesAgentSpec(cr.Spec.Access.Agent),
+			AppliedAgent:          ToTypesAppliedAgent(cr.Status.AppliedAgent),
 		},
 	}
+}
+
+// ToTypesAgentSpec unwraps the CRD's *AgentSpec (nil when
+// spec.access.agent is unset at all) into internal/types' always-present
+// value type — a nil pointer and an all-false struct mean exactly the same
+// thing to internal/reconcile (see AgentSpec.Enabled's own doc comment),
+// so this collapses the two representations into one before reconcile
+// ever sees it, rather than making every caller nil-check.
+func ToTypesAgentSpec(a *hyvev1alpha1.AgentSpec) types.AgentSpec {
+	if a == nil {
+		return types.AgentSpec{}
+	}
+	return types.AgentSpec{Enabled: a.Enabled, Proxy: a.Proxy}
+}
+
+func ToTypesAppliedAgent(a *hyvev1alpha1.AppliedAgent) *types.AppliedAgent {
+	if a == nil {
+		return nil
+	}
+	return &types.AppliedAgent{ConfigHash: a.ConfigHash, AppliedAt: a.AppliedAt}
 }
 
 func ToTypesDriverRef(d hyvev1alpha1.DriverRef) types.DriverRef {
@@ -143,14 +165,14 @@ func ToTypesAppliedResources(m map[string]*hyvev1alpha1.AppliedResource) map[str
 }
 
 // FromTypesStatus converts def's reconciler-owned fields (DriverOutputs/
-// AppliedResources) into the CRD's status shape — the inverse of
-// ToTypesClusterDefinition's status half. Spec is deliberately not
+// AppliedResources/AppliedAgent) into the CRD's status shape — the inverse
+// of ToTypesClusterDefinition's status half. Spec is deliberately not
 // converted back: CRDStateProvider.SaveClusterDefinition only ever writes
 // the status subresource (see its own doc comment for why), so a caller
 // mutating def.Spec (e.g. resources.go pruning a delete:true entry) has
 // that change silently not persisted in CRD mode — spec stays external,
 // user-owned input, same as any other Kubernetes controller.
-func FromTypesStatus(def *types.ClusterDefinition) (map[string]string, map[string]*hyvev1alpha1.AppliedResource) {
+func FromTypesStatus(def *types.ClusterDefinition) (map[string]string, map[string]*hyvev1alpha1.AppliedResource, *hyvev1alpha1.AppliedAgent) {
 	var applied map[string]*hyvev1alpha1.AppliedResource
 	if def.Spec.AppliedResources != nil {
 		applied = make(map[string]*hyvev1alpha1.AppliedResource, len(def.Spec.AppliedResources))
@@ -168,5 +190,5 @@ func FromTypesStatus(def *types.ClusterDefinition) (map[string]string, map[strin
 			}
 		}
 	}
-	return def.Spec.DriverOutputs, applied
+	return def.Spec.DriverOutputs, applied, FromTypesAppliedAgent(def.Spec.AppliedAgent)
 }

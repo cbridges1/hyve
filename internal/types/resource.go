@@ -191,3 +191,26 @@ type AppliedResource struct {
 	AppliedAt string          `yaml:"appliedAt" json:"appliedAt"` // RFC 3339
 	Objects   []AppliedObject `yaml:"objects,omitempty" json:"objects,omitempty"`
 }
+
+// AppliedAgent is the reconciler-owned record of what hyve currently
+// believes it installed for hyve-agent on this cluster — never hand-edit.
+// Unlike AppliedResource, there's no Objects list: hyve-agent's own
+// manifest identities (Namespace/ServiceAccount/ClusterRole/
+// ClusterRoleBinding/Deployment, plus the two proxy ClusterRoleBindings)
+// are fixed and deterministic, not derived from an arbitrary applied
+// manifest — see internal/reconcile/agent.go's own object-identity
+// constants, which both apply and removal work off directly instead of
+// anything recorded here.
+type AppliedAgent struct {
+	// ConfigHash detects drift in exactly the inputs that actually change
+	// what gets applied (Proxy, the resolved agent image) — deliberately
+	// excludes Enabled itself (a false Enabled means "not installed at
+	// all," represented by AppliedAgent being nil, not by a hash) and
+	// excludes the bootstrap token (single-use and never something to
+	// re-apply over just because a prior token happened to differ — see
+	// internal/reconcile/agent.go's reconcileAgent for why a token is only
+	// ever minted on a real config transition, not every reconcile cycle).
+	ConfigHash string `yaml:"configHash" json:"configHash"`
+
+	AppliedAt string `yaml:"appliedAt" json:"appliedAt"` // RFC 3339
+}

@@ -97,3 +97,12 @@ type AppliedResource struct {
 	AppliedAt    string          `json:"appliedAt"`
 	Objects      []AppliedObject `json:"objects,omitempty"`
 }
+
+// AppliedAgent is the reconciler-owned record of what hyve currently
+// believes it installed for hyve-agent on this cluster. Mirrors
+// internal/types.AppliedAgent — see that type's own doc comment for why
+// there's no Objects list the way AppliedResource has one.
+type AppliedAgent struct {
+	ConfigHash string `json:"configHash"`
+	AppliedAt  string `json:"appliedAt"`
+}

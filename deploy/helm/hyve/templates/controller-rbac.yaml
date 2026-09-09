@@ -95,6 +95,18 @@ rules:
     resources: ["secrets"]
     verbs: ["get"]
     resourceNames: ["hyve-cli-secrets"]
+  # create backs agentpki.TokenIssuer (internal/agentpki/issuer.go,
+  # wired in cmd/controller/run.go's own AgentTokenIssuer field) minting a
+  # fresh hyve-agent-bootstrap-* Secret per milestone 4's agent-install
+  # step (internal/reconcile/agent.go) — unscoped because, same gotcha as
+  # api-rbac.yaml's own hyve-cli-secrets comment, RBAC resourceNames can't
+  # scope create at all, and a bootstrap-token Secret's name varies per
+  # mint (it's derived from the token's own hash). hyve-api's RBAC (not
+  # this one) already holds get+delete on Secrets unscoped — see
+  # api-rbac.yaml — which is what actually consumes these.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
   # record.EventRecorder (see reconciler.go's Recorder field, wired via
   # mgr.GetEventRecorderFor in SetupWithManager) creates a fresh Event object
   # per emitted event — patch is also needed since client-go's recorder
