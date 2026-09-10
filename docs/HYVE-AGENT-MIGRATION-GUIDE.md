@@ -119,35 +119,54 @@ memory of that). Treat them as a starting point, not a guarantee.
 
 ## Host cluster access (`access.method: primary`) — resolved in milestone 9
 
-`access.method: primary`'s hardcoded minting mechanism
-(`PrimaryClusterProvider`, its superadmin-only gate, and its ad hoc
-`ServiceAccountRef`-based `TokenRequest`/`/proxy` path) has been removed
-entirely — not deferred, not replaced by hyve-agent, but deleted. The
-resolved design (per an explicit decision on this project, "host cluster
-should default to the auth method defined in the module") is simpler than
-either the old mechanism or a full agent-symmetric model: `primary` is now
-a pure identifying marker, and a `primary`-marked `ClusterDefinition` is
-authenticated exactly like any other cluster, through its own real
-`spec.driver`'s `auth` operation.
+**Naming convention:** the host cluster's self-registered `ClusterDefinition`
+is now conventionally named `host` (previously suggested as `local` —
+renamed because "local" already means something else entirely in this
+project's own vocabulary: local/file mode, no live cluster at all. The
+host cluster is the opposite of that — a very real, live cluster, the one
+hyve-controller/hyve-api themselves run on). Nothing in the code requires
+this exact name; it's purely a convention `scripts/install-local.sh`'s own
+suggested snippet uses.
 
-**What this means for the cluster conventionally named `local`:** it now
-needs a real `spec.driver` (and a matching `auth.yaml` in that driver
-module) for `hyve cluster auth local` / `hyve migrate cluster` to actually
-mint anything. Before this milestone, `local` had `spec.driver: {}` and
-relied entirely on the special case this milestone removed — reconciling
-it today (confirmed live, `k3d-hyve-local`) produces a real, continuous
-`"no driver specified"` reconcile error until an admin assigns it one.
-This is expected, not a bug: give the host cluster's `ClusterDefinition` a
-driver module whose `auth.yaml` produces a kubeconfig for the cluster
-hyve is already running on — for an in-cluster case, one that mints a
-token against `hyve-access-admin`/`hyve-access-readonly`
-(`deploy/helm/hyve/templates/api-access-roles.yaml`) and points `server:`
-at this API's own `/proxy` path (still live, generic infrastructure — see
-`internal/api/proxy.go`) is the direct equivalent of what
-`PrimaryClusterProvider` used to do automatically, just expressed as an
-ordinary module instead of hardcoded Go.
+`access.method: primary`'s original hardcoded minting mechanism
+(`PrimaryClusterProvider`, gated to `RoleSuperadmin`, minting a token
+against a caller's resolved `ServiceAccountRef` or a dedicated host
+ServiceAccount) was removed once in this milestone, then **restored in a
+scoped-down form** after a real regression was found live: an earlier
+design for this milestone required an admin to hand-write a driver module
+just to get a kubeconfig for the cluster hyve is already running on —
+reconciling `k3d-hyve-local`'s own host `ClusterDefinition` after that
+change produced a real, continuous `"no driver specified"` reconcile
+error, since it had `spec.driver: {}` and nothing to fill it with. That
+was an acknowledged oversight, corrected the same day: the host cluster
+needs no module at all for its own lifecycle (auth/create/delete).
 
-`access.method: primary`'s only remaining consumer is
-`hyve migrate cluster`'s host-resolution (`cmd/migrate_resolve.go`'s
-`resolveCurrentHostKubeconfigPath`), which still looks for exactly one
-`ClusterDefinition` with this marker set — that convention is unchanged.
+**The resolved design:** `internal/api.HostProvider` (the restored,
+scoped-down `PrimaryClusterProvider`) mints a short-lived token against a
+dedicated `hyve-host-admin` `ServiceAccount` (bound to the built-in
+`cluster-admin` `ClusterRole` — see
+`deploy/helm/hyve/templates/api-access-roles.yaml`) via `TokenRequest`,
+gated to `RoleSuperadmin` only, and returns a kubeconfig whose `server:`
+points at hyve-api's own `/proxy` path — reachable because hyve-api
+already runs inside the host cluster itself, no tunnel of any kind
+needed (unlike `access.method: tunnel` or hyve-agent's own SSH tunnel,
+both of which solve a genuinely different problem: reaching a cluster
+hyve-api has *no* direct network path to at all). `hyve-controller` mints
+its own token the same way, directly against
+`https://kubernetes.default.svc` (no `/proxy` hop needed — it's already
+inside the cluster too), to reconcile `spec.resources` on the host
+cluster with no module involved (see `internal/reconcile/host.go`). Ad
+hoc `hyve workflow run --cluster host` needs nothing extra either — it
+only depends on `hyve cluster auth host` having produced a working
+kubeconfig, which it now does automatically.
+
+This all applies only to a `primary`-marked `ClusterDefinition` with **no
+real `spec.driver`** — the automatic, zero-config case. An admin who sets
+a real `spec.driver` on a `primary`-marked cluster deliberately opts out
+of this automatic path: it's then reconciled exactly like any other
+driver-having cluster (client-side auth via
+`GET /clusters/<name>/auth-context`, the same as the default case), and
+`access.method: primary` stays set purely as `hyve migrate cluster`'s own
+host-identification marker (`cmd/migrate_resolve.go`'s
+`resolveCurrentHostKubeconfigPath`) — that convention is unchanged either
+way.

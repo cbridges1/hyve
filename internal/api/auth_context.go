@@ -91,27 +91,22 @@ func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
 }
 
 // handleAuthContext only serves clusters using the default client-side auth
-// method (spec.access.method unset or AccessMethodPrimary, AND
-// spec.access.agent.proxy not set — milestone 5's own agent-proxy path is
-// checked here too, alongside Method, even though it's a separate field:
-// Agent/Proxy is deliberately orthogonal to Method, meaning a real
-// agent+proxy cluster typically leaves Method unset entirely, and without
-// this check it would incorrectly look exactly like an ordinary
-// client-side-auth cluster here, sending a caller down the wrong path —
-// running the driver module's own auth.yaml locally instead of ever
-// reaching GET /api/kubeconfig's agent-proxy dispatch at all).
-// AccessMethodPrimary is carved out of the generic Method-set rejection
-// below because it no longer means "server-minted, no driver module" (see
-// its own doc comment) — a primary-marked cluster has a real driver
-// module and is meant to go through this exact client-side path like any
-// other default-auth cluster; Method is only set on it as an identifying
-// marker for `hyve migrate cluster`, not a dispatch instruction. A
-// cluster that's opted into the AccessMethodModuleAuth override or
-// AccessMethodTunnel is still server-minted via GET /api/kubeconfig
-// instead, and returning driver secrets here for those would just be a
-// second, weaker-guaranteed way to reach the same access (no
-// authorization check baked in, unlike the override path's module-side
-// check — see moduleEnvForClusterDefinition).
+// method (spec.access.method unset — or AccessMethodPrimary with a real
+// spec.driver explicitly configured, see the usesClientSideAuth comment
+// below — AND spec.access.agent.proxy not set — milestone 5's own
+// agent-proxy path is checked here too, alongside Method, even though
+// it's a separate field: Agent/Proxy is deliberately orthogonal to
+// Method, meaning a real agent+proxy cluster typically leaves Method
+// unset entirely, and without this check it would incorrectly look
+// exactly like an ordinary client-side-auth cluster here, sending a
+// caller down the wrong path — running the driver module's own auth.yaml
+// locally instead of ever reaching GET /api/kubeconfig's agent-proxy
+// dispatch at all). A cluster that's opted into the AccessMethodModuleAuth
+// override or AccessMethodTunnel is still server-minted via
+// GET /api/kubeconfig instead, and returning driver secrets here for
+// those would just be a second, weaker-guaranteed way to reach the same
+// access (no authorization check baked in, unlike the override path's
+// module-side check — see moduleEnvForClusterDefinition).
 func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
@@ -125,7 +120,18 @@ func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get cluster")
 		return
 	}
-	if cd.Spec.Access.Method != "" && cd.Spec.Access.Method != hyvev1alpha1.AccessMethodPrimary {
+	// A primary-marked cluster with no real driver is the common,
+	// zero-config host-cluster case — GET /api/kubeconfig's HostProvider
+	// serves it automatically, with no module involved (see its own doc
+	// comment), so it's excluded here exactly like module-auth/tunnel.
+	// One WITH a real driver is an admin's deliberate opt-out of that
+	// automatic path — Method stays "primary" regardless (see
+	// AccessMethodPrimary's own doc comment on why it never changes), so
+	// this is the one case Method alone can't decide; Driver.Source is
+	// what actually distinguishes them.
+	usesClientSideAuth := cd.Spec.Access.Method == "" ||
+		(cd.Spec.Access.Method == hyvev1alpha1.AccessMethodPrimary && cd.Spec.Driver.Source != "")
+	if !usesClientSideAuth {
 		writeError(w, http.StatusConflict, fmt.Sprintf("cluster %q uses access.method %q, not client-side auth — fetch its kubeconfig via GET /api/kubeconfig instead", name, cd.Spec.Access.Method))
 		return
 	}

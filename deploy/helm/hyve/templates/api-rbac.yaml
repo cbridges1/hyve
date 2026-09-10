@@ -163,6 +163,21 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["delete"]
+  # Backs internal/api's HostProvider (GET /api/kubeconfig for
+  # access.method: primary, no real spec.driver — see
+  # docs/HYVE-AGENT-MIGRATION-GUIDE.md's "Host cluster access" section):
+  # mints a short-lived token against the dedicated hyve-host-admin
+  # ServiceAccount via TokenRequest. Scoped to exactly that one
+  # ServiceAccount — unlike the plain "secrets" create rule above,
+  # resourceNames DOES work here (confirmed live): a subresource create
+  # like serviceaccounts/token targets an already-existing, named parent
+  # object (the URL itself names it, e.g. POST .../serviceaccounts/NAME/
+  # token), unlike a bare top-level create with a client-supplied name and
+  # no prior identity to match against.
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.api.hostServiceAccount | default "hyve-host-admin" | quote }}]
+    verbs: ["create"]
   # get/list (beyond nothing before) granted ahead of Phase 6.7's
   # log-streaming feature, not yet implemented — see pods/pods-log below.
   - apiGroups: ["batch"]

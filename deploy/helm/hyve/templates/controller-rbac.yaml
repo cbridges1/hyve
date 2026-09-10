@@ -107,6 +107,21 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
+  # Backs internal/reconcile/host.go's own host-cluster spec.resources
+  # reconciliation (a primary-marked ClusterDefinition with no real
+  # spec.driver — see docs/HYVE-AGENT-MIGRATION-GUIDE.md's "Host cluster
+  # access" section): mints a token against the dedicated hyve-host-admin
+  # ServiceAccount via TokenRequest, exactly like internal/api's own
+  # HostProvider does for GET /api/kubeconfig (see api-rbac.yaml's twin
+  # rule and its own comment on why resourceNames DOES work for this
+  # particular create verb). hyve-controller talks to the cluster it's
+  # already running on directly (server: https://kubernetes.default.svc),
+  # not through /proxy — it has no need for that reverse-proxy hop the way
+  # an external kubectl caller does.
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.api.hostServiceAccount | default "hyve-host-admin" | quote }}]
+    verbs: ["create"]
   # record.EventRecorder (see reconciler.go's Recorder field, wired via
   # mgr.GetEventRecorderFor in SetupWithManager) creates a fresh Event object
   # per emitted event — patch is also needed since client-go's recorder

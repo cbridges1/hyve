@@ -909,6 +909,58 @@ cluster auth local` reaches the client-side auth-context path (not a 409)
 and fails for the expected reason; confirmed `GET /healthz` and the web
 console's Access Methods nav entry/pages are gone.
 
+**Correction, same day:** the "give the host cluster a real driver
+module" design above was flagged by the user as an oversight almost
+immediately after the live verification surfaced its actual cost —
+requiring an admin to hand-write a driver module just to get a kubeconfig
+for the cluster hyve is already running on is pure friction with no real
+benefit, since that cluster is always directly reachable in-cluster
+already. Restored, in scoped-down form: `internal/api.HostProvider` (a
+trimmed `PrimaryClusterProvider` — the dead "mint for the caller's own
+resolved `ServiceAccountRef`" branch stays gone, confirmed genuinely
+unreachable via any HTTP dispatch both times this was audited) mints a
+token against a dedicated `hyve-host-admin` ServiceAccount via
+`TokenRequest`, gated to `RoleSuperadmin`, kubeconfig `server:` pointing
+at hyve-api's own `/proxy`. `internal/reconcile/host.go` gives
+`hyve-controller` the equivalent capability for `spec.resources`
+reconciliation, minting its own token directly against
+`https://kubernetes.default.svc` (no `/proxy` hop needed — it's already
+inside the cluster). Both share the actual TokenRequest-minting logic via
+a new `internal/hostauth` package rather than duplicating it, and
+`internal/reconcile` gained a new `HostKubeconfigIssuer` interface
+(mirroring `AgentTokenIssuer`'s existing "interface lives with the
+consumer" shape) rather than importing client-go directly, keeping that
+package's own mode-agnostic discipline intact.
+
+This now applies only to a `primary`-marked cluster with **no** real
+`spec.driver` (`isHostClusterWithoutDriver`, `internal/reconcile/host.go`)
+— the zero-config case. One WITH a real driver still goes through the
+ordinary client-side path exactly as the first pass above described;
+`internal/api/kubeconfig_handler.go` and `auth_context.go` both carry a
+matching `Driver.Source == ""` condition so the two paths can't collide.
+Helm chart restorations: `hyve-host-admin` ServiceAccount +
+ClusterRoleBinding (`api-access-roles.yaml`), a `serviceaccounts/token`
+create rule scoped by `resourceNames` to that one ServiceAccount in both
+`api-rbac.yaml` (hyve-api) and — newly, this correction's own addition,
+not something the original `PrimaryClusterProvider` ever needed since only
+the API used to mint this — `controller-rbac.yaml` (hyve-controller).
+Confirmed live (a real RBAC probe against `k3d-hyve-local`, not just
+assumed) that `resourceNames` genuinely does scope a `serviceaccounts/token`
+create correctly, unlike a bare top-level object create (e.g. `secrets`) —
+the difference being that a subresource create like this one targets an
+already-existing, named parent object, with that name already in the
+request URL.
+
+**Naming, also raised the same day:** the host cluster's own
+`ClusterDefinition` had been conventionally suggested as `local` (see
+`scripts/install-local.sh`'s own snippet, and this milestone's live
+verification above) — flagged as a genuine naming collision, since "local"
+already means something else entirely in this project (local/file mode,
+no live cluster at all — the opposite of what this object represents).
+Renamed the convention to `host` throughout `scripts/install-local.sh` and
+the docs; nothing in the code depends on the literal name, only on the
+`access.method: primary` marker.
+
 ## Cross-cutting
 
 - **Verification discipline**: every milestone gets `go build ./... && go

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func newAuthContextMux(s *Server) *http.ServeMux {
@@ -146,20 +147,41 @@ func TestHandleAuthContext_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-// TestHandleAuthContext_AllowsPrimaryCluster confirms access.method: primary
-// (hyvev1alpha1.AccessMethodPrimary) no longer routes to a special
-// server-minted path — it's a pure host-identification marker now (see its
-// own doc comment), and a primary-marked cluster has a real driver module
-// like any other default-auth cluster, so its kubeconfig comes from this
-// same client-side auth-context endpoint.
-func TestHandleAuthContext_AllowsPrimaryCluster(t *testing.T) {
-	hostCD := newClusterDef("local")
+// TestHandleAuthContext_AllowsPrimaryClusterWithRealDriver confirms a
+// primary-marked cluster (hyvev1alpha1.AccessMethodPrimary — the host
+// cluster hyve-controller/hyve-api themselves run on) that has a real
+// spec.driver explicitly configured — an admin's deliberate opt-out of
+// the automatic, no-module HostProvider path — is served by this same
+// client-side auth-context endpoint like any other driver-having,
+// default-auth cluster.
+func TestHandleAuthContext_AllowsPrimaryClusterWithRealDriver(t *testing.T) {
+	hostCD := newClusterDef("host")
 	hostCD.Spec.Access.Method = hyvev1alpha1.AccessMethodPrimary
 	s := &Server{Client: newFakeClient(t, hostCD), Namespace: testNamespace, ModulesDir: newTestModulesDirWithAuth(t)}
 
-	req := httptest.NewRequest(http.MethodGet, "/clusters/local/auth-context", nil)
+	req := httptest.NewRequest(http.MethodGet, "/clusters/host/auth-context", nil)
 	rec := httptest.NewRecorder()
 	newAuthContextMux(s).ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandleAuthContext_RejectsPrimaryClusterWithNoDriver confirms a
+// primary-marked cluster with no real spec.driver — the common,
+// zero-config host-cluster case — is rejected here (409), directing the
+// caller to GET /api/kubeconfig instead, where HostProvider serves it
+// automatically with no module involved (see HostProvider's own doc
+// comment).
+func TestHandleAuthContext_RejectsPrimaryClusterWithNoDriver(t *testing.T) {
+	hostCD := &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "host", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary}},
+	}
+	s := &Server{Client: newFakeClient(t, hostCD), Namespace: testNamespace}
+
+	req := httptest.NewRequest(http.MethodGet, "/clusters/host/auth-context", nil)
+	rec := httptest.NewRecorder()
+	newAuthContextMux(s).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
 }

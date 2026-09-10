@@ -18,18 +18,22 @@ func (s *Server) registerKubeconfigRoutes(mux *http.ServeMux) {
 }
 
 // handleKubeconfig resolves ?cluster=<name> and dispatches to the right
-// AccessProvider — TunnelProvider or ModuleAuthProvider — per the target
-// ClusterDefinition's spec.access.method. Unset (the default) isn't served
-// here at all — see ClusterDefinitionSpec.Access's doc comment: that case
-// is client-side auth, served by GET /api/clusters/<name>/auth-context
-// instead. access.method: primary (hyvev1alpha1.AccessMethodPrimary) is
-// deliberately not one of this switch's cases either: it's a pure
-// host-identification marker now, not a dispatch key — a primary-marked
-// cluster has a real driver module and gets its kubeconfig the same
-// client-side way any other default-auth cluster does (handleAuthContext
-// carries the carve-out that lets Method: primary through that path — see
-// its own doc comment). See HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
-// Phase 6.5.
+// AccessProvider — HostProvider, TunnelProvider, or ModuleAuthProvider —
+// per the target ClusterDefinition's spec.access.method. Unset (the
+// default) isn't served here at all — see ClusterDefinitionSpec.Access's
+// doc comment: that case is client-side auth, served by
+// GET /api/clusters/<name>/auth-context instead. See
+// HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5.
+//
+// The host ClusterDefinition (access.method: primary) always lives in
+// s.Namespace (the install's control-plane namespace), never a tenant
+// namespace. Looked up here via s.TenantNamespace(r), same as any other
+// cluster — which already resolves to s.Namespace for a superadmin caller
+// (they have no tenant namespace of their own, see RoleSuperadmin's doc
+// comment) and to the caller's own tenant namespace otherwise, so an
+// ordinary tenant admin's lookup simply never finds it: invisible by
+// construction, not merely by the role check HostProvider itself also
+// enforces.
 func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("cluster")
 	if name == "" {
@@ -58,6 +62,17 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	// whatever other access path it may also support.
 	case cd.Spec.Access.Agent != nil && cd.Spec.Access.Agent.Proxy:
 		provider = s.AgentProvider
+	// A primary-marked cluster with no real spec.driver (the common,
+	// zero-config case — see HostProvider's own doc comment) is served
+	// here, automatically, with no module involved at all. One WITH a
+	// real driver (an admin's deliberate opt-out of the automatic path)
+	// falls through this switch entirely — Method stays "primary" either
+	// way, since cmd/migrate_resolve.go depends on it as a host-
+	// identification marker regardless of how auth actually works — and
+	// is served by handleAuthContext's own matching carve-out instead
+	// (client-side, like any other driver-having cluster).
+	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodPrimary && cd.Spec.Driver.Source == "":
+		provider = s.HostProvider
 	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodTunnel:
 		provider = s.TunnelProvider
 	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodModuleAuth:

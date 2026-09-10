@@ -13,8 +13,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 // ── TunnelProvider ──────────────────────────────────────────────────────
@@ -37,6 +41,55 @@ func TestTunnelProvider_SecretMissing(t *testing.T) {
 	_, err := p.Kubeconfig(context.Background(), &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "prod"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "prod-access-kubeconfig")
+}
+
+// ── HostProvider ──────────────────────────────────────────────────────────
+
+func TestHostProvider_RequiresSuperadmin(t *testing.T) {
+	p := &HostProvider{
+		Clientset:             fake.NewClientset(),
+		HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: "hyve-host-admin", Namespace: testNamespace},
+	}
+	ctx := contextWithRole(context.Background(), hyvev1alpha1.RoleAdmin)
+	_, err := p.Kubeconfig(ctx, &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "host"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "superadmin")
+}
+
+func TestHostProvider_SuperadminMintsAgainstHostServiceAccount(t *testing.T) {
+	clientset := fake.NewClientset()
+	var requestedSA string
+	clientset.PrependReactor("create", "serviceaccounts", func(action ktesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(ktesting.CreateActionImpl)
+		if !ok || createAction.GetSubresource() != "token" {
+			return false, nil, nil
+		}
+		requestedSA = createAction.Name
+		return true, &authenticationv1.TokenRequest{Status: authenticationv1.TokenRequestStatus{Token: "host-admin-token"}}, nil
+	})
+
+	p := &HostProvider{
+		Clientset:             clientset,
+		CA:                    []byte("fake-ca-data"),
+		PublicBaseURL:         "https://hyve-api.example.com",
+		HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: "hyve-host-admin", Namespace: testNamespace},
+	}
+	ctx := contextWithRole(context.Background(), hyvev1alpha1.RoleSuperadmin)
+
+	kc, err := p.Kubeconfig(ctx, &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "host"}})
+	require.NoError(t, err)
+	assert.Equal(t, "hyve-host-admin", requestedSA)
+	kcStr := string(kc)
+	assert.Contains(t, kcStr, "host-admin-token")
+	assert.Contains(t, kcStr, "https://hyve-api.example.com/proxy")
+}
+
+func TestHostProvider_NoHostServiceAccountConfigured_Errors(t *testing.T) {
+	p := &HostProvider{Clientset: fake.NewClientset()}
+	ctx := contextWithRole(context.Background(), hyvev1alpha1.RoleSuperadmin)
+	_, err := p.Kubeconfig(ctx, &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "host"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no host ServiceAccount configured")
 }
 
 // ── ModuleAuthProvider ──────────────────────────────────────────────────
@@ -126,30 +179,60 @@ func TestHandleKubeconfig_UnknownCluster(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-// TestHandleKubeconfig_PrimaryMarkerIsNotServedHere confirms access.method:
-// primary is no longer a dispatch key for GET /api/kubeconfig — it's a
-// pure host-identification marker now (see AccessMethodPrimary's own doc
-// comment), so a primary-marked cluster falls through to the same 409
-// "use client-side auth instead" response as any other default-auth
-// cluster, exactly like TestHandleKubeconfig_DefaultIsClientSideAuthNotServed.
-func TestHandleKubeconfig_PrimaryMarkerIsNotServedHere(t *testing.T) {
+// TestHandleKubeconfig_DispatchesToHostProvider confirms a primary-marked
+// cluster with no real spec.driver — the common, zero-config host-cluster
+// case — is served by HostProvider automatically, with no module involved.
+func TestHandleKubeconfig_DispatchesToHostProvider(t *testing.T) {
+	host := &recordingProvider{kc: []byte("host-kubeconfig")}
 	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
 	hostCD := &hyvev1alpha1.ClusterDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "primary", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "host", Namespace: testNamespace},
 		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary}},
 	}
 	s := &Server{
 		Client:             newFakeClient(t, hostCD),
 		Namespace:          testNamespace,
+		HostProvider:       host,
 		ModuleAuthProvider: moduleAuth,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=primary", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=host", nil)
+	rec := httptest.NewRecorder()
+	s.handleKubeconfig(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, host.called)
+	assert.False(t, moduleAuth.called)
+	assert.Equal(t, "host-kubeconfig", rec.Body.String())
+}
+
+// TestHandleKubeconfig_PrimaryWithRealDriverIsNotServedHere confirms a
+// primary-marked cluster that DOES have a real spec.driver (an admin's
+// deliberate opt-out of the automatic host path) is NOT intercepted by
+// HostProvider — it falls through to the same 409 "use client-side auth
+// instead" response as any other driver-having, default-auth cluster (see
+// handleAuthContext's own matching carve-out).
+func TestHandleKubeconfig_PrimaryWithRealDriverIsNotServedHere(t *testing.T) {
+	host := &recordingProvider{kc: []byte("host-kubeconfig")}
+	hostCD := &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "host", Namespace: testNamespace},
+		Spec: hyvev1alpha1.ClusterDefinitionSpec{
+			Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary},
+			Driver: hyvev1alpha1.DriverRef{Source: "./modules/civo", Version: "latest"},
+		},
+	}
+	s := &Server{
+		Client:       newFakeClient(t, hostCD),
+		Namespace:    testNamespace,
+		HostProvider: host,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=host", nil)
 	rec := httptest.NewRecorder()
 	s.handleKubeconfig(rec, req)
 
 	require.Equal(t, http.StatusConflict, rec.Code)
-	assert.False(t, moduleAuth.called)
+	assert.False(t, host.called)
 }
 
 func TestHandleKubeconfig_DefaultIsClientSideAuthNotServed(t *testing.T) {

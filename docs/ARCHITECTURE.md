@@ -141,24 +141,23 @@ target `ClusterDefinition`'s `spec.access` configuration:
 
 | Path | Where the driver's `auth` op runs | What you get |
 |---|---|---|
-| Default (`spec.access.method` unset or `primary`) | The caller's own machine | A kubeconfig, written locally — `GET /clusters/{name}/auth-context` delivers the resolved `auth.yaml` content, the caller's own tools run it |
+| Default (`spec.access.method` unset, or `primary` WITH a real `spec.driver`) | The caller's own machine | A kubeconfig, written locally — `GET /clusters/{name}/auth-context` delivers the resolved `auth.yaml` content, the caller's own tools run it |
+| `access.method: primary`, no `spec.driver` | N/A — no module at all | A kubeconfig minted server-side against a dedicated `hyve-host-admin` ServiceAccount, `server:` pointing at hyve-api's own `/proxy` path (`internal/api/access.go`'s `HostProvider`, superadmin-only) — the zero-config default for the cluster hyve-controller/hyve-api themselves run on, since it's already reachable in-cluster with no tunnel of any kind needed. See `docs/HYVE-AGENT-MIGRATION-GUIDE.md`'s "Host cluster access" section |
 | `access.method: module-auth` | Server-side, inline in the API pod | A kubeconfig, fetched via `GET /api/kubeconfig` (`internal/api/access.go`'s `ModuleAuthProvider`) |
 | `access.method: tunnel` | N/A — reads a pre-existing Secret | A kubeconfig some other process put in a Secret ahead of time (`internal/api/access.go`'s `TunnelProvider`) — for a cluster with no cloud-native reachable endpoint and no hyve-agent installed yet |
 | `spec.access.agent` (`enabled`/`proxy`) | N/A — hyve-agent dials out from the managed cluster and stays connected | Either a live connection status only (`enabled`), or (`proxy: true`) a kubeconfig whose `server:` points back at this API's own `/api/agent-proxy/<name>` path, relaying real kubectl traffic over the tunnel — see `docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md` |
 
-`access.method: primary` is not a separate dispatch path — as of
-`docs/HYVE-AGENT-IMPLEMENTATION-PLAN.md`'s milestone 9, it's a pure
-identifying marker a `ClusterDefinition` can carry to mean "this is the
-cluster hyve-controller/hyve-api themselves run on," consumed only by
-`hyve migrate cluster`'s own host-resolution (`cmd/migrate_resolve.go`). A
-`primary`-marked cluster needs a real `spec.driver` and gets its
-kubeconfig through the same default client-side path as any other cluster
-— there is no more hardcoded, superadmin-only minting shortcut. The
+`access.method: primary` always means "this is the cluster
+hyve-controller/hyve-api themselves run on" — consumed by `hyve migrate
+cluster`'s own host-resolution (`cmd/migrate_resolve.go`) regardless of
+which row above actually serves it. Whether it dispatches to `HostProvider`
+or falls through to the ordinary default path depends entirely on whether
+a real `spec.driver` is set: no driver is the common, zero-config case;
+a real driver is an admin's deliberate opt-out of the automatic path. The
 `AccessMethod` CRD (`spec.access.accessMethodRef`, an external identity
 service like Rancher/Teleport minting on hyve's behalf) has been removed
 outright, not merely deprecated — see `docs/HYVE-AGENT-MIGRATION-GUIDE.md`
-for the (now-historical) migration steps off both the old `AccessMethod`
-CRD and the old `primary`-minting behavior.
+for the (now-historical) migration steps off it.
 
 ## Multi-tenant installs
 

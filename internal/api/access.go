@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/hostauth"
 	"github.com/cbridges1/hyve/internal/module"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,6 +68,67 @@ func (p *AgentProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cluster
 	}
 	server := strings.TrimRight(p.PublicBaseURL, "/") + "/api/agent-proxy/" + cd.Name
 	return buildKubeconfig(server, nil, token)
+}
+
+// HostProvider mints a kubeconfig for the ClusterDefinition marked
+// access.method: primary (hyvev1alpha1.AccessMethodPrimary) — the cluster
+// hyve-controller/hyve-api themselves run on. Unlike every other
+// AccessProvider, this needs no driver module at all: an earlier design
+// for this required an admin to hand-write a driver module's auth.yaml
+// just to get a kubeconfig for the cluster hyve is already running on,
+// which turned out to be pure friction with no real benefit — reverted as
+// an acknowledged oversight (see docs/HYVE-AGENT-MIGRATION-GUIDE.md's
+// "Host cluster access" section for the full history). Mints a token
+// against the dedicated HostServiceAccountRef (e.g. hyve-host-admin,
+// bound to the built-in cluster-admin ClusterRole — see
+// deploy/helm/hyve/templates/api-access-roles.yaml) via
+// internal/hostauth.MintKubeconfig, gated to RoleSuperadmin only, since
+// this credential reaches the cluster every tenant's workload actually
+// runs on.
+type HostProvider struct {
+	Clientset kubernetes.Interface
+
+	// CA is this API pod's own in-cluster CA — normally read once at
+	// startup from /var/run/secrets/kubernetes.io/serviceaccount/ca.crt.
+	CA []byte
+
+	// PublicBaseURL is this API's own public address, e.g.
+	// "https://hyve-api.example.com" — clusters[].cluster.server in the
+	// returned kubeconfig is PublicBaseURL + "/proxy".
+	PublicBaseURL string
+
+	// HostServiceAccountRef is the dedicated, standing ServiceAccount this
+	// mints a token against — deliberately separate from any
+	// tenant-scoped role's own ServiceAccount, so host-cluster privilege
+	// is its own narrowly-granted, auditable binding, never incidentally
+	// inherited from a tenant role. Left zero-value, Kubeconfig 500s with
+	// a clear message rather than falling back to anything.
+	HostServiceAccountRef hyvev1alpha1.ServiceAccountRef
+
+	// TokenTTL defaults to 1h when zero — deliberately short, given what
+	// this kubeconfig grants; no refresh endpoint yet, a caller
+	// re-requests a fresh one once this expires.
+	TokenTTL time.Duration
+}
+
+func (p *HostProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
+	role, _ := RoleFromContext(ctx)
+	if role != hyvev1alpha1.RoleSuperadmin {
+		name := "<unknown>"
+		if cd != nil {
+			name = cd.Name
+		}
+		return nil, fmt.Errorf("cluster %q is the host cluster (access.method: primary) — only a superadmin may access it", name)
+	}
+	if p.HostServiceAccountRef.Name == "" {
+		return nil, fmt.Errorf("no host ServiceAccount configured for the host access path")
+	}
+	ttl := p.TokenTTL
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	server := strings.TrimRight(p.PublicBaseURL, "/") + "/proxy"
+	return hostauth.MintKubeconfig(ctx, p.Clientset, p.HostServiceAccountRef.Namespace, p.HostServiceAccountRef.Name, server, p.CA, ttl)
 }
 
 // ModuleAuthProvider backs the explicit AccessMethodModuleAuth override

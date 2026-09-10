@@ -72,6 +72,9 @@ spec:
             {{- if .Values.controller.agent.tunnelAddress }}
             - --agent-tunnel-address={{ .Values.controller.agent.tunnelAddress }}
             {{- end }}
+            {{- if .Values.api.hostServiceAccount }}
+            - --host-service-account={{ .Values.api.hostServiceAccount }}
+            {{- end }}
           # HOME=/data redirects module.CacheDir()'s hardcoded
           # $HOME/.hyve/module-cache (internal/module/cache.go — it doesn't
           # respect --home/HYVE_HOME) onto the same PVC --modules-dir lives

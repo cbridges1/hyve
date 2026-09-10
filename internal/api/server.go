@@ -33,6 +33,12 @@ type Server struct {
 	ModuleAuthProvider AccessProvider
 	TunnelProvider     AccessProvider
 
+	// HostProvider serves any ClusterDefinition whose access.method is
+	// AccessMethodPrimary (see kubeconfig_handler.go's switch) — nil is
+	// fine for a deployment with no host-cluster access story configured
+	// yet, that case just 500s with a clear message.
+	HostProvider AccessProvider
+
 	// AgentProvider serves GET /api/kubeconfig for any ClusterDefinition
 	// with spec.access.agent.proxy: true — see access.go's AgentProvider
 	// and handleKubeconfig's own dispatch, which checks this ahead of

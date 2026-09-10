@@ -28,13 +28,14 @@ import (
 )
 
 var (
-	apiNamespace        string
-	apiModulesDir       string
-	apiBindAddress      string
-	apiPublicBaseURL    string
-	apiProxyTarget      string
-	apiInClusterCAPath  string
-	apiAgentBindAddress string
+	apiNamespace          string
+	apiModulesDir         string
+	apiBindAddress        string
+	apiPublicBaseURL      string
+	apiProxyTarget        string
+	apiInClusterCAPath    string
+	apiHostServiceAccount string
+	apiAgentBindAddress   string
 )
 
 // Cmd is the api command.
@@ -63,9 +64,10 @@ func init() {
 	runCmd.Flags().StringVar(&apiNamespace, "namespace", "hyve-system", "Namespace ClusterDefinitions/HyveAccessBindings/credentials Secrets live in")
 	runCmd.Flags().StringVar(&apiModulesDir, "modules-dir", "/var/lib/hyve/modules", "Directory containing the baked-in hyve.lock and resolved modules — see cmd/controller's --modules-dir")
 	runCmd.Flags().StringVar(&apiBindAddress, "bind-address", ":8090", "Address the API binds to")
-	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the agent-proxy kubeconfig path's server: field")
+	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the host-cluster and agent-proxy kubeconfig paths' server: fields")
 	runCmd.Flags().StringVar(&apiProxyTarget, "proxy-target", "https://kubernetes.default.svc", "Upstream /proxy/* forwards to")
-	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used to trust the /proxy upstream")
+	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the host-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
+	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary, no real spec.driver) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
 
 	Cmd.AddCommand(runCmd)
@@ -126,8 +128,14 @@ func runAPI() {
 
 	caData, caErr := os.ReadFile(apiInClusterCAPath)
 	if caErr != nil {
-		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
+		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the host-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
 	} else {
+		server.HostProvider = &hyveapi.HostProvider{
+			Clientset:             clientset,
+			CA:                    caData,
+			PublicBaseURL:         apiPublicBaseURL,
+			HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Namespace: apiNamespace, Name: apiHostServiceAccount},
+		}
 		proxy, pErr := hyveapi.BuildProxy(apiProxyTarget, caData)
 		if pErr != nil {
 			log.Fatalf("❌ Failed to build /proxy handler: %v", pErr)
@@ -136,11 +144,10 @@ func runAPI() {
 	}
 
 	// The agent tunnel listener is a raw TCP+SSH listener, not an
-	// http.Handler — see Server.ServeAgentTunnel's own doc comment. Same
-	// "its own goroutine, logs rather than kills the whole API" stance as
-	// the relay listener above; skipped entirely if AgentCA/AgentRegistry
-	// never got configured (the soft-fail branch above already logged
-	// why).
+	// http.Handler — see Server.ServeAgentTunnel's own doc comment. Its
+	// own goroutine, logs rather than kills the whole API on error;
+	// skipped entirely if AgentCA/AgentRegistry never got configured (the
+	// soft-fail branch above already logged why).
 	if server.AgentCA != nil && server.AgentRegistry != nil {
 		go func() {
 			log.Printf("🚀 hyve agent tunnel listener starting — bind=%s", apiAgentBindAddress)

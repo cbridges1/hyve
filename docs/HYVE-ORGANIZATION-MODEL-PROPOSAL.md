@@ -51,6 +51,19 @@ retirements, or the new Postgres schema. Build the new shape directly;
 the migration-mechanics open question and the "migration cost for
 existing tenants" limitation below are removed rather than answered.
 
+**Reconciled against the agent work and current tree (2026-09-09):**
+`AccessMethod` is dropped from "the five environment-scoped resource
+types" throughout this doc — it's down to four (`ClusterDefinition`,
+`Template`, `Workflow`, `Resource`). `HYVE-AGENT-ARCHITECTURE-PROPOSAL.md`
+and `HYVE-AGENT-IMPLEMENTATION-PLAN.md` (Milestone 9) retired the
+`AccessMethod` CRD outright in favor of the agent-based connection model,
+and the current tree confirms it: there is no `accessmethod_types.go` in
+`internal/apis/hyve/v1alpha1/` any more. See "What stays
+Kubernetes-native" for the full accounting, including the newer CRD types
+(`Module`, `WorkflowRun`, `HyveSession`, `ResourceRefStatus`,
+`WorkflowRefStatus`) that have shown up in the tree since the original
+draft and why none of them are added to the four.
+
 ## Summary
 
 Restructure hyve's tenancy model from today's flat "one `HyveEnvironment` =
@@ -211,8 +224,8 @@ which stays exactly as pure and Kubernetes-only as it is today.
   isolation primitive and was never a data record to begin with; it
   doesn't move regardless of where the organization's business metadata
   lives.
-- The five environment-scoped resource types (`ClusterDefinition`,
-  `Template`, `Workflow`, `Resource`, `AccessMethod`) — these are the
+- The four environment-scoped resource types (`ClusterDefinition`,
+  `Template`, `Workflow`, `Resource`) — these are the
   actual infrastructure-shaped objects the controller reconciles, and the
   only Kubernetes objects the controller ever reads. They keep the
   `hyve.io/environment: <short-name>` label from the original draft,
@@ -227,6 +240,22 @@ which stays exactly as pure and Kubernetes-only as it is today.
   reconciling resources that happen to live in a given namespace; it
   never needs org identity, plan, or metadata to do that, so it was never
   really coupled to the CRD version of that object in the first place.
+- **`AccessMethod` is gone, not just excluded from this list.** The
+  original draft counted it as the fifth environment-scoped resource
+  type; `HYVE-AGENT-ARCHITECTURE-PROPOSAL.md`'s Milestone 9 (see
+  `HYVE-AGENT-IMPLEMENTATION-PLAN.md`) retired the `AccessMethod` CRD
+  entirely — the mint-`Job`-plus-relay-listener machinery, the CRD itself
+  (`accessmethod_types.go`), `spec.access.accessMethodRef`/
+  `accessMethodClusterID` on `ClusterDefinitionSpec`, and the web
+  console's Access Methods page were all deleted in favor of the
+  agent-based connection model, where every cluster gets the same
+  agent-mediated access path instead of a per-cluster `AccessMethod`
+  object to provision and mint credentials through. Confirmed against the
+  current tree: there is no `accessmethod_types.go` in
+  `internal/apis/hyve/v1alpha1/` any more. `access.method: primary` lives
+  on, but only as a marker constant on `AccessSpec`, not a standalone
+  resource type — it was never one of "the five" to begin with, it's a
+  field value on `ClusterDefinition`.
 
 **Why this is a strict improvement on the cost problem that drove the
 namespace-per-organization decision above:** even the label-based CRD
@@ -289,7 +318,7 @@ them separately; this extends it to how they run in production):
 - **Controller** — unchanged from today: leader-elected, low replica
   count, talks only to the Kubernetes API, never touches Postgres. It has
   no relationship to organizations as business entities at all now — its
-  entire job is reconciling the five environment-scoped resource types
+  entire job is reconciling the four environment-scoped resource types
   wherever they live. Its scaling characteristics (reconciliation
   throughput, work queue depth) are unrelated to the API server's, which
   is the actual operational argument for running them as separate
@@ -349,13 +378,28 @@ most blast radius — worth being explicit about exactly what changes:
 | `HyveEnvironment` (`internal/apis/hyve/v1alpha1/hyveenvironment_types.go`) — one per tenant, lives in `hyve-system`, `spec.namespace` names the tenant's own namespace | Organization — a Postgres row, not a CRD (revised twice now: the original draft renamed this CRD to `HyveOrganization`; this revision retires the CRD entirely). Holds name, plan/metadata, and the org-id ↔ namespace-name mapping. `POST /environments` becomes `POST /organizations`, now backed by the API server's configured database (SQLite by default, Postgres opt-in — see "Backend selection is a config flag"). The underlying `Namespace` object itself is still created and still real K8s infrastructure — only the CRD wrapper around it is gone. |
 | *(nothing — doesn't exist today)* | Environment (new meaning) — a Postgres row scoped to an org via a real foreign key, not a CRD (revised from the original draft, which made this a namespaced-within-the-org CRD). Holds the short environment name (`dev`/`staging`/`production`) and whatever quotas/metadata an org sets. |
 
-New fields on the five environment-scoped resource types
-(`ClusterDefinition`, `Template`, `Workflow`, `Resource`, `AccessMethod`):
-a `hyve.io/environment: <short-name>` label, plus the real `metadata.name`
-computed as `<environment>-<name>` per the naming section above. These
-stay CRDs, unaffected by the persistence split — only the object that
-*defines which environment names are valid and who can use them* moved to
-Postgres, not the resources tagged with the label.
+New fields on the four environment-scoped resource types
+(`ClusterDefinition`, `Template`, `Workflow`, `Resource` — `AccessMethod`
+dropped from this list; see "What stays Kubernetes-native" above, it was
+retired outright by the agent architecture work, not carried forward
+unlabeled): a `hyve.io/environment: <short-name>` label, plus the real
+`metadata.name` computed as `<environment>-<name>` per the naming section
+above. These stay CRDs, unaffected by the persistence split — only the
+object that *defines which environment names are valid and who can use
+them* moved to Postgres, not the resources tagged with the label.
+
+Since the original draft, the codebase has also grown `Module`,
+`WorkflowRun`, `HyveSession`, `ResourceRefStatus`, and `WorkflowRefStatus`
+as additional namespaced CRDs. None are added to the four above: `Module`,
+`ResourceRefStatus`, and `WorkflowRefStatus` are controller-written
+visibility/status mirrors (per their own doc comments — e.g. `Module`'s
+"creating one by hand does not cause the controller to resolve anything"),
+not resources a user names and could collide on across environments, and
+`WorkflowRun` is a one-shot execution request scoped through the
+`ClusterDefinition`/`Workflow` it already references rather than
+independently named. Whether any of these should still carry the
+`hyve.io/environment` label for filtering/display purposes (as opposed to
+needing the naming-collision handling) is open — see "Open questions."
 
 `HyveAccessBinding` (`internal/apis/hyve/v1alpha1/hyveaccessbinding_types.go`)
 is superseded by a Postgres table for the environment-scoped case
@@ -372,7 +416,7 @@ resource type, now querying Postgres instead of listing CRDs.
 - `--org <name>` keeps its existing meaning (`cmd/shared.ResolveOrgToNamespace`'s
   job is unchanged: org name → namespace).
 - A new `--env <name>` selects the environment within that org — needed
-  everywhere the five resource types are addressed (`hyve cluster create`,
+  everywhere the four resource types are addressed (`hyve cluster create`,
   `hyve cluster show`, etc.). **Decided (2026-09-09):** `POST /organizations`
   always provisions a default environment as part of the same request —
   there is no separate "create my first environment" step. This is one
@@ -408,6 +452,13 @@ is confirmed, not part of this doc.
 
 ## Open questions
 
+- Should `Module`, `WorkflowRun`, `HyveSession`, `ResourceRefStatus`, or
+  `WorkflowRefStatus` carry the `hyve.io/environment` label even though
+  none of them need the `<environment>-<name>` naming-collision handling?
+  A per-environment dashboard/CLI filter ("show me workflow runs in
+  `dev`") might still want it for display, purely inherited from the
+  parent resource each one references, without those types needing their
+  own short-name uniqueness scheme.
 - What happens to grants with no environment scope set once finer-grained
   bindings start being created for the same org — does an org-wide grant
   and an environment-scoped grant for the same identity need an explicit

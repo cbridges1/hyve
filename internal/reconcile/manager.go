@@ -105,6 +105,16 @@ type Reconciler struct {
 	// Same "no sensible default, skip with a warning" stance as
 	// AgentControlPlaneURL.
 	AgentTunnelAddress string
+
+	// HostKubeconfigIssuer mints a kubeconfig for hyve's own host cluster
+	// — see reconcileHostCluster's own doc comment. Left nil by the CLI,
+	// which disables spec.resources reconciliation for a no-driver
+	// primary-marked cluster entirely (logged as a warning, not an
+	// error) — local/file mode has no control-plane cluster concept for
+	// this to mean anything against, same "nil disables it softly" stance
+	// AgentTokenIssuer above takes. cmd/controller/run.go is the only
+	// caller that sets this.
+	HostKubeconfigIssuer HostKubeconfigIssuer
 }
 
 // moduleImage resolves the image a module.Executor should use when
@@ -319,6 +329,9 @@ func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefiniti
 		return nil
 	}
 
+	if isHostClusterWithoutDriver(def) {
+		return r.reconcileHostCluster(ctx, def, lf, dryRun, secretsEnv, hooks)
+	}
 	return r.reconcileCluster(ctx, def, lf, dryRun, secretsEnv, hooks)
 }
 
@@ -736,9 +749,15 @@ func envValue(env []string, key string) string {
 // off disk via module.resolveLocal, with no digest to verify, so a lock
 // entry for one only ever holds an empty resolved/sha256 pair: required
 // presence, zero actual integrity value) or already present in hyve.lock.
-// Mirrors validateWorkflowRefsLocked's local/remote split below.
+// Mirrors validateWorkflowRefsLocked's local/remote split below. A
+// no-driver primary-marked cluster (see isHostClusterWithoutDriver) is the
+// one exception — that's a real, supported zero-config shape, not a
+// misconfiguration, so it skips this check entirely rather than erroring.
 func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) error {
 	if c.Spec.Driver.Source == "" {
+		if isHostClusterWithoutDriver(c) {
+			return nil
+		}
 		return fmt.Errorf("cluster %s: no driver specified — set spec.driver.source in the cluster YAML", c.Metadata.Name)
 	}
 	if module.IsLocalSource(c.Spec.Driver.Source) {

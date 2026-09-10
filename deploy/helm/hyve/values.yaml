@@ -97,10 +97,21 @@ api:
   modulesDir: /var/lib/hyve/modules
 
   # publicBaseURL is this API's own public address, e.g.
-  # https://hyve-api.example.com — required for the agent-proxy kubeconfig
-  # path's server: field (see AgentProvider, internal/api/access.go). Left
-  # empty, that path stays disabled.
+  # https://hyve-api.example.com — required for the host-cluster and
+  # agent-proxy kubeconfig paths' server: fields (see HostProvider/
+  # AgentProvider, internal/api/access.go). Left empty, those paths stay
+  # disabled.
   publicBaseURL: ""
+
+  # hostServiceAccount names the dedicated ServiceAccount (in .namespace,
+  # created by api-access-roles.yaml) a superadmin's host-cluster
+  # kubeconfig mints a token against, for a ClusterDefinition with
+  # spec.access.method: primary and no real spec.driver. Matches
+  # --host-service-account's own default in cmd/api/run.go; only needs
+  # setting here if the ServiceAccount name is customized away from
+  # "hyve-host-admin" (also update controller-rbac.yaml's own
+  # resourceNames reference if you do).
+  hostServiceAccount: ""
 
   proxyTarget: "https://kubernetes.default.svc"
 

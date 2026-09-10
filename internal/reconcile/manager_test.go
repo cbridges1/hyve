@@ -93,6 +93,29 @@ func TestValidateDriverModuleLocked(t *testing.T) {
 		}
 		assert.NoError(t, validateDriverModuleLocked(c, lf))
 	})
+
+	t.Run("primary-marked host cluster with no driver needs no lock entry", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "host"},
+			Spec:     types.ClusterSpec{AccessMethod: types.AccessMethodPrimary},
+		}
+		assert.NoError(t, validateDriverModuleLocked(c, lf))
+	})
+
+	t.Run("primary-marked host cluster WITH a real driver still validates it normally", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "host"},
+			Spec: types.ClusterSpec{
+				AccessMethod: types.AccessMethodPrimary,
+				Driver:       types.DriverRef{Source: "github.com/hyve-modules/civo", Version: "v1.0.0"},
+			},
+		}
+		err := validateDriverModuleLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in hyve.lock")
+	})
 }
 
 func TestEffectiveStatus(t *testing.T) {
