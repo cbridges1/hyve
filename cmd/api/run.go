@@ -36,6 +36,7 @@ var (
 	apiInClusterCAPath    string
 	apiHostServiceAccount string
 	apiAgentBindAddress   string
+	apiPublicCAPath       string
 )
 
 // Cmd is the api command.
@@ -69,6 +70,7 @@ func init() {
 	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the host-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
 	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary, no real spec.driver) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
+	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -94,6 +96,18 @@ func runAPI() {
 	moduleAuthProvider := &hyveapi.ModuleAuthProvider{ModulesDir: apiModulesDir}
 	tunnelProvider := &hyveapi.TunnelProvider{Client: c, Namespace: apiNamespace}
 
+	// Optional — see --public-ca-path's own doc comment. Empty path means
+	// "not configured," not an error: most real deployments use a
+	// publicly-trusted certificate and have no CA of their own to embed.
+	var publicCA []byte
+	if apiPublicCAPath != "" {
+		var caErr error
+		publicCA, caErr = os.ReadFile(apiPublicCAPath)
+		if caErr != nil {
+			log.Fatalf("❌ Failed to read --public-ca-path %s: %v", apiPublicCAPath, caErr)
+		}
+	}
+
 	// Needed for agent bootstrap token validation (agentpki), the agent
 	// tunnel CA, and raw Events() reads/writes — see Server.Clientset's
 	// own doc comment.
@@ -108,7 +122,7 @@ func runAPI() {
 		SigningKey:         signingKey,
 		ModuleAuthProvider: moduleAuthProvider,
 		TunnelProvider:     tunnelProvider,
-		AgentProvider:      &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL},
+		AgentProvider:      &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL, PublicCA: publicCA},
 		ModulesDir:         apiModulesDir,
 		Clientset:          clientset,
 	}

@@ -103,6 +103,26 @@ api:
   # disabled.
   publicBaseURL: ""
 
+  # publicCABundle embeds a CA into every agent-proxy kubeconfig
+  # (AgentProvider.PublicCA, internal/api/access.go) so kubectl trusts
+  # whatever terminates TLS in front of publicBaseURL without relying on
+  # the caller's OS/system trust store — the Kubernetes-native answer to
+  # "I don't want to install mkcert on every machine that needs this,"
+  # since a kubeconfig embedding its own CA is exactly how every real
+  # cluster's kubeconfig already works. Only needed for a self-signed or
+  # otherwise not-publicly-trusted certificate; leave configMapName empty
+  # (default) for a real ACME/Let's Encrypt certificate, which every
+  # caller's system trust store already trusts on its own.
+  publicCABundle:
+    # Name of an existing ConfigMap (in .namespace) holding the CA
+    # certificate as a PEM-encoded key — a ConfigMap, not a Secret, since a
+    # CA's public certificate isn't sensitive data. This chart doesn't
+    # create it or the certificate that needs signing with it — see
+    # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md for why exposure/TLS stays
+    # entirely the deployer's own choice.
+    configMapName: ""
+    key: ca.crt
+
   # hostServiceAccount names the dedicated ServiceAccount (in .namespace,
   # created by api-access-roles.yaml) a superadmin's host-cluster
   # kubeconfig mints a token against, for a ClusterDefinition with

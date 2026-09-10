@@ -41,11 +41,20 @@ spec:
             {{- end }}
             - --proxy-target={{ .Values.api.proxyTarget }}
             - --agent-bind-address={{ .Values.api.agentBindAddress }}
+            {{- if .Values.api.publicCABundle.configMapName }}
+            - --public-ca-path=/etc/hyve/public-ca/{{ .Values.api.publicCABundle.key }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
             - name: agent
               containerPort: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
+          {{- if .Values.api.publicCABundle.configMapName }}
+          volumeMounts:
+            - name: public-ca
+              mountPath: /etc/hyve/public-ca
+              readOnly: true
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -60,3 +69,9 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- if .Values.api.publicCABundle.configMapName }}
+      volumes:
+        - name: public-ca
+          configMap:
+            name: {{ .Values.api.publicCABundle.configMapName }}
+      {{- end }}

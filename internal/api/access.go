@@ -59,6 +59,24 @@ func buildKubeconfig(server string, caData []byte, token string) ([]byte, error)
 type AgentProvider struct {
 	// PublicBaseURL is this API's own public address.
 	PublicBaseURL string
+
+	// PublicCA, if set, is embedded as this kubeconfig's
+	// certificate-authority-data — the CA that signed whatever terminates
+	// TLS in front of PublicBaseURL (an Ingress, a LoadBalancer, wherever).
+	// Left nil (the default), the minted kubeconfig carries no CA data at
+	// all and kubectl falls back to the OS/system trust store — fine for a
+	// publicly-trusted certificate (a real ACME/Let's Encrypt cert), but
+	// it means a self-signed or locally-generated cert fails validation
+	// for every caller except a machine that separately imported that CA
+	// into its own system trust store (e.g. via mkcert). Setting PublicCA
+	// avoids needing that per-machine step at all: any caller's kubectl
+	// trusts this specific cluster entry via the embedded CA, the same
+	// mechanism HostProvider already uses for its own CA, and the same
+	// mechanism every real kubeconfig for every real cluster already
+	// relies on — there is nothing agent-proxy-specific this needs beyond
+	// what kubeconfig already supports. See
+	// docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md.
+	PublicCA []byte
 }
 
 func (p *AgentProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
@@ -67,7 +85,7 @@ func (p *AgentProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cluster
 		return nil, fmt.Errorf("no session token available for this caller")
 	}
 	server := strings.TrimRight(p.PublicBaseURL, "/") + "/api/agent-proxy/" + cd.Name
-	return buildKubeconfig(server, nil, token)
+	return buildKubeconfig(server, p.PublicCA, token)
 }
 
 // HostProvider mints a kubeconfig for the ClusterDefinition marked

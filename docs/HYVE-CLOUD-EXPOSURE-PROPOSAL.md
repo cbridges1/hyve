@@ -163,13 +163,30 @@ quieter one — stays out entirely.
 **No automatic TLS-cert-minting added to `scripts/install-local.sh`.**
 Building convenience automation around `HostProvider`'s CA requirement
 would invest in the path this proposal just demoted. `AgentProvider`
-doesn't pin CA at all, so once local dev also exercises the agent-based
-host path, testing it needs only *some* real, system- (or
-`mkcert`-)trusted TLS — a much lower bar than "signed by this exact
-cluster's own apiserver CA." `mkcert` is the right building block if that
-friction turns out to matter later, not the cluster-PKI trick used to
-unblock testing this session (kept working, documented, for anyone still
-using `HostProvider` directly).
+doesn't pin CA to the cluster's own apiserver at all — a much lower bar
+than `HostProvider`'s requirement.
+
+**Superseded: `AgentProvider` now supports an explicit, embedded CA —
+`mkcert` is not needed.** The original framing of this open question
+assumed the only options were "a publicly-trusted cert" or "a
+per-machine, mkcert-installed local CA." That was wrong: kubeconfig's own
+`certificate-authority-data` field is the actual Kubernetes-native
+mechanism for this — `HostProvider` already used it, `AgentProvider` just
+didn't. Fixed: `AgentProvider` gained a `PublicCA []byte` field (embedded
+into every kubeconfig it mints, `internal/api/access.go`), wired through a
+new `--public-ca-path` flag (`cmd/api/run.go`) and a new
+`api.publicCABundle.configMapName`/`key` chart value (a ConfigMap, not a
+Secret — a CA's public certificate isn't sensitive). Generate any CA you
+like (self-signed via `openssl`, cert-manager's own self-signed `Issuer`,
+whatever), sign the Ingress/LB's server certificate with it, put the CA's
+public cert in a ConfigMap, and point `api.publicCABundle.configMapName`
+at it — every caller's `kubectl` then trusts it via the embedded CA, with
+zero per-machine setup, no OS trust store changes, and nothing that
+differs between your laptop, a teammate's, or CI. Confirmed live on
+k3d-hyve-local: generated a dedicated CA independent of k3d's own
+apiserver CA (unlike the earlier workaround), and `kubectl --context host
+get nodes` succeeded with no `--insecure-skip-tls-verify` and no local
+trust-store changes at all.
 
 ## Implementation notes
 
@@ -197,15 +214,49 @@ using `HostProvider` directly).
   reaches `reconcileAgent`'s own "not configured" branch rather than
   skipping it entirely. `go build ./...` and `go test
   ./internal/reconcile/...` both pass.
-- **Not verified live: an actual hyve-agent installation and working
-  `AgentProvider`-served kubeconfig for the host cluster.** The running
-  k3d-hyve-local install has no `controller.agent.controlPlaneURL`/
-  `tunnelAddress` configured (confirmed via `helm get values`), and
-  standing those up needs real external reachability this local dev
-  environment doesn't have (see `HYVE-AGENT-MIGRATION-GUIDE.md`'s own
-  point 1 on this exact requirement) — the same gap that doc already
-  flags for testing the agent path generally, not something new this
-  change introduced. The code path is confirmed reached and exercised by
-  the new test; the full connect-and-proxy behavior needs a real
-  externally-reachable control plane to verify, same as any other
-  hyve-agent installation.
+- **Now verified live end to end, including a real working `kubectl`
+  session.** Two things were needed beyond the reconciler fix above, both
+  found by actually running this rather than stopping at the code-reached
+  check:
+  1. hyve-agent's own outbound calls (bootstrap POST + SSH tunnel dial)
+     can't use the public Ingress hostname when the agent runs inside the
+     very same cluster being tested — confirmed live that a pod inside
+     k3d-hyve-local resolving `hyve-api.127.0.0.1.nip.io` gets `127.0.0.1`
+     (nip.io always resolves there, regardless of who asks), which from
+     inside that pod's own network namespace is its own loopback, not
+     Traefik. Pointing `controller.agent.controlPlaneURL`/`tunnelAddress`
+     at the in-cluster Service DNS name
+     (`hyve-api.hyve-system.svc.cluster.local`) instead fixed this —
+     confirmed via `kubectl -n hyve-system logs deploy/hyve-agent`: `agent:
+     connected to hyve-api.hyve-system.svc.cluster.local:8092`. This only
+     applies to same-cluster (host) testing — a genuinely remote cluster's
+     agent needs the real public address instead, which is why
+     `tunnel-test/` (nexus-config) tests the real-public-address path on
+     Civo rather than assuming the in-cluster shortcut generalizes.
+  2. `AgentProvider`'s kubeconfig carries no CA data (`nil`, unlike
+     `HostProvider`), so `kubectl` fell back to the OS/system trust store
+     and rejected the k3d-CA-signed certificate from earlier in this
+     session (`x509: certificate is not trusted`) — that certificate was
+     only ever trusted by `HostProvider`'s own explicit CA embedding, and
+     `AgentProvider` has no equivalent. Fixed properly rather than worked
+     around: see `AgentProvider.PublicCA` below.
+  With both fixed: `kubectl -n hyve-system get deploy hyve-agent` shows it
+  installed and running, `hyve cluster auth host` dispatches to
+  `AgentProvider` automatically (no code change needed — `Agent.Proxy` was
+  already checked ahead of `Method` in `kubeconfig_handler.go`), and
+  `kubectl --context host get nodes` succeeds for real.
+- **`AgentProvider` gained an explicit CA-embedding option
+  (`PublicCA []byte`, `internal/api/access.go`)** — the same
+  `certificate-authority-data` mechanism `HostProvider` already used, now
+  available for the agent-proxy path too. Wired through a new
+  `--public-ca-path` flag (`cmd/api/run.go`) and a new
+  `api.publicCABundle.configMapName`/`key` chart value (mounted as a
+  read-only volume on `hyve-api`, `api-deployment.yaml`) — a ConfigMap,
+  not a Secret, since a CA's public certificate isn't sensitive. Empty by
+  default (no behavior change for existing installs); when set, every
+  `AgentProvider`-minted kubeconfig trusts that CA directly, with no
+  reliance on any caller's OS trust store — no `mkcert`, no per-machine
+  setup, and it works identically for a teammate's machine or CI as it
+  does for the machine that generated the CA. `go build ./...`, `go vet
+  ./...`, and `go test ./...` all pass; `helm lint`/`helm template` render
+  correctly both with and without the value set.
