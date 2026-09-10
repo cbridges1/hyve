@@ -14,21 +14,30 @@ set -euo pipefail
 # (values.yaml's ui.enabled: false — a real install makes its own exposure
 # decision) but this local-dev script turns it on by default, since the
 # whole point of a local sandbox is a full one, and it costs nothing extra
-# (same Ingress host, split by path — see ui-ingress.yaml). Set
-# HYVE_INSTALL_UI=false to skip building/deploying it.
+# (same Ingress host, split by path — see this script's own apply_ingress
+# below). Set HYVE_INSTALL_UI=false to skip building/deploying it.
 #
-# Exposes hyve-api (and the UI, at "/") via Ingress (host:
-# hyve-api.127.0.0.1.nip.io by default), not NodePort — Docker Desktop's own
-# built-in Kubernetes doesn't map any host port beyond its fixed API-server
-# one (confirmed live:
-# NodePort and LoadBalancer were both unreachable from the host on it), so
-# this only actually works against create-local-cluster.sh's k3d cluster,
-# whose host 80/443 are mapped to k3d's own load balancer -> Traefik (k3d's
-# default ingress controller) at cluster-creation time — the only point
-# port mappings can be set at all for a kind/k3d node. Every service
-# exposed *after* that one-time setup, including this one, is pure
-# `kubectl apply`/`helm upgrade --install` — no further cluster changes,
-# ever.
+# Exposes hyve-api (and the UI, at "/") via an Ingress THIS SCRIPT applies
+# directly with kubectl (host: hyve-api.127.0.0.1.nip.io by default), not
+# NodePort — Docker Desktop's own built-in Kubernetes doesn't map any host
+# port beyond its fixed API-server one (confirmed live: NodePort and
+# LoadBalancer were both unreachable from the host on it), so this only
+# actually works against create-local-cluster.sh's k3d cluster, whose host
+# 80/443 are mapped to k3d's own load balancer -> Traefik (k3d's default
+# ingress controller) at cluster-creation time — the only point port
+# mappings can be set at all for a kind/k3d node.
+#
+# The Ingress is deliberately NOT part of deploy/helm/hyve any more (see
+# docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md) — Traefik-specific, nip.io-hostname,
+# local-only routing has no business being a real install's concern, and
+# "what ingress controller/LoadBalancer/TLS story does this deployer
+# already have" varies too much across clouds for the chart to guess at.
+# This script owns it end-to-end instead: apply_ingress below is plain
+# kubectl against hard-coded Traefik semantics, entirely separate from the
+# helm release, so `helm uninstall`/upgrade never touches it and a real
+# chart consumer never sees it. Every service exposed *after* the one-time
+# k3d port-mapping setup, including this one, is pure `kubectl apply`/
+# `helm upgrade --install` — no further cluster changes, ever.
 #
 # nip.io (a public wildcard-DNS service resolving any
 # <name>.127.0.0.1.nip.io to 127.0.0.1 via real DNS), not a bare
@@ -41,6 +50,23 @@ set -euo pipefail
 # the actual traffic, which still goes straight to 127.0.0.1); use
 # HYVE_INSTALL_INGRESS_HOST to override if you'd rather manage your own
 # /etc/hosts entry instead.
+#
+# TLS is off by default (plain HTTP, same as always) — set
+# HYVE_INSTALL_TLS_SECRET to an existing `kubernetes.io/tls` Secret name in
+# NAMESPACE to terminate TLS on the Ingress instead. Plain HTTP is fine for
+# exercising most of the API, but publicBaseURL-derived kubeconfigs
+# (HostProvider/AgentProvider, internal/api/access.go) won't actually
+# authenticate over it: client-go strips bearer tokens from requests to a
+# bare http:// server (confirmed live; see
+# docs/HYVE-AGENT-MIGRATION-GUIDE.md and docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md).
+# If you set HYVE_INSTALL_TLS_SECRET, also set
+# HYVE_INSTALL_PUBLIC_BASE_URL=https://$INGRESS_HOST. Note HostProvider
+# specifically (the "host" ClusterDefinition path in this script's own
+# printed next-steps) additionally requires that secret's certificate to
+# chain to this cluster's own apiserver CA, not just any cert — see
+# docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md for why, and for the recommended
+# alternative (route the host cluster through hyve-agent instead, which has
+# no such requirement).
 #
 # Unlike scripts/test-*.sh, this does NOT clean up after itself — it's
 # meant to leave a running install behind. Re-running it is safe/idempotent
@@ -63,10 +89,88 @@ INSTALL_UI="${HYVE_INSTALL_UI:-true}"
 MULTI_TENANT="${HYVE_INSTALL_MULTI_TENANT:-false}"
 INGRESS_HOST="${HYVE_INSTALL_INGRESS_HOST:-hyve-api.127.0.0.1.nip.io}"
 PUBLIC_BASE_URL="${HYVE_INSTALL_PUBLIC_BASE_URL:-http://$INGRESS_HOST}"
+TLS_SECRET="${HYVE_INSTALL_TLS_SECRET:-}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { echo "── $*"; }
+
+# Applies this script's own Ingress objects directly with kubectl — see
+# this file's header comment for why these aren't in deploy/helm/hyve.
+# Mirrors exactly what the chart's now-removed api-ingress.yaml/
+# ui-ingress.yaml templates used to generate: one Ingress with the API's
+# full path list (or a single "/" catch-all when the UI is off) plus a
+# second Ingress owning "/" for hyve-ui when it's on. Idempotent — always
+# safe to re-apply.
+apply_ingress() {
+  local tls_block=""
+  if [[ -n "$TLS_SECRET" ]]; then
+    tls_block="
+  tls:
+    - hosts: [$INGRESS_HOST]
+      secretName: $TLS_SECRET"
+  fi
+
+  if [[ "$INSTALL_UI" == "true" ]]; then
+    kubectl apply -f - <<EOF >/dev/null
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hyve-api
+  namespace: $NAMESPACE
+spec:
+  ingressClassName: traefik${tls_block}
+  rules:
+    - host: $INGRESS_HOST
+      http:
+        paths:
+$(for p in /api /auth /healthz /docs /openapi.yaml /proxy /agent; do
+  printf '          - path: %s\n            pathType: Prefix\n            backend:\n              service:\n                name: hyve-api\n                port:\n                  number: 80\n' "$p"
+done)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hyve-ui
+  namespace: $NAMESPACE
+spec:
+  ingressClassName: traefik${tls_block}
+  rules:
+    - host: $INGRESS_HOST
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hyve-ui
+                port:
+                  number: 80
+EOF
+  else
+    kubectl apply -f - <<EOF >/dev/null
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hyve-api
+  namespace: $NAMESPACE
+spec:
+  ingressClassName: traefik${tls_block}
+  rules:
+    - host: $INGRESS_HOST
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hyve-api
+                port:
+                  number: 80
+EOF
+    kubectl -n "$NAMESPACE" delete ingress hyve-ui --ignore-not-found >/dev/null
+  fi
+}
 
 # The image build/run platform here is independent of what the *cluster*
 # runs — Kubernetes pulls images via containerd, not this shell's `docker`
@@ -161,9 +265,10 @@ helm upgrade --install hyve "$ROOT_DIR/deploy/helm/hyve" \
   --set namespace="$NAMESPACE" \
   --set api.publicBaseURL="$PUBLIC_BASE_URL" \
   --set api.multiTenant.enabled="$MULTI_TENANT" \
-  --set api.ingress.enabled=true \
-  --set api.ingress.host="$INGRESS_HOST" \
   "${UI_SET_FLAGS[@]}" >/dev/null
+
+log "Applying local-dev Ingress (host=$INGRESS_HOST, tls=${TLS_SECRET:-off})"
+apply_ingress
 
 log "Restarting Deployments so the freshly-built image(s) are actually used"
 DEPLOYMENTS=(deployment/hyve-controller deployment/hyve-api)
@@ -193,7 +298,11 @@ echo "     hyve login --api-url $PUBLIC_BASE_URL"
 echo ""
 echo "  3. Self-register this cluster as the host, then try the host-cluster kubeconfig path"
 echo "     (see docs/HYVE-AGENT-MIGRATION-GUIDE.md's \"Host cluster access\" section — no"
-echo "     spec.driver needed, hyve mints a kubeconfig for it automatically):"
+echo "     spec.driver needed, hyve mints a kubeconfig for it automatically). NOTE: with the"
+echo "     default plain-HTTP setup this prints a kubeconfig kubectl can't actually"
+echo "     authenticate with (client-go drops bearer tokens over http://) — see"
+echo "     docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md, or just use your existing native kubeconfig"
+echo "     for this same cluster instead of this path for local dev:"
 echo "     kubectl apply -f - <<'EOF'"
 echo "     apiVersion: hyve.io/v1alpha1"
 echo "     kind: ClusterDefinition"

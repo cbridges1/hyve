@@ -140,22 +140,19 @@ api:
 
   service:
     port: 80
-    # type/nodePort default to a plain ClusterIP for a real install (reached
-    # via port-forward, ingress.* below, or your own exposure mechanism). A
-    # NodePort override only makes sense on a cluster whose node ports are
-    # actually mapped to the host (e.g. a kind/k3d dev cluster created with
-    # extraPortMappings).
+    # type/nodePort default to a plain ClusterIP for a real install — this
+    # chart does not create any Ingress/LoadBalancer of its own (see
+    # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md): exposing hyve-api publicly,
+    # and terminating TLS in front of it, is entirely the deployer's own
+    # choice (a cloud LoadBalancer Service, your own Ingress controller,
+    # port-forward for local use). A NodePort override only makes sense on
+    # a cluster whose node ports are actually mapped to the host (e.g. a
+    # kind/k3d dev cluster created with extraPortMappings) — that's also
+    # the local-dev script's own approach; see scripts/install-local.sh,
+    # which applies its own plain-kubectl Ingress against local k3d's
+    # bundled Traefik rather than anything this chart templates.
     type: ClusterIP
     nodePort: ""
-
-  # ingress is disabled by default — a real install should make its own
-  # exposure decision; scripts/create-local-cluster.sh + install-local.sh
-  # enable it for local dev only, routed through k3d's default Traefik
-  # ingress controller.
-  ingress:
-    enabled: false
-    host: ""
-    className: traefik
 
   # accessRoles controls whether this chart also creates the two default
   # roles' backing ServiceAccounts + RoleBindings/ClusterRoleBindings
@@ -185,13 +182,14 @@ api:
     enabled: false
 
 # ui deploys the optional web/ frontend (see HYVE-IMPLEMENTATION-PLAN.md's
-# Phase 11) — disabled by default, same "a real install makes its own
-# exposure decision" stance as api.ingress. Requires api.ingress.enabled:
-# true to actually be reachable — web/ only ever makes relative (/api/...,
-# /auth/...) requests, so it MUST be served from api.ingress.host, the
-# exact same origin as hyve-api. There is no separate ui.ingress.host to
-# set: ui-ingress.yaml always reuses api.ingress.host, so this
-# same-origin requirement can't be misconfigured into two different hosts.
+# Phase 11) — disabled by default, same "this chart makes no exposure
+# decision for you" stance as api.service above. web/ only ever makes
+# relative (/api/..., /auth/...) requests, so whatever exposes hyve-ui
+# publicly MUST route it from the exact same origin as hyve-api — this
+# chart creates the hyve-ui Service for you to point your own
+# Ingress/LoadBalancer/routing rules at, same-origin with hyve-api, but
+# does not wire that routing up itself. scripts/install-local.sh's own
+# Ingress (local dev only) does this correctly as a worked example.
 ui:
   enabled: false
 
@@ -210,9 +208,3 @@ ui:
 
   service:
     port: 80
-
-  ingress:
-    # className mirrors api.ingress.className by default — override only if
-    # the UI genuinely needs a different ingress controller than the API,
-    # which on a shared host would be unusual.
-    className: ""

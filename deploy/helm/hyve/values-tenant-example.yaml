@@ -24,13 +24,12 @@ namespace: <tenant-ns>
 api:
   # This tenant's own public hostname — each tenant needs a distinct host
   # (or distinct path prefix on a shared host, if you front multiple
-  # tenants with one Ingress yourself instead of using this chart's own
-  # api.ingress).
+  # tenants with one Ingress/LoadBalancer of your own). This chart has no
+  # Ingress of its own to enable/configure (see
+  # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md) — point whatever you're already
+  # running at the hyve-api Service this release creates in <tenant-ns>.
   publicBaseURL: https://<tenant>.hyve.example.com
   primaryClusterName: <tenant>-primary
-  ingress:
-    enabled: true
-    host: <tenant>.hyve.example.com
 
   # Leave at the chart default (false) unless this tenant's cluster is
   # genuinely single-tenant — true grants this tenant's admin role

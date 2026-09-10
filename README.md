@@ -204,12 +204,12 @@ helm install hyve-<tenant> deploy/helm/hyve \
   --namespace <tenant-ns> \
   -f deploy/helm/hyve/values-tenant-example.yaml \
   --set namespace=<tenant-ns> \
-  --set api.ingress.host=<tenant>.hyve.example.com
+  --set api.publicBaseURL=https://<tenant>.hyve.example.com
 
 hyve cluster-config api create-user <username> --role admin --namespace <tenant-ns> | kubectl apply -f -
 ```
 
-See `deploy/helm/hyve/values-tenant-example.yaml` for the full set of per-tenant overrides.
+This chart has no Ingress/LoadBalancer of its own to enable — point whatever exposure you're already running (an existing Ingress controller, a cloud LoadBalancer, your own routing) at the `hyve-api`/`hyve-ui` Services this release creates in `<tenant-ns>`. See `deploy/helm/hyve/values-tenant-example.yaml` for the full set of per-tenant overrides, and `docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md` for why exposure is deliberately left out of the chart.
 
 **CRDs are cluster-global, shared by every tenant install.** `helm install` only applies `deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm upgrade` never touches them (standard Helm behavior). So only the very first tenant's install actually creates them; a later CRD schema change needs a manual `kubectl apply -f deploy/helm/hyve/crds/` before any tenant runs `helm upgrade`, or that tenant's upgrade will run against a stale schema.
 

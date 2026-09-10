@@ -18,7 +18,7 @@ spec:
       {{- end }}
     # A raw SSH TCP listener, not HTTP — see api.agentBindAddress's own
     # comment in values.yaml for why this lives on the main Service despite
-    # never being routed through api-ingress.yaml.
+    # never being routable through an HTTP Ingress.
     - name: agent
       port: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
       targetPort: agent
