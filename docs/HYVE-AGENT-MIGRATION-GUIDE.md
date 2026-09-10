@@ -170,3 +170,34 @@ driver-having cluster (client-side auth via
 host-identification marker (`cmd/migrate_resolve.go`'s
 `resolveCurrentHostKubeconfigPath`) — that convention is unchanged either
 way.
+
+**Superseded as the *recommended* path (not removed) — see
+`docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md`.** `HostProvider`'s `/proxy` path
+pins trust to the host cluster's own apiserver CA, which works fine here
+(hyve-api runs inside the cluster it's minting credentials for) but is a
+hard ceiling on EKS/GKE/AKS: none of the three major managed control
+planes expose that CA's private key to anyone, at all — no configuration
+fixes this. The recommended way to reach the host cluster is now to
+enable hyve-agent on it too, exactly like any other managed cluster:
+
+```yaml
+spec:
+  access:
+    method: primary
+    agent:
+      enabled: true
+      proxy: true
+```
+
+`internal/reconcile/host.go`'s driver-less dispatch path now calls
+`reconcileAgent` using the same in-cluster kubeconfig it already mints for
+`spec.resources` (previously it didn't — a driver-less host cluster's own
+dispatch branch bypassed `reconcileAgent` entirely, so this had silently
+no effect before). Once installed, `GET /kubeconfig`'s own provider
+dispatch (`internal/api/kubeconfig_handler.go`) already checks
+`Agent.Proxy` ahead of `Method`, so `hyve cluster auth host` automatically
+starts going through `AgentProvider` instead of `HostProvider` — no other
+config change needed. `access.method: primary` with no agent enabled is
+kept working as documented above, for anyone deliberately staying off the
+agent on a self-managed cluster where borrowing the CA is at least
+possible — it's the fallback now, not the default recommendation.

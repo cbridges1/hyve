@@ -94,6 +94,29 @@ func (r *Reconciler) reconcileHostCluster(ctx context.Context, cluster types.Clu
 
 	env := append(buildModuleEnv(cluster, secretsEnv), "KUBECONFIG="+kcFile.Name())
 
+	// hyve-agent installation applies here too now (see
+	// docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md) — the host cluster is meant to
+	// reach itself through hyve-agent/AgentProvider like any other managed
+	// cluster, not through HostProvider's own CA-pinned /proxy path, which
+	// cannot work at all on a managed control plane (EKS/GKE/AKS never
+	// expose the apiserver's own CA key). Before this, reconcileAgent was
+	// only ever called from reconcileCluster's own dispatch branch — a
+	// driver-less host cluster took this function's separate dispatch path
+	// instead (see isHostClusterWithoutDriver) and so spec.access.agent
+	// silently had no effect on it at all, regardless of what it was set
+	// to. The kubeconfig just minted above (HostKubeconfigIssuer, already
+	// cluster-admin-equivalent in-cluster) is exactly what reconcileAgent
+	// needs to kubectl apply hyve-agent's own manifests — no driver module
+	// involved, same as spec.resources below. Same warn-and-continue,
+	// skip-on-dry-run stance as reconcileCluster's own call site: agent
+	// install state is independent of everything else this function does,
+	// and reconcileAgent has no read-only mode of its own.
+	if dryRun {
+		r.logf("[%s] DRY RUN: skipping hyve-agent reconciliation", name)
+	} else if agentErr := r.reconcileAgent(ctx, &cluster, env); agentErr != nil {
+		r.logf("[%s] Warning: hyve-agent reconciliation failed: %v", name, agentErr)
+	}
+
 	repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
 	if cfgErr != nil {
 		r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)

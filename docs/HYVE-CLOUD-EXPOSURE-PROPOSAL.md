@@ -1,11 +1,12 @@
 # Proposal: cloud-portable exposure and host-cluster access
 
-**Status:** partially implemented. The chart/ingress cleanup below is
-done; retiring `HostProvider` in favor of routing the host cluster through
-hyve-agent is still a proposal, not implemented. Written to capture a
-design direction worked out in conversation, prompted by a live failure
-found while debugging `hyve cluster auth host` against a local k3d
-cluster with no TLS in front of it.
+**Status:** implemented. The chart/ingress cleanup, and the reconciler
+change routing the host cluster through hyve-agent, are both done — see
+"Implementation notes" at the end for exactly what changed and what
+wasn't (couldn't be) verified live. Written to capture a design direction
+worked out in conversation, prompted by a live failure found while
+debugging `hyve cluster auth host` against a local k3d cluster with no
+TLS in front of it.
 
 ## Summary
 
@@ -18,14 +19,16 @@ Two related decisions:
    Local dev's Ingress (Traefik-specific, nip.io-hostname, k3d-only) moved
    into `scripts/install-local.sh` as a plain `kubectl apply`, entirely
    outside the helm release.
-2. **The host cluster (`access.method: primary`, `HostProvider`) should
-   stop being a special case and instead go through hyve-agent like every
-   other cluster** — proposed, not yet built. `HostProvider`'s `/proxy`
-   path pins trust to the in-cluster Kubernetes API server's own CA, which
-   is fundamentally incompatible with EKS, GKE, and AKS: none of them
-   expose their control plane's CA private key to anyone, ever. There is
-   no configuration that fixes this — it's a hard architectural ceiling on
-   `HostProvider`, not a deployment detail to work around.
+2. **The host cluster (`access.method: primary`, `HostProvider`) stops
+   being a special case and goes through hyve-agent like every other
+   cluster, when asked to.** `HostProvider`'s `/proxy` path pins trust to
+   the in-cluster Kubernetes API server's own CA, which is fundamentally
+   incompatible with EKS, GKE, and AKS: none of them expose their control
+   plane's CA private key to anyone, ever. There is no configuration that
+   fixes this — it's a hard architectural ceiling on `HostProvider`, not a
+   deployment detail to work around. `access.method: primary` is kept
+   working exactly as before for anyone who doesn't opt into the agent —
+   this is additive, not a breaking change.
 
 ## Why now
 
@@ -107,11 +110,12 @@ existing-Secret reference (already what `scripts/install-local.sh`'s
 understands, and *document* a cert-manager `ClusterIssuer`+`Certificate`
 snippet for anyone who has it, rather than baking in a dependency.
 
-## Proposed, not yet implemented: retire `HostProvider`'s `/proxy` path
+## Retiring `HostProvider`'s `/proxy` path as the default
 
-**The host cluster should register hyve-agent and go through
-`AgentProvider`'s `/api/agent-proxy/host` path, exactly like every other
-managed cluster.** Concretely:
+**The host cluster registers hyve-agent and goes through `AgentProvider`'s
+`/api/agent-proxy/host` path, exactly like every other managed cluster,
+once an operator sets `spec.access.agent.enabled/proxy: true` on it.**
+Concretely:
 
 - `access.method: primary` (`HostProvider`, `internal/api/access.go`)
   stops being the recommended way to reach the cluster hyve's own control
@@ -133,27 +137,75 @@ managed cluster.** Concretely:
   work uniformly on EKS, GKE, and AKS, not any change to how TLS is
   terminated in front of hyve-api.
 
-## Open questions
+## Resolved decisions
 
-- Does `access.method: primary` get removed outright once the agent path
-  covers the host-cluster case, or kept indefinitely as a documented
-  fallback for self-managed clusters that don't want an agent running on
-  their own control-plane node? (Mirrors the same question already
-  resolved for `AccessMethod` more broadly in
-  `HYVE-AGENT-ARCHITECTURE-PROPOSAL.md` — likely the same answer: keep it,
-  clearly marked as the exception, not the default.)
-- Should the chart optionally support rendering a cert-manager
-  `Certificate` when a value explicitly opts in (e.g.
-  `api.tls.certManager.enabled: true`), gated so it only ever renders when
-  requested, or should that stay pure documentation with zero chart
-  support at all? Leaning toward pure documentation, given the "the chart
-  makes no exposure decision for you" stance adopted above — an opt-in
-  flag is still a chart-owned exposure decision, just a quieter one.
-- Should `scripts/install-local.sh`'s own Ingress gain an option to mint
-  its TLS cert from the local cluster's own CA automatically (formalizing
-  what was done manually this session), or does that become unnecessary
-  once local dev also exercises the agent-based host-cluster path instead
-  of `HostProvider`, at which point any cert (even a plain self-signed one
-  with `insecure-skip-tls-verify`-equivalent handling) would do? Leaning
-  toward the latter — not worth automating a workaround for a path being
-  deprecated.
+**`access.method: primary` is kept, not removed**, mirroring the decision
+already made for `access.method: tunnel` when `AccessMethod` itself was
+retired (`HYVE-AGENT-MIGRATION-GUIDE.md`: "a normal, supported access
+path... it never needed hyve-agent as a replacement and isn't going
+anywhere"). There's a real, narrow audience — an operator on a small
+self-managed cluster who'd rather not add hyve-agent's Deployment/
+ServiceAccount/RBAC footprint to their own control-plane node — and the
+mechanism still works there. The only change is which path is
+recommended/defaulted toward, not which paths exist.
+
+**No chart support for cert-manager, not even opt-in — documentation
+only.** A `Certificate` resource needs an `issuerRef` naming a specific
+`ClusterIssuer` (ACME/HTTP-01, ACME/DNS-01 with a specific DNS provider's
+credentials, a private CA, a cloud-specific issuer), and which shape a
+given deployer has varies enough that "supporting" it means exposing a
+pile of mostly-dead values per install. That's the same shape of problem
+that produced the original bug (a chart-owned Ingress carrying Traefik-
+specific, locally-scoped assumptions that only surfaced as broken once
+enabled). An opt-in flag is still a chart-owned exposure decision, just a
+quieter one — stays out entirely.
+
+**No automatic TLS-cert-minting added to `scripts/install-local.sh`.**
+Building convenience automation around `HostProvider`'s CA requirement
+would invest in the path this proposal just demoted. `AgentProvider`
+doesn't pin CA at all, so once local dev also exercises the agent-based
+host path, testing it needs only *some* real, system- (or
+`mkcert`-)trusted TLS — a much lower bar than "signed by this exact
+cluster's own apiserver CA." `mkcert` is the right building block if that
+friction turns out to matter later, not the cluster-PKI trick used to
+unblock testing this session (kept working, documented, for anyone still
+using `HostProvider` directly).
+
+## Implementation notes
+
+- `deploy/helm/hyve/templates/api-ingress.yaml`/`ui-ingress.yaml` deleted;
+  `api.ingress.*`/`ui.ingress.*` values removed. `scripts/
+  install-local.sh` now applies an equivalent Ingress directly via
+  `kubectl apply` (`apply_ingress`), entirely outside the helm release.
+  Verified live: `helm lint` passes, `helm template` renders zero
+  `Ingress` objects, and the running k3d-hyve-local install kept working
+  end to end after the cutover (`hyve cluster auth host` +
+  `kubectl --context host get nodes` + the UI all still reachable).
+- `internal/reconcile/host.go`'s `reconcileHostCluster` (the dispatch
+  target for a driver-less `primary`-marked cluster) now calls
+  `reconcileAgent` using the same in-cluster kubeconfig it already mints
+  for `spec.resources`. Before this change, a driver-less host cluster
+  never reached `reconcileAgent` at all — it has its own dispatch branch
+  in `ReconcileOne`, separate from `reconcileCluster` (the only other call
+  site) — so `spec.access.agent` silently had no effect on it regardless
+  of what it was set to. `internal/api/kubeconfig_handler.go`'s provider
+  dispatch already checked `Agent.Proxy` ahead of `Method` before this
+  change, so no API-side change was needed once the reconciler actually
+  installs the agent.
+- New test: `TestReconcileHostCluster_AgentEnabled_NoAgentConfig_SoftNoOp`
+  (`internal/reconcile/host_test.go`) confirms `reconcileHostCluster` now
+  reaches `reconcileAgent`'s own "not configured" branch rather than
+  skipping it entirely. `go build ./...` and `go test
+  ./internal/reconcile/...` both pass.
+- **Not verified live: an actual hyve-agent installation and working
+  `AgentProvider`-served kubeconfig for the host cluster.** The running
+  k3d-hyve-local install has no `controller.agent.controlPlaneURL`/
+  `tunnelAddress` configured (confirmed via `helm get values`), and
+  standing those up needs real external reachability this local dev
+  environment doesn't have (see `HYVE-AGENT-MIGRATION-GUIDE.md`'s own
+  point 1 on this exact requirement) — the same gap that doc already
+  flags for testing the agent path generally, not something new this
+  change introduced. The code path is confirmed reached and exercised by
+  the new test; the full connect-and-proxy behavior needs a real
+  externally-reachable control plane to verify, same as any other
+  hyve-agent installation.

@@ -85,6 +85,35 @@ func TestReconcileHostCluster_MintError_PropagatesAsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "boom")
 }
 
+// TestReconcileHostCluster_AgentEnabled_NoAgentConfig_SoftNoOp confirms
+// reconcileHostCluster now actually reaches reconcileAgent (see this
+// file's own doc comment on the fix — before it, a driver-less host
+// cluster's dispatch path never called reconcileAgent at all, so
+// spec.access.agent had no effect on it regardless of what it was set
+// to). With no AgentTokenIssuer/AgentControlPlaneURL/AgentTunnelAddress
+// configured (this Reconciler's own zero-value default), reconcileAgent's
+// own "not configured" branch logs a warning and returns nil — this test
+// only needs to confirm that branch is actually reached and that
+// reconcileHostCluster still succeeds end to end, not that an agent gets
+// installed (that needs a real cluster/kubectl, covered by
+// agent_test.go's own kubectlApply-level tests instead).
+func TestReconcileHostCluster_AgentEnabled_NoAgentConfig_SoftNoOp(t *testing.T) {
+	issuer := &fakeHostKubeconfigIssuer{kc: []byte("apiVersion: v1\nkind: Config\n")}
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir()})
+	r.HostKubeconfigIssuer = issuer
+	// r.AgentTokenIssuer/AgentControlPlaneURL/AgentTunnelAddress left at
+	// their zero values on purpose — reconcileAgent must treat that as a
+	// soft no-op, not fail the whole reconcile.
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "host"},
+		Spec:     types.ClusterSpec{AccessMethod: types.AccessMethodPrimary, Agent: types.AgentSpec{Enabled: true, Proxy: true}},
+	}
+	err := r.reconcileHostCluster(context.Background(), cluster, &module.LockFile{Version: 1}, false, nil, &ReconcileHooks{})
+	require.NoError(t, err, "missing agent config must be a soft no-op, not an error")
+	assert.True(t, issuer.called, "host kubeconfig must still be minted for spec.resources reconciliation regardless of agent config")
+}
+
 // TestReconcileHostCluster_NoResources_MintsAndSucceeds confirms the
 // no-module path actually reaches reconcileResources with a working
 // KUBECONFIG env var set from the minted kubeconfig — with zero
