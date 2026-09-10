@@ -11,6 +11,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/cbridges1/hyve/internal/agentpki"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -48,19 +49,6 @@ const (
 	agentDeploymentName           = "hyve-agent"
 	agentProxyAdminBindingName    = "hyve-agent-proxy-admin"
 	agentProxyReadOnlyBindingName = "hyve-agent-proxy-readonly"
-)
-
-// agentProxyAdminGroup/agentProxyReadOnlyGroup are the Impersonate-Group
-// values milestone 5's proxy path must send for hyve's admin/read-only
-// roles, respectively — fixed here because this reconcile step is what
-// actually provisions the ClusterRoleBindings that make those two exact
-// group names meaningful on the target cluster (see
-// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Proxy authorization model":
-// "the exact same two RoleBindings... admin->cluster-admin, read-only->view").
-// Milestone 5 must use these two literal strings, not invent its own.
-const (
-	agentProxyAdminGroup    = "hyve:admin"
-	agentProxyReadOnlyGroup = "hyve:read-only"
 )
 
 // defaultAgentImage is hyve-agent's image when HyveConfig.spec.
@@ -366,7 +354,8 @@ func renderAgentCoreManifest(p agentManifestParams) ([]byte, error) {
 
 // renderAgentProxyManifest needs no per-cluster values at all — both
 // ClusterRoleBindings' subjects are the two fixed Impersonate-Group
-// values milestone 5 will send, not anything specific to this cluster.
+// values agent_proxy.go sends (agentpki.AgentProxyAdminGroup/
+// AgentProxyReadOnlyGroup), not anything specific to this cluster.
 func renderAgentProxyManifest() ([]byte, error) {
 	return []byte(fmt.Sprintf(`
 apiVersion: rbac.authorization.k8s.io/v1
@@ -394,5 +383,5 @@ roleRef:
   kind: ClusterRole
   name: view
   apiGroup: rbac.authorization.k8s.io
-`, agentProxyAdminBindingName, agentProxyAdminGroup, agentProxyReadOnlyBindingName, agentProxyReadOnlyGroup)), nil
+`, agentProxyAdminBindingName, agentpki.AgentProxyAdminGroup, agentProxyReadOnlyBindingName, agentpki.AgentProxyReadOnlyGroup)), nil
 }

@@ -60,6 +60,57 @@ spec:
               a real Kubernetes object's metadata can only hold standard ObjectMeta
               fields, not arbitrary custom ones.
             properties:
+              access:
+                description: |-
+                  Access mirrors ClusterDefinitionSpec.Access — copied verbatim by
+                  RenderClusterDefinitionSpec into every cluster created from this
+                  template. Cluster-mode only, like the rest of AccessSpec (a
+                  local-mode-rendered cluster has no live API for Agent to mean
+                  anything against); internal/template.TemplateSpec
+                  (local mode's own template type, converted into this one before
+                  rendering) has no equivalent field, so a local-mode template
+                  always renders a zero-value Access here. Found missing live,
+                  confirmed by a real Template CRD silently dropping a hand-written
+                  spec.access.agent block at the API server's own schema-validation
+                  layer — the CRD simply had no such property to preserve, regardless
+                  of how the Template was created (--set, -f a file, or a direct
+                  kubectl apply all hit the same gap).
+                properties:
+                  agent:
+                    description: |-
+                      Agent configures hyve-agent for this cluster — see
+                      docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel
+                      above — a cluster can use both at once, or either alone.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled installs/keeps hyve-agent running on this cluster, reporting
+                          connection status (ClusterDefinitionStatus.Agent) back to the control
+                          plane. Proxy below requires this to also be true; flipping Enabled
+                          back to false uninstalls the agent (and, transitively, disables
+                          Proxy).
+                        type: boolean
+                      proxy:
+                        description: |-
+                          Proxy additionally lets the control plane route kubectl/API traffic
+                          to this cluster through its agent's own tunnel — see "Proxy
+                          authorization model" in the architecture proposal for the
+                          impersonation-based authorization this relies on. Independently
+                          toggleable from Enabled so a cluster can report live status without
+                          ever accepting proxied traffic.
+                        type: boolean
+                    type: object
+                  method:
+                    type: string
+                  tunnel:
+                    description: |-
+                      TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml
+                      dispatches to for this cluster.
+                    properties:
+                      provider:
+                        type: string
+                    type: object
+                type: object
               description:
                 type: string
               driver:

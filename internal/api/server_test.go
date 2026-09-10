@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func okHandler() http.Handler {
@@ -166,4 +170,25 @@ func TestTenantNamespace_OrdinaryAdminActAsHeader_NeverHonored(t *testing.T) {
 	req.Header.Set(actAsNamespaceHeader, "acme")
 
 	require.Equal(t, "own-tenant", s.TenantNamespace(req), "an ordinary admin's own session namespace must win, never the header")
+}
+
+func TestEmitClusterEvent_NilClientset_NoOp(t *testing.T) {
+	// Must not panic — the only assertion possible for a deliberate no-op.
+	emitClusterEvent(context.Background(), nil, "acme", "web", "AgentConnected", "hyve-agent connected")
+}
+
+func TestEmitClusterEvent_CreatesRealEvent(t *testing.T) {
+	clientset := fake.NewClientset()
+	emitClusterEvent(context.Background(), clientset, "acme", "web", "AgentConnected", "hyve-agent connected")
+
+	list, err := clientset.CoreV1().Events("acme").List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, list.Items, 1)
+	ev := list.Items[0]
+	assert.Equal(t, "AgentConnected", ev.Reason)
+	assert.Equal(t, "hyve-agent connected", ev.Message)
+	assert.Equal(t, "ClusterDefinition", ev.InvolvedObject.Kind)
+	assert.Equal(t, "web", ev.InvolvedObject.Name)
+	assert.Equal(t, "acme", ev.InvolvedObject.Namespace)
+	assert.Equal(t, corev1.EventTypeNormal, ev.Type)
 }

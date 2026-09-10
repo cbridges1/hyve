@@ -4,8 +4,6 @@ import { LoginForm } from './components/LoginForm'
 import { SuperadminOnly } from './components/RoleGate'
 import { ConfirmProvider } from './lib/confirm'
 import { useSession } from './lib/useAuth'
-import { AccessMethodDetailPage } from './routes/AccessMethodDetailPage'
-import { AccessMethodsPage } from './routes/AccessMethodsPage'
 import { AccountsPage } from './routes/AccountsPage'
 import { ClusterDetailPage } from './routes/ClusterDetailPage'
 import { ClustersListPage } from './routes/ClustersListPage'
@@ -41,8 +39,6 @@ function App() {
             <Route path="/templates/:name" element={<TemplateDetailPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/workflows/:name" element={<WorkflowDetailPage />} />
-            <Route path="/access-methods" element={<AccessMethodsPage />} />
-            <Route path="/access-methods/:name" element={<AccessMethodDetailPage />} />
             <Route
               path="/environments"
               element={

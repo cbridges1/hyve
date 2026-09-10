@@ -19,11 +19,9 @@ metadata:
 # as Phase 1's tenant-admin roles already work via api-access-roles.yaml.
 #
 # Namespace-scoped: ClusterDefinition/Template/Workflow CRUD, Secrets
-# (credentials + tunnel kubeconfigs), TokenRequest (minting on behalf of a
-# caller's matched HyveAccessBinding — see internal/api/access.go's
-# PrimaryClusterProvider), and read access to Jobs/Pods/pod logs for the
-# future log-streaming endpoint (Phase 6.7, not yet implemented — granted
-# now so a later rollout of that feature needs no RBAC change).
+# (credentials + tunnel kubeconfigs), and read access to Jobs/Pods/pod logs
+# for the future log-streaming endpoint (Phase 6.7, not yet implemented —
+# granted now so a later rollout of that feature needs no RBAC change).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: {{ if .Values.api.multiTenant.enabled }}ClusterRole{{ else }}Role{{ end }}
 metadata:
@@ -83,13 +81,6 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["modules"]
     verbs: ["get", "list", "watch"]
-  # AccessMethod is namespace-scoped and admin-creatable through the API
-  # now, same as templates/workflows/resources above — its mint operation
-  # is fully tenant-isolated (see accessmethod_mint.go), so there's no
-  # extra sensitivity here beyond what those already have.
-  - apiGroups: ["hyve.io"]
-    resources: ["accessmethods"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
   # Same read-only reasoning as modules above — only the controller writes
   # these (upsertWorkflowRefStatusCR/upsertResourceRefStatusCR); the API
   # merges them into `hyve workflow list`/`resource list`'s output
@@ -150,11 +141,8 @@ rules:
   # resourceNames at all — a rule with resourceNames simply never matches a
   # create request (confirmed live: combining create with resourceNames
   # made every create 403, not "unscoped" as might be assumed), so create
-  # needs its own unscoped rule — also what access-method minting
-  # (accessmethod_mint.go) needs to create its own short-lived,
-  # per-request credentials Secret (name varies per mint request, so
-  # resourceNames can't scope this one either). update/patch/delete CAN
-  # be scoped by resourceNames and are, for hyve-cli-secrets specifically.
+  # needs its own unscoped rule. update/patch/delete CAN be scoped by
+  # resourceNames and are, for hyve-cli-secrets specifically.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
@@ -169,27 +157,17 @@ rules:
   # that varies per created account. This does let hyve-api delete *any*
   # Secret in this namespace, including hyve-api-credentials (its own
   # signing key) and hyve-cli-secrets — a real, deliberate widening, not an
-  # oversight. Accepted because an admin-role caller through this API can
-  # already mint a kubeconfig scoped to admin of this whole namespace via
-  # the primary-cluster TokenRequest path (see access.go's
-  # PrimaryClusterProvider, and api-access-roles.yaml's
-  # accessRoles.clusterScoped), so this isn't a first departure from a
-  # tightly-scoped baseline.
+  # oversight; accepted because an admin-role caller through this API
+  # already has broad control of this namespace's own resources via
+  # ordinary ClusterDefinition/Template/Secret CRUD.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["delete"]
-  - apiGroups: [""]
-    resources: ["serviceaccounts/token"]
-    verbs: ["create"]
-  # create/delete (beyond the original read-only get/list, granted ahead
-  # of Phase 6.7's log-streaming feature) back access-method minting
-  # (accessmethod_mint.go) — a short-lived Job runs an AccessMethod's
-  # driver module's auth operation, deleted again the moment its result
-  # arrives (or its wait times out). No update/patch: this API never
-  # modifies a Job in place.
+  # get/list (beyond nothing before) granted ahead of Phase 6.7's
+  # log-streaming feature, not yet implemented — see pods/pods-log below.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "create", "delete"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
@@ -201,10 +179,14 @@ rules:
   # reconcile lifecycle milestone (internal/controller.
   # ClusterDefinitionReconciler.Recorder) via a raw client-go
   # involvedObject.name field selector, not the cached controller-runtime
-  # client — read-only.
+  # client. create backs agent_proxy.go's own emitAgentProxyEvent — the
+  # milestone 5 audit-trail write for every proxied kubectl request (see
+  # docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Audit trail: connection-
+  # level for v1"), the one write this Role needs alongside its
+  # otherwise-read-only Events access.
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: {{ if .Values.api.multiTenant.enabled }}ClusterRoleBinding{{ else }}RoleBinding{{ end }}

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cbridges1/hyve/internal/agentpki"
 	"github.com/cbridges1/hyve/internal/types"
 )
 
@@ -203,8 +204,8 @@ func TestReconcileAgent_ProxyEnabled_AppliesProxyBindings(t *testing.T) {
 	log := readInvocations(t, invocations)
 	assert.Contains(t, log, agentProxyAdminBindingName)
 	assert.Contains(t, log, agentProxyReadOnlyBindingName)
-	assert.Contains(t, log, agentProxyAdminGroup)
-	assert.Contains(t, log, agentProxyReadOnlyGroup)
+	assert.Contains(t, log, agentpki.AgentProxyAdminGroup)
+	assert.Contains(t, log, agentpki.AgentProxyReadOnlyGroup)
 }
 
 func TestReconcileAgent_ProxyTurnedOff_RemovesProxyBindingsOnly(t *testing.T) {

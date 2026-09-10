@@ -39,8 +39,7 @@ controller:
   # internal/reconcile/agent.go) — both values must be set together for
   # spec.access.agent.enabled to do anything on any cluster; leaving
   # either unset disables hyve-agent installation entirely, logged as an
-  # info line at controller startup rather than failing it (matches
-  # api.relayBaseURL's own "opt-in, soft-disabled when unset" stance).
+  # info line at controller startup rather than failing it.
   agent:
     # controlPlaneURL is hyve-api's own externally-reachable base URL for
     # POST /agent/bootstrap — see cmd/controller/run.go's
@@ -98,44 +97,19 @@ api:
   modulesDir: /var/lib/hyve/modules
 
   # publicBaseURL is this API's own public address, e.g.
-  # https://hyve-api.example.com — required for the host-cluster
-  # kubeconfig path's server: field (see hostServiceAccount below and
-  # HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access" section). Left
+  # https://hyve-api.example.com — required for the agent-proxy kubeconfig
+  # path's server: field (see AgentProvider, internal/api/access.go). Left
   # empty, that path stays disabled.
   publicBaseURL: ""
 
-  # hostServiceAccount names the dedicated ServiceAccount (in .namespace,
-  # created by api-access-roles.yaml) a superadmin's host-cluster
-  # kubeconfig mints a token against, for a ClusterDefinition with
-  # spec.access.method: primary — replaces the old, pre-Phase-2
-  # primaryClusterName name-matching shortcut, which required no real
-  # ClusterDefinition at all. Matches --host-service-account's own default
-  # in cmd/api/run.go; only needs setting here if the ServiceAccount name
-  # is customized away from "hyve-host-admin".
-  hostServiceAccount: ""
-
   proxyTarget: "https://kubernetes.default.svc"
 
-  # relayBindAddress is the access-method mint relay listener's own port —
-  # see accessmethod_mint.go's Server.RelayRoutes. Served on a separate
-  # in-cluster-only Service (api-internal-service.yaml), never an Ingress.
-  relayBindAddress: ":8091"
-
-  # relayBaseURL is this API's own in-cluster address for the relay
-  # listener above. Left empty, it's computed from the internal Service
-  # this chart creates (hyve-api-internal.<namespace>.svc.cluster.local) —
-  # safe to leave unset in the common case, since (unlike publicBaseURL)
-  # nothing external ever needs to reach this address. Set explicitly only
-  # if the internal Service is renamed via fullnameOverride or similar.
-  relayBaseURL: ""
-
   # agentBindAddress is hyve-agent's own SSH tunnel listener's port — see
-  # internal/api.Server.ServeAgentTunnel. Unlike relayBindAddress above,
-  # this is exposed on the MAIN hyve-api Service (api-service.yaml), not
-  # the pod-network-only internal one: a managed cluster's hyve-agent
-  # dials in from outside this cluster's own pod network, the same way a
-  # user's browser reaches api.ingress.host. A raw SSH TCP listener can't
-  # be routed through the same HTTP Ingress as the rest of the API, so
+  # internal/api.Server.ServeAgentTunnel. Exposed on the MAIN hyve-api
+  # Service (api-service.yaml): a managed cluster's hyve-agent dials in
+  # from outside this cluster's own pod network, the same way a user's
+  # browser reaches api.ingress.host. A raw SSH TCP listener can't be
+  # routed through the same HTTP Ingress as the rest of the API, so
   # reaching it from outside the cluster needs its own exposure (a
   # LoadBalancer Service, a TCP-mode Ingress/gateway, or — for local dev —
   # kubectl port-forward svc/hyve-api).
@@ -181,12 +155,13 @@ api:
   accessRoles:
     create: true
     # clusterScoped: false (default) binds these roles as namespaced
-    # RoleBindings, so a caller who mints a kubeconfig via the primary-
-    # cluster path (see PrimaryClusterProvider, internal/api/access.go) only
-    # gets cluster-admin/view over THIS install's own namespace — required
-    # for multiple hyve installs (tenants) to safely share one cluster. Set
-    # true only for a genuinely single-tenant cluster where cluster-wide
-    # cluster-admin/view for these roles is actually intended.
+    # RoleBindings, so a caller whose driver module mints a kubeconfig
+    # against hyve-access-admin/hyve-access-readonly (e.g. one that routes
+    # through /proxy — see internal/api/proxy.go) only gets cluster-admin/
+    # view over THIS install's own namespace — required for multiple hyve
+    # installs (tenants) to safely share one cluster. Set true only for a
+    # genuinely single-tenant cluster where cluster-wide cluster-admin/view
+    # for these roles is actually intended.
     clusterScoped: false
 
   # multiTenant.enabled (default false, HYVE-MULTI-TENANCY-PLAN.md's

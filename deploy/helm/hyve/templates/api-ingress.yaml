@@ -19,9 +19,9 @@ spec:
           # more specific than "/") is what makes both Ingress objects
           # coexist correctly on one host regardless of which the ingress
           # controller evaluates first. /agent must be externally
-          # reachable (unlike the internal-only relay listener) since a
-          # real hyve-agent runs on a remote, externally-hosted managed
-          # cluster, not inside this cluster's own pod network — see
+          # reachable since a real hyve-agent runs on a remote,
+          # externally-hosted managed cluster, not inside this cluster's
+          # own pod network — see
           # docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Agent identity /
           # authentication".
           {{- range list "/api" "/auth" "/healthz" "/docs" "/openapi.yaml" "/proxy" "/agent" }}

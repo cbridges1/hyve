@@ -42,6 +42,15 @@ object itself is unaffected and stays fully K8s-native either way; only
 the *business record* of the organization (name, plan/metadata, the
 namespace-name mapping) moves.
 
+**Resolved (2026-09-09):** no migration path is needed for any of the
+above. This is all still in development — nothing is running against the
+existing `HyveEnvironment`-per-tenant architecture in production, so
+there's no real tenant data (the `acme` object referenced below was
+illustrative, not a live customer) to carry across CRD renames, CRD
+retirements, or the new Postgres schema. Build the new shape directly;
+the migration-mechanics open question and the "migration cost for
+existing tenants" limitation below are removed rather than answered.
+
 ## Summary
 
 Restructure hyve's tenancy model from today's flat "one `HyveEnvironment` =
@@ -266,12 +275,17 @@ scaled processes, not just built as independent binaries (the original
 draft's `cmd/api`/`cmd/controller`-out-of-the-CLI decision covers building
 them separately; this extends it to how they run in production):
 
-- **API server** — stateless, Postgres-backed for everything in the
-  "moves to Postgres" list above, horizontally scalable behind normal
-  autoscaling. Its read/write-heavy CRUD workload (auth checks, RBAC
-  lookups, environment queries, dashboard traffic) has ordinary
-  stateless-app scaling characteristics once it's not bottlenecked by
-  Kubernetes API server list/watch semantics for that data.
+- **API server** — stateless for everything in the "moves to Postgres"
+  list above, with the database driver a config choice on the binary
+  itself rather than baked into a deployment topology: `--db=sqlite`
+  (default) or `--db=postgres`. Its read/write-heavy CRUD workload (auth
+  checks, RBAC lookups, environment queries, dashboard traffic) has
+  ordinary stateless-app scaling characteristics once it's not
+  bottlenecked by Kubernetes API server list/watch semantics for that
+  data — but horizontal scaling of the API server tier specifically
+  requires the Postgres driver. SQLite is single-writer; a SQLite-backed
+  deployment runs one API server replica, and autoscaling only becomes
+  available once Postgres is selected.
 - **Controller** — unchanged from today: leader-elected, low replica
   count, talks only to the Kubernetes API, never touches Postgres. It has
   no relationship to organizations as business entities at all now — its
@@ -281,14 +295,18 @@ them separately; this extends it to how they run in production):
   is the actual operational argument for running them as separate
   deployments rather than one process wearing two hats.
 
-**Self-hosted installs:** a hosted, multi-tenant deployment of the API
-server needs real Postgres (backups, HA, the usual). A self-hosted,
-single-tenant install doesn't need to pay that operational cost — the CLI
-already embeds `modernc.org/sqlite` (`internal/database`) for its own
-local state, so the same schema running against SQLite instead of
-Postgres is a reasonable default for self-hosted, with Postgres reserved
-for the deployment topology that actually needs concurrent multi-writer
-access and horizontal API-server scaling.
+**Backend selection is a config flag, not a topology decision.** The
+earlier framing tied SQLite to self-hosted and Postgres to hosted; that
+conflates two different questions. The API server defaults to SQLite —
+same `modernc.org/sqlite` driver the CLI already embeds for its own local
+state in `internal/database`, so a fresh install (self-hosted or a
+low-traffic hosted tier) works with zero extra infrastructure and no
+database to stand up. Postgres is opt-in via `--db=postgres` for anyone
+who needs concurrent multi-writer access or horizontal API-server
+scaling — in practice that will usually be the hosted, multi-tenant
+offering, but it's a property of what the operator configures, not of
+which offering they're running. Same schema either way; only the driver
+and the single-writer ceiling change.
 
 ## Honest limitations
 
@@ -307,12 +325,6 @@ access and horizontal API-server scaling.
   leak**, in a way a genuine namespace boundary can't be bypassed by a
   bug in application code. This is the direct cost of choosing the
   cheaper model — worth naming, not glossing over.
-- **Migration cost for existing tenants.** Every existing `HyveEnvironment`
-  object (there's exactly one real one as of this writing — `acme`) gets
-  retired, not renamed: its data becomes a Postgres `organizations` row
-  (referencing the namespace that already exists), plus at least one
-  default environment row so existing `ClusterDefinition`s don't end up
-  with no environment scope at all once the field becomes meaningful.
 - **Postgres is a new stateful dependency for the server side.** Confirmed
   the API/controller have no database dependency today — this is the
   first one. It needs a backup/HA story before it's load-bearing for the
@@ -334,7 +346,7 @@ most blast radius — worth being explicit about exactly what changes:
 
 | Today | Becomes |
 |---|---|
-| `HyveEnvironment` (`internal/apis/hyve/v1alpha1/hyveenvironment_types.go`) — one per tenant, lives in `hyve-system`, `spec.namespace` names the tenant's own namespace | Organization — a Postgres row, not a CRD (revised twice now: the original draft renamed this CRD to `HyveOrganization`; this revision retires the CRD entirely). Holds name, plan/metadata, and the org-id ↔ namespace-name mapping. `POST /environments` becomes `POST /organizations`, now backed by Postgres. The underlying `Namespace` object itself is still created and still real K8s infrastructure — only the CRD wrapper around it is gone. |
+| `HyveEnvironment` (`internal/apis/hyve/v1alpha1/hyveenvironment_types.go`) — one per tenant, lives in `hyve-system`, `spec.namespace` names the tenant's own namespace | Organization — a Postgres row, not a CRD (revised twice now: the original draft renamed this CRD to `HyveOrganization`; this revision retires the CRD entirely). Holds name, plan/metadata, and the org-id ↔ namespace-name mapping. `POST /environments` becomes `POST /organizations`, now backed by the API server's configured database (SQLite by default, Postgres opt-in — see "Backend selection is a config flag"). The underlying `Namespace` object itself is still created and still real K8s infrastructure — only the CRD wrapper around it is gone. |
 | *(nothing — doesn't exist today)* | Environment (new meaning) — a Postgres row scoped to an org via a real foreign key, not a CRD (revised from the original draft, which made this a namespaced-within-the-org CRD). Holds the short environment name (`dev`/`staging`/`production`) and whatever quotas/metadata an org sets. |
 
 New fields on the five environment-scoped resource types
@@ -361,12 +373,14 @@ resource type, now querying Postgres instead of listing CRDs.
   job is unchanged: org name → namespace).
 - A new `--env <name>` selects the environment within that org — needed
   everywhere the five resource types are addressed (`hyve cluster create`,
-  `hyve cluster show`, etc.). Needs a sensible default so single-environment
-  orgs (the common case, especially early on) don't need to pass it every
-  time — likely "the org's only environment if it has exactly one" or an
-  explicit "default" environment created automatically alongside a new
-  org, mirroring how `POST /organizations` already provisions the
-  namespace/RBAC scaffolding as one step.
+  `hyve cluster show`, etc.). **Decided (2026-09-09):** `POST /organizations`
+  always provisions a default environment as part of the same request —
+  there is no separate "create my first environment" step. This is one
+  more row in the same Postgres transaction described in "Persistence
+  split" (org + default environment + initial admin grant), not an extra
+  round trip, and it means `--env` can default to that environment
+  whenever an org has exactly one, so single-environment orgs (the common
+  case, especially early on) never need to pass it.
 - The web console needs an environment switcher alongside (or folded
   into) the existing `EnvironmentSwitcher`/act-as dropdown built earlier
   this session — that component already establishes the right UI pattern
@@ -385,7 +399,8 @@ naming-collision reasoning above — two clusters named `web` in different
 environments need distinct agent connections too), and the proxy handler's
 existence check needs to resolve environment the same way it resolves
 `TenantNamespace` today — as of this revision, that resolution is a
-Postgres-backed authorization check made through the API server, not a
+database-backed authorization check made through the API server (SQLite
+or Postgres, per "Backend selection is a config flag" above), not a
 CRD lookup, but the shape of the change to the agent proposal is
 otherwise unchanged. Flagging this now rather than leaving the agent doc
 silently stale; the actual edit is a follow-up once this proposal's shape
@@ -393,10 +408,6 @@ is confirmed, not part of this doc.
 
 ## Open questions
 
-- Does creating an organization always provision a default environment (so
-  a brand-new org is immediately usable without a separate "create my
-  first environment" step), or is environment creation always a distinct,
-  explicit action?
 - What happens to grants with no environment scope set once finer-grained
   bindings start being created for the same org — does an org-wide grant
   and an environment-scoped grant for the same identity need an explicit
@@ -404,18 +415,13 @@ is confirmed, not part of this doc.
   Postgres revision makes this a tractable query problem rather than a
   hand-rolled CRD comparison, but doesn't answer it by itself — still
   open.)*
-- Migration mechanics for retiring the `HyveEnvironment` CRD in favor of a
-  Postgres `organizations` table — this is a one-time export of the one
-  real object (`acme`) into a Postgres row referencing its existing
-  namespace, then deleting the CRD type, rather than the export/delete/
-  reapply-under-new-name dance an in-place rename would have needed; worth
-  confirming there's no code path left anywhere still expecting to read
-  organization data via the Kubernetes API before the CRD is actually
-  removed.
-- What's the actual Postgres backup/HA story for the hosted offering, and
-  is SQLite genuinely sufficient for self-hosted, or does even a
-  single-tenant install eventually want Postgres (e.g. once a self-hosted
-  org itself wants multiple concurrent API server replicas)?
+- What's the actual Postgres backup/HA story once an operator opts into
+  it? And on the SQLite side: what's the concrete signal that should push
+  a default install to flip the flag — API server replica count above 1,
+  a request-volume threshold, org count, or just "you asked for HA"?
+- Does the API server need to refuse to start (or just warn) if
+  `--db=sqlite` is paired with a replica count > 1, given SQLite's
+  single-writer constraint, or is that left to the operator to get wrong?
 - Does `HyveAccessBinding` get deleted outright once its environment-scoped
   successor ships, or does it stick around for org-wide (no-environment)
   grants specifically, with the Postgres table only covering the

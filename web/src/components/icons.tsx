@@ -83,15 +83,6 @@ export function AccountsIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
-export function AccessMethodsIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...base} {...props}>
-      <circle cx="8" cy="15" r="4" />
-      <path d="M11 12l9-9M17 3h3v3M13 7l3 3" />
-    </svg>
-  )
-}
-
 export function EnvironmentsIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>

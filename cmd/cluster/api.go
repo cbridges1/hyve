@@ -61,6 +61,19 @@ func showClusterAPI(client *shared.APIClient, name string) {
 	if c.AccessLastMinted != "" {
 		log.Printf("Access last minted: %s", c.AccessLastMinted)
 	}
+	if c.Agent != nil && c.Agent.Enabled {
+		log.Printf("Agent: enabled (proxy: %v)", c.Agent.Proxy)
+		log.Printf("  Connected: %v", c.AgentStatus.Connected)
+		if c.AgentStatus.Version != "" {
+			log.Printf("  Version: %s", c.AgentStatus.Version)
+		}
+		if c.AgentStatus.LastConnectedAt != "" {
+			log.Printf("  Last connected: %s", c.AgentStatus.LastConnectedAt)
+		}
+		if c.AgentStatus.LastDisconnectedAt != "" {
+			log.Printf("  Last disconnected: %s", c.AgentStatus.LastDisconnectedAt)
+		}
+	}
 	if len(c.Conditions) > 0 {
 		log.Println("Conditions:")
 		for _, cond := range c.Conditions {

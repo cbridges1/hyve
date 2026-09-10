@@ -18,23 +18,18 @@ func (s *Server) registerKubeconfigRoutes(mux *http.ServeMux) {
 }
 
 // handleKubeconfig resolves ?cluster=<name> and dispatches to the right
-// AccessProvider — PrimaryProvider, TunnelProvider, or ModuleAuthProvider —
-// per the target ClusterDefinition's spec.access.method. Unset (the
-// default) isn't served here at all — see ClusterDefinitionSpec.Access's
-// doc comment: that case is client-side auth, served by
-// GET /api/clusters/<name>/auth-context instead. See
-// HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5.
-//
-// The host ClusterDefinition (access.method: primary) always lives in
-// s.Namespace (the install's control-plane namespace), never a tenant
-// namespace. Looked up here via s.TenantNamespace(r), same as any other
-// cluster — which already resolves to s.Namespace for a superadmin caller
-// (they have no tenant namespace of their own, see RoleSuperadmin's doc
-// comment) and to the caller's own tenant namespace otherwise, so an
-// ordinary tenant admin's lookup simply never finds it: invisible by
-// construction, not merely by the role check PrimaryClusterProvider itself
-// also enforces (see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access"
-// section).
+// AccessProvider — TunnelProvider or ModuleAuthProvider — per the target
+// ClusterDefinition's spec.access.method. Unset (the default) isn't served
+// here at all — see ClusterDefinitionSpec.Access's doc comment: that case
+// is client-side auth, served by GET /api/clusters/<name>/auth-context
+// instead. access.method: primary (hyvev1alpha1.AccessMethodPrimary) is
+// deliberately not one of this switch's cases either: it's a pure
+// host-identification marker now, not a dispatch key — a primary-marked
+// cluster has a real driver module and gets its kubeconfig the same
+// client-side way any other default-auth cluster does (handleAuthContext
+// carries the carve-out that lets Method: primary through that path — see
+// its own doc comment). See HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+// Phase 6.5.
 func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("cluster")
 	if name == "" {
@@ -54,12 +49,18 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var provider AccessProvider
-	switch cd.Spec.Access.Method {
-	case hyvev1alpha1.AccessMethodPrimary:
-		provider = s.PrimaryProvider
-	case hyvev1alpha1.AccessMethodTunnel:
+	switch {
+	// Agent/Proxy is deliberately orthogonal to Access.Method (see
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Relationship to
+	// existing access paths") — checked ahead of the Method switch below
+	// entirely, not folded into it, so a cluster can have Proxy enabled
+	// regardless of whatever Method happens to be set (or unset) for
+	// whatever other access path it may also support.
+	case cd.Spec.Access.Agent != nil && cd.Spec.Access.Agent.Proxy:
+		provider = s.AgentProvider
+	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodTunnel:
 		provider = s.TunnelProvider
-	case hyvev1alpha1.AccessMethodModuleAuth:
+	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodModuleAuth:
 		provider = s.ModuleAuthProvider
 	default:
 		writeError(w, http.StatusConflict, fmt.Sprintf(

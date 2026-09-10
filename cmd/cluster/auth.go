@@ -42,40 +42,29 @@ API pod and this fetches an already-minted kubeconfig (GET /api/kubeconfig)
 and merges it in — --method isn't supported for that path, since the server
 always uses the module's default auth method.
 
-If the cluster references an AccessMethod (spec.access.accessMethodRef) —
-an external identity service like Rancher — this requires cluster mode
-('hyve login' first): the AccessMethod's driver module's auth operation
-always runs server-side in a short-lived Job, POST /api/access-methods/
-<ref>/mint, never on this machine. See HYVE-ACCESS-METHOD-DESIGN.md.
-
-An AccessMethod's required credentials (its declared RequiredEnv names —
-GET /api/access-methods/<ref> reports them) can be passed explicitly via
---set KEY=VALUE instead of being expected to already be set in your shell's
-environment — --set takes precedence when both are given, and either form
-satisfies the requirement.`,
+If the cluster has hyve-agent proxying enabled (spec.access.agent.proxy:
+true), this also fetches an already-minted kubeconfig (GET
+/api/kubeconfig, same call as the server-side-auth case above) — but its
+server: doesn't point at the target cluster's own real apiserver, or at
+any driver module's auth op at all. It points back at this API's own
+/api/agent-proxy/<name> path: every kubectl request against the resulting
+context is relayed through hyve-api, over hyve-agent's own outbound SSH
+tunnel, to the cluster's real apiserver — the cluster never needs a
+directly reachable endpoint or its own native driver auth. See
+docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		setVals, _ := cmd.Flags().GetStringArray("set")
-		credentialParams := map[string]string{}
-		for _, kv := range setVals {
-			parts := strings.SplitN(kv, "=", 2)
-			if len(parts) != 2 {
-				log.Fatalf("Invalid --set value %q (expected KEY=VALUE)", kv)
-			}
-			credentialParams[parts[0]] = parts[1]
-		}
-		runClusterAuth(args[0], authMethodFlag, credentialParams)
+		runClusterAuth(args[0], authMethodFlag)
 	},
 }
 
 func init() {
 	authCmd.Flags().StringVar(&authMethodFlag, "method", "", "auth method name to use (default: first method in auth.yaml)")
-	authCmd.Flags().StringArray("set", nil, "Explicit credential value for an AccessMethod's required env var (repeatable): KEY=VALUE — takes precedence over the same name already set in your environment")
 }
 
-func runClusterAuth(name string, method string, credentialParams map[string]string) {
+func runClusterAuth(name string, method string) {
 	if sess, ok := shared.UseClusterMode(); ok {
-		authClusterAPI(shared.NewAPIClient(sess), name, method, credentialParams)
+		authClusterAPI(shared.NewAPIClient(sess), name, method)
 		return
 	}
 
@@ -86,10 +75,6 @@ func runClusterAuth(name string, method string, credentialParams map[string]stri
 	cluster, _, err := stateMgr.LoadClusterDefinition(name)
 	if err != nil {
 		log.Fatalf("Failed to load cluster '%s': %v", name, err)
-	}
-
-	if cluster.Spec.AccessMethodRef != "" {
-		log.Fatalf("Cluster %q uses access method %q, which requires cluster mode — run `hyve login` first (see HYVE-ACCESS-METHOD-DESIGN.md)", name, cluster.Spec.AccessMethodRef)
 	}
 
 	lf, err := mod.LoadLockFile(repoPath)
@@ -130,16 +115,15 @@ func runClusterAuth(name string, method string, credentialParams map[string]stri
 // authClusterAPI is cluster mode's counterpart to runClusterAuth's local
 // flow. Default: fetch driver info via GET /api/clusters/<name>/auth-context
 // and run the module client-side, same as local mode — the API never sees
-// the resulting credentials. Only for a cluster that's explicitly opted
-// into the server-side override (or tunnel access) does this fall back to
-// fetching an already-minted kubeconfig and merging it in.
-func authClusterAPI(client *shared.APIClient, name string, method string, credentialParams map[string]string) {
-	if cd, err := client.GetCluster(name); err == nil {
-		handled := runAccessMethodAuthCluster(name, cd.AccessMethodRef, cd.AccessMethodClusterID, client, credentialParams)
-		if handled {
-			return
-		}
-	}
+// the resulting credentials. A cluster explicitly opted into the
+// server-side override, tunnel access, or hyve-agent proxying instead
+// falls back to fetching an already-minted kubeconfig and merging it in
+// — cd (fetched once, up front) is what lets the final branch below tell
+// the agent-proxy case apart from the others for its own, more specific
+// success message; a failure fetching it degrades gracefully to the
+// generic message rather than blocking auth entirely.
+func authClusterAPI(client *shared.APIClient, name string, method string) {
+	cd, cdErr := client.GetCluster(name)
 
 	authCtx, err := client.GetAuthContext(name)
 	if err == nil {
@@ -167,7 +151,11 @@ func authClusterAPI(client *shared.APIClient, name string, method string, creden
 		log.Fatalf("Failed to merge kubeconfig: %v", err)
 	}
 
-	fmt.Printf("kubectl context for '%s' configured (via the API, server-side auth)\n", name)
+	if cdErr == nil && cd.Agent != nil && cd.Agent.Proxy {
+		fmt.Printf("kubectl context for '%s' configured (via hyve-agent's proxy tunnel — kubectl traffic is relayed through the API to this cluster's own agent, not a direct connection)\n", name)
+	} else {
+		fmt.Printf("kubectl context for '%s' configured (via the API, server-side auth)\n", name)
+	}
 }
 
 // runModuleAuthLocally is cluster mode's client-side-default path: runs the

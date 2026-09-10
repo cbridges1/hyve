@@ -46,7 +46,7 @@ func (s *Server) ServeAgentTunnel(ctx context.Context, bindAddress string) error
 
 // ListenAgentTunnel validates AgentCA/AgentRegistry are configured and
 // binds bindAddress — a raw TCP listener, not an http.Handler, so (unlike
-// Routes()/RelayRoutes()) nothing here is handed to http.ListenAndServe.
+// Routes()) nothing here is handed to http.ListenAndServe.
 // Callers that don't need the actual bound address back should generally
 // call ServeAgentTunnel instead of this plus ServeAgentTunnelListener
 // separately.
@@ -192,14 +192,16 @@ func (s *Server) handleAgentConnection(conn net.Conn, config *ssh.ServerConfig) 
 	}
 	key := AgentConnectionKey{Namespace: namespace, ClusterName: clusterName}
 
-	// Channels this connection will never use in this milestone still have
-	// to be serviced per ssh.NewServerConn's own documented requirement
-	// ("must be serviced, or the connection will hang") — reject every
-	// channel-open outright (no proxy yet) rather than leaving it
-	// unhandled.
+	// Channels the agent itself might try to open toward hyve-api —
+	// nothing in this design ever needs that direction (milestone 5's own
+	// proxy channels run the other way: hyve-api, the server here, opens
+	// them toward the agent — see agent_proxy.go's dialAgentChannel) — so
+	// anything arriving here still has to be serviced per
+	// ssh.NewServerConn's own documented requirement ("must be serviced,
+	// or the connection will hang"), rejected outright.
 	go func() {
 		for newChannel := range chans {
-			_ = newChannel.Reject(ssh.Prohibited, "hyve-agent proxying is not enabled on this connection yet")
+			_ = newChannel.Reject(ssh.Prohibited, "hyve-agent does not open channels toward the control plane")
 		}
 	}()
 
@@ -207,19 +209,21 @@ func (s *Server) handleAgentConnection(conn net.Conn, config *ssh.ServerConfig) 
 	go s.drainAgentRequests(reqs, agentConn)
 
 	s.AgentRegistry.Register(key, agentConn)
-	s.writeAgentStatus(key, true, agentConn.Version)
+	s.writeAgentStatus(key, true, agentConn.Version())
 	log.Printf("api: hyve-agent connected — namespace=%s cluster=%s remote=%s", namespace, clusterName, conn.RemoteAddr())
+	emitClusterEvent(context.Background(), s.Clientset, namespace, clusterName, "AgentConnected", "hyve-agent connected")
 
 	err = serverConn.Wait()
 	s.AgentRegistry.RemoveIfCurrent(key, agentConn)
-	s.writeAgentStatus(key, false, agentConn.Version)
+	s.writeAgentStatus(key, false, agentConn.Version())
 	log.Printf("api: hyve-agent disconnected — namespace=%s cluster=%s (%v)", namespace, clusterName, err)
+	emitClusterEvent(context.Background(), s.Clientset, namespace, clusterName, "AgentDisconnected", "hyve-agent disconnected")
 }
 
 // drainAgentRequests services one connection's global SSH requests for as
-// long as it's open — the heartbeat payload updates agentConn.Version
-// in place (read by the next writeAgentStatus call on disconnect, and
-// available to milestone 5's proxy authorization work immediately);
+// long as it's open — the heartbeat payload updates agentConn's own
+// version/token via SetHeartbeat (read by the next writeAgentStatus call
+// on disconnect, and by agent_proxy.go on every proxied request);
 // anything else this listener doesn't recognize gets a plain negative
 // reply when one is requested, never left unanswered.
 func (s *Server) drainAgentRequests(reqs <-chan *ssh.Request, agentConn *AgentConnection) {
@@ -227,7 +231,7 @@ func (s *Server) drainAgentRequests(reqs <-chan *ssh.Request, agentConn *AgentCo
 		if req.Type == agentpki.HeartbeatRequestType {
 			var payload agentpki.HeartbeatPayload
 			if err := json.Unmarshal(req.Payload, &payload); err == nil {
-				agentConn.Version = payload.Version
+				agentConn.SetHeartbeat(payload.Version, payload.ServiceAccountToken)
 			}
 			if req.WantReply {
 				_ = req.Reply(true, nil)

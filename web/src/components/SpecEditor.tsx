@@ -56,8 +56,8 @@ function LineNumbers({ lineCount }: { lineCount: number }) {
 
 /**
  * Generic "edit this CR's spec as raw YAML" panel — one component reused
- * across every editable detail page (Cluster/Template/Workflow/Resource/
- * AccessMethod) rather than a bespoke structured form per type. Mirrors
+ * across every editable detail page (Cluster/Template/Workflow/Resource)
+ * rather than a bespoke structured form per type. Mirrors
  * this codebase's own "a CR is just YAML" model — same mental shape as
  * `kubectl edit`, and the same js-yaml load()/dump() pair the "create from
  * YAML" flows (ClustersListPage/TemplatesPage/WorkflowsPage) already use.

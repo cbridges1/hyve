@@ -5,17 +5,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/module"
 
-	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,8 +19,7 @@ import (
 
 // AccessProvider mints a kubeconfig for a ClusterDefinition — see
 // HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5. ctx carries whatever
-// per-request context the caller's requireRole middleware attached (e.g.
-// ServiceAccountRefFromContext for PrimaryClusterProvider) — every
+// per-request context the caller's requireRole middleware attached — every
 // implementation shares this one signature so handleKubeconfig can dispatch
 // without a type switch on the provider itself.
 type AccessProvider interface {
@@ -44,104 +39,32 @@ func buildKubeconfig(server string, caData []byte, token string) ([]byte, error)
 	return clientcmd.Write(*cfg)
 }
 
-// PrimaryClusterProvider mints a scoped ServiceAccount token via
-// TokenRequest and assembles a kubeconfig whose server: points back at
-// this API's own /proxy path (see proxy.go) — Phase 6.5/6.6. Hardcoded to
-// the one cluster this API runs on; not configurable per-request. The
-// minted token's actual permissions come from whatever RoleBinding/
-// ClusterRoleBinding the resolved ServiceAccountRef's ServiceAccount has —
-// by default (api.accessRoles.clusterScoped: false in the Helm chart) that's
-// a namespaced RoleBinding scoped to this install's own namespace, so a
-// caller's "admin" role means admin of this install's namespace, not
-// cluster-admin over a cluster shared with other hyve installs.
-type PrimaryClusterProvider struct {
-	Clientset kubernetes.Interface
-
-	// CA is this API pod's own in-cluster CA — normally read once at
-	// startup from /var/run/secrets/kubernetes.io/serviceaccount/ca.crt.
-	CA []byte
-
-	// PublicBaseURL is this API's own public address, e.g.
-	// "https://hyve-api.example.com" — clusters[].cluster.server in the
-	// returned kubeconfig is PublicBaseURL + "/proxy".
+// AgentProvider mints a kubeconfig whose server: points at this API's own
+// /api/agent-proxy/<name> path (see agent_proxy.go), carrying the
+// caller's own hyve session token — /proxy's own kubeconfigs (see
+// proxy.go) instead carry a real Kubernetes ServiceAccount token, since
+// /proxy forwards it straight through, unmodified, to the one real
+// apiserver it already trusts (the cluster it runs on itself).
+// /api/agent-proxy has no such standing trust in any one target cluster
+// (there could be many, each a different real cluster this pod has never
+// talked to directly) — so the credential embedded here is hyve's own
+// session token instead: agent_proxy.go's own requireAuth+requireRole
+// re-verifies it exactly like any other /api/* call, then that handler
+// itself supplies the real Kubernetes credential (the connected agent's
+// own heartbeat-reported ServiceAccount token) plus Impersonate-User/
+// -Group headers derived from the caller's resolved role.
+type AgentProvider struct {
+	// PublicBaseURL is this API's own public address.
 	PublicBaseURL string
-
-	// TokenTTL defaults to 24h when zero — no refresh endpoint yet (v1); a
-	// caller re-requests a fresh kubeconfig once this expires.
-	TokenTTL time.Duration
-
-	// HostServiceAccountRef is the dedicated, standing ServiceAccount
-	// (e.g. hyve-host-admin, bound to the built-in cluster-admin
-	// ClusterRole — see deploy/helm/hyve/templates/api-access-roles.yaml)
-	// this mints a token against when cd.Spec.Access.Method is
-	// AccessMethodPrimary — deliberately separate from whatever
-	// ServiceAccountRefFromContext resolves for an ordinary tenant role,
-	// so host-cluster privilege is its own narrowly-granted, auditable
-	// binding, never incidentally inherited from a tenant-scoped role. See
-	// HYVE-MULTI-TENANCY-PLAN.md's "Which ServiceAccount (resolved)"
-	// section. Left zero-value, the primary/host access path 500s with a
-	// clear message rather than falling back to anything.
-	HostServiceAccountRef ServiceAccountRefConfig
-
-	// HostTokenTTL defaults to 1h when zero — deliberately shorter than
-	// TokenTTL's own 24h default, given what a host-cluster-admin
-	// kubeconfig grants (see the doc section above).
-	HostTokenTTL time.Duration
 }
 
-// ServiceAccountRefConfig names a ServiceAccount by namespace/name —
-// distinct from hyvev1alpha1.ServiceAccountRef only in that this one is a
-// server-startup configuration value, not something resolved per-caller
-// from a HyveAccessBinding.
-type ServiceAccountRefConfig struct {
-	Namespace string
-	Name      string
-}
-
-// Kubeconfig mints a token for either the caller's own resolved
-// ServiceAccountRef (see ServiceAccountRefFromContext, set by requireRole
-// from the caller's matched HyveAccessBinding) or — when cd's
-// access.method is AccessMethodPrimary — the dedicated HostServiceAccountRef
-// instead, gated to RoleSuperadmin only. cd is nil for the (deprecated)
-// no-ClusterDefinition call shape some tests still exercise; treated the
-// same as any non-primary cd.
-func (p *PrimaryClusterProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
-	if cd != nil && cd.Spec.Access.Method == hyvev1alpha1.AccessMethodPrimary {
-		role, _ := RoleFromContext(ctx)
-		if role != hyvev1alpha1.RoleSuperadmin {
-			return nil, fmt.Errorf("cluster %q is the host cluster (access.method: primary) — only a superadmin may access it", cd.Name)
-		}
-		if p.HostServiceAccountRef.Name == "" {
-			return nil, fmt.Errorf("no host ServiceAccount configured for the primary/host access path")
-		}
-		ttl := p.HostTokenTTL
-		if ttl <= 0 {
-			ttl = time.Hour
-		}
-		return p.mintKubeconfig(ctx, p.HostServiceAccountRef.Namespace, p.HostServiceAccountRef.Name, ttl)
-	}
-
-	saRef, ok := ServiceAccountRefFromContext(ctx)
+func (p *AgentProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
+	token, ok := tokenFromContext(ctx)
 	if !ok {
-		return nil, fmt.Errorf("no service account resolved for this caller")
+		return nil, fmt.Errorf("no session token available for this caller")
 	}
-
-	ttl := p.TokenTTL
-	if ttl <= 0 {
-		ttl = 24 * time.Hour
-	}
-	return p.mintKubeconfig(ctx, saRef.Namespace, saRef.Name, ttl)
-}
-
-func (p *PrimaryClusterProvider) mintKubeconfig(ctx context.Context, namespace, name string, ttl time.Duration) ([]byte, error) {
-	expSeconds := int64(ttl.Seconds())
-	tr, err := p.Clientset.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, name, &authenticationv1.TokenRequest{
-		Spec: authenticationv1.TokenRequestSpec{ExpirationSeconds: &expSeconds},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("mint token for %s/%s: %w", namespace, name, err)
-	}
-	return buildKubeconfig(strings.TrimRight(p.PublicBaseURL, "/")+"/proxy", p.CA, tr.Status.Token)
+	server := strings.TrimRight(p.PublicBaseURL, "/") + "/api/agent-proxy/" + cd.Name
+	return buildKubeconfig(server, nil, token)
 }
 
 // ModuleAuthProvider backs the explicit AccessMethodModuleAuth override

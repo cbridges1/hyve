@@ -39,6 +39,21 @@ type TemplateSpec struct {
 	// silently ignored. Intended for admins enforcing standard
 	// configurations.
 	LockParams bool `json:"lockParams,omitempty"`
+
+	// Access mirrors ClusterDefinitionSpec.Access — copied verbatim by
+	// RenderClusterDefinitionSpec into every cluster created from this
+	// template. Cluster-mode only, like the rest of AccessSpec (a
+	// local-mode-rendered cluster has no live API for Agent to mean
+	// anything against); internal/template.TemplateSpec
+	// (local mode's own template type, converted into this one before
+	// rendering) has no equivalent field, so a local-mode template
+	// always renders a zero-value Access here. Found missing live,
+	// confirmed by a real Template CRD silently dropping a hand-written
+	// spec.access.agent block at the API server's own schema-validation
+	// layer — the CRD simply had no such property to preserve, regardless
+	// of how the Template was created (--set, -f a file, or a direct
+	// kubectl apply all hit the same gap).
+	Access AccessSpec `json:"access,omitempty"`
 }
 
 // +kubebuilder:object:root=true

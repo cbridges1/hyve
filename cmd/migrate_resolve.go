@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	mod "github.com/cbridges1/hyve/internal/module"
@@ -54,9 +57,6 @@ func resolveClusterKubeconfigPath(name string) (path string, cleanup func(), err
 	if err != nil {
 		return "", noopCleanup, fmt.Errorf("load cluster %q: %w", name, err)
 	}
-	if cluster.Spec.AccessMethodRef != "" {
-		return "", noopCleanup, fmt.Errorf("cluster %q uses an access method, which requires cluster mode — run `hyve login` first", name)
-	}
 
 	lf, err := mod.LoadLockFile(repoPath)
 	if err != nil {
@@ -92,8 +92,12 @@ func resolveClusterKubeconfigPath(name string) (path string, cleanup func(), err
 //   - Cluster mode (a `hyve login` session is active): the ClusterDefinition
 //     with access.method: primary on the cluster that session is logged
 //     into — there's exactly one per install by convention (see
-//     AccessMethodPrimary's own doc comment) — resolved via GET
-//     /api/kubeconfig the same way GetKubeconfig always works.
+//     AccessMethodPrimary's own doc comment). That marker no longer routes
+//     to a server-minted kubeconfig (GET /api/kubeconfig) — a primary-marked
+//     cluster has a real driver module now, and gets its kubeconfig the
+//     same client-side way any other default-auth cluster does (GET
+//     /api/clusters/<name>/auth-context + running its auth op locally, see
+//     resolveViaAuthContext).
 //   - Local mode: no access.method: primary concept applies at all (that's
 //     cluster-mode-only) — "current host" is simply whatever kubeconfig is
 //     already active on this machine, i.e. the default kubeconfig loading
@@ -123,19 +127,55 @@ func resolveCurrentHostKubeconfigPath() (path string, cleanup func(), err error)
 		return "", noopCleanup, fmt.Errorf("no ClusterDefinition with access.method: primary found — the current host has no self-registered ClusterDefinition yet (see HYVE-MULTI-TENANCY-PLAN.md's \"Bootstrap and migration flow\")")
 	}
 
-	kc, err := client.GetKubeconfig(hostName)
+	return resolveViaAuthContext(client, hostName)
+}
+
+// resolveViaAuthContext runs name's driver module auth operation entirely
+// client-side — the same GET /api/clusters/<name>/auth-context + local
+// Executor flow cmd/cluster/auth.go's runModuleAuthLocally uses — and
+// returns the resulting per-cluster kubeconfig's own file path, without
+// merging it into ~/.kube/config (unlike runModuleAuthLocally, this
+// package only needs a path migrate.BuildClient can read).
+func resolveViaAuthContext(client *shared.APIClient, name string) (path string, cleanup func(), err error) {
+	noopCleanup := func() {}
+
+	authCtx, err := client.GetAuthContext(name)
 	if err != nil {
-		return "", noopCleanup, fmt.Errorf("fetch kubeconfig for host cluster %q: %w", hostName, err)
+		if errors.Is(err, shared.ErrClientSideAuthUnavailable) {
+			return "", noopCleanup, fmt.Errorf("cluster %q doesn't use client-side auth — fetch its kubeconfig via `hyve cluster auth %s` first, then re-run this against the resulting kubeconfig by hand", name, name)
+		}
+		return "", noopCleanup, fmt.Errorf("fetch auth context for %q: %w", name, err)
 	}
-	f, err := os.CreateTemp("", "hyve-migrate-host-kubeconfig-*.yaml")
+
+	tmpDir, err := os.MkdirTemp("", "hyve-migrate-auth-*")
 	if err != nil {
-		return "", noopCleanup, fmt.Errorf("create temp kubeconfig file: %w", err)
+		return "", noopCleanup, fmt.Errorf("create temp directory for auth module: %w", err)
 	}
-	if _, err := f.Write(kc); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", noopCleanup, fmt.Errorf("write temp kubeconfig file: %w", err)
+	cleanup = func() { os.RemoveAll(tmpDir) }
+
+	if err := os.WriteFile(filepath.Join(tmpDir, authCtx.AuthFileName), []byte(authCtx.AuthFileContent), 0600); err != nil {
+		cleanup()
+		return "", noopCleanup, fmt.Errorf("write auth module file: %w", err)
 	}
-	f.Close()
-	return f.Name(), func() { os.Remove(f.Name()) }, nil
+
+	env := []string{"HYVE_CLUSTER_NAME=" + name, "HYVE_CLUSTER_REGION=" + authCtx.Region}
+	for k, v := range authCtx.Params {
+		env = append(env, "HYVE_PARAM_"+strings.ToUpper(k)+"="+v)
+	}
+	for k, v := range authCtx.DriverOutputs {
+		env = append(env, k+"="+v)
+	}
+	executor := &mod.Executor{ModuleDir: tmpDir, Env: env, WorkDir: tmpDir, ClusterName: name}
+
+	result, err := executor.Execute(context.Background(), mod.OperationAuth)
+	if err != nil {
+		cleanup()
+		return "", noopCleanup, fmt.Errorf("auth for %q: %w", name, err)
+	}
+	kcPath := result.Outputs["KUBECONFIG"]
+	if kcPath == "" {
+		cleanup()
+		return "", noopCleanup, fmt.Errorf("auth for %q produced no kubeconfig", name)
+	}
+	return kcPath, cleanup, nil
 }

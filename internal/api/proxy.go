@@ -12,13 +12,11 @@ import (
 // BuildProxy returns a reverse proxy that forwards /proxy/*-prefixed
 // requests to target (normally "https://kubernetes.default.svc"), trusting
 // caCert for that upstream TLS connection — the API pod's own in-cluster
-// CA. The forwarded bearer token (set by the caller, already required by
-// requireAuth/requireRole to be a valid hyve session — the token that
-// actually authorizes the Kubernetes-side request is the one
-// PrimaryClusterProvider minted, present in the client's own kubeconfig
-// and sent as this request's own Authorization header when the client is
-// `kubectl --kubeconfig <minted-file>`) is passed straight through
-// unmodified. This handler does not re-implement authorization — the
+// CA. The forwarded bearer token (set by the caller — a real Kubernetes
+// ServiceAccount token some driver module's auth.yaml minted and embedded
+// in the kubeconfig it handed back, pointing server: at this API's own
+// /proxy path) is passed straight through unmodified. This handler does
+// not re-implement authorization — the
 // target kube-apiserver's own RBAC is the actual authority; re-checking
 // here would just be a second system that can drift from the first.
 //

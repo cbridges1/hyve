@@ -201,38 +201,13 @@ type ClusterSpec struct {
 	// isn't ACTIVE.
 	DependsOn []string `yaml:"dependsOn,omitempty" json:"dependsOn,omitempty"`
 
-	// AccessMethodRef names an AccessMethod (internal/apis/hyve/v1alpha1's
-	// AccessMethod CRD) that `hyve cluster auth` resolves via a live
-	// cluster-mode API to mint a kubeconfig — its driver module's auth
-	// operation always runs server-side, never locally, so this field
-	// only does anything once the cluster it's set on is actually managed
-	// through a live cluster-mode API (a local-only ClusterDefinition can
-	// still declare it — e.g. before `hyve migrate to-cluster` — but
-	// `hyve cluster auth` on it locally errors clearly instead of
-	// attempting anything). Independent of the CRD-only Access.Method/
-	// Tunnel fields, which are separate server-mediated concepts. See
-	// HYVE-ACCESS-METHOD-DESIGN.md.
-	AccessMethodRef string `yaml:"accessMethodRef,omitempty" json:"accessMethodRef,omitempty"`
-
-	// AccessMethodClusterID is this cluster's own identifier within the
-	// referenced AccessMethod's provider (e.g. Rancher's internal cluster
-	// ID) — required when AccessMethodRef is set. An admin sets this
-	// directly today; auto-populating it (e.g. via a CAPI module's
-	// afterCreate hook writing it into DriverOutputs) is a natural later
-	// addition, not required for this to work.
-	AccessMethodClusterID string `yaml:"accessMethodClusterID,omitempty" json:"accessMethodClusterID,omitempty"`
-
 	// AccessMethod mirrors the CRD-only AccessSpec.Method (module-auth/
-	// tunnel/primary) — despite the doc comment above this struct once
-	// saying that field never needed to reach internal/types, "primary"
-	// specifically does: it's the one access method with no driver at all
-	// (see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access" section), and
-	// this same reconcile code (internal/reconcile) is what enforces "a
-	// cluster must have a driver" — confirmed live, a primary-access
-	// ClusterDefinition otherwise sits permanently in an error Condition
-	// ("no driver specified") even though it's not misconfigured at all.
-	// module-auth/tunnel still don't need this — they keep a real driver,
-	// so ordinary reconciliation is correct for them.
+	// tunnel/primary). "primary" is a pure identifying marker today — see
+	// hyvev1alpha1.AccessMethodPrimary's own doc comment — consumed by
+	// `hyve migrate cluster`'s host-resolution; it carries no special
+	// reconcile behavior of its own. Every ClusterSpec, including a
+	// primary-marked one, needs a real Driver — reconcile enforces this
+	// uniformly.
 	AccessMethod string `yaml:"accessMethod,omitempty" json:"accessMethod,omitempty"`
 
 	// Agent mirrors the CRD-only AccessSpec.Agent (hyvev1alpha1.AgentSpec)

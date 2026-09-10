@@ -50,12 +50,23 @@ type clusterDTO struct {
 	AccessMethod       string             `json:"accessMethod,omitempty"`
 	AccessLastMinted   string             `json:"accessLastMinted,omitempty"`
 
-	// AccessMethodRef surfaces spec.access.accessMethodRef so `hyve cluster
-	// auth` can discover it via GET /api/clusters/<name> and take the
-	// client-side AccessMethod path (see HYVE-ACCESS-METHOD-DESIGN.md)
-	// before deciding whether to fall back to GetAuthContext/GetKubeconfig.
-	AccessMethodRef       string `json:"accessMethodRef,omitempty"`
-	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
+	// Agent surfaces spec.access.agent (nil when unset — Proxy alone
+	// meaningfully requires Enabled, so a caller distinguishing "never
+	// configured" from "explicitly false" needs the nil case preserved,
+	// unlike AccessMethod's always-present string) so `hyve cluster auth`
+	// can recognize the agent-proxy path before deciding which message to
+	// print (see cmd/cluster/auth.go), and so `hyve cluster show`/the web
+	// console can display whether it's configured at all.
+	Agent *hyvev1alpha1.AgentSpec `json:"agent,omitempty"`
+
+	// AgentStatus surfaces status.agent — hyve-agent's live connectivity
+	// snapshot, written directly by whichever hyve-api process holds this
+	// cluster's tunnel connection (internal/api/agent_listener.go), not
+	// the reconciler. Value type, not pointer, mirroring
+	// ClusterDefinitionStatus.Agent's own shape exactly (Connected: false
+	// is a meaningful, always-present value, not "unset" — see that
+	// field's own doc comment on why it deliberately has no omitempty).
+	AgentStatus hyvev1alpha1.AgentStatus `json:"agentStatus,omitempty"`
 
 	// PendingDeletion reflects metadata.deletionTimestamp != nil — DELETE
 	// /clusters/<name> only ever sets this (see handleDeleteCluster), it
@@ -95,10 +106,10 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 		// the spec value for — confirmed live: reading Status here left the
 		// UI badge never showing and migrate's host-resolution never
 		// matching, for every access method including the new primary one.
-		AccessMethod:          cd.Spec.Access.Method,
-		AccessLastMinted:      cd.Status.Access.LastMinted,
-		AccessMethodRef:       cd.Spec.Access.AccessMethodRef,
-		AccessMethodClusterID: cd.Spec.Access.AccessMethodClusterID,
+		AccessMethod:     cd.Spec.Access.Method,
+		AccessLastMinted: cd.Status.Access.LastMinted,
+		Agent:            cd.Spec.Access.Agent,
+		AgentStatus:      cd.Status.Agent,
 	}
 }
 

@@ -109,6 +109,27 @@ func TestHandleGetCluster_Found(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "should-never-appear-in-dto")
 }
 
+// TestHandleGetCluster_SurfacesAgent is milestone 7's own regression test:
+// spec.access.agent/status.agent were previously entirely absent from the
+// DTO, leaving `hyve cluster auth`/`show` with no way to know a cluster
+// even had hyve-agent configured.
+func TestHandleGetCluster_SurfacesAgent(t *testing.T) {
+	cd := newClusterDef("prod")
+	cd.Spec.Access.Agent = &hyvev1alpha1.AgentSpec{Enabled: true, Proxy: true}
+	cd.Status.Agent = hyvev1alpha1.AgentStatus{Connected: true, Version: "dev", LastConnectedAt: "2026-01-01T00:00:00Z"}
+	s := &Server{Client: newFakeClient(t, cd), Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodGet, "/clusters/prod", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var dto clusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	require.NotNil(t, dto.Agent)
+	assert.True(t, dto.Agent.Enabled)
+	assert.True(t, dto.Agent.Proxy)
+	assert.True(t, dto.AgentStatus.Connected)
+	assert.Equal(t, "dev", dto.AgentStatus.Version)
+}
+
 // TestHandleGetCluster_PendingDeletion proves the DTO surfaces a pending
 // delete — confirmed live this was previously invisible: DELETE
 // /clusters/<name> only ever sets metadata.deletionTimestamp

@@ -13,11 +13,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -29,14 +30,17 @@ type Server struct {
 	Namespace  string // hyve-system by convention — where credentials Secrets/ClusterDefinitions live
 	SigningKey []byte
 
-	// PrimaryProvider serves any ClusterDefinition whose access.method is
-	// AccessMethodPrimary (see kubeconfig_handler.go's switch) — nil is
-	// fine for a deployment with no host-cluster access story configured
-	// yet, that case just 500s with a clear message rather than being
-	// unreachable by construction like the old name-matching shortcut was.
-	PrimaryProvider    AccessProvider
 	ModuleAuthProvider AccessProvider
 	TunnelProvider     AccessProvider
+
+	// AgentProvider serves GET /api/kubeconfig for any ClusterDefinition
+	// with spec.access.agent.proxy: true — see access.go's AgentProvider
+	// and handleKubeconfig's own dispatch, which checks this ahead of
+	// spec.access.method entirely (Agent/Proxy is orthogonal to Method).
+	// nil is fine for a deployment that never configures agent proxying;
+	// that case 500s with a clear message, same stance as the other
+	// providers' own nil handling.
+	AgentProvider AccessProvider
 
 	// ModulesDir is the same baked-in modules root ModuleAuthProvider's own
 	// ModulesDir points at (see its doc comment) — used directly by
@@ -46,32 +50,12 @@ type Server struct {
 	ModulesDir string
 
 	// Clientset is a plain client-go clientset (as distinct from Client,
-	// the controller-runtime client used for CRDs) — needed for
-	// Job/Secret dispatch, which internal/k8sjob's kubernetes.Interface-
-	// based API expects. Used by the access-method mint handler
-	// (accessmethod_mint.go); nil is fine for a deployment that never
-	// calls it (every other handler uses Client instead).
+	// the controller-runtime client used for CRDs) — needed for agent
+	// bootstrap token validation (agent_bootstrap.go), raw Events()
+	// reads/writes (clusters.go, emitClusterEvent). nil is fine for a
+	// deployment that never calls a handler needing it (every other
+	// handler uses Client instead).
 	Clientset kubernetes.Interface
-
-	// RelayBaseURL is this API's own in-cluster address for the mint
-	// relay listener (see RelayRoutes) — e.g.
-	// "http://hyve-api-internal.hyve-system.svc.cluster.local:8091". Never
-	// the same as the public-facing address: the relay listener has no
-	// Ingress at all, reachable only from inside the cluster's own pod
-	// network. Required for POST /api/access-methods/<name>/mint to work
-	// at all; that handler 500s with a clear message if this is unset.
-	RelayBaseURL string
-
-	// MintTimeout overrides how long handleAccessMethodMint waits for its
-	// dispatched Job to push a result before giving up — see
-	// mintTimeout's own doc comment for the production default this falls
-	// back to when zero. Exists as a Server field (not just the constant)
-	// so tests can shorten it well below 90s instead of actually waiting.
-	MintTimeout time.Duration
-
-	// mintPending tracks in-flight access-method mint requests awaiting a
-	// push from their dispatched Job — see accessmethod_mint.go.
-	mintPending sync.Map
 
 	// Proxy backs /proxy/* — see proxy.go. Left nil, /proxy/* 503s rather
 	// than panicking.
@@ -80,8 +64,8 @@ type Server struct {
 	// AgentCA backs POST /agent/bootstrap (agent_bootstrap.go) — see
 	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Agent identity /
 	// authentication". Left nil, that endpoint 500s with a clear message
-	// rather than panicking, same stance Proxy/RelayBaseURL above take for
-	// their own not-yet-configured cases.
+	// rather than panicking, same stance Proxy above takes for its own
+	// not-yet-configured case.
 	AgentCA *agentpki.CA
 
 	// AgentRegistry backs ServeAgentTunnel (agent_listener.go) — the
@@ -127,29 +111,14 @@ func (s *Server) Routes() http.Handler {
 	s.registerResourceRoutes(apiMux)
 	s.registerSecretsRoutes(apiMux)
 	s.registerModuleRoutes(apiMux)
-	s.registerAccessMethodRoutes(apiMux)
-	s.registerAccessMethodMintRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 	s.registerAccountRoutes(apiMux)
 	s.registerEnvironmentRoutes(apiMux)
+	s.registerAgentProxyRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
 	return corsMiddleware(mux)
-}
-
-// RelayRoutes returns the internal-only handler an access-method mint
-// Job's push callback calls — see accessmethod_mint.go. Deliberately not
-// mounted under Routes()/"/api/": this must be served on a separate
-// listener with no Ingress at all (see cmd/api/run.go), since it carries
-// no hyve session concept whatsoever — its own one-shot per-request bearer
-// token (checked inside handleAccessMethodMintRelay itself) is the only
-// authorization it has, and it must never be reachable from outside the
-// cluster's own pod network.
-func (s *Server) RelayRoutes() http.Handler {
-	mux := http.NewServeMux()
-	s.registerAccessMethodMintRelayRoutes(mux)
-	return mux
 }
 
 // handleProxy forwards to s.Proxy (see proxy.go's BuildProxy) — a thin
@@ -168,10 +137,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 type contextKey string
 
 const (
-	contextKeyUsername          contextKey = "hyve-api-username"
-	contextKeyNamespace         contextKey = "hyve-api-namespace"
-	contextKeyRole              contextKey = "hyve-api-role"
-	contextKeyServiceAccountRef contextKey = "hyve-api-service-account-ref"
+	contextKeyUsername  contextKey = "hyve-api-username"
+	contextKeyNamespace contextKey = "hyve-api-namespace"
+	contextKeyRole      contextKey = "hyve-api-role"
+	contextKeyToken     contextKey = "hyve-api-token"
 )
 
 // UsernameFromContext returns the authenticated caller's username, set by
@@ -245,11 +214,16 @@ func (s *Server) TenantNamespace(r *http.Request) string {
 	return s.Namespace
 }
 
-// ServiceAccountRefFromContext returns the caller's matched binding's
-// ServiceAccountRef, set by requireRole — used by PrimaryClusterProvider's
-// TokenRequest call (see access.go).
-func ServiceAccountRefFromContext(ctx context.Context) (hyvev1alpha1.ServiceAccountRef, bool) {
-	v, ok := ctx.Value(contextKeyServiceAccountRef).(hyvev1alpha1.ServiceAccountRef)
+// tokenFromContext returns the caller's own raw, already-verified hyve
+// session token — set by requireAuth. Unexported (unlike the other
+// FromContext accessors above, all used by AccessProvider implementations
+// across their own concerns): AgentProvider (access.go) is the only
+// consumer, embedding this same token into the kubeconfig it mints so
+// that when kubectl later presents it back to /api/agent-proxy/..., that
+// route's own requireAuth re-verifies it exactly like any other /api/*
+// call — see agent_proxy.go's own doc comment for the full round trip.
+func tokenFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(contextKeyToken).(string)
 	return v, ok
 }
 
@@ -272,6 +246,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		ctx := context.WithValue(r.Context(), contextKeyUsername, username)
 		ctx = context.WithValue(ctx, contextKeyNamespace, namespace)
+		ctx = context.WithValue(ctx, contextKeyToken, token)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -294,7 +269,6 @@ func (s *Server) requireRole(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), contextKeyRole, binding.Spec.Role)
-		ctx = context.WithValue(ctx, contextKeyServiceAccountRef, binding.Spec.ServiceAccountRef)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -318,7 +292,7 @@ func RequireRole(w http.ResponseWriter, r *http.Request, allowed ...string) bool
 		// environment switcher (TenantNamespace's X-Hyve-Act-As-Namespace
 		// handling) actually usable: without it, every one of the ~20
 		// RoleAdmin-only mutation endpoints (clusters/templates/workflows/
-		// resources/accessmethods/secrets/workflow-runs) rejected a
+		// resources/secrets/workflow-runs) rejected a
 		// superadmin outright before namespace resolution ever mattered,
 		// confirmed live. Centralized here rather than listing
 		// RoleSuperadmin at every call site individually, so a future
@@ -334,6 +308,51 @@ func RequireRole(w http.ResponseWriter, r *http.Request, allowed ...string) bool
 	}
 	writeError(w, http.StatusForbidden, fmt.Sprintf("role %q is not permitted to perform this action", role))
 	return false
+}
+
+// emitClusterEvent creates a plain corev1.Event referencing the named
+// ClusterDefinition — shared by agent_proxy.go's audit trail and
+// agent_listener.go's connect/disconnect events, factored out once a
+// second call site needed the identical boilerplate. Not a full
+// record.EventRecorder (this package has no broadcaster/scheme machinery
+// standing one up would need, and both call sites already have a
+// clientset in hand) — a direct Events().Create call, matching
+// GET /clusters/{name}/events' own raw-client-go read path (see
+// clusters.go's handleGetClusterEvents) rather than the cached
+// controller-runtime client used elsewhere in this package. UID is
+// deliberately never set on InvolvedObject: that read path matches purely
+// on involvedObject.name (a field selector, not UID-aware), and neither
+// call site otherwise has the object's UID in hand without an extra Get —
+// best-effort audit/status events don't need object-identity precision
+// that fine. Best-effort throughout: a failure here is logged, never
+// returned to the caller, since neither call site's own real work should
+// ever be blocked by an event-emission hiccup. No-ops (logs nothing, not
+// even a warning) when clientset is nil — an install that never
+// configured one shouldn't get log spam for a feature it isn't using.
+func emitClusterEvent(ctx context.Context, clientset kubernetes.Interface, namespace, name, reason, message string) {
+	if clientset == nil {
+		return
+	}
+	now := time.Now()
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "hyve-" + strings.ToLower(reason) + "-", Namespace: namespace},
+		InvolvedObject: corev1.ObjectReference{
+			APIVersion: hyvev1alpha1.GroupVersion.String(),
+			Kind:       "ClusterDefinition",
+			Namespace:  namespace,
+			Name:       name,
+		},
+		Reason:         reason,
+		Message:        message,
+		Type:           corev1.EventTypeNormal,
+		Source:         corev1.EventSource{Component: "hyve-api"},
+		FirstTimestamp: metav1.NewTime(now),
+		LastTimestamp:  metav1.NewTime(now),
+		Count:          1,
+	}
+	if _, err := clientset.CoreV1().Events(namespace).Create(ctx, event, metav1.CreateOptions{}); err != nil {
+		log.Printf("api: failed to emit %s event for %s/%s: %v", reason, namespace, name, err)
+	}
 }
 
 // writeJSON writes v as a JSON response with the given status code.

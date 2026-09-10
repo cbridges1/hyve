@@ -28,16 +28,13 @@ import (
 )
 
 var (
-	apiNamespace          string
-	apiModulesDir         string
-	apiBindAddress        string
-	apiPublicBaseURL      string
-	apiProxyTarget        string
-	apiInClusterCAPath    string
-	apiRelayBindAddress   string
-	apiRelayBaseURL       string
-	apiHostServiceAccount string
-	apiAgentBindAddress   string
+	apiNamespace        string
+	apiModulesDir       string
+	apiBindAddress      string
+	apiPublicBaseURL    string
+	apiProxyTarget      string
+	apiInClusterCAPath  string
+	apiAgentBindAddress string
 )
 
 // Cmd is the api command.
@@ -66,12 +63,9 @@ func init() {
 	runCmd.Flags().StringVar(&apiNamespace, "namespace", "hyve-system", "Namespace ClusterDefinitions/HyveAccessBindings/credentials Secrets live in")
 	runCmd.Flags().StringVar(&apiModulesDir, "modules-dir", "/var/lib/hyve/modules", "Directory containing the baked-in hyve.lock and resolved modules — see cmd/controller's --modules-dir")
 	runCmd.Flags().StringVar(&apiBindAddress, "bind-address", ":8090", "Address the API binds to")
-	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the primary-cluster kubeconfig path's server: field")
+	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the agent-proxy kubeconfig path's server: field")
 	runCmd.Flags().StringVar(&apiProxyTarget, "proxy-target", "https://kubernetes.default.svc", "Upstream /proxy/* forwards to")
-	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the primary-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
-	runCmd.Flags().StringVar(&apiRelayBindAddress, "relay-bind-address", ":8091", "Address the access-method mint relay listener binds to — never expose this via Ingress; in-cluster pod network only")
-	runCmd.Flags().StringVar(&apiRelayBaseURL, "relay-base-url", "", "This API's own in-cluster address for the relay listener (e.g. http://hyve-api-internal.hyve-system.svc.cluster.local:8091) — required for POST /api/access-methods/<name>/mint; leave unset to disable access-method minting entirely")
-	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
+	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used to trust the /proxy upstream")
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
 
 	Cmd.AddCommand(runCmd)
@@ -98,18 +92,12 @@ func runAPI() {
 	moduleAuthProvider := &hyveapi.ModuleAuthProvider{ModulesDir: apiModulesDir}
 	tunnelProvider := &hyveapi.TunnelProvider{Client: c, Namespace: apiNamespace}
 
-	// Built unconditionally (unlike PrimaryProvider's clientset below,
-	// which only exists when the primary-cluster path is configured) —
-	// access-method minting (accessmethod_mint.go) needs a plain
-	// client-go clientset for Job/Secret dispatch regardless of whether
-	// this deployment ever uses the primary-cluster feature.
+	// Needed for agent bootstrap token validation (agentpki), the agent
+	// tunnel CA, and raw Events() reads/writes — see Server.Clientset's
+	// own doc comment.
 	clientset, csErr := kubernetes.NewForConfig(cfg)
 	if csErr != nil {
 		log.Fatalf("❌ Failed to build Kubernetes clientset: %v", csErr)
-	}
-
-	if apiRelayBaseURL == "" {
-		log.Printf("ℹ️  --relay-base-url not set — access-method minting (POST /api/access-methods/<name>/mint) disabled")
 	}
 
 	server := &hyveapi.Server{
@@ -118,9 +106,9 @@ func runAPI() {
 		SigningKey:         signingKey,
 		ModuleAuthProvider: moduleAuthProvider,
 		TunnelProvider:     tunnelProvider,
+		AgentProvider:      &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL},
 		ModulesDir:         apiModulesDir,
 		Clientset:          clientset,
-		RelayBaseURL:       apiRelayBaseURL,
 	}
 
 	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)
@@ -138,33 +126,14 @@ func runAPI() {
 
 	caData, caErr := os.ReadFile(apiInClusterCAPath)
 	if caErr != nil {
-		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the primary/host-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
+		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
 	} else {
-		server.PrimaryProvider = &hyveapi.PrimaryClusterProvider{
-			Clientset:             clientset,
-			CA:                    caData,
-			PublicBaseURL:         apiPublicBaseURL,
-			HostServiceAccountRef: hyveapi.ServiceAccountRefConfig{Namespace: apiNamespace, Name: apiHostServiceAccount},
-		}
 		proxy, pErr := hyveapi.BuildProxy(apiProxyTarget, caData)
 		if pErr != nil {
 			log.Fatalf("❌ Failed to build /proxy handler: %v", pErr)
 		}
 		server.Proxy = proxy
 	}
-
-	// The relay listener is a genuinely separate net/http server on its
-	// own port, not a route under the main mux — see Server.RelayRoutes'
-	// own doc comment for why it must never share the main bind
-	// address/Ingress. Started in its own goroutine; a fatal error here
-	// only kills access-method minting, not the whole API, so it logs
-	// rather than log.Fatalf-ing.
-	go func() {
-		log.Printf("🚀 hyve api relay listener starting — bind=%s", apiRelayBindAddress)
-		if err := http.ListenAndServe(apiRelayBindAddress, server.RelayRoutes()); err != nil {
-			log.Printf("❌ Relay listener exited with error: %v", err)
-		}
-	}()
 
 	// The agent tunnel listener is a raw TCP+SSH listener, not an
 	// http.Handler — see Server.ServeAgentTunnel's own doc comment. Same

@@ -169,6 +169,33 @@ export function ClusterDetailPage() {
       <KubeconfigPanel name={name} />
 
       <Card title="Recent activity">
+        {cluster.agent?.enabled && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 pb-3 mb-1 dark:border-neutral-800/70">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${
+                cluster.agentStatus?.connected
+                  ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+                  : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${cluster.agentStatus?.connected ? 'bg-green-600 dark:bg-green-400' : 'bg-neutral-400'}`} />
+              Agent {cluster.agentStatus?.connected ? 'connected' : 'disconnected'}
+            </span>
+            {cluster.agent?.proxy && (
+              <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                Proxy enabled
+              </span>
+            )}
+            {cluster.agentStatus?.version && (
+              <span className="text-xs text-neutral-400">v{cluster.agentStatus.version}</span>
+            )}
+            <span className="text-xs text-neutral-400">
+              {cluster.agentStatus?.connected
+                ? cluster.agentStatus?.lastConnectedAt && `since ${cluster.agentStatus.lastConnectedAt}`
+                : cluster.agentStatus?.lastDisconnectedAt && `since ${cluster.agentStatus.lastDisconnectedAt}`}
+            </span>
+          </div>
+        )}
         {!activity?.events?.length && <EmptyState>No events recorded yet.</EmptyState>}
         {activity?.events?.map((ev, i) => (
           <div

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -88,7 +89,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
-func connectOnce(cfg Config) (ssh.Conn, error) {
+func connectOnce(cfg Config) (*ssh.Client, error) {
 	authMethod, err := cfg.Identity.AuthMethod()
 	if err != nil {
 		return nil, fmt.Errorf("build auth method: %w", err)
@@ -115,9 +116,33 @@ func connectOnce(cfg Config) (ssh.Conn, error) {
 		HostKeyCallback: checker.CheckHostKey,
 		Timeout:         10 * time.Second,
 	}
-	client, err := ssh.Dial("tcp", cfg.TunnelAddress, clientConfig)
+
+	// net.DialTimeout + ssh.NewClientConn + ssh.NewClient, not the
+	// shorthand ssh.Dial (which does exactly this internally) — Dial's
+	// own doc comment is explicit that its shortcut discards the
+	// incoming-channel plumbing a caller needs "for access to incoming
+	// channels and requests." Milestone 5's proxy path needs exactly
+	// that: hyve-api opens a channel *toward* the agent per proxied
+	// request (see internal/agentpki.ProxyChannelType), which only
+	// (*ssh.Client).HandleChannelOpen — set up in serveProxyChannels
+	// below — can ever see.
+	netConn, err := net.DialTimeout("tcp", cfg.TunnelAddress, clientConfig.Timeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", cfg.TunnelAddress, err)
 	}
+	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, cfg.TunnelAddress, clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("handshake with %s: %w", cfg.TunnelAddress, err)
+	}
+	client := ssh.NewClient(sshConn, chans, reqs)
+
+	// Registers interest in ProxyChannelType before this connection can
+	// possibly receive one — internal/agentpki.ProxyChannelType's own doc
+	// comment covers why hyve-api, the SSH server here, is the one
+	// opening these, not the agent. Runs for the lifetime of this one
+	// connection; a reconnect (a fresh connectOnce call) re-registers on
+	// the new *ssh.Client.
+	go serveProxyChannels(client)
+
 	return client, nil
 }

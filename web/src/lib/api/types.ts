@@ -78,6 +78,20 @@ export type ClusterSummary = {
   // comment on why this isn't the same concern as the driverOutputs/
   // kubeconfig exclusion right above.
   spec?: ClusterDefinitionSpec
+  // Agent/agentStatus mirror internal/api's clusterDTO fields of the same
+  // name — spec.access.agent (nil/undefined when never configured) and
+  // status.agent (hyve-agent's live connectivity snapshot, written by
+  // whichever hyve-api process holds this cluster's tunnel connection).
+  agent?: AgentSpec
+  agentStatus?: AgentStatus
+}
+
+export type AgentSpec = { enabled?: boolean; proxy?: boolean }
+export type AgentStatus = {
+  connected?: boolean
+  lastConnectedAt?: string
+  lastDisconnectedAt?: string
+  version?: string
 }
 
 export type ClusterDefinitionSpec = {
@@ -91,7 +105,7 @@ export type ClusterDefinitionSpec = {
   pause?: boolean
   expiresAt?: string
   dependsOn?: string[]
-  access?: { method?: string; tunnel?: { provider?: string } }
+  access?: { method?: string; tunnel?: { provider?: string }; agent?: AgentSpec }
 }
 
 export type ClusterResources = {
@@ -219,27 +233,6 @@ export type AuthContext = {
   authFileContent: string
   tools?: { name: string; description?: string }[]
 }
-
-// ── Access methods (internal/api/accessmethods.go's accessMethodDTO) ────
-// Namespace-scoped and admin-creatable through this console, same as
-// templates/workflows/resources — its mint operation is fully
-// tenant-isolated, so there's no extra sensitivity over those.
-
-export type AccessMethodSpec = {
-  driver?: DriverRef
-  inlineAuth?: string
-  requiredEnv?: string[]
-  serverURL: string
-  runner?: RunnerSpec
-}
-export type AccessMethod = { name: string; spec: AccessMethodSpec; requiredEnv?: string[] }
-export type CreateAccessMethodRequest = { name: string; spec: AccessMethodSpec }
-export type MintAccessMethodRequest = {
-  clusterName: string
-  accessMethodClusterID: string
-  credentialEnv?: Record<string, string>
-}
-export type MintAccessMethodResponse = { kubeconfig: string }
 
 // ── Workflow runs (internal/api/workflowruns.go) — cluster mode's `hyve
 // workflow run` execution surface. No list endpoint exists (single-name

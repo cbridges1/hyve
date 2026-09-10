@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,6 +14,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
+
+// randomHex returns n random bytes hex-encoded — used to generate a short,
+// collision-resistant suffix for a generated WorkflowRun name.
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
 
 // registerWorkflowRunRoutes wires the /workflow-runs endpoints onto mux —
 // mounted under /api/ (behind requireAuth+requireRole) by Server.Routes.

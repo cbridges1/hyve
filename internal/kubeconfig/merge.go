@@ -146,10 +146,10 @@ func keepLastByName(items []map[string]interface{}) []map[string]interface{} {
 // mode) into the kubeconfig file at configPath. Its cluster/context/user
 // entries are renamed to entryName regardless of what the source called
 // them — every minted kubeconfig has exactly one of each, so this sidesteps
-// any collision with whatever server-side name was used (e.g.
-// PrimaryClusterProvider hardcodes "hyve") and instead keys everything by
-// the real cluster name, matching how multiple clusters coexist in one
-// local kubeconfig today. Any existing entries already named entryName are
+// any collision with whatever server-side name was used (e.g. internal/api's
+// buildKubeconfig hardcodes "hyve") and instead keys everything by the real
+// cluster name, matching how multiple clusters coexist in one local
+// kubeconfig today. Any existing entries already named entryName are
 // replaced. Sets current-context to entryName. Creates configPath (and its
 // parent directory) if it doesn't exist yet.
 func MergeKubeconfigEntry(configPath string, newConfigContent []byte, entryName string) error {

@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func newAuthContextMux(s *Server) *http.ServeMux {
@@ -118,6 +117,25 @@ func TestHandleAuthContext_RejectsTunnel(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, rec.Code)
 }
 
+// TestHandleAuthContext_RejectsAgentProxy is milestone 5's own regression
+// test for a real gap found live: a cluster with spec.access.agent.proxy
+// true but spec.access.method left unset (the normal, expected shape,
+// since Agent/Proxy is deliberately orthogonal to Method) used to look
+// exactly like an ordinary client-side-auth cluster here — `hyve cluster
+// auth` would have run the driver module's own auth.yaml locally instead
+// of ever reaching GET /api/kubeconfig's agent-proxy dispatch at all.
+func TestHandleAuthContext_RejectsAgentProxy(t *testing.T) {
+	cd := newClusterDef("prod")
+	cd.Spec.Access.Agent = &hyvev1alpha1.AgentSpec{Enabled: true, Proxy: true}
+	s := &Server{Client: newFakeClient(t, cd), Namespace: testNamespace}
+
+	req := httptest.NewRequest(http.MethodGet, "/clusters/prod/auth-context", nil)
+	rec := httptest.NewRecorder()
+	newAuthContextMux(s).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
 func TestHandleAuthContext_NotFound(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
 
@@ -128,16 +146,20 @@ func TestHandleAuthContext_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-func TestHandleAuthContext_RejectsPrimaryCluster(t *testing.T) {
-	hostCD := &hyvev1alpha1.ClusterDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNamespace},
-		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Access: hyvev1alpha1.AccessSpec{Method: hyvev1alpha1.AccessMethodPrimary}},
-	}
-	s := &Server{Client: newFakeClient(t, hostCD), Namespace: testNamespace}
+// TestHandleAuthContext_AllowsPrimaryCluster confirms access.method: primary
+// (hyvev1alpha1.AccessMethodPrimary) no longer routes to a special
+// server-minted path — it's a pure host-identification marker now (see its
+// own doc comment), and a primary-marked cluster has a real driver module
+// like any other default-auth cluster, so its kubeconfig comes from this
+// same client-side auth-context endpoint.
+func TestHandleAuthContext_AllowsPrimaryCluster(t *testing.T) {
+	hostCD := newClusterDef("local")
+	hostCD.Spec.Access.Method = hyvev1alpha1.AccessMethodPrimary
+	s := &Server{Client: newFakeClient(t, hostCD), Namespace: testNamespace, ModulesDir: newTestModulesDirWithAuth(t)}
 
 	req := httptest.NewRequest(http.MethodGet, "/clusters/local/auth-context", nil)
 	rec := httptest.NewRecorder()
 	newAuthContextMux(s).ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }

@@ -100,17 +100,23 @@ const (
 	// AccessMethodPrimary marks a ClusterDefinition as representing the
 	// cluster hyve-controller/hyve-api themselves run on (the "host"
 	// cluster — see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access"
-	// section). No driver/create/delete lifecycle applies — it already
-	// exists by definition. Routes to PrimaryClusterProvider, which mints
-	// a cluster-admin-bound token via TokenRequest and points server: at
-	// this API's own /proxy path rather than any external address (works
-	// identically whether the host cluster has a public IP, a LAN-only
-	// address, or sits behind NAT with no inbound path at all — the proxy
-	// runs from inside the cluster, so it never needs one). Gated to
-	// RoleSuperadmin only; every other role is refused outright, since
-	// this credential reaches the cluster every tenant's workload actually
-	// runs on. Should live in the install's control-plane namespace
-	// (hyve-system by convention), never a tenant namespace.
+	// section) — used only as an identifying convention today (e.g. `hyve
+	// migrate cluster`'s own "find the current host" resolution), not as a
+	// kubeconfig-minting dispatch key: a `primary`-marked cluster is
+	// reconciled and authenticated to exactly like any other
+	// ClusterDefinition, through its own real spec.driver's auth
+	// operation. This used to also route to a hardcoded, superadmin-only
+	// PrimaryClusterProvider that minted a cluster-admin-bound token via
+	// TokenRequest and pointed server: at this API's own /proxy path,
+	// bypassing the driver/auth model entirely — removed (see
+	// docs/HYVE-AGENT-IMPLEMENTATION-PLAN.md's milestone 9) in favor of
+	// giving the host cluster a real driver module like every other
+	// cluster, per the same "host cluster should default to the auth
+	// method defined in the module" decision that motivated dropping that
+	// special case. /proxy itself (internal/api/proxy.go) is unaffected —
+	// still generic, reusable infrastructure any driver module's auth.yaml
+	// can choose to route a minted token through if it wants that
+	// convenience, just no longer wired to this value automatically.
 	AccessMethodPrimary = "primary"
 )
 
@@ -125,33 +131,9 @@ type AccessSpec struct {
 	Method string      `json:"method,omitempty"`
 	Tunnel *TunnelSpec `json:"tunnel,omitempty"` // only meaningful when Method is AccessMethodTunnel
 
-	// AccessMethodRef names an AccessMethod object (see accessmethod_types.go)
-	// providing a client-side, per-user access path independent of Method/
-	// Tunnel above — set by `hyve cluster auth` itself, resolved entirely
-	// client-side (or via a small read-only API lookup in cluster mode),
-	// never through GET /api/kubeconfig or ModuleAuthProvider/TunnelProvider
-	// at all. Orthogonal to Method: a cluster can leave Method unset (the
-	// client-side module-auth default) and still set AccessMethodRef, since
-	// they're two independent ways a caller might obtain a kubeconfig for
-	// the same cluster. See HYVE-ACCESS-METHOD-DESIGN.md for the full
-	// design and why this is additive rather than replacing Tunnel/
-	// TunnelProvider (that path stays for the case Rancher/Teleport is only
-	// reachable from the API pod, not the caller's own machine — deferred,
-	// not removed).
-	AccessMethodRef string `json:"accessMethodRef,omitempty"`
-
-	// AccessMethodClusterID is this cluster's own identifier within the
-	// referenced AccessMethod's provider (e.g. Rancher's internal cluster
-	// ID) — required when AccessMethodRef is set. See AccessMethodRef's own
-	// doc comment and types.ClusterSpec.AccessMethodClusterID (the local-
-	// mode equivalent).
-	AccessMethodClusterID string `json:"accessMethodClusterID,omitempty"`
-
 	// Agent configures hyve-agent for this cluster — see
-	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel/
-	// AccessMethodRef above (those are being phased out in favor of this,
-	// per that doc's "Relationship to existing access paths" section, but
-	// nothing here removes them yet).
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel
+	// above — a cluster can use both at once, or either alone.
 	Agent *AgentSpec `json:"agent,omitempty"`
 }
 

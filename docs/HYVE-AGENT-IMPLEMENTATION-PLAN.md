@@ -396,12 +396,24 @@ caller can actually use.
 
 **Files (new):**
 
-- `internal/api/agent_proxy.go` — the proxy handler (mounted at, e.g.,
-  `/agent-proxy/{namespace}/{name}/`): `requireAuth`+`requireRole`,
-  `TenantNamespace(r)` resolution, a `Get` existence check against that
-  `(namespace, name)` (the same check `handleGetCluster` already makes),
-  *then* a registry lookup — per the resolved multi-tenancy design, in
-  that exact order. Builds an `httputil.ReverseProxy` whose
+- `internal/api/agent_proxy.go` — the proxy handler, mounted at
+  `/api/agent-proxy/{name}/{rest...}` — deliberately *not*
+  `/agent-proxy/{namespace}/{name}/` as originally sketched here: the
+  namespace is never taken from the URL at all, always from
+  `TenantNamespace(r)` (the caller's own verified session/act-as
+  namespace), exactly matching `handleGetCluster`'s own established
+  pattern for every other cluster-scoped route — a caller-suppliable
+  namespace segment would have been exactly the cross-tenant hole the
+  Tests section below guards against. Nested under `/api/` (inside
+  `apiMux`) rather than a separate top-level mount like `/proxy/`, so it
+  inherits `requireAuth`+`requireRole` from `Routes()`'s existing apiMux
+  wrapping for free — unlike `/proxy/`, whose caller presents a real
+  Kubernetes token, not a hyve one, this route needs the same session
+  auth every other `/api/*` route already has. A `Get` existence check
+  against `(TenantNamespace(r), name)` (the same check `handleGetCluster`
+  already makes), *then* a registry lookup — per the resolved
+  multi-tenancy design, in that exact order. Builds an
+  `httputil.ReverseProxy` whose
   `Transport.DialContext` opens a new channel on the matched agent's SSH
   connection (`ssh.ServerConn.OpenChannel`, requesting a forwarded-tcpip
   channel to `https://kubernetes.default.svc` on the agent's side) instead
@@ -417,23 +429,118 @@ caller can actually use.
   `server:`-points-at-hyve-api's-own-path shape `PrimaryClusterProvider`
   already uses for `/proxy`).
 
-**Tests:** `internal/api/agent_proxy_test.go` — must include explicit
-cross-tenant-rejection cases (styled like this session's own
-`TestHandleCreateEnvironment_RejectsReservedNames` regression tests: prove
-a namespace-B caller 404s/403s against a namespace-A cluster, not just that
-the happy path works) and role→impersonation-group mapping tests
-(`admin`→`cluster-admin` group, `read-only`→`view` group, verified against
-a fake/local target apiserver's own RBAC decision, not just that the
-header got set).
+Also touched, beyond the two files above: `internal/agentpki/proxy.go`
+(new — `ProxyChannelType`/`ProxyChannelPayload`/`NewProxyChannelPayload`,
+`KubernetesAPIServerAddr`, and the two `AgentProxyAdminGroup`/
+`AgentProxyReadOnlyGroup` constants, moved here from
+`internal/reconcile/agent.go` so both the reconcile step that provisions
+the `ClusterRoleBinding`s and this milestone's proxy handler share one
+literal source of truth instead of two hand-synced copies —
+`internal/reconcile/agent.go` itself now imports `agentpki` for them);
+`internal/agentpki/protocol.go` (`HeartbeatPayload` gains
+`ServiceAccountToken`); `internal/agent/heartbeat.go` (reads the agent's
+own mounted projected-token file fresh every heartbeat, plus fires one
+immediately on connect rather than waiting out the first 30s interval);
+`internal/agent/connect.go` (`ssh.Dial` → `net.Dial`+`NewClientConn`+
+`NewClient`, since `ssh.Dial`'s own shortcut discards exactly the
+incoming-channel plumbing `HandleChannelOpen` needs) and
+`internal/agent/proxy.go` (new — the agent-side channel accept loop, a
+pure raw byte-relay to `kubernetes.default.svc`, no HTTP/TLS of its own);
+`internal/api/agentregistry.go` (`AgentConnection.Version` changed from a
+field to a mutex-guarded method, `ServiceAccountToken` added alongside it
+— both written by `drainAgentRequests`, both now read from a different
+goroutine by `agent_proxy.go`); `internal/api/kubeconfig_handler.go`
+(dispatches to `AgentProvider` ahead of the `Access.Method` switch
+entirely, since Agent/Proxy is orthogonal to Method); `internal/api/
+auth_context.go` (a live-discovered fix — see below);
+`deploy/helm/hyve/templates/api-rbac.yaml` (`events` gains `create`, for
+the audit-trail write).
 
-**Manual verification (the real test of the whole proposal):** `hyve
-cluster auth <name>` against an agent+proxy-enabled cluster, then run
-actual `kubectl get pods`, `kubectl exec`, `kubectl logs -f`, and `kubectl
-get --watch` through the minted kubeconfig — confirming the
-streaming/connection-upgrade cases specifically, since those are the exact
-reason a raw connection-level tunnel was chosen over anything HTTP-level in
-the "Tunnel protocol" resolution. A plain `kubectl get pods` succeeding
-proves far less than `kubectl exec` working.
+**Tests:** `internal/api/agent_proxy_test.go` — cross-tenant-rejection
+(styled like this session's own
+`TestHandleCreateEnvironment_RejectsReservedNames` regression tests: prove
+a namespace-B caller 404s against a namespace-A cluster, not just that the
+happy path works), proxy-not-enabled (both a `Proxy: false` and a nil
+`Agent` spec) 403s, not-connected/no-registry/no-credentials-yet 503s, and
+a pure `agentImpersonationGroup` mapping unit test. Role→impersonation-
+group mapping is verified separately, in
+`internal/api/agent_proxy_rbac_test.go`, against a *real* local
+apiserver's own RBAC decision (not just that the header string got
+built) via `sigs.k8s.io/controller-runtime/pkg/envtest` (already a
+transitive dependency, and its binaries happened to already be installed
+on this dev machine) — `admin` group actually creates a Namespace via a
+real `cluster-admin` ClusterRoleBinding, `read-only` actually lists Pods
+but is genuinely `Forbidden` creating one, and the agent's own
+un-impersonated identity (impersonate verb only) is genuinely `Forbidden`
+doing anything else — using `rest.Config.Impersonate` (client-go's own
+supported mechanism for the identical `Impersonate-User`/
+`Impersonate-Group` headers `buildAgentReverseProxy`'s Director sets) so
+the test doesn't need this package's own HTTP handler, a fake SSH tunnel,
+or a fake agent connection just to reach the same two header values. Skips
+(does not fail) when envtest binaries aren't available locally, so `go
+test ./...` stays runnable anywhere.
+
+**Manual verification (the real test of the whole proposal):** done live
+against `k3d-hyve-local`, self-referentially (the same `authOnly`
+fake-driver technique milestone 4's own live verification used) — real
+GET/POST/watch requests through a minted `/api/agent-proxy/<name>`
+kubeconfig's own token confirmed: reads and writes both actually reach the
+real apiserver and return real data (a `ConfigMap` genuinely created,
+then genuinely read back); `?watch=true` streams real incremental events
+rather than buffering (the plan's own core concern about the tunnel
+choice); the `admin`→`read-only` role split holds live, not just in the
+envtest suite (a real read-only session's `GET` returned `200`, its `POST`
+returned a real `403 Forbidden` naming the impersonated user); the
+audit-trail `Event` fires for every proxied request, correctly attributed
+to the calling user, once the RBAC fix below was applied. **Not** done
+live: `kubectl exec`/`kubectl logs -f`/`kubectl get --watch` through a
+real `kubectl` binary specifically — see the live-discovered limitation
+below for why, and why the streaming/write verification above is still
+real evidence for those code paths despite that gap.
+
+**Live-discovered fixes and findings:**
+
+- `deploy/helm/hyve/templates/api-rbac.yaml` granted `hyve-api`'s own Role
+  only `get`/`list` on `events`, never `create` — `emitAgentProxyEvent`'s
+  audit-trail write 403'd silently (the proxied request itself still
+  succeeded; only the audit Event failed to be written) until `create` was
+  added.
+- `internal/api/auth_context.go`'s `handleAuthContext` only ever checked
+  `spec.access.method != ""` to decide "this cluster doesn't use
+  client-side auth, tell the caller to use `GET /api/kubeconfig` instead"
+  — it never checked `spec.access.agent.proxy` at all. Since Agent/Proxy
+  is deliberately orthogonal to Method (a real agent+proxy cluster
+  normally leaves Method unset entirely), `hyve cluster auth <name>`
+  against a real agent+proxy cluster would have silently taken the
+  *wrong* path — attempting to run the driver module's own `auth.yaml`
+  locally, client-side, instead of ever reaching the agent-proxy
+  kubeconfig dispatch. Fixed by adding the same rejection
+  `handleAuthContext` already had for `Method`, now also for
+  `Agent.Proxy`; covered by a new regression test,
+  `TestHandleAuthContext_RejectsAgentProxy`.
+- **Environment limitation, not a hyve bug** (confirmed live, cost real
+  debugging time): a real `kubectl`/client-go client refuses to attach
+  *any* credential — bearer token, client cert, or basic auth — to a
+  request whose target URL scheme is `http://` rather than `https://`.
+  This is `k8s.io/client-go/tools/clientcmd`'s own `DirectClientConfig.
+  ClientConfig()`, gated by `restclient.IsConfigTransportTLS` (a bare
+  `baseURL.Scheme == "https"` string check, confirmed by reading the
+  actual resolved client-go source) — not a flag, not something
+  `insecure-skip-tls-verify` overrides, and not anything specific to this
+  milestone's own code. `k3d-hyve-local`'s local-dev Ingress has never
+  terminated TLS (plain HTTP throughout this whole project's local
+  testing), which means this exact limitation already applied equally to
+  the *pre-existing* `PrimaryClusterProvider`/`/proxy` kubeconfig path —
+  it was simply never exercised through a real `kubectl` binary before
+  now. A real deployment's `PublicBaseURL` is `https://...` behind a real
+  Ingress/LB, where this never triggers at all. Standing up real Ingress
+  TLS for this one local dev cluster was judged out of scope for this
+  milestone (a genuinely separate, environment-level piece of
+  infrastructure, not specific to hyve-agent); verified the underlying
+  mechanism instead via direct authenticated HTTP requests (curl, which
+  has no such client-side restriction) exercising the exact same
+  server-side code path `kubectl` would have — see "Manual verification"
+  above.
 
 ## Milestone 6: a real testbed template + full live cycle
 
@@ -446,6 +553,99 @@ proves far less than `kubectl exec` working.
   status visible in the CLI/UI → proxy works, including `exec`/`watch` →
   delete → confirm the agent's own `Deployment`/RBAC gets torn down along
   with the cluster, nothing orphaned in either direction.
+
+**Scope, as actually run:** the real Civo cluster half of this milestone
+was explicitly descoped by the user after two rounds of discussion — a
+real Civo cluster is billed, and (separately, the actual blocker) a real
+external cluster's hyve-agent has no path back to this laptop's
+k3d-hyve-local control plane without standing up genuinely new networking
+infrastructure (a public HTTPS endpoint + a reachable raw-TCP endpoint —
+neither ngrok nor Cloudflare Tunnel's free tier cover both without an
+account this agent isn't able to create on the user's behalf). Directed
+instead to "just rely on k3d for now" — the full live cycle below was run
+self-referentially, the same technique milestones 4/5 already established,
+now driven through a real `Template` (not raw `ClusterDefinition` YAML) to
+exercise the actual `hyve template create`/`hyve cluster create --template`
+path end to end, which is what surfaced this milestone's own real bug (see
+below). `template-civo-agent.yaml` was still written and committed to
+nexus-config as the real, correct artifact for whenever real external
+reachability exists — it's simply never been created-from live in this
+session.
+
+**Live-discovered fix — a real, pre-existing bug, not specific to
+hyve-agent:** `hyve template create m6-agent-test -f <file-with-spec.access.agent-set>`
+followed by `hyve cluster create --template m6-agent-test` produced a
+cluster with `spec.access: {}` — completely empty. Root cause:
+`hyvev1alpha1.TemplateSpec` (the `Template` CRD's own spec type) never had
+an `Access` field *at all* — not added when `AccessMethodRef`/`Method`
+were introduced, still missing when `Agent` was added in milestone 1. A
+Kubernetes CRD silently drops any property its schema doesn't declare, so
+every one of the three ways to set `spec.access` on a Template (`--set`,
+`-f` a file, or a direct `kubectl apply`) hit the exact same silent
+data-loss, regardless of which one was used — confirmed live by a real
+Template CRD dropping a hand-written `spec.access.agent` block. This
+explains why `template-civo-rancher-agent.yaml`'s own precedent (predating
+this session) documents a manual `kubectl patch clusterdefinition ...
+access.accessMethodRef` step performed *after* `hyve cluster create`
+rather than setting it in the Template at all — that workaround was
+already routing around this same gap, just never diagnosed as a Template
+schema bug before now. Fixed by adding `Access AccessSpec` to
+`TemplateSpec` (`internal/apis/hyve/v1alpha1/template_types.go`) and
+threading it through `RenderClusterDefinitionSpec`
+(`internal/apis/hyve/v1alpha1/render.go`); CRD regenerated;
+`internal/api/templates.go`'s own create/update handlers needed no change
+at all, since `createTemplateRequest`/`updateTemplateRequest` already
+embed `hyvev1alpha1.TemplateSpec` directly rather than a hand-copied DTO.
+Covered by a new regression test,
+`TestRenderClusterDefinitionSpec_CopiesAccess`.
+
+**Full live cycle, as actually verified** (self-referentially, on
+`k3d-hyve-local`, via a real `Template` → `hyve cluster create --template`
+→ real reconcile → real proxy traffic → real teardown):
+
+- **Create → agent installs and connects**: `hyve template create` +
+  `hyve cluster create --template` produced a `ClusterDefinition` whose
+  `spec.access.agent` correctly carried through (post-fix); hyve-agent
+  installed and reported `status.agent.connected: true` on the very first
+  reconcile cycle, no manual follow-up step — the actual point of this
+  milestone's own testbed, and the first time the *Template* path (not a
+  hand-written `ClusterDefinition`) proved this.
+- **Status visible in the CLI**: only partially — `hyve cluster show`
+  and `hyve cluster logs` currently surface neither `status.agent` nor
+  `status.appliedAgent` at all; confirmed via `kubectl get -o yaml`
+  instead. Not fixed here — this is milestone 7's own explicit scope
+  ("CLI + web console surfacing"), not a milestone 6 blocker.
+- **Proxy works, including `exec`/`watch`**: verified with *real*
+  `k8s.io/client-go/tools/remotecommand` (SPDY exec, the same mechanism
+  `kubectl exec` itself uses) and the real typed client's `Watch`
+  interface — not curl this time. A real command (`echo ...`, `hostname`)
+  actually ran inside a real pod and streamed real stdout back through
+  the full tunnel; a real `Watch` delivered a real `ADDED` event. This
+  resolves milestone 5's own documented gap (`kubectl exec`/`watch` never
+  verified through real client-go machinery, only curl) — the *only*
+  difference from a literal `kubectl` invocation is building `rest.Config`
+  directly instead of loading it via `clientcmd` from a kubeconfig file,
+  which is what milestone 5 found refuses to attach credentials over
+  `http://` — every server-side code path (auth, the existence/registry
+  checks, the SSH tunnel, the agent's own relay, the real apiserver) is
+  identical either way.
+- **Delete → confirm nothing orphaned**: hyve's own delete path
+  (`reconcileCluster`'s `Delete && ACTIVE` branch) never calls
+  `reconcileAgent` at all — for a real driver this is harmless (the
+  driver's own delete operation destroys the whole cluster, agent
+  included, as a side effect), but this self-referential test's fake
+  driver destroys nothing. Verified the *intended* clean-shutdown
+  sequence instead: `spec.access.agent.enabled: false` first (the
+  first-class, already-tested milestone 4 mechanism) — confirmed live
+  that this alone removed every object hyve-agent had created
+  (`Deployment`, `ServiceAccount`, `Role`, `RoleBinding`,
+  `ClusterRole`, both proxy `ClusterRoleBinding`s — `kubectl get` for
+  each came back empty) — *then* deleted the `ClusterDefinition` itself,
+  which removed cleanly with nothing left behind. This is the sequence a
+  real decommissioning flow should actually use (disable the agent first,
+  destroy the cluster second), and it's the one milestone 4 was actually
+  built and tested against — not a workaround adopted only because this
+  test's own driver doesn't destroy anything.
 
 ## Milestone 7: CLI + web console surfacing
 
@@ -460,6 +660,58 @@ proves far less than `kubectl exec` working.
   field exists — `SpecEditor` edits the full YAML spec directly — so a
   purpose-built toggle control in the UI is a nice-to-have polish item for
   this milestone, not a blocker for it.
+
+**Files, as actually touched:** `internal/api/clusters.go` (`clusterDTO`
+gains `Agent`/`AgentStatus`, mirroring `spec.access.agent`/`status.agent`
+— the CRD's own status field is a value type with no `omitempty`, on
+purpose, so `AgentStatus` mirrors that exactly rather than a pointer);
+`cmd/shared/apiclient.go` (`ClusterDTO` gains the same two fields — this
+package already imports `hyvev1alpha1`, so no new dependency); `cmd/
+cluster/auth.go` (the fifth branch, plus a new `Long:` paragraph
+describing it — `cd` is now captured at function scope in `authClusterAPI`
+so the final branch can inspect `cd.Agent.Proxy` before choosing its
+message); `cmd/cluster/api.go` (`showClusterAPI` prints Agent/connected/
+version/last-connected/last-disconnected when configured);
+`internal/api/server.go` (new shared `emitClusterEvent` helper — factored
+out once a *second* call site needed the exact same Event-construction
+boilerplate `emitAgentProxyEvent` from milestone 5 already had);
+`internal/api/agent_listener.go` (`handleAgentConnection` now emits a real
+`AgentConnected`/`AgentDisconnected` Event on every transition, not just a
+status-field write — giving `hyve cluster logs`/the web console's
+"Recent activity" panel real connect/disconnect *history*, which a
+current-state-only status snapshot can't; `AgentProxyRequest` events from
+milestone 5 already flowed through the *existing*
+`GET /clusters/{name}/events` mechanism with zero changes needed, since
+that endpoint reads every Event on the object regardless of Reason);
+`web/src/lib/api/types.ts` (`AgentSpec`/`AgentStatus` types, added to both
+`ClusterSummary` — the DTO's top-level fields — and
+`ClusterDefinitionSpec.access` — for `SpecEditor`'s own typed value,
+though confirmed unnecessary for the toggle to actually work: `SpecEditor`
+round-trips through `js-yaml`'s `dump`/`load` on a generic object, not a
+TS-type-enforced serializer, so an untyped `agent:` block would have
+survived a save regardless); `web/src/routes/ClusterDetailPage.tsx` (the
+status indicator itself — a green/grey connected-dot badge plus a
+"Proxy enabled" badge and version/timestamp, at the top of "Recent
+activity", only rendered when `cluster.agent?.enabled`).
+
+**Verified live**, self-referentially on `k3d-hyve-local` (same technique
+as milestones 4-6): `hyve cluster show` prints `Agent: enabled (proxy:
+true)` / `Connected: true` / `Version` / `Last connected`; `hyve cluster
+auth` against the same cluster printed the new, distinct agent-proxy
+message ("kubectl traffic is relayed through the API to this cluster's
+own agent, not a direct connection") rather than the generic server-side-
+auth one; `hyve cluster logs` showed real `AgentConnected` **and**
+`AgentDisconnected` events after forcing a real reconnect (deleting the
+agent pod) — confirming the new event emission fires on both transitions,
+not just one; the web console's cluster detail page, viewed in a real
+browser, rendered the "● Agent connected" / "Proxy enabled" / "vdev" /
+"since ..." badge row exactly as designed, with the same events listed
+below it via the pre-existing events panel; the "Edit spec" YAML editor
+correctly showed `access.agent.enabled: true` / `proxy: true` for a real
+cluster, confirming the "already works via SpecEditor" claim held for
+real, not just in theory. No new bugs found this milestone — the DTO/CLI/
+web layers were new surface area with no existing behavior to conflict
+with.
 
 ## Milestone 8: deprecation notice + migration guide
 
@@ -481,58 +733,181 @@ real window and a real guide before milestone 9 deletes anything:
   milestone 9 starts — the plan doesn't get to remove a mechanism while its
   own reference deployment still depends on it.
 
-## Milestone 9: remove `AccessMethod`, `primary`, and `tunnel`
+**Actually done, as of this update: the doc-only half only.** Written —
+`docs/HYVE-AGENT-MIGRATION-GUIDE.md` (new), `docs/ARCHITECTURE.md`'s new
+"Cluster access paths" section, and `// Deprecated:` notices on
+`AccessMethod`, `AccessMethodTunnel`/`TunnelSpec`, `AccessMethodPrimary`,
+and `AccessSpec.AccessMethodRef`/`AccessMethodClusterID`
+(`internal/apis/hyve/v1alpha1/{accessmethod,clusterdefinition}_types.go`),
+CRDs regenerated. **Not done: the live migration itself, and this
+milestone's own definition of done is explicitly not met.**
 
-The actual removal — scheduled, not deferred. Only starts once milestone
-8's definition of done (the known live case migrated, not just docs
-published) is met.
+Found live, before any migration work could even start: `acme-worker`
+(this plan's own cited "known live case") no longer exists on
+`k3d-hyve-local` — `kubectl get clusterdefinition -A` shows only `local`.
+It appears to have expired the same way the unrelated `civo-test` cluster
+did earlier in this project's history, not been deliberately migrated.
 
-**Files removed:**
+This also surfaced a real gap the original plan text didn't fully resolve:
+milestone 9's title bundles `primary` in with `AccessMethod`/`tunnel` as
+if all three have an equally straightforward agent-based replacement, but
+`primary` doesn't — it's the *host* cluster's own access path (the one
+`hyve-controller`/`hyve-api` run on), and "every cluster including the
+host is agent-connected symmetrically" (the architecture proposal's own
+resolved direction) still leaves open exactly how the current
+superadmin-only gate and `PrimaryClusterProvider`'s other behavior map
+onto that. Raised with the user directly; explicit decision: **write the
+deprecation notices and migration guide now (this document), but do not
+attempt a live migration or start milestone 9's removal yet** — see
+`docs/HYVE-AGENT-MIGRATION-GUIDE.md`'s own "Host cluster access" section
+for the honest, still-open state of that specific question, and its own
+top-of-file "Status of this guide, honestly" note for the
+`AccessMethod`/`tunnel` half (a reasoned-through procedure, not yet
+proven against a live cluster).
 
-- `internal/apis/hyve/v1alpha1/accessmethod_types.go` (the whole CRD type).
-- `internal/api/accessmethods.go`, `internal/api/accessmethod_mint.go` (CRUD
-  handlers, the mint-Job-dispatch-plus-relay machinery, the relay listener
-  registration).
-- `internal/api/access.go`: `TunnelProvider` deleted outright.
-  `PrimaryClusterProvider`'s `AccessMethodPrimary`-specific branch in
-  `Kubeconfig` removed — but audit the rest of `PrimaryClusterProvider`
-  (specifically the non-primary path that mints a caller's own resolved
-  `ServiceAccountRef`) before assuming the whole type goes: confirm nothing
-  besides the primary/host-cluster case still depends on it before deleting
-  more than that one branch. Don't remove code this milestone hasn't
-  actually confirmed is dead.
-- `internal/apis/hyve/v1alpha1/clusterdefinition_types.go`: remove
-  `AccessMethodRef`/`AccessMethodClusterID` from `AccessSpec`, remove
-  `TunnelSpec`/`TunnelProviderRancher`/`TunnelProviderTeleport`, remove the
-  `AccessMethodPrimary` constant and `Method`'s primary/tunnel values —
-  regenerate `zz_generated.deepcopy.go` and
-  `deploy/helm/hyve/crds/hyve.io_clusterdefinitions.yaml` (same
-  `controller-gen` step milestone 1 used to add fields, now removing them —
-  diff before applying, same discipline).
-- `deploy/helm/hyve/crds/hyve.io_accessmethods.yaml` deleted; any
-  `AccessMethod`-specific RBAC rules in `deploy/helm/hyve/templates/*rbac*.yaml`
-  pruned (audit these directly rather than assuming which rules exist —
-  this doc hasn't re-verified their current exact shape).
-- Web console: `AccessMethodsPage.tsx`, `AccessMethodDetailPage.tsx`,
-  `web/src/lib/api/accessmethods.ts`, the "Access methods" nav entry in
-  `AppShell.tsx`'s `navGroups`.
-- CLI: whatever in `cmd/cluster/auth.go` and `cmd/shared/apiclient.go`
-  implements the `accessMethodRef`/mint request path.
+## Milestone 9: remove `AccessMethod`, and `PrimaryClusterProvider`'s minting
 
-**Tests:** delete the corresponding `*_test.go` files/cases outright
-rather than leaving them testing removed code; any test fixture elsewhere
-in the suite that happens to set `AccessMethodRef` on a `ClusterDefinition`
-(a real risk — this field has been used as convenient sample data in
-tests unrelated to access methods themselves) needs auditing and updating,
-not just the access-method-specific test files.
+**Actually done — but under a materially different, user-clarified scope
+than this section originally specified.** Milestone 8's own gate (a real
+live migration proven, not just docs) was never actually met —
+`acme-worker` had already expired, and no replacement live case
+materialized. Rather than stay blocked on that indefinitely, the scope was
+renegotiated directly with the user, who gave two explicit, load-bearing
+decisions that supersede this section's original plan:
 
-**Manual verification:** `go build ./...` clean confirms nothing else in
-the tree still references the removed types (the compiler does this audit
-for free); a full redeploy to `k3d-hyve-local`; confirm the web console's
-Access Methods nav entry and pages are actually gone, not just unlinked;
-confirm `acme-worker` (migrated in milestone 8) is still working
-post-removal, since that's the one live proof this milestone didn't just
-delete code nobody was using.
+1. *"AccessMethod should be removed. If admin wants cluster to accessed
+   via tunnel it should be specified in the clusterdefinition."* — the
+   `AccessMethod` CRD is removed outright; `access.method: tunnel`
+   (the pre-existing inline field, a distinct thing from the `AccessMethod`
+   CRD) is explicitly **kept, unchanged, not deprecated**. The milestone's
+   own title ("remove `AccessMethod`, `primary`, and `tunnel`") was wrong
+   about `tunnel`.
+2. *"host cluster should default to the auth method defined in the
+   module"* — `PrimaryClusterProvider` and its hardcoded
+   `TokenRequest`/`/proxy`-minting mechanism are removed entirely, but
+   `access.method: primary`/`AccessMethodPrimary` itself stays, now as a
+   pure identifying marker (see below for why removing the value too would
+   have silently broken something real). Live-verified: `hyve cluster auth
+   local` no longer 409s at `handleAuthContext`'s Method-set check, reaches
+   the same client-side auth-context path as any other default-auth
+   cluster, and correctly fails with "failed to resolve driver module" (not
+   a 409, not a panic) since `local` has no real driver assigned yet — the
+   expected, documented state until an admin gives it one (see
+   `docs/HYVE-AGENT-MIGRATION-GUIDE.md`'s "Host cluster access" section).
+
+**Why `primary` the marker survived when `primary` the mechanism didn't:**
+an audit before writing any code (following this section's own original
+"don't remove code this milestone hasn't confirmed is dead" instruction)
+found `cmd/migrate_resolve.go`'s `resolveCurrentHostKubeconfigPath` — `hyve
+migrate cluster`'s host-resolution — depends on `access.method: primary` as
+a structural convention to find "the one ClusterDefinition that represents
+this install's own host cluster," completely independent of
+`PrimaryClusterProvider`'s minting behavior. Removing the value along with
+the mechanism would have silently broken `hyve migrate cluster` with no
+warning. `resolveCurrentHostKubeconfigPath` was rewritten to resolve a
+kubeconfig via the same client-side auth-context flow `cmd/cluster/auth.go`
+uses (new `resolveViaAuthContext` helper) instead of the old
+`GET /api/kubeconfig` call, since that endpoint no longer serves `primary`
+at all.
+
+**Files actually removed:** `internal/apis/hyve/v1alpha1/accessmethod_types.go`;
+`internal/api/accessmethods.go`, `internal/api/accessmethod_mint.go` (+
+their `_test.go` files); `internal/k8sjob/push.go` (its only caller was the
+deleted mint handler); `deploy/helm/hyve/templates/api-internal-service.yaml`
+(the relay-only internal Service); `deploy/helm/hyve/crds/hyve.io_accessmethods.yaml`;
+the `hyve-host-admin` ServiceAccount+ClusterRoleBinding in
+`api-access-roles.yaml`; `cmd/cluster/auth_access_method.go` (+ its
+`_test.go`); the web console's `AccessMethodsPage.tsx`,
+`AccessMethodDetailPage.tsx`, `web/src/lib/api/accessMethods.ts`, and the
+"Access methods" nav entry in `AppShell.tsx`.
+
+**Files substantially edited:** `internal/api/access.go` (`PrimaryClusterProvider`
+and `ServiceAccountRefConfig` types deleted outright — audited first and
+confirmed the whole type's only real caller was the primary/host-cluster
+case, so unlike the original plan's caution, nothing needed to survive
+piecemeal); `internal/apis/hyve/v1alpha1/clusterdefinition_types.go`
+(`AccessMethodRef`/`AccessMethodClusterID` fields removed from `AccessSpec`;
+`AccessMethodPrimary`'s doc comment rewritten to describe the marker-only
+semantics; `AccessMethodTunnel`/`TunnelSpec`/`TunnelProviderRancher`/
+`TunnelProviderTeleport`'s `Deprecated:` notices from milestone 8 reverted,
+since tunnel isn't being removed after all); `internal/types/types.go`
+(same field removal; `AccessMethod` kept, its doc comment rewritten);
+`internal/reconcile/manager.go`'s `ReconcileOne` (the `access.method:
+primary` → skip-driver-reconciliation special case deleted — a
+primary-marked cluster is validated/reconciled exactly like any other now);
+`internal/api/server.go` (`PrimaryProvider`/`RelayBaseURL`/`MintTimeout`/
+`mintPending` fields, `RelayRoutes()`, `contextKeyServiceAccountRef`/
+`ServiceAccountRefFromContext` all removed — confirmed via grep the
+service-account-ref context value had exactly one reader, the deleted
+`PrimaryClusterProvider`); `internal/api/kubeconfig_handler.go` (the
+`AccessMethodPrimary` dispatch case removed from `handleKubeconfig`'s
+switch — a primary-marked cluster now falls through to the same 409 every
+other default-auth cluster gets); `internal/api/auth_context.go`
+(`handleAuthContext`'s Method-set rejection gained a carve-out: `Method ==
+AccessMethodPrimary` is treated as default/client-side-compatible, not
+rejected); `cmd/api/run.go` (relay listener goroutine, `--relay-*`/
+`--host-service-account` flags, `PrimaryClusterProvider`/
+`ServiceAccountRefConfig` construction all removed; in-cluster CA reading
+and `/proxy` construction kept — `/proxy` stays generic, reusable
+infrastructure any driver module's `auth.yaml` can route through, not
+wired to any one mechanism); `internal/crdconv/clusterdefinition.go` +
+`totypes_reverse.go` (drop the `AccessMethodRef`/`AccessMethodClusterID`
+field conversions both directions); `cmd/cluster/auth.go` (the
+`--set KEY=VALUE`/`credentialParams` flag and the `AccessMethod`-dispatch
+branch in `authClusterAPI` removed — nothing else used `credentialParams`);
+`cmd/shared/apiclient.go` (`AccessMethodDTO`/`GetAccessMethod`/
+`MintAccessMethodKubeconfig`(`Response`) removed; `ClusterDTO`'s
+`AccessMethodRef`/`AccessMethodClusterID` fields removed, `AccessMethod`
+itself kept); `deploy/helm/hyve/templates/api-rbac.yaml` (the `accessmethods`
+resource rule removed; `jobs`/`serviceaccounts/token` verbs narrowed back
+to what's actually still used — `create`/`delete` on `jobs` and `create` on
+`serviceaccounts/token` were solely for the deleted mint machinery);
+`deploy/helm/hyve/values.yaml` + `api-deployment.yaml` + `api-service.yaml`
++ `api-ingress.yaml` (relay/host-service-account values, args, and doc
+comments removed); doc-comment-only fixes in
+`hyveaccessbinding_types.go`, `agentpki/ca.go`, `kubeconfig/merge.go`,
+`internal/api/agent_proxy.go`, `internal/api/proxy.go`,
+`internal/apis/hyve/v1alpha1/template_types.go` (all stale mentions of the
+removed types).
+
+**Deliberately NOT removed:** `HyveAccessBinding.Spec.ServiceAccountRef`
+(the field, its two writers in `cmd/api/create_user.go`/
+`internal/api/accounts.go`, and the `hyve-access-admin`/
+`hyve-access-readonly` ServiceAccount+RoleBinding scaffolding) — nothing
+reads it back via the deleted `ServiceAccountRefFromContext` anymore, but
+it's a plausible role→ServiceAccount convention independent of
+`PrimaryClusterProvider`'s fate, wasn't named in this milestone's file
+list, and removing it would have been a broader, unrequested change. Only
+`hyve-host-admin` (purpose-built for `PrimaryClusterProvider`'s
+`HostServiceAccountRef`, with no purpose independent of it) was removed.
+
+**Tests:** deleted the access-method-specific test files/cases outright
+(`internal/api/access_test.go`'s `PrimaryClusterProvider` block,
+`cmd/cluster/auth_access_method_test.go` in full); rewrote
+`TestHandleKubeconfig_DispatchesToPrimaryProvider` →
+`TestHandleKubeconfig_PrimaryMarkerIsNotServedHere` and
+`TestHandleAuthContext_RejectsPrimaryCluster` →
+`TestHandleAuthContext_AllowsPrimaryCluster`, both asserting the new,
+inverted behavior rather than just deleting the coverage. No stray
+`AccessMethodRef` sample-data fixtures found elsewhere in the suite (the
+compiler would have caught any, since the field no longer exists on either
+struct).
+
+**Manual verification:** `go build ./... && go vet ./... && gofmt -l .`
+clean; full `go test ./...` clean; `cd web && npx tsc -b` clean; `helm
+lint`/`helm template` clean on the pruned chart; a real redeploy to
+`k3d-hyve-local` via `scripts/install-local.sh`; confirmed live that
+`local` (the pre-existing `primary`-marked `ClusterDefinition`, with
+`spec.driver: {}` left over from before this milestone) now produces a
+real, continuous `"no driver specified"` reconcile error instead of being
+silently skipped — this is the expected cost of the new design, not a
+bug, and is documented in `docs/HYVE-AGENT-MIGRATION-GUIDE.md`'s "Host
+cluster access" section as a required follow-up (give `local` a real
+driver module) rather than something this milestone silently papered
+over; confirmed live via a throwaway superadmin test account that `hyve
+cluster auth local` reaches the client-side auth-context path (not a 409)
+and fails for the expected reason; confirmed `GET /healthz` and the web
+console's Access Methods nav entry/pages are gone.
 
 ## Cross-cutting
 

@@ -26,5 +26,6 @@ func RenderClusterDefinitionSpec(tpl TemplateSpec, region string, overrides map[
 		Params:    params,
 		Workflows: tpl.Workflows,
 		Resources: tpl.Resources,
+		Access:    tpl.Access,
 	}
 }

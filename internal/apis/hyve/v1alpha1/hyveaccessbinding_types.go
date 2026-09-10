@@ -48,12 +48,16 @@ type HyveAccessBindingSubject struct {
 	Value string `json:"value"`
 }
 
-// ServiceAccountRef names the in-cluster ServiceAccount that
-// PrimaryClusterProvider's TokenRequest call mints a token against for a
-// caller matching this binding — see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
-// Phase 6.5. The two default roles (admin/read-only) point at hyve's own
+// ServiceAccountRef names the in-cluster ServiceAccount a role→ServiceAccount
+// convention associates with this binding — written by both
+// cmd/api/create_user.go and internal/api/accounts.go's own account
+// creation. The two default roles (admin/read-only) point at hyve's own
 // static hyve-access-admin/hyve-access-readonly ServiceAccounts; a custom
-// role points at an operator-defined one instead.
+// role points at an operator-defined one instead. Nothing in this package
+// reads it back today (see docs/HYVE-AGENT-IMPLEMENTATION-PLAN.md's
+// milestone 9 for the mechanism that used to — PrimaryClusterProvider's
+// TokenRequest call, removed) — kept as a still-plausible role→ServiceAccount
+// convention independent of that mechanism's fate, not dead weight from it.
 type ServiceAccountRef struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`

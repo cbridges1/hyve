@@ -23,10 +23,8 @@ func FromTypesClusterDefinitionSpec(def *types.ClusterDefinition) hyvev1alpha1.C
 		ExpiresAt: def.Spec.ExpiresAt,
 		DependsOn: def.Spec.DependsOn,
 		Access: hyvev1alpha1.AccessSpec{
-			AccessMethodRef:       def.Spec.AccessMethodRef,
-			AccessMethodClusterID: def.Spec.AccessMethodClusterID,
-			Method:                def.Spec.AccessMethod,
-			Agent:                 FromTypesAgentSpec(def.Spec.Agent),
+			Method: def.Spec.AccessMethod,
+			Agent:  FromTypesAgentSpec(def.Spec.Agent),
 		},
 	}
 }

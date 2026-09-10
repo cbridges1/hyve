@@ -21,12 +21,55 @@ type AgentConnectionKey struct {
 
 // AgentConnection is one live agent's SSH connection, held in
 // Server.AgentRegistry for as long as it stays connected. Milestone 5's
-// proxy handler opens new channels against Conn per proxied request; this
-// milestone never does.
+// proxy handler (agent_proxy.go) opens new channels against Conn per
+// proxied request, and reads ServiceAccountToken (via Heartbeat) for the
+// bearer token it needs to actually authenticate that request to the
+// target cluster's own apiserver.
 type AgentConnection struct {
 	Conn        ssh.Conn
-	Version     string
 	ConnectedAt time.Time
+
+	// mu guards version/serviceAccountToken below — both are written by
+	// drainAgentRequests's own goroutine (agent_listener.go, once per
+	// heartbeat) and, since milestone 5, read concurrently by
+	// agent_proxy.go on every proxied request from a different goroutine
+	// entirely. Version was previously read/written with no
+	// synchronization at all (harmless in practice before milestone 5,
+	// since nothing read it from a different goroutine than the one
+	// disconnect-time read in writeAgentStatus) — fixed here alongside
+	// adding ServiceAccountToken rather than leaving one field safe and
+	// the other not.
+	mu                  sync.RWMutex
+	version             string
+	serviceAccountToken string
+}
+
+// SetHeartbeat records this connection's latest self-reported version and
+// current ServiceAccount token — called once per heartbeat received (see
+// drainAgentRequests).
+func (c *AgentConnection) SetHeartbeat(version, serviceAccountToken string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.version = version
+	c.serviceAccountToken = serviceAccountToken
+}
+
+// Version returns the most recently heartbeat-reported version, "" if
+// none has arrived yet.
+func (c *AgentConnection) Version() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.version
+}
+
+// ServiceAccountToken returns the most recently heartbeat-reported
+// token, "" if none has arrived yet — agent_proxy.go treats an empty
+// value as "this agent hasn't reported credentials yet", not as an
+// invalid/expired token to try anyway.
+func (c *AgentConnection) ServiceAccountToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.serviceAccountToken
 }
 
 // AgentRegistry is the in-memory, (namespace, clusterName)-keyed map of

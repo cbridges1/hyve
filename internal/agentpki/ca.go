@@ -36,8 +36,8 @@ const caSecretDataKey = "ca.key"
 
 // CA is hyve's own internal SSH certificate authority. Loaded once at
 // API/controller startup (mirrors how the API pod already reads its own
-// in-cluster CA once at startup for PrimaryClusterProvider) and held for
-// the process's lifetime — never regenerated automatically, since that
+// in-cluster CA once at startup for /proxy — see cmd/api/run.go) and held
+// for the process's lifetime — never regenerated automatically, since that
 // would invalidate every already-issued certificate out from under
 // whatever's still using it.
 type CA struct {

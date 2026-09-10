@@ -91,16 +91,27 @@ func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
 }
 
 // handleAuthContext only serves clusters using the default client-side auth
-// method (spec.access.method unset) — a cluster that's opted into the
-// AccessMethodModuleAuth override, AccessMethodTunnel, or AccessMethodPrimary
-// (the API's own host cluster — no driver module at all, always
-// server-minted via TokenRequest, see PrimaryClusterProvider) is
-// server-minted via GET /api/kubeconfig instead, and returning driver
-// secrets here for those would just be a second, weaker-guaranteed way to
-// reach the same access (no authorization check baked in, unlike the
-// override path's module-side check — see moduleEnvForClusterDefinition).
-// The generic access.method != "" rejection below already covers all three
-// non-default cases uniformly — no special-casing needed per method.
+// method (spec.access.method unset or AccessMethodPrimary, AND
+// spec.access.agent.proxy not set — milestone 5's own agent-proxy path is
+// checked here too, alongside Method, even though it's a separate field:
+// Agent/Proxy is deliberately orthogonal to Method, meaning a real
+// agent+proxy cluster typically leaves Method unset entirely, and without
+// this check it would incorrectly look exactly like an ordinary
+// client-side-auth cluster here, sending a caller down the wrong path —
+// running the driver module's own auth.yaml locally instead of ever
+// reaching GET /api/kubeconfig's agent-proxy dispatch at all).
+// AccessMethodPrimary is carved out of the generic Method-set rejection
+// below because it no longer means "server-minted, no driver module" (see
+// its own doc comment) — a primary-marked cluster has a real driver
+// module and is meant to go through this exact client-side path like any
+// other default-auth cluster; Method is only set on it as an identifying
+// marker for `hyve migrate cluster`, not a dispatch instruction. A
+// cluster that's opted into the AccessMethodModuleAuth override or
+// AccessMethodTunnel is still server-minted via GET /api/kubeconfig
+// instead, and returning driver secrets here for those would just be a
+// second, weaker-guaranteed way to reach the same access (no
+// authorization check baked in, unlike the override path's module-side
+// check — see moduleEnvForClusterDefinition).
 func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
@@ -114,8 +125,12 @@ func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get cluster")
 		return
 	}
-	if cd.Spec.Access.Method != "" {
+	if cd.Spec.Access.Method != "" && cd.Spec.Access.Method != hyvev1alpha1.AccessMethodPrimary {
 		writeError(w, http.StatusConflict, fmt.Sprintf("cluster %q uses access.method %q, not client-side auth — fetch its kubeconfig via GET /api/kubeconfig instead", name, cd.Spec.Access.Method))
+		return
+	}
+	if cd.Spec.Access.Agent != nil && cd.Spec.Access.Agent.Proxy {
+		writeError(w, http.StatusConflict, fmt.Sprintf("cluster %q has spec.access.agent.proxy enabled, not client-side auth — fetch its kubeconfig via GET /api/kubeconfig instead", name))
 		return
 	}
 

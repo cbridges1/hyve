@@ -9,7 +9,6 @@ import { useWhoami } from '../lib/useWhoami'
 import { Logo } from './Logo'
 import { ThemeToggle } from './ThemeToggle'
 import {
-  AccessMethodsIcon,
   AccountsIcon,
   ChevronDownIcon,
   ClustersIcon,
@@ -40,7 +39,6 @@ const navGroups: { label: string; items: { to: string; label: string; Icon: type
   {
     label: 'Configuration',
     items: [
-      { to: '/access-methods', label: 'Access methods', Icon: AccessMethodsIcon },
       { to: '/resources', label: 'Resources', Icon: ResourcesIcon },
       { to: '/modules', label: 'Modules', Icon: ModulesIcon },
       { to: '/secrets', label: 'Secrets', Icon: SecretsIcon },
