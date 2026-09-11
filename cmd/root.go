@@ -74,11 +74,12 @@ func init() {
 	rootCmd.AddCommand(rescmd.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
 
-	// Ops-only — runs inside Helm-deployed pods, not an interactive
-	// end-user surface. Hidden from `hyve --help`'s own command list
-	// (Cmd.Hidden, set in cmd/clusterconfig/cmd.go) but still fully
-	// invocable by name — Helm's own Deployment args call it directly
-	// (`hyve cluster-config controller run` / `... api run`), which works
-	// identically whether or not cobra lists it in --help.
+	// 'controller'/'api' run are ops-only (Helm's own Deployment args call
+	// them directly — `hyve cluster-config controller run` / `... api
+	// run`), but 'api' also nests the local-user management commands
+	// (create-user, ...) a real operator runs interactively when
+	// bootstrapping a cluster-mode install, so the whole tree is visible
+	// in `hyve --help` rather than Cmd.Hidden — see cmd/clusterconfig's
+	// own doc comment.
 	rootCmd.AddCommand(clusterconfig.Cmd)
 }

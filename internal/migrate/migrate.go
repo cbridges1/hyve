@@ -32,15 +32,32 @@ import (
 )
 
 // BuildClient constructs a controller-runtime client.Client against an
-// external kubeconfig path — the same clientcmd.BuildConfigFromFlags
-// pattern internal/secretsfrom.Resolve already uses for a remote cluster's
-// kubeconfig, wrapped with the hyve.io scheme CRDStateProvider needs (plus
-// corev1, already on scheme.Scheme, for credential Secrets). Registering
-// hyvev1alpha1 onto the shared client-go scheme.Scheme mirrors
-// cmd/controller/run.go's own one-line registration exactly — safe to call
-// more than once per process (AddToScheme is idempotent).
+// external kubeconfig path, wrapped with the hyve.io scheme
+// CRDStateProvider needs (plus corev1, already on scheme.Scheme, for
+// credential Secrets). Registering hyvev1alpha1 onto the shared client-go
+// scheme.Scheme mirrors cmd/controller/run.go's own one-line registration
+// exactly — safe to call more than once per process (AddToScheme is
+// idempotent).
+//
+// An empty kubeconfigPath resolves the same way a bare kubectl invocation
+// does ($KUBECONFIG, else ~/.kube/config) via
+// clientcmd.NewDefaultClientConfigLoadingRules — deliberately NOT
+// clientcmd.BuildConfigFromFlags("", kubeconfigPath), which looks like it
+// should do the same thing but doesn't: with both its arguments empty it
+// tries in-cluster config first (never applicable here — every caller of
+// BuildClient is a CLI command run by an operator, not something running
+// inside a pod), and its post-in-cluster-failure fallback constructs a
+// bare &ClientConfigLoadingRules{ExplicitPath: ""} with no search
+// Precedence list at all — silently ignoring $KUBECONFIG entirely rather
+// than falling through to it. Confirmed live: a valid $KUBECONFIG pointing
+// at a real cluster still produced "no configuration has been provided"
+// through the old BuildConfigFromFlags call.
 func BuildClient(kubeconfigPath string) (client.Client, error) {
-	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfigPath != "" {
+		loadingRules.ExplicitPath = kubeconfigPath
+	}
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("build client config from %s: %w", kubeconfigPath, err)
 	}
