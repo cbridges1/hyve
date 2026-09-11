@@ -26,17 +26,25 @@ import (
 // (dropping columns is an awkward SQLite migration for zero benefit) but
 // nothing in this package reads or writes them — only api_url is reused.
 type Repository struct {
-	ID        int       `json:"id"`
-	Name      string    `json:"name"`
-	RepoURL   string    `json:"repo_url"`
-	LocalPath string    `json:"local_path"`
-	APIURL    string    `json:"api_url,omitempty"`
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	RepoURL   string `json:"repo_url"`
+	LocalPath string `json:"local_path"`
+	APIURL    string `json:"api_url,omitempty"`
+	// APICACert is a PEM-encoded CA certificate to trust in addition to
+	// the system trust store when talking to APIURL — see
+	// database.ensureRepositoryCredentialColumns' own doc comment. Empty
+	// means "use the system trust store as-is," correct for the common
+	// case of a publicly-trusted certificate. Set via 'hyve env create
+	// --ca-cert'/'hyve env login --ca-cert', read by cmd/shared's HTTP
+	// client construction.
+	APICACert string    `json:"api_ca_cert,omitempty"`
 	IsCurrent bool      `json:"is_current"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, created_at, updated_at`
+const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, api_ca_cert, created_at, updated_at`
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -47,13 +55,14 @@ type scanner interface {
 func scanRepository(s scanner) (*Repository, error) {
 	repo := &Repository{}
 	var createdAt, updatedAt string
-	var apiURL sql.NullString
+	var apiURL, apiCACert sql.NullString
 
 	if err := s.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath, &repo.IsCurrent,
-		&apiURL, &createdAt, &updatedAt); err != nil {
+		&apiURL, &apiCACert, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	repo.APIURL = apiURL.String
+	repo.APICACert = apiCACert.String
 
 	var err error
 	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
@@ -248,6 +257,52 @@ func (m *Manager) ListRepositories() ([]*Repository, error) {
 	}
 
 	return repositories, nil
+}
+
+// SetAPICACert stores caCertPEM (PEM-encoded, or "" to clear) as the named
+// repository's trusted CA for its api_url — see Repository.APICACert's own
+// doc comment. Separate from AddRepository/UpdateRepository (which every
+// existing caller already invokes without this) rather than folded into
+// either, matching SetSecret/UnsetSecret's own precedent for a narrow,
+// single-field mutator.
+func (m *Manager) SetAPICACert(name, caCertPEM string) error {
+	result, err := m.db.Conn().Exec(`UPDATE repositories SET api_ca_cert = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?`,
+		nullableString(caCertPEM), name)
+	if err != nil {
+		return fmt.Errorf("failed to set api_ca_cert: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("repository '%s' not found", name)
+	}
+	return nil
+}
+
+// GetRepositoryByAPIURL returns the repository registered against apiURL
+// (exact match — callers should already have trimmed a trailing slash the
+// same way AddRepository/'hyve env login' do), or an error if none is
+// registered yet. Used to resolve a per-environment trusted CA (see
+// Repository.APICACert) from just a URL, when no environment name is
+// available at the call site (cmd/shared's session-refresh/logout
+// requests, which only carry session.Session.APIURL).
+func (m *Manager) GetRepositoryByAPIURL(apiURL string) (*Repository, error) {
+	selectSQL := `
+	SELECT ` + repositoryColumns + `
+	FROM repositories
+	WHERE api_url = ?
+	`
+
+	repo, err := scanRepository(m.db.Conn().QueryRow(selectSQL, apiURL))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("no environment registered for api_url %q", apiURL)
+		}
+		return nil, fmt.Errorf("failed to get repository: %w", err)
+	}
+	return repo, nil
 }
 
 // GetRepositoryByName returns a repository by name

@@ -123,6 +123,7 @@ func (d *DB) initialize() error {
 			local_path TEXT NOT NULL,
 			is_current BOOLEAN DEFAULT FALSE,
 			api_url TEXT,
+			api_ca_cert TEXT,
 			session_token TEXT,
 			session_expires_at TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -205,10 +206,17 @@ func (d *DB) initialize() error {
 	return nil
 }
 
-// ensureRepositoryCredentialColumns adds any of api_url/session_token/
-// session_expires_at missing from an existing repositories table — see the
-// call site in newDB for why this can't just live in the CREATE TABLE
-// statement alone.
+// ensureRepositoryCredentialColumns adds any of api_url/api_ca_cert/
+// session_token/session_expires_at missing from an existing repositories
+// table — see the call site in newDB for why this can't just live in the
+// CREATE TABLE statement alone. api_ca_cert holds a PEM-encoded CA
+// certificate to trust in addition to the system trust store when talking
+// to this environment's api_url, for an install whose TLS certificate is
+// signed by a CA that isn't publicly trusted (a self-signed CA for a bare
+// IP/nip.io address with no real domain — same situation
+// internal/reconcile.Reconciler.AgentCACertPEM exists for on the
+// hyve-agent side; this is the CLI's own equivalent, set via 'hyve env
+// create --ca-cert'/'hyve env login --ca-cert').
 func (d *DB) ensureRepositoryCredentialColumns() error {
 	rows, err := d.db.Query(`PRAGMA table_info(repositories)`)
 	if err != nil {
@@ -228,7 +236,7 @@ func (d *DB) ensureRepositoryCredentialColumns() error {
 	}
 	rows.Close()
 
-	for _, col := range []string{"api_url", "session_token", "session_expires_at"} {
+	for _, col := range []string{"api_url", "api_ca_cert", "session_token", "session_expires_at"} {
 		if existing[col] {
 			continue
 		}

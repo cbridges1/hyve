@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,10 +15,11 @@ import (
 )
 
 var (
-	loginAPIURL   string
-	loginUsername string
-	loginPassword string
-	loginOrg      string
+	loginAPIURL     string
+	loginUsername   string
+	loginPassword   string
+	loginOrg        string
+	loginCACertPath string
 )
 
 var loginCmd = &cobra.Command{
@@ -54,6 +56,16 @@ SessionTTL) — a short-lived access token cached from it is silently
 refreshed as needed, so routine use never requires logging in again until
 the underlying session itself expires or 'hyve env logout' revokes it.
 
+--ca-cert names a PEM-encoded CA certificate to trust in addition to the
+system trust store, for an API whose TLS certificate isn't publicly
+trusted (a self-signed CA for a bare IP/nip.io address with no real
+domain). Persisted onto the registered environment (new or existing) that
+matches --api-url once login succeeds, so later commands against this
+same environment (hyve cluster auth, hyve env whoami, ...) trust it too
+without passing --ca-cert again — omit it on a later login against an
+already-registered environment and its previously-stored CA (if any) is
+reused automatically.
+
 If a cluster-mode command seems to be talking to the wrong server even
 after 'hyve env use' switched you to a local/different environment,
 check 'hyve env whoami' first — a still-active session here takes
@@ -87,6 +99,7 @@ func init() {
 	loginCmd.Flags().StringVar(&loginUsername, "username", "", "Username (omit to be prompted)")
 	loginCmd.Flags().StringVar(&loginPassword, "password", "", "Password (scripting only — omit to be prompted without echo)")
 	loginCmd.Flags().StringVar(&loginOrg, "org", "", "Tenant to log into (omit for the control-plane/superadmin tier) — resolved to a namespace client-side, see cmd/shared.ResolveOrgToNamespace")
+	loginCmd.Flags().StringVar(&loginCACertPath, "ca-cert", "", "Path to a PEM-encoded CA certificate to trust in addition to the system trust store (default: reuse whatever CA, if any, is already stored for this environment)")
 
 	Cmd.AddCommand(loginCmd)
 	Cmd.AddCommand(logoutCmd)
@@ -120,7 +133,19 @@ func runLogin() {
 	namespace := shared.ResolveOrgToNamespace(loginOrg)
 
 	apiURL := strings.TrimRight(apiURLFlag, "/")
-	sess, err := shared.PerformLogin(apiURL, username, password, namespace)
+
+	caCertPEM := ""
+	if loginCACertPath != "" {
+		data, err := os.ReadFile(loginCACertPath)
+		if err != nil {
+			log.Fatalf("Failed to read --ca-cert %s: %v", loginCACertPath, err)
+		}
+		caCertPEM = string(data)
+	} else {
+		caCertPEM = existingCACertForAPIURL(apiURL)
+	}
+
+	sess, err := shared.PerformLogin(apiURL, username, password, namespace, caCertPEM)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -130,7 +155,27 @@ func runLogin() {
 
 	fmt.Printf("✅ Logged in as %s against %s (session expires %s)\n", username, apiURL, sess.SessionExpiresAt)
 
-	ensureClusterEnvironmentRegistered(apiURL)
+	ensureClusterEnvironmentRegistered(apiURL, caCertPEM)
+}
+
+// existingCACertForAPIURL looks up whatever CA cert (if any) is already
+// stored for an environment registered against apiURL — lets a later
+// `hyve env login` (no --ca-cert given) against an already-registered
+// self-signed-CA environment keep working without repeating the flag
+// every time. Empty (not fatal) if no such environment exists yet or it
+// has no CA stored — this is best-effort discovery, not a requirement.
+func existingCACertForAPIURL(apiURL string) string {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		return ""
+	}
+	defer repoMgr.Close()
+
+	repo, err := repoMgr.GetRepositoryByAPIURL(apiURL)
+	if err != nil {
+		return ""
+	}
+	return repo.APICACert
 }
 
 func runLogout() {
@@ -173,13 +218,15 @@ func currentEnvironmentAPIURL() string {
 // ensureClusterEnvironmentRegistered makes sure apiURL shows up in 'hyve
 // env list' after a successful login, registering one automatically if no
 // existing environment already has it. This stores no credential — only
-// the URL, same as 'hyve env create --api-url' — so it doesn't reintroduce
-// the old bug where login and environment selection were the same row:
-// the actual session stays exactly where session.Save just put it,
-// entirely independent of this registry entry. Best-effort: a failure here
-// only means the new environment doesn't show up in 'hyve env list' yet,
-// not that login itself failed, so it only warns, never log.Fatal.
-func ensureClusterEnvironmentRegistered(apiURL string) {
+// the URL (and, if non-empty, caCertPEM — see Repository.APICACert's own
+// doc comment, not a credential either, just connection trust config),
+// same as 'hyve env create --api-url'/'--ca-cert' — so it doesn't
+// reintroduce the old bug where login and environment selection were the
+// same row: the actual session stays exactly where session.Save just put
+// it, entirely independent of this registry entry. Best-effort: a failure
+// here only means the new environment doesn't show up in 'hyve env list'
+// yet, not that login itself failed, so it only warns, never log.Fatal.
+func ensureClusterEnvironmentRegistered(apiURL, caCertPEM string) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Printf("⚠️  Logged in, but couldn't register '%s' as an environment: %v", apiURL, err)
@@ -194,7 +241,12 @@ func ensureClusterEnvironmentRegistered(apiURL string) {
 	}
 	for _, e := range envs {
 		if e.APIURL == apiURL {
-			return // already registered under some name — nothing to do
+			if caCertPEM != "" && caCertPEM != e.APICACert {
+				if err := repoMgr.SetAPICACert(e.Name, caCertPEM); err != nil {
+					log.Printf("⚠️  Logged in, but couldn't update the stored CA cert for '%s': %v", e.Name, err)
+				}
+			}
+			return // already registered under some name — nothing else to do
 		}
 	}
 
@@ -204,6 +256,11 @@ func ensureClusterEnvironmentRegistered(apiURL string) {
 	if _, err := repoMgr.AddRepository(name, "", "", apiURL); err != nil {
 		log.Printf("⚠️  Logged in, but couldn't register '%s' as an environment: %v", apiURL, err)
 		return
+	}
+	if caCertPEM != "" {
+		if err := repoMgr.SetAPICACert(name, caCertPEM); err != nil {
+			log.Printf("⚠️  Registered '%s' but couldn't store its CA cert: %v", name, err)
+		}
 	}
 	fmt.Printf("📁 Registered '%s' as a new environment (api: %s)\n", name, apiURL)
 

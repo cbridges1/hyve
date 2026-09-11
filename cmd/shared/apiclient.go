@@ -2,6 +2,8 @@ package shared
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +45,63 @@ type APIClient struct {
 // guarantee AccessToken is current.
 func NewAPIClient(sess *session.Session) *APIClient {
 	return &APIClient{BaseURL: strings.TrimRight(sess.APIURL, "/"), Token: sess.AccessToken}
+}
+
+// httpClientForAPIURL returns http.DefaultClient for the common case — a
+// publicly-trusted certificate needs no help from this process — or, if
+// apiURL has an environment registered against it (internal/repository)
+// with a stored APICACert, a client that also trusts that CA. Every
+// http.DefaultClient.Do call site in this package and cmd/shared/session.go
+// goes through this (or PerformLogin's own equivalent, which has no
+// registered environment to look up yet) rather than calling
+// http.DefaultClient directly, so a self-signed-CA install (a bare
+// IP/nip.io address with no real domain — the same situation
+// internal/reconcile.Reconciler.AgentCACertPEM exists for on the
+// hyve-agent side) works from an operator's own machine the same way it
+// already does for hyve-agent itself. Best-effort: a lookup failure (no
+// repository package manager, no matching environment, no stored CA) is
+// not an error here — it just means the default trust store is used,
+// correct for the common case and for any call happening before an
+// environment is even registered.
+func httpClientForAPIURL(apiURL string) *http.Client {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		return http.DefaultClient
+	}
+	defer repoMgr.Close()
+
+	repo, err := repoMgr.GetRepositoryByAPIURL(strings.TrimRight(apiURL, "/"))
+	if err != nil || repo.APICACert == "" {
+		return http.DefaultClient
+	}
+
+	client, err := httpClientTrustingCA(repo.APICACert)
+	if err != nil {
+		log.Printf("Warning: stored CA cert for %s is invalid (%v) — using the default trust store", apiURL, err)
+		return http.DefaultClient
+	}
+	return client
+}
+
+// httpClientTrustingCA returns a client whose RootCAs pool is the system
+// pool (falling back to an empty pool if the system pool can't be loaded)
+// plus caCertPEM appended, so a self-signed CA is trusted in addition to,
+// not instead of, whatever the system already trusts. Mirrors
+// internal/agent.bootstrapHTTPClient exactly — same problem, same fix,
+// different process.
+func httpClientTrustingCA(caCertPEM string) (*http.Client, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("no valid PEM certificate found in the configured CA cert")
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+	}, nil
 }
 
 // UseClusterMode reports whether the current command should talk to the API
@@ -530,7 +589,7 @@ func (c *APIClient) GetAuthContext(clusterName string) (*AuthContextDTO, error) 
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientForAPIURL(c.BaseURL).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("reach %s: %w", c.BaseURL, err)
 	}
@@ -571,7 +630,7 @@ func (c *APIClient) GetKubeconfig(clusterName string) ([]byte, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientForAPIURL(c.BaseURL).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("reach %s: %w", c.BaseURL, err)
 	}
@@ -659,7 +718,7 @@ func (c *APIClient) do(method, path string, body []byte, out interface{}) error 
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientForAPIURL(c.BaseURL).Do(req)
 	if err != nil {
 		return fmt.Errorf("reach %s: %w", c.BaseURL, err)
 	}

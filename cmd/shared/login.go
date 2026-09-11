@@ -28,14 +28,35 @@ import (
 // function itself only ever deals in "namespace", never "org", per
 // HYVE-MULTI-TENANCY-PLAN.md's explicit design intent that the API (and
 // everything below it) never learns the concept of "org" at all.
-func PerformLogin(apiURL, username, password, namespace string) (*session.Session, error) {
+//
+// caCertPEM, if non-empty, is trusted in addition to the system trust
+// store for this one call — passed explicitly rather than resolved via
+// httpClientForAPIURL(apiURL) because no environment may be registered
+// against apiURL yet at login time (that's cmd/env/login.go's own
+// ensureClusterEnvironmentRegistered, which runs after this succeeds); see
+// cmd/env/login.go's own --ca-cert flag for where a caller gets this.
+func PerformLogin(apiURL, username, password, namespace, caCertPEM string) (*session.Session, error) {
 	body, err := json.Marshal(map[string]string{"username": username, "password": password, "namespace": namespace})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
 
 	trimmedURL := strings.TrimRight(apiURL, "/")
-	resp, err := http.Post(trimmedURL+"/auth/login", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, trimmedURL+"/auth/login", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.DefaultClient
+	if caCertPEM != "" {
+		var caErr error
+		client, caErr = httpClientTrustingCA(caCertPEM)
+		if caErr != nil {
+			return nil, fmt.Errorf("invalid --ca-cert: %w", caErr)
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reach %s: %w", trimmedURL, err)
 	}

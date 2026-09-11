@@ -78,7 +78,7 @@ func RevokeSession(sess *session.Session) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientForAPIURL(sess.APIURL).Do(req)
 	if err != nil {
 		return fmt.Errorf("reach %s: %w", sess.APIURL, err)
 	}
@@ -109,7 +109,7 @@ func refreshAccessToken(sess *session.Session) (accessToken, expiresAt string, e
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientForAPIURL(sess.APIURL).Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("reach %s: %w", sess.APIURL, err)
 	}

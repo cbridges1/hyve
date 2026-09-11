@@ -34,8 +34,9 @@ import (
 )
 
 var (
-	createPath   string
-	createAPIURL string
+	createPath       string
+	createAPIURL     string
+	createCACertPath string
 )
 
 var createCmd = &cobra.Command{
@@ -58,6 +59,14 @@ access still requires running 'hyve env login' separately (with no --api-url of
 its own, it defaults to the current environment's --api-url); login is a
 single, global credential independent of which environment is active (see
 'hyve env login's own --help).
+
+--ca-cert (only meaningful alongside --api-url) names a PEM-encoded CA
+certificate to trust in addition to the system trust store when talking
+to --api-url — for an install whose TLS certificate isn't publicly
+trusted (a self-signed CA for a bare IP/nip.io address with no real
+domain). Not a credential either, same as --api-url itself; can also be
+set later via 'hyve env login --ca-cert', which persists it onto whichever
+environment matches the URL you log into.
 
 Registration only — this never clones, pulls, commits, or pushes anything.
 If you want the directory kept in sync with a git remote, that's entirely
@@ -140,6 +149,7 @@ with shell substitution:
 func init() {
 	createCmd.Flags().StringVar(&createPath, "path", "", "Local directory to register (default: current working directory, unless --api-url is given alone)")
 	createCmd.Flags().StringVar(&createAPIURL, "api-url", "", "Cluster API URL to pre-register for 'hyve env login' to target later (stores no credential)")
+	createCmd.Flags().StringVar(&createCACertPath, "ca-cert", "", "Path to a PEM-encoded CA certificate to trust in addition to the system trust store for --api-url (not a credential)")
 
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(currentCmd)
@@ -190,6 +200,15 @@ func runCreate(name string) {
 
 	if _, err := repoMgr.AddRepository(name, "", abs, createAPIURL); err != nil {
 		log.Fatalf("Failed to register '%s': %v", name, err)
+	}
+	if createCACertPath != "" {
+		data, err := os.ReadFile(createCACertPath)
+		if err != nil {
+			log.Fatalf("Failed to read --ca-cert %s: %v", createCACertPath, err)
+		}
+		if err := repoMgr.SetAPICACert(name, string(data)); err != nil {
+			log.Fatalf("Failed to store --ca-cert for '%s': %v", name, err)
+		}
 	}
 	if err := repoMgr.SetCurrentRepository(name); err != nil {
 		log.Fatalf("Failed to activate '%s': %v", name, err)

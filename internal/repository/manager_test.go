@@ -384,3 +384,46 @@ func TestGetCurrentRepository_ReturnsAPIURL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://hyve-api.example.com", current.APIURL)
 }
+
+func TestSetAPICACert_RoundTrips(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("prod", "", "", "https://hyve-api.example.com")
+	require.NoError(t, err)
+
+	repo, err := mgr.GetRepositoryByName("prod")
+	require.NoError(t, err)
+	assert.Equal(t, "", repo.APICACert, "no CA cert stored yet")
+
+	const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+	require.NoError(t, mgr.SetAPICACert("prod", pem))
+
+	repo, err = mgr.GetRepositoryByName("prod")
+	require.NoError(t, err)
+	assert.Equal(t, pem, repo.APICACert)
+
+	require.NoError(t, mgr.SetAPICACert("prod", ""))
+	repo, err = mgr.GetRepositoryByName("prod")
+	require.NoError(t, err)
+	assert.Equal(t, "", repo.APICACert, "clearing must round-trip to empty, not the literal string")
+}
+
+func TestSetAPICACert_UnknownRepository(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+	err := mgr.SetAPICACert("nonexistent", "pem")
+	assert.Error(t, err)
+}
+
+func TestGetRepositoryByAPIURL(t *testing.T) {
+	mgr := NewManagerWithDB(setupTestDB(t))
+
+	_, err := mgr.AddRepository("prod", "", "", "https://hyve-api.example.com")
+	require.NoError(t, err)
+
+	repo, err := mgr.GetRepositoryByAPIURL("https://hyve-api.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "prod", repo.Name)
+
+	_, err = mgr.GetRepositoryByAPIURL("https://not-registered.example.com")
+	assert.Error(t, err)
+}
