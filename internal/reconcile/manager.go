@@ -106,6 +106,18 @@ type Reconciler struct {
 	// AgentControlPlaneURL.
 	AgentTunnelAddress string
 
+	// AgentCACertPEM is the PEM-encoded CA that signed whatever terminates
+	// TLS in front of AgentControlPlaneURL, when it isn't publicly trusted
+	// (a self-signed CA for a bare IP/nip.io address, the same situation
+	// internal/api's own AgentProvider.PublicCA exists for) — embedded as
+	// a literal ConfigMap on each remote cluster hyve-agent installs onto
+	// by renderAgentCoreManifest, then read by hyve-agent's own
+	// --ca-cert flag (see cmd/agent/main.go) for its POST /agent/bootstrap
+	// call. Left empty, hyve-agent falls back to its process's default
+	// system trust store — correct for a publicly-trusted certificate,
+	// and the reason this is opt-in rather than required.
+	AgentCACertPEM string
+
 	// HostKubeconfigIssuer mints a kubeconfig for hyve's own host cluster
 	// — see reconcileHostCluster's own doc comment. Left nil by the CLI,
 	// which disables spec.resources reconciliation for a no-driver

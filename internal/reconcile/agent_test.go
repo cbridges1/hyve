@@ -120,7 +120,7 @@ func TestReconcileAgent_UpToDate_SkipsReapply(t *testing.T) {
 		Metadata: types.ClusterMetadata{Name: "acme-worker"},
 		Spec: types.ClusterSpec{
 			Agent:        types.AgentSpec{Enabled: true},
-			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress), AppliedAt: "2026-01-01T00:00:00Z"},
+			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, ""), AppliedAt: "2026-01-01T00:00:00Z"},
 		},
 	}
 
@@ -217,14 +217,14 @@ func TestReconcileAgent_ProxyTurnedOff_RemovesProxyBindingsOnly(t *testing.T) {
 		Metadata: types.ClusterMetadata{Name: "acme-worker"},
 		Spec: types.ClusterSpec{
 			Agent:        types.AgentSpec{Enabled: true, Proxy: false},
-			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(true, image, r.AgentControlPlaneURL, r.AgentTunnelAddress), AppliedAt: "2026-01-01T00:00:00Z"},
+			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(true, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, ""), AppliedAt: "2026-01-01T00:00:00Z"},
 		},
 	}
 
 	err := r.reconcileAgent(context.Background(), &cluster, nil)
 	require.NoError(t, err)
 	require.NotNil(t, cluster.Spec.AppliedAgent)
-	assert.Equal(t, agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress), cluster.Spec.AppliedAgent.ConfigHash)
+	assert.Equal(t, agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, ""), cluster.Spec.AppliedAgent.ConfigHash)
 
 	log := readInvocations(t, invocations)
 	assert.Contains(t, log, agentProxyAdminBindingName)
@@ -260,10 +260,11 @@ func TestReconcileAgent_SkipsWhenNotConfigured(t *testing.T) {
 }
 
 func TestAgentConfigHash_ChangesWithProxyOrImageOrEndpoints(t *testing.T) {
-	base := agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092")
-	assert.NotEqual(t, base, agentConfigHash(true, "image:v1", "http://cp.example.com", "cp.example.com:8092"), "proxy toggling must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v2", "http://cp.example.com", "cp.example.com:8092"), "image change must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp2.example.com", "cp.example.com:8092"), "control-plane URL change must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp2.example.com:8092"), "tunnel address change must change the hash")
-	assert.Equal(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092"), "identical inputs must hash identically")
+	base := agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "")
+	assert.NotEqual(t, base, agentConfigHash(true, "image:v1", "http://cp.example.com", "cp.example.com:8092", ""), "proxy toggling must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v2", "http://cp.example.com", "cp.example.com:8092", ""), "image change must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp2.example.com", "cp.example.com:8092", ""), "control-plane URL change must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp2.example.com:8092", ""), "tunnel address change must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "-----BEGIN CERTIFICATE-----..."), "CA cert change must change the hash")
+	assert.Equal(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", ""), "identical inputs must hash identically")
 }

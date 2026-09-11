@@ -36,8 +36,18 @@ func main() {
 		namespace       = flag.String("namespace", envOr("HYVE_NAMESPACE", ""), "this agent's own namespace, for persisting its bootstrapped identity (env HYVE_NAMESPACE)")
 		clusterName     = flag.String("cluster-name", envOr("HYVE_CLUSTER_NAME", ""), "this ClusterDefinition's own name, matching what the control plane signed a certificate for (env HYVE_CLUSTER_NAME)")
 		bootstrapToken  = flag.String("bootstrap-token", envOr("HYVE_BOOTSTRAP_TOKEN", ""), "single-use bootstrap token — only needed until identity is first persisted (env HYVE_BOOTSTRAP_TOKEN)")
+		caCertPath      = flag.String("ca-cert", envOr("HYVE_CA_CERT", ""), "path to a PEM-encoded CA certificate to trust in addition to the system trust store, for a --control-plane-url whose TLS certificate isn't publicly trusted (env HYVE_CA_CERT)")
 	)
 	flag.Parse()
+
+	var caCertPEM string
+	if *caCertPath != "" {
+		data, err := os.ReadFile(*caCertPath)
+		if err != nil {
+			log.Fatalf("hyve-agent: failed to read --ca-cert %s: %v", *caCertPath, err)
+		}
+		caCertPEM = string(data)
+	}
 
 	if *controlPlaneURL == "" || *tunnelAddress == "" || *namespace == "" {
 		fmt.Fprintln(os.Stderr, "hyve-agent: --control-plane-url, --tunnel-address, and --namespace are all required")
@@ -62,7 +72,7 @@ func main() {
 		log.Fatalf("hyve-agent: failed to build Kubernetes clientset: %v", err)
 	}
 
-	identity, err := agent.LoadOrBootstrapIdentity(ctx, clientset, *namespace, *controlPlaneURL, *bootstrapToken)
+	identity, err := agent.LoadOrBootstrapIdentity(ctx, clientset, *namespace, *controlPlaneURL, *bootstrapToken, caCertPEM)
 	if err != nil {
 		log.Fatalf("hyve-agent: failed to load or bootstrap identity: %v", err)
 	}

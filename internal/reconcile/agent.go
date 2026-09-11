@@ -49,6 +49,7 @@ const (
 	agentDeploymentName           = "hyve-agent"
 	agentProxyAdminBindingName    = "hyve-agent-proxy-admin"
 	agentProxyReadOnlyBindingName = "hyve-agent-proxy-readonly"
+	agentCACertConfigMapName      = "hyve-agent-ca"
 )
 
 // defaultAgentImage is hyve-agent's image when HyveConfig.spec.
@@ -98,16 +99,18 @@ func agentProxyObjects() []types.AppliedObject {
 // agentConfigHash detects drift in exactly the inputs that change what
 // gets applied — see types.AppliedAgent.ConfigHash's own doc comment for
 // why Enabled and the bootstrap token are deliberately excluded.
-// controlPlaneURL/tunnelAddress are included despite being controller-wide
-// (not per-cluster) settings: they're embedded directly in every agent's
-// rendered Deployment env, so a real change to either (e.g. hyve-api
-// migrating to a new address) must re-apply every existing installation,
-// not just new ones — confirmed live: leaving them out of the hash meant
-// an already-applied agent kept its stale, now-wrong HYVE_CONTROL_PLANE_URL
+// controlPlaneURL/tunnelAddress/caCertPEM are included despite being
+// controller-wide (not per-cluster) settings: they're embedded directly in
+// every agent's rendered Deployment (env vars, or — for caCertPEM — a
+// mounted ConfigMap), so a real change to any of them (e.g. hyve-api
+// migrating to a new address, or rotating its CA) must re-apply every
+// existing installation, not just new ones — confirmed live for
+// controlPlaneURL/tunnelAddress: leaving them out of the hash meant an
+// already-applied agent kept its stale, now-wrong HYVE_CONTROL_PLANE_URL
 // forever, since the "up to date, skip" check never noticed anything
-// changed.
-func agentConfigHash(proxy bool, image, controlPlaneURL, tunnelAddress string) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("proxy=%v;image=%s;controlPlaneURL=%s;tunnelAddress=%s", proxy, image, controlPlaneURL, tunnelAddress)))
+// changed. caCertPEM follows the identical reasoning.
+func agentConfigHash(proxy bool, image, controlPlaneURL, tunnelAddress, caCertPEM string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("proxy=%v;image=%s;controlPlaneURL=%s;tunnelAddress=%s;caCertPEM=%s", proxy, image, controlPlaneURL, tunnelAddress, caCertPEM)))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -146,7 +149,7 @@ func (r *Reconciler) reconcileAgent(ctx context.Context, cluster *types.ClusterD
 	}
 
 	image := r.resolveAgentImage()
-	configHash := agentConfigHash(spec.Proxy, image, r.AgentControlPlaneURL, r.AgentTunnelAddress)
+	configHash := agentConfigHash(spec.Proxy, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, r.AgentCACertPEM)
 	if cluster.Spec.AppliedAgent != nil && cluster.Spec.AppliedAgent.ConfigHash == configHash {
 		log.Printf("[%s] hyve-agent: up to date", name)
 		return nil
@@ -176,6 +179,7 @@ func (r *Reconciler) reconcileAgent(ctx context.Context, cluster *types.ClusterD
 		TunnelAddress:   r.AgentTunnelAddress,
 		ClusterName:     name,
 		BootstrapToken:  token,
+		CACertPEM:       r.AgentCACertPEM,
 	})
 	if err != nil {
 		return fmt.Errorf("render hyve-agent manifest: %w", err)
@@ -231,6 +235,13 @@ type agentManifestParams struct {
 	TunnelAddress   string
 	ClusterName     string
 	BootstrapToken  string
+
+	// CACertPEM, when non-empty, is embedded as a literal ConfigMap
+	// (agentCACertConfigMapName) on the target cluster and mounted into
+	// the agent container — see Reconciler.AgentCACertPEM's own doc
+	// comment for why the PEM content itself must travel with this
+	// manifest rather than a same-cluster ConfigMap reference.
+	CACertPEM string
 }
 
 // yq YAML-quotes s as a double-quoted scalar — every templated value below
@@ -311,6 +322,16 @@ roleRef:
   kind: Role
   name: ` + agentSecretRoleName + `
   apiGroup: rbac.authorization.k8s.io
+{{- if .CACertPEM}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ` + agentCACertConfigMapName + `
+  namespace: ` + agentNamespace + `
+data:
+  ca.crt: {{yq .CACertPEM}}
+{{- end}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -342,6 +363,18 @@ spec:
               value: {{yq .ClusterName}}
             - name: HYVE_BOOTSTRAP_TOKEN
               value: {{yq .BootstrapToken}}
+{{- if .CACertPEM}}
+            - name: HYVE_CA_CERT
+              value: /etc/hyve-agent/ca/ca.crt
+          volumeMounts:
+            - name: ca-cert
+              mountPath: /etc/hyve-agent/ca
+              readOnly: true
+      volumes:
+        - name: ca-cert
+          configMap:
+            name: ` + agentCACertConfigMapName + `
+{{- end}}
 `))
 
 func renderAgentCoreManifest(p agentManifestParams) ([]byte, error) {

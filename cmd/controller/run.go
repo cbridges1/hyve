@@ -43,6 +43,7 @@ var (
 	maxConcurrentReconciles int
 	agentControlPlaneURL    string
 	agentTunnelAddress      string
+	agentCAPath             string
 	hostServiceAccount      string
 	hostCAPath              string
 )
@@ -82,6 +83,7 @@ func init() {
 	runCmd.Flags().IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4, "Maximum ClusterDefinitions reconciled at once — without this, a single stuck cluster (e.g. a workflow step wedged on ImagePullBackOff) blocks every other cluster's reconcile in the namespace")
 	runCmd.Flags().StringVar(&agentControlPlaneURL, "agent-control-plane-url", "", "hyve-api's own externally-reachable base URL, for a newly-installed hyve-agent's POST /agent/bootstrap (e.g. https://hyve-api.example.com) — leave unset to disable hyve-agent installation entirely (spec.access.agent.enabled becomes a no-op, logged as a warning)")
 	runCmd.Flags().StringVar(&agentTunnelAddress, "agent-tunnel-address", "", "hyve-api's own externally-reachable SSH tunnel listener address, host:port (e.g. hyve-api.example.com:8092) — same disable-if-unset behavior as --agent-control-plane-url")
+	runCmd.Flags().StringVar(&agentCAPath, "agent-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --agent-control-plane-url — embedded as a literal ConfigMap on every remote cluster hyve-agent installs onto (a cross-cluster volume mount isn't possible, unlike --public-ca-path's same-cluster case) so hyve-agent's own POST /agent/bootstrap call trusts it. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/reconcile/agent.go")
 	runCmd.Flags().StringVar(&hostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) this controller mints a token against to reconcile spec.resources for a primary-marked ClusterDefinition with no real spec.driver — see internal/reconcile/host.go and deploy/helm/hyve/templates/api-access-roles.yaml. Must match hyve-api's own --host-service-account")
 	runCmd.Flags().StringVar(&hostCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used for the host-cluster kubeconfig's certificate-authority-data")
 
@@ -188,6 +190,17 @@ func runController() {
 	hyveReconciler.AgentTunnelAddress = agentTunnelAddress
 	if agentControlPlaneURL == "" || agentTunnelAddress == "" {
 		log.Printf("ℹ️  --agent-control-plane-url/--agent-tunnel-address not set — spec.access.agent.enabled will be a no-op on every cluster")
+	}
+
+	// Optional — see --agent-ca-path's own doc comment. Empty path means
+	// "not configured," not an error: most real deployments use a
+	// publicly-trusted certificate and have no CA of their own to embed.
+	if agentCAPath != "" {
+		agentCA, caErr := os.ReadFile(agentCAPath)
+		if caErr != nil {
+			log.Fatalf("❌ Failed to read --agent-ca-path %s: %v", agentCAPath, caErr)
+		}
+		hyveReconciler.AgentCACertPEM = string(agentCA)
 	}
 
 	// Host-cluster spec.resources reconciliation (a primary-marked

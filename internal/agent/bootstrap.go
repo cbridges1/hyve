@@ -10,6 +10,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -65,8 +67,17 @@ func (id *Identity) AuthMethod() (ssh.AuthMethod, error) {
 // certificate against controlPlaneURL's own POST /agent/bootstrap (see
 // internal/api/agent_bootstrap.go), and persists the result so a pod
 // restart doesn't need to re-bootstrap (and, since the token is single-
-// use, couldn't anyway).
-func LoadOrBootstrapIdentity(ctx context.Context, clientset kubernetes.Interface, namespace, controlPlaneURL, bootstrapToken string) (*Identity, error) {
+// use, couldn't anyway). caCertPEM, if non-empty, is trusted in addition
+// to (not instead of) the process's default system trust store, for a
+// controlPlaneURL whose TLS certificate is signed by a CA the system
+// store doesn't already know about (a self-signed CA for a bare IP/nip.io
+// address with no real domain — see cmd/agent/main.go's own --ca-cert
+// flag and Reconciler.AgentCACertPEM's doc comment for where this comes
+// from). Only consulted on the persisted-identity-missing path — an
+// already-bootstrapped agent never calls requestCertificate again, so a
+// CA rotation doesn't retroactively affect it (matches the rest of this
+// package's "bootstrap once, persist forever" stance).
+func LoadOrBootstrapIdentity(ctx context.Context, clientset kubernetes.Interface, namespace, controlPlaneURL, bootstrapToken, caCertPEM string) (*Identity, error) {
 	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, certSecretName, metav1.GetOptions{})
 	if err == nil {
 		return identityFromSecretData(secret.Data)
@@ -92,7 +103,7 @@ func LoadOrBootstrapIdentity(ctx context.Context, clientset kubernetes.Interface
 		return nil, fmt.Errorf("wrap agent public key: %w", err)
 	}
 
-	certLine, caKeyLine, err := requestCertificate(ctx, controlPlaneURL, bootstrapToken, ssh.MarshalAuthorizedKey(sshPub))
+	certLine, caKeyLine, err := requestCertificate(ctx, controlPlaneURL, bootstrapToken, ssh.MarshalAuthorizedKey(sshPub), caCertPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +181,7 @@ func identityFromSecretData(data map[string][]byte) (*Identity, error) {
 // own doc comment in internal/api/agent_bootstrap.go for why folding it
 // into this same response doesn't need a second, separate distribution
 // mechanism.
-func requestCertificate(ctx context.Context, controlPlaneURL, bootstrapToken string, publicKeyAuthorized []byte) (certificate, caPublicKey []byte, err error) {
+func requestCertificate(ctx context.Context, controlPlaneURL, bootstrapToken string, publicKeyAuthorized []byte, caCertPEM string) (certificate, caPublicKey []byte, err error) {
 	body, err := json.Marshal(map[string]string{
 		"token":     bootstrapToken,
 		"publicKey": string(publicKeyAuthorized),
@@ -185,7 +196,11 @@ func requestCertificate(ctx context.Context, controlPlaneURL, bootstrapToken str
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	client, err := bootstrapHTTPClient(caCertPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("call %s/agent/bootstrap: %w", controlPlaneURL, err)
 	}
@@ -206,6 +221,33 @@ func requestCertificate(ctx context.Context, controlPlaneURL, bootstrapToken str
 		return nil, nil, fmt.Errorf("parse bootstrap response: %w", err)
 	}
 	return []byte(parsed.Certificate), []byte(parsed.CAPublicKey), nil
+}
+
+// bootstrapHTTPClient returns http.DefaultClient unchanged when caCertPEM
+// is empty (the common case — a publicly-trusted certificate needs no
+// help from this process). Otherwise it returns a client whose RootCAs
+// pool is the system pool (falling back to an empty pool if the system
+// pool can't be loaded, e.g. a minimal container image with no CA bundle
+// installed at all — not a reason to refuse trusting the one CA this
+// process was explicitly configured with) plus caCertPEM appended, so a
+// self-signed CA controlPlaneURL's certificate was signed with is trusted
+// in addition to, not instead of, whatever the system already trusts.
+func bootstrapHTTPClient(caCertPEM string) (*http.Client, error) {
+	if caCertPEM == "" {
+		return http.DefaultClient, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("no valid PEM certificate found in the configured CA cert")
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+	}, nil
 }
 
 func marshalPrivateKeyPEM(priv ed25519.PrivateKey) ([]byte, error) {

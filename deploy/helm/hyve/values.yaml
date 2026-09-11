@@ -54,6 +54,29 @@ controller:
     # can't go through the same HTTP Ingress api.ingress.host uses).
     tunnelAddress: ""
 
+    # caBundle mirrors api.publicCABundle exactly, one layer over: if
+    # whatever terminates TLS in front of controlPlaneURL/tunnelAddress is
+    # signed by a CA not in the public trust store (a self-signed CA for a
+    # bare IP/nip.io address with no real domain, same situation
+    # api.publicCABundle exists for), every newly-installed hyve-agent's
+    # own POST /agent/bootstrap call fails TLS verification — confirmed
+    # live, this exact failure mode
+    # ("x509: certificate signed by unknown authority"), before this
+    # existed. Set to the same ConfigMap api.publicCABundle already
+    # names (its own certificate's CA) unless hyve-agent needs to trust a
+    # different one. Read by the controller at startup
+    # (--agent-ca-path, cmd/controller/run.go) and embedded as a literal
+    # ConfigMap on each remote cluster hyve-agent installs onto — a
+    # cross-cluster mount isn't possible, so the PEM content itself
+    # travels with the rendered agent manifest (internal/reconcile/agent.go)
+    # rather than a same-cluster volume reference the way api.publicCABundle
+    # uses. Leave unset for a publicly-trusted certificate (e.g. a real
+    # ACME/Let's Encrypt cert) — hyve-agent's default system trust store
+    # already covers that case with no configuration needed.
+    caBundle:
+      configMapName: ""
+      key: ca.crt
+
   resources:
     requests:
       cpu: 100m

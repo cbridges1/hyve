@@ -72,6 +72,9 @@ spec:
             {{- if .Values.controller.agent.tunnelAddress }}
             - --agent-tunnel-address={{ .Values.controller.agent.tunnelAddress }}
             {{- end }}
+            {{- if .Values.controller.agent.caBundle.configMapName }}
+            - --agent-ca-path=/etc/hyve/agent-ca/{{ .Values.controller.agent.caBundle.key }}
+            {{- end }}
             {{- if .Values.api.hostServiceAccount }}
             - --host-service-account={{ .Values.api.hostServiceAccount }}
             {{- end }}
@@ -88,6 +91,11 @@ spec:
           volumeMounts:
             - name: modules
               mountPath: /data
+            {{- if .Values.controller.agent.caBundle.configMapName }}
+            - name: agent-ca
+              mountPath: /etc/hyve/agent-ca
+              readOnly: true
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080
@@ -111,3 +119,8 @@ spec:
         - name: modules
           persistentVolumeClaim:
             claimName: hyve-controller-modules
+      {{- if .Values.controller.agent.caBundle.configMapName }}
+        - name: agent-ca
+          configMap:
+            name: {{ .Values.controller.agent.caBundle.configMapName }}
+      {{- end }}
