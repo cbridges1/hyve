@@ -13,6 +13,7 @@ import (
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/repository"
 	"github.com/cbridges1/hyve/internal/session"
 )
 
@@ -45,38 +46,63 @@ func NewAPIClient(sess *session.Session) *APIClient {
 }
 
 // UseClusterMode reports whether the current command should talk to the API
-// instead of local files: a usable session exists (see EnsureValidSession,
-// which silently refreshes an expired access token before this ever has to
-// decide anything). Session presence deliberately wins over any other
-// signal — no separate flag needed, and `hyve env logout` cleanly reverts to
-// local mode. Returns the session as well so callers don't need to reload
-// it.
+// instead of local files. The ACTIVE ENVIRONMENT decides this, not session
+// presence alone — changed after live confirmation that the original
+// "session presence always wins" rule was surprising in practice: `hyve env
+// use <local-only-environment>` had no effect on cluster-mode-aware
+// commands as long as an unrelated session was still active from earlier,
+// requiring an explicit `hyve env logout` to actually get local behavior
+// back, which defeated much of the point of `env use` existing at all.
 //
-// Never having logged in returns (nil, false) — local mode is correct
-// there, no different from before. Having logged in but ending up with
-// nothing usable (the session itself expired, or the server rejected a
-// refresh — e.g. revoked by `hyve env logout` elsewhere) is deliberately NOT
-// treated the same way: every caller of this function is a "which backend
-// do I talk to" dispatch point (cluster API vs. local clusters/*.yaml),
-// and for a cluster-mode environment, its local clusters/ directory is not
-// a second source of truth — it's frequently empty or stale, since the
-// real state lives in the cluster's CRDs. Silently falling through to the
-// local branch there would let a command like `hyve cluster delete`
-// operate on stale local files and run reconciliation directly against a
-// cloud provider from this machine, bypassing the controller entirely —
-// with no indication to the user that anything unusual happened. So this
-// hard-fails instead, forcing an explicit `hyve env login` before any command
-// proceeds down either branch. (`hyve env whoami`/`hyve env list`/`hyve env
-// current` do not call this — they read the session directly and report
-// expiry as information, not a fatal error, since they're the tools meant
-// for diagnosing exactly this situation.)
+//   - Active environment has no --api-url (a pure local directory): always
+//     local mode, full stop, regardless of whether some other session
+//     happens to still be active elsewhere. `hyve env use` alone is now
+//     enough to switch back to local — no `hyve env logout` required.
+//   - Active environment has an --api-url: cluster mode, provided the
+//     current session (see EnsureValidSession) is both valid and for that
+//     same --api-url. Switching back to a cluster environment whose
+//     session is still active resumes cluster mode automatically, with no
+//     re-login needed — switching environments never touches the session
+//     itself (session.Load/Save), only which environment is read here to
+//     decide whether to use it. Session storage and environment selection
+//     remain genuinely independent state (see internal/session's own doc
+//     comment for why that split exists); this function is just the one
+//     place that now gates cluster-mode dispatch on both together, rather
+//     than on the session alone.
+//
+// Every other case is a hard failure, not a silent fallback — preserving
+// this function's original reasoning: for a cluster-mode environment, its
+// local clusters/ directory is not a second source of truth (frequently
+// empty or stale, since the real state lives in the cluster's CRDs).
+// Silently falling through to the local branch would let a command like
+// `hyve cluster delete` operate on stale local files and run
+// reconciliation directly against a cloud provider from this machine,
+// bypassing the controller entirely, with no indication anything unusual
+// happened. (`hyve env whoami`/`hyve env list`/`hyve env current` do not
+// call this — they read the session/environment directly and report
+// mismatches as information, not a fatal error, since they're the tools
+// meant for diagnosing exactly this situation.)
 func UseClusterMode() (*session.Session, bool) {
-	sess, err := EnsureValidSession()
-	if sess == nil {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
 		return nil, false
 	}
-	if err != nil {
-		log.Fatalf("❌ %v — this is a cluster-mode environment (API: %s), not a local one. Refusing to silently fall back to local file operations, which could target stale or missing state instead of the live cluster.\n\nRun 'hyve env login --api-url %s' to re-authenticate.", err, sess.APIURL, sess.APIURL)
+	defer repoMgr.Close()
+
+	current, err := repoMgr.GetCurrentRepository()
+	if err != nil || current.APIURL == "" {
+		return nil, false
+	}
+
+	sess, sessErr := EnsureValidSession()
+	if sess == nil {
+		log.Fatalf("❌ Environment '%s' is a cluster environment (API: %s), but you're not logged in.\n\nRun 'hyve env login' to authenticate against it.", current.Name, current.APIURL)
+	}
+	if sess.APIURL != current.APIURL {
+		log.Fatalf("❌ Environment '%s' expects API %s, but your active session is for %s.\n\nRun 'hyve env login' to authenticate against '%s' (or 'hyve env use' whichever environment your active session actually belongs to).", current.Name, current.APIURL, sess.APIURL, current.Name)
+	}
+	if sessErr != nil {
+		log.Fatalf("❌ %v — this is a cluster-mode environment (API: %s), not a local one. Refusing to silently fall back to local file operations, which could target stale or missing state instead of the live cluster.\n\nRun 'hyve env login --api-url %s' to re-authenticate.", sessErr, sess.APIURL, sess.APIURL)
 	}
 	return sess, true
 }
