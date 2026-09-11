@@ -1,4 +1,4 @@
-package cmd
+package env
 
 import (
 	"encoding/json"
@@ -16,35 +16,36 @@ import (
 var whoamiCmd = &cobra.Command{
 	Use:   "whoami",
 	Short: "Show whether you're currently authenticated to a hyve API server, and as whom",
-	Long: `Reports the current cluster-mode session (see 'hyve login' — one global,
-machine-wide credential, independent of 'hyve env'), if any, and confirms it
-directly against the API server rather than trusting the local record
-alone — a session can be locally present but already expired or rejected
-server-side (e.g. after 'hyve logout' revoked it from elsewhere). Attempts
-a silent refresh first if the cached access token has expired but the
-underlying session hasn't — the same thing every other command does before
-deciding whether it's authenticated.
+	Long: `Reports the current cluster-mode session (see 'hyve env login' — one
+global, machine-wide credential that does NOT depend on which environment
+is current), if any, and confirms it directly against the API server
+rather than trusting the local record alone — a session can be locally
+present but already expired or rejected server-side (e.g. after
+'hyve env logout' revoked it from elsewhere). Attempts a silent refresh
+first if the cached access token has expired but the underlying session
+hasn't — the same thing every other command does before deciding whether
+it's authenticated.
 
 Exits non-zero when not authenticated, so it's scriptable:
-  hyve whoami >/dev/null || hyve login --api-url ...`,
+  hyve env whoami >/dev/null || hyve env login --api-url ...`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runWhoami()
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(whoamiCmd)
+	Cmd.AddCommand(whoamiCmd)
 }
 
 func runWhoami() {
 	sess, err := shared.EnsureValidSession()
 	if sess == nil && err == nil {
-		fmt.Println("Not logged in (run 'hyve login --api-url ...')")
+		fmt.Println("Not logged in (run 'hyve env login --api-url ...')")
 		os.Exit(1)
 	}
 	if err != nil {
 		if sess != nil {
-			fmt.Printf("Session expired (%v) — run 'hyve login --api-url %s'\n", err, sess.APIURL)
+			fmt.Printf("Session expired (%v) — run 'hyve env login --api-url %s'\n", err, sess.APIURL)
 		} else {
 			fmt.Printf("Failed to read local session: %v\n", err)
 		}
@@ -67,7 +68,7 @@ func runWhoami() {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Local session for %s was rejected by the server (%s) — run 'hyve login --api-url %s'\n", sess.APIURL, resp.Status, sess.APIURL)
+		fmt.Printf("Local session for %s was rejected by the server (%s) — run 'hyve env login --api-url %s'\n", sess.APIURL, resp.Status, sess.APIURL)
 		os.Exit(1)
 	}
 

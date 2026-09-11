@@ -67,7 +67,7 @@ func init() {
 func runMigrate(posPath string) {
 	sess, ok := shared.UseClusterMode()
 	if !ok {
-		log.Fatal("`hyve migrate` requires an active environment with cluster-mode credentials — run `hyve login` first")
+		log.Fatal("`hyve migrate` requires an active environment with cluster-mode credentials — run `hyve env login` first")
 	}
 	client := shared.NewAPIClient(sess)
 

@@ -21,7 +21,7 @@ import (
 // token (used on every /api/* request) and the longer-lived session token
 // (used to silently refresh it — see internal/api's HyveSession/
 // AccessTokenTTL/SessionTTL doc comments). Username is carried onto the
-// returned Session purely for display (e.g. `hyve whoami`'s local-only
+// returned Session purely for display (e.g. `hyve env whoami`'s local-only
 // summary before its own server round trip). namespace is the already-
 // resolved tenant to log into (empty for the control-plane/superadmin
 // namespace) — see ResolveOrgToNamespace for how --org gets here; this
@@ -104,7 +104,7 @@ func PromptSecret(label string) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// ResolveOrgToNamespace maps a `--org` value to the namespace `hyve login`
+// ResolveOrgToNamespace maps a `--org` value to the namespace `hyve env login`
 // actually sends. Today this is a trivial identity mapping — org name *is*
 // namespace name — deliberately kept as its own isolated function rather
 // than inlined at the call site: see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2"
@@ -117,7 +117,7 @@ func ResolveOrgToNamespace(org string) string {
 }
 
 // UniqueEnvironmentName returns base, or base-2, base-3, ... — whichever is
-// the first name not already registered. Shared by `hyve login`'s
+// the first name not already registered. Shared by `hyve env login`'s
 // auto-provisioning path and `hyve env create`'s name-omitted default.
 func UniqueEnvironmentName(repoMgr *repository.Manager, base string) string {
 	name := base

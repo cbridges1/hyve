@@ -14,7 +14,7 @@ import (
 // same dispatch: a valid local Session (see shared.UseClusterMode) means
 // cluster mode — talk to the API — otherwise fall through to today's
 // local-file behavior, unchanged. Session presence deliberately wins with
-// no separate flag; `hyve logout` cleanly reverts to local mode.
+// no separate flag; `hyve env logout` cleanly reverts to local mode.
 func showCluster(clusterName string) {
 	if sess, ok := shared.UseClusterMode(); ok {
 		showClusterAPI(shared.NewAPIClient(sess), clusterName)

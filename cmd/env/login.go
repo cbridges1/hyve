@@ -1,4 +1,4 @@
-package cmd
+package env
 
 import (
 	"fmt"
@@ -23,22 +23,27 @@ var (
 var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Authenticate against a hyve API server (cluster mode)",
-	Long: `Logs in against a hyve API server's local (username/password) auth. This is
-one global, machine-wide credential — like 'gh auth login' or 'docker
-login' — completely independent of whichever local directory 'hyve env' has
-selected: cluster-mode commands use this session regardless of the current
+	Long: `Logs in against a hyve API server's local (username/password) auth. Nested
+under 'hyve env' as the natural place to look for it, but the underlying
+credential is still one global, machine-wide session — like 'gh auth
+login' or 'docker login' — that does NOT depend on which environment is
+current: cluster-mode commands use this session regardless of the active
 environment, and a pure local/GitOps environment never needs it at all.
+Switching environments (hyve env use) never logs you out, and logging in
+never changes which environment is active except as described below —
+these two are still independent state, just reachable from the same
+command group now.
 
 --api-url defaults to the current environment's --api-url (see 'hyve env
 create --api-url') when omitted — registering a cluster environment ahead
-of time and logging into it later ('hyve env use that-cluster && hyve
+of time and logging into it later ('hyve env use that-cluster && hyve env
 login') are two separate, independently-timed steps; pass --api-url
 explicitly to log into a URL that isn't (or isn't yet) a registered
 environment at all.
 
 If --api-url doesn't match any already-registered environment, one is
 registered automatically (named from the URL's host, deduplicated on
-collision) — so a bare 'hyve login --api-url ...' is enough to both
+collision) — so a bare 'hyve env login --api-url ...' is enough to both
 authenticate and make that cluster visible in 'hyve env list' afterward,
 without a separate 'hyve env create' step. Only made the active
 environment if you had none registered yet; otherwise your existing
@@ -47,7 +52,18 @@ current environment (e.g. a local directory) is left alone.
 The session returned stays usable for a while (see the server's own
 SessionTTL) — a short-lived access token cached from it is silently
 refreshed as needed, so routine use never requires logging in again until
-the underlying session itself expires or 'hyve logout' revokes it.`,
+the underlying session itself expires or 'hyve env logout' revokes it.
+
+If a cluster-mode command seems to be talking to the wrong server even
+after 'hyve env use' switched you to a local/different environment,
+check 'hyve env whoami' first — a still-active session here takes
+precedence over the current environment for any cluster-mode-aware
+command (see cmd/shared.UseClusterMode), by design (this is what stops
+a revoked/expired session from silently falling back to whatever local
+files happen to sit in the current environment's own directory — see
+internal/session's own doc comment for the incident that motivated
+keeping these independent). 'hyve env logout' first if that's not what
+you want.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runLogin()
 	},
@@ -72,8 +88,8 @@ func init() {
 	loginCmd.Flags().StringVar(&loginPassword, "password", "", "Password (scripting only — omit to be prompted without echo)")
 	loginCmd.Flags().StringVar(&loginOrg, "org", "", "Tenant to log into (omit for the control-plane/superadmin tier) — resolved to a namespace client-side, see cmd/shared.ResolveOrgToNamespace")
 
-	rootCmd.AddCommand(loginCmd)
-	rootCmd.AddCommand(logoutCmd)
+	Cmd.AddCommand(loginCmd)
+	Cmd.AddCommand(logoutCmd)
 }
 
 func runLogin() {

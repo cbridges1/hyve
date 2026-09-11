@@ -30,7 +30,7 @@ func LoadSession() (*session.Session, error) {
 // error, it's "local mode is correct here." Returns (sess, err) when
 // something IS logged in but couldn't be made to work (the session itself
 // has expired, or the server rejected the refresh, e.g. because it was
-// revoked by `hyve logout` elsewhere) — callers decide whether that's
+// revoked by `hyve env logout` elsewhere) — callers decide whether that's
 // fatal: UseClusterMode treats it as fatal (see its own doc comment for
 // why silently falling back to local files is dangerous for a cluster-mode
 // environment); LoadEnvironmentSecrets treats it as safely ignorable,

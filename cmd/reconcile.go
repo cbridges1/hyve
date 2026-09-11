@@ -20,7 +20,7 @@ When --path is provided, the given local directory is used directly and all
 reconciliation runs locally, bypassing the cicd mode check in hyve.yaml. This is
 intended for use inside CI/CD pipelines that have already checked out the repository.
 
-Cluster mode (a valid 'hyve login' session exists) and no --path given: this
+Cluster mode (a valid 'hyve env login' session exists) and no --path given: this
 command is a no-op. There's no local checkout to reconcile against, and
 nothing to trigger — the deployed controller already watches every
 ClusterDefinition and reconciles it continuously via Kubernetes' own

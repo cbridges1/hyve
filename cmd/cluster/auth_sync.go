@@ -19,7 +19,7 @@ var authSyncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Remove stale local kubeconfig entries for clusters that no longer exist",
 	Long: "Diffs context names in ~/.kube/config against known clusters — fetched from " +
-		"the API in cluster mode (a 'hyve login' session is active), or from local " +
+		"the API in cluster mode (a 'hyve env login' session is active), or from local " +
 		"clusters/*.yaml files otherwise — and removes any context, plus its cluster " +
 		"and user entries, that no longer corresponds to a known cluster.",
 	Run: func(cmd *cobra.Command, args []string) {

@@ -42,7 +42,7 @@ func init() {
 func runApply() {
 	sess, ok := shared.UseClusterMode()
 	if !ok {
-		log.Fatal("`hyve apply` requires an active environment with cluster-mode credentials — run `hyve login` first")
+		log.Fatal("`hyve apply` requires an active environment with cluster-mode credentials — run `hyve env login` first")
 	}
 	client := shared.NewAPIClient(sess)
 

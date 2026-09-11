@@ -25,7 +25,7 @@ var logsCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		sess, ok := shared.UseClusterMode()
 		if !ok {
-			log.Fatal("`hyve cluster logs` requires cluster mode — run `hyve login` first. In local/CLI mode, a create/delete operation's output already streams straight to this terminal when `hyve reconcile` runs it.")
+			log.Fatal("`hyve cluster logs` requires cluster mode — run `hyve env login` first. In local/CLI mode, a create/delete operation's output already streams straight to this terminal when `hyve reconcile` runs it.")
 		}
 		showClusterLogsAPI(shared.NewAPIClient(sess), args[0])
 	},

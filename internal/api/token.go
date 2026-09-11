@@ -23,7 +23,7 @@ const AccessTokenTTL = 30 * time.Minute
 
 // SessionTTL is how long a HyveSession (created by POST /auth/login,
 // re-validated by every POST /auth/refresh) stays valid before a real
-// `hyve login` is required again. Long relative to AccessTokenTTL — this
+// `hyve env login` is required again. Long relative to AccessTokenTTL — this
 // is the credential that makes unattended/automated use practical without
 // storing a raw password: a cron job holds this instead, silently
 // refreshing its short-lived access token for up to SessionTTL without

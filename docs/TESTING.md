@@ -86,7 +86,7 @@ task install:local   # build from local source, install controller + API onto it
 port-forward needed. It's persistent, not self-cleaning: re-run it after
 every code change you want to verify live, and manually clean up any
 scratch clusters/environments/sessions/secrets you create during
-verification afterward (`kubectl delete`, `hyve env remove`, `hyve logout`,
+verification afterward (`kubectl delete`, `hyve env remove`, `hyve env logout`,
 etc.) — nothing in `install:local` itself does this for you.
 
 ### Manual live-verification pattern
@@ -95,7 +95,7 @@ The pattern used throughout this codebase's cluster-mode work (auth
 redesign, module Job dispatch, live secret injection, ...):
 
 1. `task install:local` after every change.
-2. Exercise the actual CLI commands against the real cluster (`hyve login`,
+2. Exercise the actual CLI commands against the real cluster (`hyve env login`,
    `hyve apply -f ...`, `hyve cluster create`, etc.) — not just unit tests —
    since controller-runtime RBAC, CRD schema, and Job-dispatch behavior only
    surface against a real API server.

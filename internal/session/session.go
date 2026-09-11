@@ -4,7 +4,7 @@
 // cluster-mode session used to be the same database row, conflated as one
 // concept; they're two unrelated things (most cluster-mode commands never
 // touch a local directory at all — see cmd/cluster/crud.go's API branch)
-// and are now stored, and selected, completely independently. `hyve login`
+// and are now stored, and selected, completely independently. `hyve env login`
 // authenticates once for the whole machine, the same way `gh auth login`/
 // `docker login`/`aws sso login` aren't scoped to whichever project
 // directory you happen to be in.
@@ -18,7 +18,7 @@ import (
 	"github.com/cbridges1/hyve/internal/database"
 )
 
-// Session is the CLI's locally-cached record of a `hyve login` — both
+// Session is the CLI's locally-cached record of a `hyve env login` — both
 // halves of what POST /auth/login (or /auth/refresh) returns. SessionID/
 // SessionSecret together are the long-lived, revocable credential
 // (internal/api's HyveSession object, identified by SessionID, verified
@@ -128,7 +128,7 @@ func Load() (*Session, error) {
 	return &sess, nil
 }
 
-// Clear removes the current session — called by `hyve logout`, after (or
+// Clear removes the current session — called by `hyve env logout`, after (or
 // regardless of) the server-side revocation call, so a local record never
 // outlives a failed revocation attempt and silently keeps "working" from
 // the CLI's own point of view.

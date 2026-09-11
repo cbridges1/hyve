@@ -22,11 +22,11 @@ var authMethodFlag string
 var authCmd = &cobra.Command{
 	Use:   "auth [cluster-name]",
 	Short: "Configure kubeconfig for a cluster",
-	Long: `Local mode (no 'hyve login' session active): runs the driver module's auth
+	Long: `Local mode (no 'hyve env login' session active): runs the driver module's auth
 operation directly against the target cloud/cluster and writes the result to
 your local kubeconfig, exactly as before.
 
-Cluster mode (a valid 'hyve login' session exists): by default, runs the
+Cluster mode (a valid 'hyve env login' session exists): by default, runs the
 same auth operation client-side too, but with no local module resolution
 required at all — GET /api/clusters/<name>/auth-context delivers the
 resolved auth operation file's content directly (resolved against the API's

@@ -19,10 +19,10 @@ import (
 var createCmd = &cobra.Command{
 	Use:   "create [cluster-name]",
 	Short: "Create a cluster from a template (local mode) or a file (cluster mode)",
-	Long: `Local mode (no 'hyve login' session active): creates from a template via
+	Long: `Local mode (no 'hyve env login' session active): creates from a template via
 --template, or from an already-fully-specified file via --file.
 
-Cluster mode (a valid 'hyve login' session exists): same choice — --template
+Cluster mode (a valid 'hyve env login' session exists): same choice — --template
 renders the named Template CR server-side (via the same rendering function
 local mode uses), or --file points at an already-fully-specified cluster
 definition (the same apiVersion/kind/metadata/spec YAML shape a local

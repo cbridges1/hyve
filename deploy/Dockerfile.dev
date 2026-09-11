@@ -13,12 +13,29 @@
 #
 # Build context is THIS hyve source repo:
 #   docker build -f deploy/Dockerfile.dev -t hyve:dev .
+#
+# One image now, not two: the web console (web/) is built here and its
+# output copied into internal/webui/dist/ *before* the Go build runs, so
+# go:embed bakes it directly into the hyve binary — hyve-api serves it
+# itself (internal/api/server.go's own Routes()), no separate nginx image/
+# Deployment/Service needed. internal/webui/dist/ ships a placeholder
+# committed to git so a plain `go build` (no Docker, no npm) still
+# compiles for local Go development — this stage's COPY overwrites it with
+# the real thing.
+FROM node:24-alpine AS ui-builder
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ .
+RUN npm run build
+
 FROM golang:1.26-alpine AS builder
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=ui-builder /src/web/dist/ internal/webui/dist/
 RUN CGO_ENABLED=0 go build -o /out/hyve .
 
 FROM alpine:3.20

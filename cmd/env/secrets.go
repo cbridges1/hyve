@@ -23,7 +23,7 @@ Local mode: stored in hyve.db attached to an environment — not tied to any
 repository/folder, and removed automatically when the environment itself is
 (see 'hyve env remove').
 
-Cluster mode (a valid 'hyve login' session exists): stored as a single
+Cluster mode (a valid 'hyve env login' session exists): stored as a single
 Kubernetes Secret in the hyve-api server's own namespace, shared by every
 caller logged into that server — --env/the environment name argument have
 no effect here, since cluster-mode secrets aren't scoped per local

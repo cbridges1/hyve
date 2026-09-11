@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Installs hyve's controller + API (+ optionally the web/ UI) onto whatever
-# cluster your current kubectl context points at — intended for the k3d
-# cluster scripts/create-local-cluster.sh creates (run that first), or any
-# other dev cluster sharing your local Docker image store, so no registry
-# push is needed. Builds deploy/Dockerfile.dev (from THIS repo's local
-# source, not a published release — see that file's header comment),
-# applies CRDs, and helm upgrade --installs the merged deploy/helm/hyve
-# chart (controller + API, and the UI unless HYVE_INSTALL_UI=false).
+# Installs hyve's controller + API onto whatever cluster your current
+# kubectl context points at — intended for the k3d cluster
+# scripts/create-local-cluster.sh creates (run that first), or any other
+# dev cluster sharing your local Docker image store, so no registry push
+# is needed. Builds deploy/Dockerfile.dev (from THIS repo's local source,
+# not a published release — see that file's header comment), applies
+# CRDs, and helm upgrade --installs the merged deploy/helm/hyve chart
+# (controller + API).
 #
-# The UI (deploy/Dockerfile.ui) is disabled by default at the chart level
-# (values.yaml's ui.enabled: false — a real install makes its own exposure
-# decision) but this local-dev script turns it on by default, since the
-# whole point of a local sandbox is a full one, and it costs nothing extra
-# (same Ingress host, split by path — see this script's own apply_ingress
-# below). Set HYVE_INSTALL_UI=false to skip building/deploying it.
+# There's no separate UI image/flag any more — the web console (web/) is
+# built as part of deploy/Dockerfile.dev itself and embedded directly into
+# the hyve binary (internal/webui, go:embed); hyve-api serves it at "/"
+# alongside everything else. One image, one Deployment, always included —
+# see internal/api/server.go's own Routes() doc comment for why a second
+# container never bought any real separation.
 #
-# Exposes hyve-api (and the UI, at "/") via an Ingress THIS SCRIPT applies
-# directly with kubectl (host: hyve-api.127.0.0.1.nip.io by default), not
-# NodePort — Docker Desktop's own built-in Kubernetes doesn't map any host
-# port beyond its fixed API-server one (confirmed live: NodePort and
-# LoadBalancer were both unreachable from the host on it), so this only
-# actually works against create-local-cluster.sh's k3d cluster, whose host
-# 80/443 are mapped to k3d's own load balancer -> Traefik (k3d's default
-# ingress controller) at cluster-creation time — the only point port
-# mappings can be set at all for a kind/k3d node.
+# Exposes hyve-api (API + UI, same origin) via an Ingress THIS SCRIPT
+# applies directly with kubectl (host: hyve-api.127.0.0.1.nip.io by
+# default), not NodePort — Docker Desktop's own built-in Kubernetes
+# doesn't map any host port beyond its fixed API-server one (confirmed
+# live: NodePort and LoadBalancer were both unreachable from the host on
+# it), so this only actually works against create-local-cluster.sh's k3d
+# cluster, whose host 80/443 are mapped to k3d's own load balancer ->
+# Traefik (k3d's default ingress controller) at cluster-creation time —
+# the only point port mappings can be set at all for a kind/k3d node.
 #
 # The Ingress is deliberately NOT part of deploy/helm/hyve any more (see
 # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md) — Traefik-specific, nip.io-hostname,
@@ -79,8 +79,6 @@ set -euo pipefail
 
 NAMESPACE="${1:-hyve-system}"
 IMAGE_TAG="hyve:dev"
-UI_IMAGE_TAG="hyve-ui:dev"
-INSTALL_UI="${HYVE_INSTALL_UI:-true}"
 # See api-rbac.yaml's own doc comment: false (default) keeps hyve-api's
 # ServiceAccount scoped to just NAMESPACE (Phase 1's one-install-per-tenant
 # model); true switches it to a ClusterRole so a single install can serve
@@ -95,13 +93,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { echo "── $*"; }
 
-# Applies this script's own Ingress objects directly with kubectl — see
-# this file's header comment for why these aren't in deploy/helm/hyve.
-# Mirrors exactly what the chart's now-removed api-ingress.yaml/
-# ui-ingress.yaml templates used to generate: one Ingress with the API's
-# full path list (or a single "/" catch-all when the UI is off) plus a
-# second Ingress owning "/" for hyve-ui when it's on. Idempotent — always
-# safe to re-apply.
+# Applies this script's own Ingress object directly with kubectl — see
+# this file's header comment for why it isn't in deploy/helm/hyve. One
+# Ingress, one Service (hyve-api) — the API's full path list plus a "/"
+# catch-all for the embedded UI, since both are the same origin now.
+# Idempotent — always safe to re-apply.
 apply_ingress() {
   local tls_block=""
   if [[ -n "$TLS_SECRET" ]]; then
@@ -111,8 +107,7 @@ apply_ingress() {
       secretName: $TLS_SECRET"
   fi
 
-  if [[ "$INSTALL_UI" == "true" ]]; then
-    kubectl apply -f - <<EOF >/dev/null
+  kubectl apply -f - <<EOF >/dev/null
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -127,39 +122,6 @@ spec:
 $(for p in /api /auth /healthz /docs /openapi.yaml /proxy /agent; do
   printf '          - path: %s\n            pathType: Prefix\n            backend:\n              service:\n                name: hyve-api\n                port:\n                  number: 80\n' "$p"
 done)
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: hyve-ui
-  namespace: $NAMESPACE
-spec:
-  ingressClassName: traefik${tls_block}
-  rules:
-    - host: $INGRESS_HOST
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: hyve-ui
-                port:
-                  number: 80
-EOF
-  else
-    kubectl apply -f - <<EOF >/dev/null
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: hyve-api
-  namespace: $NAMESPACE
-spec:
-  ingressClassName: traefik${tls_block}
-  rules:
-    - host: $INGRESS_HOST
-      http:
-        paths:
           - path: /
             pathType: Prefix
             backend:
@@ -168,8 +130,7 @@ spec:
                 port:
                   number: 80
 EOF
-    kubectl -n "$NAMESPACE" delete ingress hyve-ui --ignore-not-found >/dev/null
-  fi
+  kubectl -n "$NAMESPACE" delete ingress hyve-ui --ignore-not-found >/dev/null
 }
 
 # The image build/run platform here is independent of what the *cluster*
@@ -180,13 +141,8 @@ EOF
 # that env var being sane.
 DOCKER_PLATFORM="linux/$(docker version --format '{{.Server.Arch}}')"
 
-log "Building $IMAGE_TAG from local source (platform $DOCKER_PLATFORM)"
+log "Building $IMAGE_TAG from local source (platform $DOCKER_PLATFORM) — includes the web console (web/), built and embedded in the same image"
 docker build --platform "$DOCKER_PLATFORM" --load -f "$ROOT_DIR/deploy/Dockerfile.dev" -t "$IMAGE_TAG" "$ROOT_DIR"
-
-if [[ "$INSTALL_UI" == "true" ]]; then
-  log "Building $UI_IMAGE_TAG from local source (platform $DOCKER_PLATFORM)"
-  docker build --platform "$DOCKER_PLATFORM" --load -f "$ROOT_DIR/deploy/Dockerfile.ui" -t "$UI_IMAGE_TAG" "$ROOT_DIR"
-fi
 
 # k3d nodes run their own containerd, entirely separate from the host
 # Docker daemon's image store — unlike Docker Desktop's own built-in
@@ -202,10 +158,6 @@ if [[ "$CURRENT_CONTEXT" == k3d-* ]]; then
   K3D_CLUSTER="${CURRENT_CONTEXT#k3d-}"
   log "Importing $IMAGE_TAG into k3d cluster '$K3D_CLUSTER'"
   k3d image import "$IMAGE_TAG" -c "$K3D_CLUSTER"
-  if [[ "$INSTALL_UI" == "true" ]]; then
-    log "Importing $UI_IMAGE_TAG into k3d cluster '$K3D_CLUSTER'"
-    k3d image import "$UI_IMAGE_TAG" -c "$K3D_CLUSTER"
-  fi
 fi
 
 log "Ensuring namespace $NAMESPACE exists"
@@ -242,39 +194,19 @@ else
   PULL_POLICY="Always"
 fi
 
-# Always non-empty (unlike a conditionally-populated UI_SET_FLAGS=()) —
-# macOS's default bash (3.2, pre-4.4) treats "${arr[@]}" on a genuinely
-# empty array as an unbound variable under `set -u`, confirmed live.
-# Setting ui.enabled explicitly either way, rather than only in the true
-# branch and relying on the chart's own default for false, is also just
-# more correct: this script's own belief about UI state should never
-# silently depend on values.yaml's default staying what it is today.
-UI_SET_FLAGS=(--set "ui.enabled=$INSTALL_UI")
-if [[ "$INSTALL_UI" == "true" ]]; then
-  UI_SET_FLAGS+=(--set ui.image.repository=hyve-ui --set ui.image.tag=dev --set "ui.image.pullPolicy=$PULL_POLICY")
-fi
-
-COMPONENTS="controller + api"
-if [[ "$INSTALL_UI" == "true" ]]; then
-  COMPONENTS="$COMPONENTS + ui"
-fi
-log "Installing hyve ($COMPONENTS, image.pullPolicy=$PULL_POLICY, public-base-url=$PUBLIC_BASE_URL, multi-tenant=$MULTI_TENANT)"
+log "Installing hyve (controller + api, image.pullPolicy=$PULL_POLICY, public-base-url=$PUBLIC_BASE_URL, multi-tenant=$MULTI_TENANT)"
 helm upgrade --install hyve "$ROOT_DIR/deploy/helm/hyve" \
   --namespace "$NAMESPACE" \
   --set image.repository=hyve --set image.tag=dev --set image.pullPolicy="$PULL_POLICY" \
   --set namespace="$NAMESPACE" \
   --set api.publicBaseURL="$PUBLIC_BASE_URL" \
-  --set api.multiTenant.enabled="$MULTI_TENANT" \
-  "${UI_SET_FLAGS[@]}" >/dev/null
+  --set api.multiTenant.enabled="$MULTI_TENANT" >/dev/null
 
 log "Applying local-dev Ingress (host=$INGRESS_HOST, tls=${TLS_SECRET:-off})"
 apply_ingress
 
 log "Restarting Deployments so the freshly-built image(s) are actually used"
 DEPLOYMENTS=(deployment/hyve-controller deployment/hyve-api)
-if [[ "$INSTALL_UI" == "true" ]]; then
-  DEPLOYMENTS+=(deployment/hyve-ui)
-fi
 kubectl -n "$NAMESPACE" rollout restart "${DEPLOYMENTS[@]}"
 
 log "Waiting for rollout"
@@ -283,10 +215,7 @@ for d in "${DEPLOYMENTS[@]}"; do
 done
 
 echo ""
-echo "✅ Installed. API reachable directly at $PUBLIC_BASE_URL (via Ingress — no port-forward needed)."
-if [[ "$INSTALL_UI" == "true" ]]; then
-  echo "✅ UI reachable at the same address: $PUBLIC_BASE_URL"
-fi
+echo "✅ Installed. API + UI both reachable at $PUBLIC_BASE_URL (via Ingress — no port-forward needed)."
 echo ""
 echo "Next steps:"
 echo ""
@@ -294,7 +223,7 @@ echo "  1. Create a superadmin user:"
 echo "     (cd $ROOT_DIR && go run . cluster-config api create-user <username> --role superadmin --namespace $NAMESPACE) | kubectl apply -f -"
 echo ""
 echo "  2. Log in (no --org — a superadmin has no tenant namespace):"
-echo "     hyve login --api-url $PUBLIC_BASE_URL"
+echo "     hyve env login --api-url $PUBLIC_BASE_URL"
 echo ""
 echo "  3. Self-register this cluster as the host, then try the host-cluster kubeconfig path"
 echo "     (see docs/HYVE-AGENT-MIGRATION-GUIDE.md's \"Host cluster access\" section — no"

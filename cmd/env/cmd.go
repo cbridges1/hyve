@@ -4,7 +4,7 @@
 // may be set on the same entry or separately: a local directory (--path)
 // hyve reads/writes cluster definitions from (see
 // internal/reconcile.StateProvider), and/or a cluster API URL (--api-url)
-// pre-registered for `hyve login` to target later. Registering a cluster
+// pre-registered for `hyve env login` to target later. Registering a cluster
 // environment's URL is not the same as authenticating against it — no
 // credential is stored here at all; see internal/session for `hyve
 // login`'s own, separate, machine-wide session storage, which is what
@@ -52,12 +52,12 @@ registered/created at all. name defaults to --path's directory basename
 explicitly to pick your own, which --api-url-only registration requires
 (there's no directory to derive a default from).
 
---api-url only remembers where to point 'hyve login' at later — it stores
+--api-url only remembers where to point 'hyve env login' at later — it stores
 no credential and does not authenticate anything by itself. Cluster-mode
-access still requires running 'hyve login' separately (with no --api-url of
+access still requires running 'hyve env login' separately (with no --api-url of
 its own, it defaults to the current environment's --api-url); login is a
 single, global credential independent of which environment is active (see
-'hyve login's own --help).
+'hyve env login's own --help).
 
 Registration only — this never clones, pulls, commits, or pushes anything.
 If you want the directory kept in sync with a git remote, that's entirely
@@ -76,7 +76,7 @@ your own 'git' CLI: 'git clone' it yourself before registering it, then
 var Cmd = &cobra.Command{
 	Use:   "env",
 	Short: "Show or manage registered local directories",
-	Long:  "See subcommands to create, list, switch, show, or remove registered environments. Cluster-mode login ('hyve login') is separate — see its own --help.",
+	Long:  "See subcommands to create, list, switch, show, or remove registered environments. Cluster-mode login ('hyve env login') is separate — see its own --help.",
 }
 
 var currentCmd = &cobra.Command{
@@ -139,7 +139,7 @@ with shell substitution:
 
 func init() {
 	createCmd.Flags().StringVar(&createPath, "path", "", "Local directory to register (default: current working directory, unless --api-url is given alone)")
-	createCmd.Flags().StringVar(&createAPIURL, "api-url", "", "Cluster API URL to pre-register for 'hyve login' to target later (stores no credential)")
+	createCmd.Flags().StringVar(&createAPIURL, "api-url", "", "Cluster API URL to pre-register for 'hyve env login' to target later (stores no credential)")
 
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(currentCmd)
@@ -198,7 +198,7 @@ func runCreate(name string) {
 	switch {
 	case apiURLOnly:
 		log.Printf("✅ '%s' (%s) is now the active environment", name, createAPIURL)
-		log.Println("💡 Run 'hyve login' to authenticate against it")
+		log.Println("💡 Run 'hyve env login' to authenticate against it")
 	case createAPIURL != "":
 		log.Printf("✅ '%s' (%s, api: %s) is now the active environment", name, abs, createAPIURL)
 	default:

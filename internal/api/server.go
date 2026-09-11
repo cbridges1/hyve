@@ -17,6 +17,7 @@ import (
 
 	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/webui"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -98,6 +99,17 @@ type Server struct {
 // the real kube-apiserver's own RBAC authorizes against; this handler is
 // pure transport, per HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.6
 // ("do not re-implement authorization here").
+//
+// Everything else falls through to the embedded web console
+// (internal/webui) — unauthenticated at this layer for the same reason
+// /auth/* is: the UI is a static single-page app that does its own
+// login against /auth/login client-side, so there's no session to check
+// before handing back index.html/assets. This is also why the UI no
+// longer ships as a separate image/Deployment: every API call it makes
+// is already a bare relative path against this same origin
+// (web/src/lib/api/client.ts), so a second container never bought any
+// real separation — just an extra Ingress rule and a second thing to
+// build/push/deploy in lockstep with this one.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -124,6 +136,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
+	mux.Handle("/", http.FileServer(http.FS(webui.FS())))
 	return corsMiddleware(mux)
 }
 

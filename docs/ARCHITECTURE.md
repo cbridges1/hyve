@@ -48,8 +48,8 @@ caller that wires them to their cluster-mode implementations.
 | `module` | Resolves (`git clone`/cache, per `hyve.lock`), validates, and executes module operations (`status`/`create`/`delete`/`auth`/`scale`). `Executor.Runner`, when set, dispatches to `JobRunner` instead of running inline. |
 | `workflow` | Resolves and executes lifecycle-hook and standalone workflows. `KubernetesJobStepRunner` is workflow's equivalent of `module.JobRunner`. |
 | `k8sjob` | The one-shot `batch/v1.Job` lifecycle primitive shared by `module.JobRunner` and `workflow.KubernetesJobStepRunner` — create a Job with a given image/script/env, wait, capture combined stdout+stderr, report exit code, delete regardless of outcome. Extracted once because both callers need the identical operation. |
-| `repository` | The environment registry (`hyve env`) — named entries of `{ID, Name, RepoURL, LocalPath, APIURL, IsCurrent, ...}`. `LocalPath` and `APIURL` are independent, optionally-both-set fields: a local directory, a cluster API URL to `hyve login` against later, or both. Stores no credential of any kind — `APIURL` is only ever a remembered target, never proof of authentication. |
-| `session` | The CLI's single, machine-wide cluster-mode login (`hyve login`/`whoami`/`logout`) — deliberately independent of `repository`. See [Session and auth model](#session-and-auth-model). |
+| `repository` | The environment registry (`hyve env`) — named entries of `{ID, Name, RepoURL, LocalPath, APIURL, IsCurrent, ...}`. `LocalPath` and `APIURL` are independent, optionally-both-set fields: a local directory, a cluster API URL to `hyve env login` against later, or both. Stores no credential of any kind — `APIURL` is only ever a remembered target, never proof of authentication. |
+| `session` | The CLI's single, machine-wide cluster-mode login (`hyve env login`/`hyve env whoami`/`hyve env logout`) — deliberately independent of `repository`. See [Session and auth model](#session-and-auth-model). |
 | `database` | SQLite-backed storage underneath `repository` and `session` (two separate tables; `repositories` and a singleton `session` row), local to the machine running the CLI — never touched by cluster mode's controller/API. |
 | `api` | The HTTP API + auth layer cluster mode exposes (`cmd/api`) — a thin, authorized front door onto the CRDs the controller already reconciles, not a second implementation of hyve's logic. Plain `kubectl` against the CRDs always works without it. |
 | `secretsfrom` | Resolves a workflow's or module operation's `spec.secretsFrom` references (a Kubernetes Secret on some already-managed cluster) into env vars. Deliberately has no dependency on `module` or `workflow`, so both can share it without creating an import cycle. |
@@ -59,10 +59,14 @@ caller that wires them to their cluster-mode implementations.
 
 ## `cmd/` layout
 
-- Top-level one-shot commands (`reconcile`, `login`/`logout`, `whoami`,
-  `apply`, `migrate`) plus resource-group subcommands (`cluster`, `template`,
-  `workflow`, `module`, `env`) — the everyday CLI surface, listed at
-  `hyve --help`.
+- Top-level one-shot commands (`reconcile`, `apply`, `migrate`) plus
+  resource-group subcommands (`cluster`, `template`, `workflow`, `module`,
+  `env`) — the everyday CLI surface, listed at `hyve --help`. Login/
+  identity (`login`/`logout`/`whoami`) live under `env` (`hyve env
+  login`/`logout`/`whoami`) rather than at the top level — reachable from
+  the same command group as environment selection, even though the
+  underlying session is still independent of which environment is current
+  (see "Session and auth model" below).
 - `cmd/clusterconfig` groups the two long-running, Helm-deployed processes
   (`cmd/api`, `cmd/controller`) under `hyve cluster-config ...` — a different
   kind of command (a server that runs inside a pod) from everything else,
@@ -92,7 +96,7 @@ credentials.
   object (`spec.tokenHash`); the raw secret itself is never persisted, so
   read access to the CR alone can never reconstruct a working credential.
   Not rotated on refresh — it stays valid until its own expiry or an
-  explicit `hyve logout` (which deletes the `HyveSession`, revoking it
+  explicit `hyve env logout` (which deletes the `HyveSession`, revoking it
   immediately; the still-cached access token keeps working for at most its
   own short TTL after that).
 
@@ -115,7 +119,7 @@ Environments (`hyve env`) and this session are stored, and selected,
 completely independently — see the README's
 [Environments](../README.md#environments-local-state-vs-a-live-cluster)
 section for why that separation matters. An environment's `APIURL` (when
-set) is purely a remembered target for `hyve login --api-url` to default
+set) is purely a remembered target for `hyve env login --api-url` to default
 from — registering a cluster environment and authenticating against it are
 deliberately two separate, independently-timed actions, not one combined
 step the way the original (pre-fix) design conflated them.

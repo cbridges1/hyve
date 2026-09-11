@@ -4,7 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// HyveSessionSpec is the durable, revocable record backing one `hyve login`
+// HyveSessionSpec is the durable, revocable record backing one `hyve env login`
 // session — see internal/api/auth_handlers.go. The actual session secret a
 // client presents to POST /auth/refresh is never stored here, only its
 // SHA-256 hash (TokenHash) — read access to this object alone can never
@@ -33,7 +33,7 @@ type HyveSessionSpec struct {
 	// ExpiresAt is this session's own absolute expiry (see SessionTTL) —
 	// independent of, and much longer than, any individual access token's
 	// TTL (see AccessTokenTTL). Once past, POST /auth/refresh stops
-	// working regardless of whether this object still exists; `hyve login`
+	// working regardless of whether this object still exists; `hyve env login`
 	// again is the only way forward.
 	ExpiresAt metav1.Time `json:"expiresAt"`
 }
@@ -45,8 +45,8 @@ type HyveSessionSpec struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // HyveSession is the Schema for the hyvesessions API — the durable,
-// kubectl-visible record backing one cluster-mode login (see `hyve login`/
-// `hyve logout`), matching how Rancher's own management.cattle.io/v3 Token
+// kubectl-visible record backing one cluster-mode login (see `hyve env login`/
+// `hyve env logout`), matching how Rancher's own management.cattle.io/v3 Token
 // resource and Dex's Kubernetes storage backend both keep auth/session
 // state as cluster-native objects rather than a separate database. Deleting
 // one immediately revokes that session: the next POST /auth/refresh against

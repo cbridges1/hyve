@@ -12,14 +12,14 @@ import (
 // Repository represents one registered environment. An environment is
 // either a local directory (LocalPath set) hyve reads/writes cluster
 // definitions from, or a cluster-mode API URL (APIURL set) pre-registered
-// for `hyve login` to target later — the two are independent kinds of
+// for `hyve env login` to target later — the two are independent kinds of
 // entry in the same registry, not the same row wearing two hats. A local
 // directory and a cluster-mode *session* (the actual credential, as
 // opposed to just the URL) used to be the same row here — that conflation
 // is what made an expired/logged-out session silently fall back to
 // whatever local files happened to be sitting in the current directory.
-// APIURL only ever remembers where to point `hyve login` at; it carries no
-// credential of its own — see internal/session for `hyve login`'s
+// APIURL only ever remembers where to point `hyve env login` at; it carries no
+// credential of its own — see internal/session for `hyve env login`'s
 // separate, machine-wide session storage, which is what actually
 // authenticates. The repositories table's own legacy
 // session_token/session_expires_at columns still physically exist

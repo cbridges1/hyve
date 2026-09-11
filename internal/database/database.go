@@ -114,7 +114,7 @@ func (d *DB) initialize() error {
 	// Repositories table — each row is a "environment": a local directory
 	// (see internal/repository, cmd/env) plus, optionally, cluster-mode
 	// login credentials (api_url/session_token/session_expires_at) attached
-	// by `hyve login`. One is_current flag switches both halves together.
+	// by `hyve env login`. One is_current flag switches both halves together.
 	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS repositories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,7 +173,7 @@ func (d *DB) initialize() error {
 	}
 
 	// Session table — see internal/session. A single row (id is always 1),
-	// deliberately independent of the repositories table: `hyve login` is
+	// deliberately independent of the repositories table: `hyve env login` is
 	// one global, machine-wide credential, not an attribute of whichever
 	// local directory happens to be the current environment (see
 	// cmd/env/cmd.go's own doc comment on why local directories and

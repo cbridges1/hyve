@@ -53,8 +53,12 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&shared.HomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
 
-	// Verbs that do something, first (login/logout/whoami/apply/migrate
-	// self-register via their own file's init()).
+	// Verbs that do something, first (apply/migrate self-register via
+	// their own file's init()). login/logout/whoami moved under 'hyve
+	// env' (cmd/env/login.go, cmd/env/whoami.go) — identity is still a
+	// separate, global session independent of which environment is
+	// current (see cmd/env/login.go's own doc comment), just reachable
+	// from the same command group as environment selection now.
 	rootCmd.AddCommand(reconcileCmd)
 
 	// Identity/environment selection — almost everything below depends on
@@ -71,6 +75,10 @@ func init() {
 	rootCmd.AddCommand(modcmd.Cmd)
 
 	// Ops-only — runs inside Helm-deployed pods, not an interactive
-	// end-user surface.
+	// end-user surface. Hidden from `hyve --help`'s own command list
+	// (Cmd.Hidden, set in cmd/clusterconfig/cmd.go) but still fully
+	// invocable by name — Helm's own Deployment args call it directly
+	// (`hyve cluster-config controller run` / `... api run`), which works
+	// identically whether or not cobra lists it in --help.
 	rootCmd.AddCommand(clusterconfig.Cmd)
 }

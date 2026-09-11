@@ -201,30 +201,12 @@ api:
   multiTenant:
     enabled: false
 
-# ui deploys the optional web/ frontend (see HYVE-IMPLEMENTATION-PLAN.md's
-# Phase 11) — disabled by default, same "this chart makes no exposure
-# decision for you" stance as api.service above. web/ only ever makes
-# relative (/api/..., /auth/...) requests, so whatever exposes hyve-ui
-# publicly MUST route it from the exact same origin as hyve-api — this
-# chart creates the hyve-ui Service for you to point your own
-# Ingress/LoadBalancer/routing rules at, same-origin with hyve-api, but
-# does not wire that routing up itself. scripts/install-local.sh's own
-# Ingress (local dev only) does this correctly as a worked example.
-ui:
-  enabled: false
-
-  image:
-    repository: ""
-    tag: ""
-    pullPolicy: IfNotPresent
-
-  resources:
-    requests:
-      cpu: 50m
-      memory: 32Mi
-    limits:
-      cpu: 200m
-      memory: 128Mi
-
-  service:
-    port: 80
+# No separate ui.* block anymore — the web console (web/) is embedded
+# directly into the hyve binary (internal/webui, go:embed) and served by
+# hyve-api itself at "/", alongside /api, /auth, /proxy, etc. (see
+# internal/api/server.go's own Routes() doc comment). There's no second
+# image, Deployment, or Service to configure: api.image.*/api.service
+# above already cover it. Whatever exposes hyve-api publicly gets the UI
+# for free at the same origin — see scripts/install-local.sh's own
+# Ingress (local dev only) for a worked example, now routing everything
+# through hyve-api's single Service.
