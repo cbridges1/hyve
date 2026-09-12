@@ -201,8 +201,8 @@ export function SettingsPage() {
                 value={ii.install}
                 onChange={(e) => updateImageInstall(i, { install: e.target.value })}
                 placeholder="install script, e.g. apk add curl"
-                rows={2}
-                className={`${inputClass} font-mono text-xs`}
+                rows={8}
+                className={`${inputClass} resize-y font-mono text-xs`}
               />
             </div>
           ))}

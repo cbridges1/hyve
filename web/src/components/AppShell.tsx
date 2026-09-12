@@ -110,7 +110,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const [actAs] = useActAs()
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full flex-col">
       {who?.role === RoleSuperadmin ? (
         <EnvironmentSwitcher />
       ) : (
@@ -217,6 +217,13 @@ function UserMenu({ who }: { who: { username: string; role: string; namespace: s
             <span className="mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-500">
               {who.role === RoleSuperadmin ? 'Control plane' : who.namespace}
             </span>
+            {/* md+ already has this in the header itself (Header component)
+                — shown here only below md, where it's been relocated to
+                keep the header bar from being crowded. */}
+            <div className="mt-3 border-t border-neutral-100 pt-3 md:hidden dark:border-neutral-700">
+              <span className="mb-1.5 block text-xs font-medium text-neutral-500 dark:text-neutral-500">Theme</span>
+              <ThemeToggle />
+            </div>
             <button
               type="button"
               onClick={() => logout()}
@@ -255,10 +262,19 @@ function Header({ onOpenMobileMenu }: { onOpenMobileMenu: () => void }) {
         <Logo className="h-5" />
       </div>
       <div className="flex items-center gap-4">
-        <ThemeToggle />
+        {/* Hidden below md — three icon-buttons plus the divider plus the
+            account menu left no breathing room in a narrow mobile header
+            (confirmed live: it rendered readably, but cramped hard against
+            the right edge with the whole middle of the bar empty). Moved
+            into UserMenu's own dropdown there instead, which already has
+            the width and vertical space this needs — same control, just
+            relocated per breakpoint, not removed. */}
+        <div className="hidden md:block">
+          <ThemeToggle />
+        </div>
         {who && (
           <>
-            <div className="h-6 w-px bg-neutral-200 dark:bg-neutral-800" />
+            <div className="hidden h-6 w-px bg-neutral-200 md:block dark:bg-neutral-800" />
             <UserMenu who={who} />
           </>
         )}
