@@ -391,6 +391,17 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
 
 	env := buildModuleEnv(cluster, secretsEnv)
+
+	// Cluster-mode only — see ValidateEnvRequirements' own doc comment for
+	// why a local/CLI-mode run is deliberately exempt (a required env var
+	// there may have an equally valid non-env alternative, e.g. this
+	// module's own "run `civo apikey save` instead" case).
+	if manifest != nil && r.ModuleRunner != nil {
+		if reqErr := module.ValidateEnvRequirements(manifest.Spec.Requirements.Env, env); reqErr != nil {
+			return fmt.Errorf("cluster %s: %w", name, reqErr)
+		}
+	}
+
 	exec := &module.Executor{
 		ModuleDir:   resolved.Dir,
 		Env:         env,
@@ -495,7 +506,19 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		r.logf("[%s] Operation in progress (%s) — skipping", name, status)
 
 	default:
-		r.logf("[%s] Unhandled status %q", name, status)
+		// Confirmed live, this exact bug: returning nil here (a plain
+		// no-op) left the ClusterDefinition's own Ready condition reading
+		// "last reconcile succeeded" from whatever the previous successful
+		// pass set, even though this pass concluded nothing at all — an
+		// operator had no way to tell "genuinely ready" apart from "the
+		// driver's own status op returned something hyve doesn't
+		// recognize, so nothing happened this cycle" just by looking at
+		// the cluster's own status. An empty string is exactly this case
+		// in practice (see status.yaml's own "unrecognized status" comment
+		// for why the module itself refuses to guess NOT_FOUND/ACTIVE
+		// here) — surfacing it as a real error is what makes it show up as
+		// Error/ReconcileFailed instead of a stale Ready:true.
+		return fmt.Errorf("cluster %s: driver reported unrecognized status %q", name, status)
 	}
 
 	return nil

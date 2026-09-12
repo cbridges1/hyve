@@ -325,6 +325,109 @@ spec:
 	})
 }
 
+// TestReconcileCluster_EnvRequirements_OnlyEnforcedViaJobDispatchNotInline is
+// the inverse of the tool-requirements test above: a required env var (e.g.
+// this module's own CIVO_TOKEN) is only a hard, checkable requirement in
+// cluster mode, where the Job's container starts fresh every time with no
+// alternative. Local/CLI mode is deliberately exempt — a required env var
+// there may have an equally valid non-env alternative hyve has no
+// visibility into (e.g. `civo apikey save`), so enforcing presence would
+// risk a false positive against an already-working local setup. Confirmed
+// live: a real cluster-mode install with a driver module needing CIVO_TOKEN
+// and no such key in hyve-cli-secrets silently never created the cluster at
+// all (see TestReconcileCluster_UnrecognizedStatus_IsAHardErrorNotASilentNoop
+// for the other half of that same live bug) — this is the pre-flight check
+// that now catches it immediately instead.
+func TestReconcileCluster_EnvRequirements_OnlyEnforcedViaJobDispatchNotInline(t *testing.T) {
+	repoRoot := t.TempDir()
+	moduleDir := filepath.Join(repoRoot, "modules", "test-driver")
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.yaml"), []byte(`apiVersion: v1
+kind: Module
+metadata:
+  name: test-driver
+  version: 0.1.0
+  type: authOnly
+spec:
+  requirements:
+    env:
+      - name: DEFINITELY_NOT_SET_XYZ_123
+        description: fake credential for this test
+`), 0644))
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./modules/test-driver", Version: "local"}},
+	}
+	lf := &module.LockFile{Version: 1}
+
+	t.Run("local mode: missing env var is not enforced", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+		assert.NoError(t, err)
+	})
+
+	t.Run("cluster mode: missing env var is a hard, immediate error", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		r.ModuleRunner = &module.JobRunner{} // never actually invoked — the env check fails before dispatch
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_XYZ_123")
+	})
+
+	t.Run("cluster mode: a satisfied env requirement (via hyve-cli-secrets) passes", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		r.ModuleRunner = &module.JobRunner{}
+		secretsEnv := map[string]string{"DEFINITELY_NOT_SET_XYZ_123": "some-real-value"}
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, secretsEnv, nil)
+		assert.NoError(t, err)
+	})
+}
+
+// TestReconcileCluster_UnrecognizedStatus_IsAHardErrorNotASilentNoop is the
+// regression test for a real, live-confirmed bug: a driver's own status op
+// returning something reconcileCluster's switch doesn't recognize (an empty
+// string is the case that actually happened) used to fall into a silent
+// default no-op that returned nil — the ClusterDefinition's own Ready
+// condition then reported "last reconcile succeeded" from whatever the
+// last actually-successful pass set, even though this pass concluded
+// nothing and no cluster had ever been created. Reported directly: "the
+// cluster page indicated that the cluster was ready even though that was
+// not true."
+func TestReconcileCluster_UnrecognizedStatus_IsAHardErrorNotASilentNoop(t *testing.T) {
+	repoRoot := t.TempDir()
+	moduleDir := filepath.Join(repoRoot, "modules", "test-driver")
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.yaml"), []byte(`apiVersion: v1
+kind: Module
+metadata:
+  name: test-driver
+  version: 0.1.0
+spec: {}
+`), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.yaml"), []byte(`apiVersion: v1
+kind: Workflow
+metadata:
+  name: status
+spec:
+  jobs:
+    main:
+      steps:
+        - run: echo "nothing recognizable printed here"
+`), 0644))
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./modules/test-driver", Version: "local"}},
+	}
+	lf := &module.LockFile{Version: 1}
+	r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+
+	err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+	require.Error(t, err, "an unrecognized/empty status must be a hard error, not a silent no-op leaving a stale Ready:true")
+	assert.Contains(t, err.Error(), "unrecognized status")
+}
+
 // TestModuleImage covers the resolution chain: a ClusterDefinition's own
 // spec.runner.image (set directly, or inherited from a Template at
 // creation time) wins over HyveConfig's cluster-wide DefaultModuleImage —
