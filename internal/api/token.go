@@ -13,13 +13,28 @@ import (
 )
 
 // AccessTokenTTL is how long an access token (the "Authorization: Bearer"
-// value sent on every /api/* request) is valid for. Short and stateless by
-// design — requireAuth verifies it locally (HMAC signature + expiry, no
-// Kubernetes round trip), so every request stays cheap. A client silently
-// exchanges an expiring access token for a fresh one via POST /auth/refresh
-// as long as its underlying HyveSession (see SessionTTL) is still valid —
-// see cmd/shared's UseClusterMode for the CLI side of that.
-const AccessTokenTTL = 30 * time.Minute
+// value sent on every /api/* request) is valid for. Stateless by design —
+// requireAuth verifies it locally (HMAC signature + expiry, no Kubernetes
+// round trip), so every request stays cheap regardless of this value. The
+// hyve CLI's own cluster-mode calls never notice this directly: a client
+// silently exchanges an expiring access token for a fresh one via
+// POST /auth/refresh as long as its underlying HyveSession (see SessionTTL)
+// is still valid (see cmd/shared's UseClusterMode).
+//
+// What this value actually bounds in practice is AgentProvider's own
+// minted kubeconfig (access.go) — it embeds the caller's current access
+// token verbatim as that kubeconfig's Bearer credential, and plain
+// kubectl has no concept of silently refreshing it the way the CLI does.
+// Originally 30 minutes ("short and stateless"), which meant a real,
+// working `kubectl --context <tunneled-cluster>` session silently started
+// 401ing every half hour with no user-visible warning, forcing a fresh
+// `hyve cluster auth <name>` far more often than any real workflow wants
+// — confirmed live and reported directly. 8 hours is a deliberate
+// trade-off toward "a normal working session doesn't get interrupted"
+// over "smallest possible compromised-token exposure window"; revisit
+// downward only alongside an actual refresh mechanism for
+// AgentProvider-minted kubeconfigs, not by reverting this alone.
+const AccessTokenTTL = 8 * time.Hour
 
 // SessionTTL is how long a HyveSession (created by POST /auth/login,
 // re-validated by every POST /auth/refresh) stays valid before a real

@@ -109,12 +109,28 @@ func (r *AgentRegistry) Register(key AgentConnectionKey, conn *AgentConnection) 
 // delete-by-key would wrongly evict the new, valid connection instead of
 // the stale one that actually died. Comparing the stored pointer against
 // the one the caller believes it owns closes that window.
-func (r *AgentRegistry) RemoveIfCurrent(key AgentConnectionKey, conn *AgentConnection) {
+//
+// Returns whether conn actually was the current entry (and so was
+// removed) — handleAgentConnection's own caller uses this to decide
+// whether a Connected: false status write is warranted at all. Confirmed
+// live: several near-simultaneous connections during a hyve-api restart
+// (the agent retrying while the old TCP connection hadn't yet been
+// reported closed) left the registry correctly holding the one that's
+// actually still alive, but every one of the older connections' own
+// disconnect handler still unconditionally wrote Connected: false
+// afterward — the last one to finish (which can easily be well after the
+// real, current connection registered) stomped a correct "connected: true"
+// back to false, even though the tunnel itself kept working the whole
+// time (RemoveIfCurrent's own guard already protected the registry these
+// proxied requests actually use).
+func (r *AgentRegistry) RemoveIfCurrent(key AgentConnectionKey, conn *AgentConnection) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.conns[key] == conn {
 		delete(r.conns, key)
+		return true
 	}
+	return false
 }
 
 // Get returns key's current connection, if any.

@@ -117,6 +117,83 @@ func TestAgentTunnel_ConnectDisconnectCycle(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "ClusterDefinitionStatus.Agent.Connected must flip to false on disconnect")
 }
 
+// TestAgentTunnel_StaleDisconnectDoesNotStompStatus reproduces the exact
+// bug confirmed live during a real hyve-api rollout: an agent's reconnect
+// racing its own old connection's teardown left several near-simultaneous
+// connections registered in sequence for the same key. The registry
+// itself already resolved this safely (RemoveIfCurrent's own guard), but
+// handleAgentConnection used to call writeAgentStatus(false) unconditionally
+// on every disconnect regardless of whether it was actually superseded —
+// so the stale (first) connection's own belated disconnect stomped
+// Connected back to false even though a newer connection was live and the
+// tunnel kept working the entire time. Simulates the same race directly
+// (connect A, connect B for the same key, close A) and asserts status
+// stays true throughout, only flipping to false once B — the actually-
+// current connection — disconnects.
+func TestAgentTunnel_StaleDisconnectDoesNotStompStatus(t *testing.T) {
+	clientset := k8sfake.NewClientset()
+	ca, err := agentpki.LoadOrCreateCA(context.Background(), clientset, testNamespace)
+	require.NoError(t, err)
+
+	cd := &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "acme"},
+	}
+	fakeClient := newFakeClient(t, cd)
+
+	s := &Server{
+		Client:        fakeClient,
+		AgentCA:       ca,
+		AgentRegistry: NewAgentRegistry(),
+	}
+
+	listener, err := s.ListenAgentTunnel("127.0.0.1:0")
+	require.NoError(t, err)
+	addr := listener.Addr().String()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.ServeAgentTunnelListener(ctx, listener) }()
+
+	key := AgentConnectionKey{Namespace: "acme", ClusterName: "web"}
+	statusConnected := func() bool {
+		var fresh hyvev1alpha1.ClusterDefinition
+		if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: "acme", Name: "web"}, &fresh); err != nil {
+			return false
+		}
+		return fresh.Status.Agent.Connected
+	}
+
+	connA := dialTestAgent(t, addr, ca, "acme", "web")
+	require.Eventually(t, func() bool {
+		_, ok := s.AgentRegistry.Get(key)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond, "registry must reflect connection A")
+	require.Eventually(t, statusConnected, 2*time.Second, 10*time.Millisecond, "status must be true after A connects")
+
+	connAEntry, _ := s.AgentRegistry.Get(key)
+
+	connB := dialTestAgent(t, addr, ca, "acme", "web")
+	require.Eventually(t, func() bool {
+		c, ok := s.AgentRegistry.Get(key)
+		return ok && c != connAEntry // a distinct *AgentConnection now registered for the same key — B superseded A
+	}, 2*time.Second, 10*time.Millisecond, "registry must reflect connection B superseding A")
+
+	require.NoError(t, connA.Close())
+	// Give handleAgentConnection's own goroutine for A time to run its
+	// disconnect path — there's no event to wait on here since the fix
+	// under test is precisely "nothing observable happens": status must
+	// stay true the whole time, so this is a fixed settle window, not a
+	// polled Eventually.
+	time.Sleep(200 * time.Millisecond)
+	assert.True(t, statusConnected(), "A's stale disconnect must not stomp status back to false while B is still live")
+	_, ok := s.AgentRegistry.Get(key)
+	assert.True(t, ok, "B must still be registered after A's stale disconnect")
+
+	require.NoError(t, connB.Close())
+	require.Eventually(t, func() bool { return !statusConnected() }, 2*time.Second, 10*time.Millisecond,
+		"status must flip to false once B, the actually-current connection, disconnects")
+}
+
 // TestAgentTunnel_RejectsUnsignedKey confirms a bare (uncertified) key —
 // even a perfectly valid Ed25519 keypair — is refused, since
 // IsUserAuthority only ever recognizes certificates signed by this

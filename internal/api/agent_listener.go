@@ -214,9 +214,16 @@ func (s *Server) handleAgentConnection(conn net.Conn, config *ssh.ServerConfig) 
 	emitClusterEvent(context.Background(), s.Clientset, namespace, clusterName, "AgentConnected", "hyve-agent connected")
 
 	err = serverConn.Wait()
-	s.AgentRegistry.RemoveIfCurrent(key, agentConn)
-	s.writeAgentStatus(key, false, agentConn.Version())
+	wasCurrent := s.AgentRegistry.RemoveIfCurrent(key, agentConn)
 	log.Printf("api: hyve-agent disconnected — namespace=%s cluster=%s (%v)", namespace, clusterName, err)
+	if !wasCurrent {
+		// A newer connection for this same key already superseded this
+		// one (see RemoveIfCurrent's own doc comment) — that connection's
+		// own Connected: true status write is still correct and must not
+		// be stomped by this stale connection's disconnect.
+		return
+	}
+	s.writeAgentStatus(key, false, agentConn.Version())
 	emitClusterEvent(context.Background(), s.Clientset, namespace, clusterName, "AgentDisconnected", "hyve-agent disconnected")
 }
 
