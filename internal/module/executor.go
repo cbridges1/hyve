@@ -216,7 +216,18 @@ func (e *Executor) executeWorkflow(ctx context.Context, data []byte, name string
 			// non-zero — mirrors executeScriptViaJob's identical handling.
 			return nil, fmt.Errorf("workflow %s: %w", name, runErr)
 		}
-		return &OperationResult{Outputs: parseOutputs([]byte(stdout)), ExitCode: exitCode, RawOutput: capRawOutput(stdout)}, nil
+		result := &OperationResult{Outputs: parseOutputs([]byte(stdout)), ExitCode: exitCode, RawOutput: capRawOutput(stdout)}
+		if exitCode != 0 {
+			// Confirmed live, this exact gap: a script that ran and
+			// genuinely failed used to come back as (result, nil) — every
+			// caller of Execute checks err, not ExitCode, so a real
+			// create/status/delete failure in cluster mode was silently
+			// treated as success with empty Outputs. Matches this
+			// function's own local-mode branch below, which already
+			// returns (result, err) together.
+			return result, fmt.Errorf("workflow %s exited %d: %s", name, exitCode, strings.TrimSpace(result.RawOutput))
+		}
+		return result, nil
 	}
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", combined)
@@ -422,17 +433,24 @@ func (e *Executor) executeScript(ctx context.Context, scriptPath string) (*Opera
 	out, err := cmd.Output()
 	exitCode := 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
 			return nil, fmt.Errorf("script %s: %w", scriptPath, err)
 		}
+		exitCode = exitErr.ExitCode()
 	}
-	return &OperationResult{
+	result := &OperationResult{
 		Outputs:   parseOutputs(out),
 		ExitCode:  exitCode,
 		RawOutput: capRawOutput(string(out)),
-	}, nil
+	}
+	if exitCode != 0 {
+		// See executeWorkflow's own identical fix/comment — a script that
+		// ran and genuinely failed must come back as a real error, not
+		// silently look like success with empty Outputs.
+		return result, fmt.Errorf("script %s exited %d: %s", scriptPath, exitCode, strings.TrimSpace(result.RawOutput))
+	}
+	return result, nil
 }
 
 // executeScriptViaJob reads scriptPath's own content and dispatches it to a
@@ -452,11 +470,18 @@ func (e *Executor) executeScriptViaJob(ctx context.Context, scriptPath string) (
 		// os/exec path's *exec.ExitError handling above.
 		return nil, fmt.Errorf("script %s: %w", scriptPath, runErr)
 	}
-	return &OperationResult{
+	result := &OperationResult{
 		Outputs:   parseOutputs([]byte(stdout)),
 		ExitCode:  exitCode,
 		RawOutput: capRawOutput(stdout),
-	}, nil
+	}
+	if exitCode != 0 {
+		// See executeWorkflow's own identical fix/comment — a script that
+		// ran and genuinely failed must come back as a real error, not
+		// silently look like success with empty Outputs.
+		return result, fmt.Errorf("script %s exited %d: %s", scriptPath, exitCode, strings.TrimSpace(result.RawOutput))
+	}
+	return result, nil
 }
 
 // runShellScriptWithEnv runs script inline via os/exec (never dispatched to

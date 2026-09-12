@@ -411,6 +411,15 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		Image:       r.moduleImage(cluster),
 	}
 
+	// module.Executor.Execute guarantees a non-zero-exit status script
+	// surfaces as a non-nil err here (never a nil-err result with an
+	// empty/garbled Outputs map that would be indistinguishable from a
+	// script that legitimately printed nothing) — see its own doc
+	// comments on why that invariant matters specifically for this call
+	// site: an unrecognized/empty status falls into reconcileCluster's own
+	// default case below, and a real script failure silently looking
+	// identical to that (confirmed live, before Execute's own fix) left an
+	// operator with no idea their driver module was actually failing.
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
 		return fmt.Errorf("status check failed: %w", err)

@@ -10,6 +10,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestExecuteScript_NonZeroExitIsAHardError is the regression test for a
+// real, live-confirmed bug: a bare (non-YAML) operation script that ran
+// and genuinely failed used to come back from Execute as (result, nil) —
+// ExitCode set, but no Go error — since executeScript only ever treated a
+// non-*exec.ExitError as a hard failure, silently swallowing an ordinary
+// non-zero exit instead. Every real caller of Execute (reconcileCluster's
+// own status/create/delete checks) only ever inspects err, never
+// ExitCode, so a genuinely failing operation was indistinguishable from
+// one that simply printed nothing — confirmed live via a driver module's
+// status.yaml exhausting its own retry loop and exiting 1, which silently
+// became an "unrecognized status" no-op instead of a real, diagnosable
+// error. executeScriptViaJob and executeWorkflow's own Job-dispatch
+// branch had the identical pattern, fixed the same way — not independently
+// covered here since JobRunner needs a real Kubernetes API to dispatch
+// against; this is the one of the three fixes that's cheaply testable
+// with a plain os/exec script and no cluster at all.
+func TestExecuteScript_NonZeroExitIsAHardError(t *testing.T) {
+	moduleDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.sh"), []byte(
+		"#!/bin/sh\necho \"could not authenticate against the cloud provider\"\nexit 1\n",
+	), 0644))
+
+	exec := &Executor{ModuleDir: moduleDir, ClusterName: "my-cluster"}
+	result, err := exec.Execute(context.Background(), OperationStatus)
+
+	require.Error(t, err, "a script that ran and genuinely exited non-zero must be a hard error, not silently swallowed")
+	assert.Contains(t, err.Error(), "exited 1")
+	assert.Contains(t, err.Error(), "could not authenticate", "the script's own output must reach the error, not just a generic message")
+	require.NotNil(t, result, "the result (ExitCode, RawOutput) must still be returned alongside the error, for a caller that wants both")
+	assert.Equal(t, 1, result.ExitCode)
+}
+
 // TestExecuteYAMLWorkflowOperation_RunsInlineWhenRunnerNil confirms a
 // kind:Workflow module operation file still runs inline via os/exec in
 // local/CLI mode (Runner == nil) exactly as before — the Job-dispatch
