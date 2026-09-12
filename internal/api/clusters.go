@@ -211,6 +211,18 @@ const (
 	maxClusterEventsLimit     = 200
 )
 
+// maxTrackedClusterEvents caps how many of a ClusterDefinition's Kubernetes
+// Events this endpoint ever considers, after sorting newest-first — a
+// cluster reconciled every few seconds (e.g. the host cluster, polled by
+// the UI every 5s) can accumulate far more Event objects within
+// Kubernetes' own event-ttl window (apiserver default 1h) than any "recent
+// activity" feed should hold: confirmed live, this list growing large
+// enough that requesting it repeatedly became its own source of load.
+// Applied before pagination, so TotalEvents/offset/limit all operate
+// against this capped set, not the true (unbounded) count — the oldest
+// events beyond the cap are simply never shown, which is the point.
+const maxTrackedClusterEvents = 500
+
 func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	ns := s.TenantNamespace(r)
@@ -262,6 +274,9 @@ func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) 
 		// length: on a long-lived cluster reconciled every few minutes for
 		// days, the newest, most relevant events could be pages away.
 		sort.Slice(dto.Events, func(i, j int) bool { return dto.Events[i].LastSeen > dto.Events[j].LastSeen })
+		if len(dto.Events) > maxTrackedClusterEvents {
+			dto.Events = dto.Events[:maxTrackedClusterEvents]
+		}
 
 		dto.TotalEvents = len(dto.Events)
 		if offset > len(dto.Events) {

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -461,4 +462,30 @@ func TestHandleGetClusterEvents_LimitClampedToMax(t *testing.T) {
 	var dto clusterActivityDTO
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
 	assert.Len(t, dto.Events, 1)
+}
+
+// TestHandleGetClusterEvents_TotalCappedAtMaxTracked is the regression test
+// for a real, live-confirmed problem: a cluster reconciled every few
+// seconds (polled by the UI every 5s) accumulated Kubernetes Events fast
+// enough that "recent activity" grew unbounded and the endpoint's own List
+// call became repeated, ever-growing work. maxTrackedClusterEvents caps the
+// pool (after newest-first sorting) before pagination, so TotalEvents must
+// never exceed it even when the real event count does.
+func TestHandleGetClusterEvents_TotalCappedAtMaxTracked(t *testing.T) {
+	objs := make([]runtime.Object, 0, maxTrackedClusterEvents+50)
+	for i := 0; i < maxTrackedClusterEvents+50; i++ {
+		objs = append(objs, newTestEvent(fmt.Sprintf("ev-%d", i), "c1", i))
+	}
+	clientset := fake.NewClientset(objs...)
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Clientset: clientset, Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, fmt.Sprintf("/clusters/c1/events?limit=%d", maxClusterEventsLimit), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterActivityDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, maxTrackedClusterEvents, dto.TotalEvents, "total must be capped even though more events actually exist")
+	// The newest event (highest seq) must survive the cap, not an arbitrary one.
+	require.NotEmpty(t, dto.Events)
+	assert.Equal(t, fmt.Sprintf("Reason%d", maxTrackedClusterEvents+49), dto.Events[0].Reason)
 }
