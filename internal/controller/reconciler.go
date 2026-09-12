@@ -153,9 +153,20 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv, hooks)
 
-	cond := metav1.Condition{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Reconciled", Message: "last reconcile succeeded"}
+	// Ready and Error are always set as a pair, one true and one false —
+	// never independently — so they can't both end up true at once (an
+	// error on this pass, alongside a stale true Ready condition from
+	// whenever the cluster last actually succeeded). See setConditions'
+	// own doc comment for the live bug this fixes.
+	conds := []metav1.Condition{
+		{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Reconciled", Message: "last reconcile succeeded"},
+		{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionFalse, Reason: "Reconciled", Message: "no error"},
+	}
 	if reconcileErr != nil {
-		cond = metav1.Condition{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionTrue, Reason: "ReconcileFailed", Message: reconcileErr.Error()}
+		conds = []metav1.Condition{
+			{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: "ReconcileFailed", Message: reconcileErr.Error()},
+			{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionTrue, Reason: "ReconcileFailed", Message: reconcileErr.Error()},
+		}
 	}
 
 	// retry.RetryOnConflict, not a single Get-then-Update: ReconcileOne can
@@ -187,7 +198,7 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if lastDeleteOutput != "" {
 			fresh.Status.LastDeleteOutput = lastDeleteOutput
 		}
-		return r.setCondition(ctx, &fresh, fresh.Generation, cond)
+		return r.setConditions(ctx, &fresh, fresh.Generation, conds)
 	})
 	if updateErr != nil && !apierrors.IsNotFound(updateErr) {
 		log.Printf("[%s] Warning: failed to update status: %v", cr.Name, updateErr)
@@ -300,22 +311,44 @@ func (r *ClusterDefinitionReconciler) recordDeleteOutput(ctx context.Context, ke
 // existing entry of the same Type) and sets ObservedGeneration, then writes
 // both via the status subresource. LastTransitionTime is only bumped when
 // Status actually changes, matching the standard meta/v1 Condition
-// convention.
+// convention. A thin single-condition wrapper around setConditions — see
+// its own doc comment for why a caller setting more than one condition at
+// once (Reconcile's own Ready/Error pair) must go through that instead of
+// two separate setCondition calls.
 func (r *ClusterDefinitionReconciler) setCondition(ctx context.Context, cr *hyvev1alpha1.ClusterDefinition, generation int64, cond metav1.Condition) error {
-	cond.LastTransitionTime = metav1.Now()
-	replaced := false
-	for i, existing := range cr.Status.Conditions {
-		if existing.Type == cond.Type {
-			if existing.Status == cond.Status {
-				cond.LastTransitionTime = existing.LastTransitionTime
+	return r.setConditions(ctx, cr, generation, []metav1.Condition{cond})
+}
+
+// setConditions upserts every cond into cr.Status.Conditions (replacing any
+// existing entry of the same Type, same as setCondition) and sets
+// ObservedGeneration, then writes everything via one Status().Update call.
+// Confirmed live, the real bug this exists to close: Reconcile used to call
+// (the single-condition) setCondition with only whichever of Ready/Error
+// applied to a given pass — since that never touches the *other* type at
+// all, a cluster that had ever been genuinely Ready and later started
+// failing showed Ready: true and Error: true simultaneously forever, the
+// stale Ready never cleared by anything. Reconcile now always passes both
+// conditions together in the same call, one True and one False, so they
+// stay mutually exclusive and always reflect only the most recent pass's
+// actual outcome.
+func (r *ClusterDefinitionReconciler) setConditions(ctx context.Context, cr *hyvev1alpha1.ClusterDefinition, generation int64, conds []metav1.Condition) error {
+	now := metav1.Now()
+	for _, cond := range conds {
+		cond.LastTransitionTime = now
+		replaced := false
+		for i, existing := range cr.Status.Conditions {
+			if existing.Type == cond.Type {
+				if existing.Status == cond.Status {
+					cond.LastTransitionTime = existing.LastTransitionTime
+				}
+				cr.Status.Conditions[i] = cond
+				replaced = true
+				break
 			}
-			cr.Status.Conditions[i] = cond
-			replaced = true
-			break
 		}
-	}
-	if !replaced {
-		cr.Status.Conditions = append(cr.Status.Conditions, cond)
+		if !replaced {
+			cr.Status.Conditions = append(cr.Status.Conditions, cond)
+		}
 	}
 	cr.Status.ObservedGeneration = generation
 	return r.Client.Status().Update(ctx, cr)
