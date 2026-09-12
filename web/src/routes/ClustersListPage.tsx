@@ -5,6 +5,7 @@ import { AdminOnly } from '../components/RoleGate'
 import { ReadyBadge } from '../components/ConditionBadge'
 import { Modal } from '../components/Modal'
 import { ModeTabs } from '../components/ModeTabs'
+import { YamlEditor } from '../components/YamlEditor'
 import { clustersApi } from '../lib/api/clusters'
 import { templatesApi } from '../lib/api/templates'
 import { ApiError } from '../lib/api/client'
@@ -173,19 +174,12 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
           </div>
         </>
       ) : (
-        <label className="mb-3 block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Spec (YAML)</span>
-          <textarea
-            value={specYaml}
-            onChange={(e) => setSpecYaml(e.target.value)}
-            rows={10}
-            placeholder={YAML_SPEC_PLACEHOLDER}
-            className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-800"
-          />
+        <div className="mb-3">
+          <YamlEditor value={specYaml} onChange={setSpecYaml} onNameDetected={setName} extractSpec placeholder={YAML_SPEC_PLACEHOLDER} />
           <span className="mt-1 block text-xs text-neutral-500">
             Bypasses templates entirely — posts this spec directly, same as <code>kubectl apply</code> on a ClusterDefinition.
           </span>
-        </label>
+        </div>
       )}
 
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}

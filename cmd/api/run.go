@@ -37,6 +37,7 @@ var (
 	apiHostServiceAccount string
 	apiAgentBindAddress   string
 	apiPublicCAPath       string
+	apiConfigName         string
 )
 
 // Cmd is the api command.
@@ -71,6 +72,7 @@ func init() {
 	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary, no real spec.driver) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
 	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
+	runCmd.Flags().StringVar(&apiConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object within --namespace (GET/PATCH /api/config) — must match cmd/controller's own --config-name")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -125,6 +127,7 @@ func runAPI() {
 		AgentProvider:      &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL, PublicCA: publicCA},
 		ModulesDir:         apiModulesDir,
 		Clientset:          clientset,
+		ConfigName:         apiConfigName,
 	}
 
 	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)

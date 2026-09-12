@@ -4,8 +4,8 @@ import type { Theme } from '../lib/themeStore'
 
 const options: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
   { value: 'light', label: 'Light theme', Icon: SunIcon },
-  { value: 'system', label: 'Match system theme', Icon: SystemIcon },
   { value: 'dark', label: 'Dark theme', Icon: MoonIcon },
+  { value: 'system', label: 'Match system theme', Icon: SystemIcon },
 ]
 
 /** Three-way light/system/dark segmented control, icon-only — lives in the header's own right-hand cluster, so it gets real breathing room rather than the cramped sizing a sidebar-footer placement would force. */

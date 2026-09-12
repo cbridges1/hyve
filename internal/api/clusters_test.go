@@ -3,15 +3,19 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -374,4 +378,87 @@ func TestHandleUpdateCluster_NotFound(t *testing.T) {
 
 	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/clusters/missing", updateClusterRequest{})
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// newTestEvent builds a real corev1.Event involving ClusterDefinition
+// clusterName, seq minutes in the past — a distinct LastSeen per event
+// lets tests assert on ordering deterministically.
+func newTestEvent(name, clusterName string, seq int) *corev1.Event {
+	when := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(seq) * time.Minute))
+	return &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		InvolvedObject: corev1.ObjectReference{Kind: "ClusterDefinition", Name: clusterName},
+		Type:           "Normal",
+		Reason:         fmt.Sprintf("Reason%d", seq),
+		Message:        fmt.Sprintf("message %d", seq),
+		LastTimestamp:  when,
+	}
+}
+
+func TestHandleGetClusterEvents_DefaultsAndOrdersNewestFirst(t *testing.T) {
+	clientset := fake.NewClientset(
+		newTestEvent("ev-0", "c1", 0),
+		newTestEvent("ev-1", "c1", 1),
+		newTestEvent("ev-2", "c1", 2),
+	)
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Clientset: clientset, Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/c1/events", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterActivityDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, 3, dto.TotalEvents)
+	require.Len(t, dto.Events, 3)
+	assert.Equal(t, "Reason2", dto.Events[0].Reason, "newest (seq 2) must come first")
+	assert.Equal(t, "Reason1", dto.Events[1].Reason)
+	assert.Equal(t, "Reason0", dto.Events[2].Reason, "oldest (seq 0) must come last")
+}
+
+func TestHandleGetClusterEvents_LimitAndOffsetPaginate(t *testing.T) {
+	clientset := fake.NewClientset(
+		newTestEvent("ev-0", "c1", 0),
+		newTestEvent("ev-1", "c1", 1),
+		newTestEvent("ev-2", "c1", 2),
+		newTestEvent("ev-3", "c1", 3),
+		newTestEvent("ev-4", "c1", 4),
+	)
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Clientset: clientset, Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/c1/events?limit=2&offset=1", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterActivityDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, 5, dto.TotalEvents, "total must reflect the full set, not just this page")
+	require.Len(t, dto.Events, 2, "page size must be exactly ?limit=")
+	// Newest-first order: seq 4,3,2,1,0 — offset=1,limit=2 is seq 3,2.
+	assert.Equal(t, "Reason3", dto.Events[0].Reason)
+	assert.Equal(t, "Reason2", dto.Events[1].Reason)
+}
+
+func TestHandleGetClusterEvents_OffsetPastEnd_ReturnsEmptyNotError(t *testing.T) {
+	clientset := fake.NewClientset(newTestEvent("ev-0", "c1", 0))
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Clientset: clientset, Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/c1/events?offset=50", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto clusterActivityDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, 1, dto.TotalEvents)
+	assert.Empty(t, dto.Events)
+}
+
+func TestHandleGetClusterEvents_LimitClampedToMax(t *testing.T) {
+	clientset := fake.NewClientset(newTestEvent("ev-0", "c1", 0))
+	s := &Server{Client: newFakeClient(t, newClusterDef("c1")), Clientset: clientset, Namespace: testNamespace}
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, fmt.Sprintf("/clusters/c1/events?limit=%d", maxClusterEventsLimit+1000), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	// Only one event exists, so a successful 200 with it present is enough
+	// to prove the (deliberately unexported) clamp didn't error the request.
+	var dto clusterActivityDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Len(t, dto.Events, 1)
 }

@@ -81,6 +81,15 @@ type Server struct {
 	// error) rather than accepting connections it can't track, same
 	// fail-fast stance as the AgentCA check right above it.
 	AgentRegistry *AgentRegistry
+
+	// ConfigName is the singleton HyveConfig object's name within
+	// Namespace — see config.go and cmd/controller/run.go's own
+	// --config-name (both flags default to the same "hyve-config", and
+	// deploy/helm/hyve's chart wires both from the one
+	// .Values.controller.configName so they can never drift apart on a
+	// real install). Defaults to "hyve-config" if left unset (e.g. a test
+	// Server built without it).
+	ConfigName string
 }
 
 // Routes returns the API's full handler: /auth/*, /healthz, /docs, and
@@ -132,6 +141,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerWhoamiRoute(apiMux)
 	s.registerAccountRoutes(apiMux)
 	s.registerEnvironmentRoutes(apiMux)
+	s.registerConfigRoutes(apiMux)
 	s.registerAgentProxyRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))

@@ -5,7 +5,8 @@ export const clustersApi = {
   list: () => apiFetch<ClusterSummary[]>('/clusters'),
   get: (name: string) => apiFetch<ClusterSummary>(`/clusters/${encodeURIComponent(name)}`),
   resources: (name: string) => apiFetch<ClusterResources>(`/clusters/${encodeURIComponent(name)}/resources`),
-  events: (name: string) => apiFetch<ClusterActivity>(`/clusters/${encodeURIComponent(name)}/events`),
+  events: (name: string, limit: number, offset: number) =>
+    apiFetch<ClusterActivity>(`/clusters/${encodeURIComponent(name)}/events?limit=${limit}&offset=${offset}`),
   create: (body: CreateClusterRequest) =>
     apiFetch<ClusterSummary>('/clusters', { method: 'POST', body: JSON.stringify(body) }),
   update: (name: string, spec: ClusterDefinitionSpec) =>

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { AdminOnly } from '../components/RoleGate'
 import { RefStatusBadge } from '../components/ConditionBadge'
 import { Modal } from '../components/Modal'
+import { YamlEditor } from '../components/YamlEditor'
 import { ApiError } from '../lib/api/client'
 import { resourcesApi } from '../lib/api/resources'
 import { useConfirm } from '../lib/confirm'
@@ -43,15 +44,9 @@ function NewResourceForm({ onCreated }: { onCreated: () => void }) {
         <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
       </label>
-      <label className="mb-3 block text-sm">
-        <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Manifest (YAML)</span>
-        <textarea
-          value={manifest}
-          onChange={(e) => setManifest(e.target.value)}
-          rows={6}
-          className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-800"
-        />
-      </label>
+      <div className="mb-3">
+        <YamlEditor value={manifest} onChange={setManifest} rows={6} label="Manifest (YAML)" />
+      </div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700">

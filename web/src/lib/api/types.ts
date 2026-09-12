@@ -124,9 +124,12 @@ export type ClusterEvent = {
 // Mirrors internal/api's clusterActivityDTO — GET /clusters/<name>/events'
 // response shape. The only place a create/delete operation's actual output
 // survives (k8sjob.Run always deletes its dispatched Job right after
-// fetching logs), plus the lifecycle Events a reconcile emits.
+// fetching logs), plus the lifecycle Events a reconcile emits. events is
+// one page (see ?limit=/?offset=, ClusterDetailPage's own pagination
+// state) — totalEvents is the full count, for rendering "X-Y of Z".
 export type ClusterActivity = {
   events: ClusterEvent[] | null
+  totalEvents: number
   lastCreateOutput?: string
   lastDeleteOutput?: string
 }
@@ -257,3 +260,18 @@ export type WorkflowRunStatus = {
 // per tenant namespace (see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2").
 
 export type Environment = { name: string; namespace: string }
+
+// ── HyveConfig (internal/api/config.go) — superadmin-only, one singleton
+// per install (GET/PATCH /config). Mirrors hyveConfigDTO field-for-field;
+// exists distinguishes "no HyveConfig object yet" (the common starting
+// state) from "one exists with every field at its zero value."
+export type ImageInstall = { image: string; install: string }
+export type HyveConfig = {
+  exists: boolean
+  strictResourceDelete: boolean
+  defaultWorkflowImage?: string
+  defaultModuleImage?: string
+  defaultAgentImage?: string
+  imageInstalls?: ImageInstall[]
+  imagePullSecrets?: string[]
+}

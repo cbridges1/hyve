@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
@@ -24,9 +25,14 @@ import (
 // milestone (see internal/reconcile.ReconcileHooks/internal/controller.
 // ClusterDefinitionReconciler.Recorder) — bundled into one response since a
 // caller asking "what happened to this cluster" wants both together, not two
-// round trips.
+// round trips. Events is paginated (?limit=/?offset=, see
+// handleGetClusterEvents) — a long-lived cluster reconciled every few
+// minutes for days accumulates far more events than any UI should render
+// unbounded in one page; TotalEvents lets a caller render "X-Y of Z"
+// without a second round trip.
 type clusterActivityDTO struct {
 	Events           []clusterEventDTO `json:"events"`
+	TotalEvents      int               `json:"totalEvents"`
 	LastCreateOutput string            `json:"lastCreateOutput,omitempty"`
 	LastDeleteOutput string            `json:"lastDeleteOutput,omitempty"`
 }
@@ -196,9 +202,21 @@ func (s *Server) handleGetClusterResources(w http.ResponseWriter, r *http.Reques
 // the involvedObject.name field selector below is evaluated by the real API
 // server — a cached client has no such capability without a manager-level
 // field indexer this API server doesn't register.
+// defaultClusterEventsLimit/maxClusterEventsLimit bound ?limit= — default
+// keeps the common case (no query params at all, e.g. an older CLI/UI
+// build) from ever rendering an unbounded list; max keeps a caller from
+// requesting the whole event history in one response regardless.
+const (
+	defaultClusterEventsLimit = 20
+	maxClusterEventsLimit     = 200
+)
+
 func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	ns := s.TenantNamespace(r)
+
+	limit := parseClusterEventsIntParam(r, "limit", defaultClusterEventsLimit, 1, maxClusterEventsLimit)
+	offset := parseClusterEventsIntParam(r, "offset", 0, 0, 1<<30)
 
 	var cd hyvev1alpha1.ClusterDefinition
 	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
@@ -238,10 +256,47 @@ func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) 
 				LastSeen: lastSeen.Format(time.RFC3339),
 			})
 		}
-		sort.Slice(dto.Events, func(i, j int) bool { return dto.Events[i].LastSeen < dto.Events[j].LastSeen })
+		// Newest first — a "recent activity" feed with the oldest entries
+		// first (this package's original sort order) buries exactly what a
+		// caller opened the page to see, and is compounded by unbounded
+		// length: on a long-lived cluster reconciled every few minutes for
+		// days, the newest, most relevant events could be pages away.
+		sort.Slice(dto.Events, func(i, j int) bool { return dto.Events[i].LastSeen > dto.Events[j].LastSeen })
+
+		dto.TotalEvents = len(dto.Events)
+		if offset > len(dto.Events) {
+			offset = len(dto.Events)
+		}
+		end := offset + limit
+		if end > len(dto.Events) {
+			end = len(dto.Events)
+		}
+		dto.Events = dto.Events[offset:end]
 	}
 
 	writeJSON(w, http.StatusOK, dto)
+}
+
+// parseClusterEventsIntParam parses r's query param name as a non-negative
+// int, clamped to [min, max] — an invalid or missing value silently falls
+// back to def rather than erroring the whole request over a malformed
+// pagination param.
+func parseClusterEventsIntParam(r *http.Request, name string, def, min, max int) int {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 // createClusterRequest reuses hyvev1alpha1.ClusterDefinitionSpec directly

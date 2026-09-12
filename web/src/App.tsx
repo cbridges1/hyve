@@ -13,6 +13,7 @@ import { ModulesPage } from './routes/ModulesPage'
 import { ResourceDetailPage } from './routes/ResourceDetailPage'
 import { ResourcesPage } from './routes/ResourcesPage'
 import { SecretsPage } from './routes/SecretsPage'
+import { SettingsPage } from './routes/SettingsPage'
 import { TemplateDetailPage } from './routes/TemplateDetailPage'
 import { TemplatesPage } from './routes/TemplatesPage'
 import { WorkflowDetailPage } from './routes/WorkflowDetailPage'
@@ -53,6 +54,14 @@ function App() {
             <Route path="/modules/:name" element={<ModuleDetailPage />} />
             <Route path="/secrets" element={<SecretsPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
+            <Route
+              path="/settings"
+              element={
+                <SuperadminOnly>
+                  <SettingsPage />
+                </SuperadminOnly>
+              }
+            />
             <Route path="*" element={<Navigate to="/clusters" replace />} />
           </Route>
         </Routes>

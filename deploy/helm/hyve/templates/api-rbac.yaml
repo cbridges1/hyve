@@ -51,6 +51,18 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["templates", "workflows", "resources"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # HyveConfig backs GET/PATCH /config (internal/api/config.go) — the
+  # web console's Settings page, superadmin-only. Read+write, unlike
+  # controller-rbac.yaml's own get/list/watch-only grant for the same
+  # resource: the controller only ever reads this singleton (its own
+  # comment: "this chart never overwrites an existing HyveConfig object it
+  # doesn't own"), but this new endpoint is specifically how an operator is
+  # meant to create/edit it now, so create+update are both required here.
+  # No list/watch — handleGetConfig/handleUpdateConfig always address it
+  # by its one fixed name (s.ConfigName), never enumerate.
+  - apiGroups: ["hyve.io"]
+    resources: ["hyveconfigs"]
+    verbs: ["get", "create", "update"]
   # HyveAccessBinding is namespaced (one install = one tenant = one
   # namespace — see hyveaccessbinding_types.go), so this lives in the same
   # namespaced Role as everything else above rather than a ClusterRole.

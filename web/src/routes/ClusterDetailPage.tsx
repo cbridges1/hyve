@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BackLink, Card, EmptyState } from '../components/Card'
 import { ReadyBadge } from '../components/ConditionBadge'
@@ -11,6 +11,7 @@ import { useConfirm } from '../lib/confirm'
 import { usePolledApi } from '../lib/useApi'
 
 const POLL_INTERVAL_MS = 5000
+const EVENTS_PAGE_SIZE = 20
 
 function KubeconfigPanel({ name }: { name: string }) {
   const [result, setResult] = useState<{ kind: 'kubeconfig'; text: string } | { kind: 'auth-context'; note: string } | null>(
@@ -80,9 +81,20 @@ export function ClusterDetailPage() {
   const confirm = useConfirm()
   const { data: cluster, error } = usePolledApi(() => clustersApi.get(name), POLL_INTERVAL_MS, [name])
   const { data: resources } = usePolledApi(() => clustersApi.resources(name), POLL_INTERVAL_MS, [name])
-  const { data: activity } = usePolledApi(() => clustersApi.events(name), POLL_INTERVAL_MS, [name])
+  const [eventsOffset, setEventsOffset] = useState(0)
+  const { data: activity } = usePolledApi(
+    () => clustersApi.events(name, EVENTS_PAGE_SIZE, eventsOffset),
+    POLL_INTERVAL_MS,
+    [name, eventsOffset],
+  )
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  // Navigating from one cluster's detail page to another's re-renders this
+  // same component (React Router doesn't remount on a param-only change) —
+  // without this, the new cluster's event list would silently start on
+  // whatever page the previous one was left on.
+  useEffect(() => setEventsOffset(0), [name])
 
   async function onDelete() {
     const ok = await confirm({
@@ -218,6 +230,32 @@ export function ClusterDetailPage() {
             <span className="shrink-0 text-neutral-400">{ev.lastSeen}</span>
           </div>
         ))}
+        {!!activity?.totalEvents && (
+          <div className="mt-2 flex items-center justify-between border-t border-neutral-100 pt-2 text-xs text-neutral-500 dark:border-neutral-800/70 dark:text-neutral-400">
+            <span>
+              {Math.min(eventsOffset + 1, activity.totalEvents)}–{Math.min(eventsOffset + EVENTS_PAGE_SIZE, activity.totalEvents)} of{' '}
+              {activity.totalEvents}
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setEventsOffset((o) => Math.max(0, o - EVENTS_PAGE_SIZE))}
+                disabled={eventsOffset === 0}
+                className="rounded px-2 py-1 font-medium text-neutral-600 transition-colors hover:bg-neutral-100 disabled:opacity-40 disabled:hover:bg-transparent dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => setEventsOffset((o) => o + EVENTS_PAGE_SIZE)}
+                disabled={eventsOffset + EVENTS_PAGE_SIZE >= activity.totalEvents}
+                className="rounded px-2 py-1 font-medium text-neutral-600 transition-colors hover:bg-neutral-100 disabled:opacity-40 disabled:hover:bg-transparent dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
         {(activity?.lastCreateOutput || activity?.lastDeleteOutput) && (
           <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800/70">
             {activity?.lastCreateOutput && (

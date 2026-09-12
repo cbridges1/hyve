@@ -18,6 +18,7 @@ import {
   ModulesIcon,
   ResourcesIcon,
   SecretsIcon,
+  SettingsIcon,
   TemplatesIcon,
   WorkflowsIcon,
 } from './icons'
@@ -134,11 +135,12 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             managing hyve-system's own accounts is just "Viewing: Control
             plane" + Accounts, the same page a tenant admin already uses,
             not a separate mechanism. Environments (creating/listing
-            tenants) is control-plane-only — it isn't scoped to any one
-            tenant, so it only makes sense while Viewing: Control plane,
+            tenants) and Settings (the install-wide HyveConfig singleton)
+            are both control-plane-only — neither is scoped to any one
+            tenant, so both only make sense while Viewing: Control plane,
             unlike Accounts above. Grouped under its own header only when
-            at least one of the two is actually visible, so this role-gated
-            group never renders as an empty heading. */}
+            at least one of the three is actually visible, so this
+            role-gated group never renders as an empty heading. */}
         {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <div>
             <div className={groupHeaderClass}>Organization</div>
@@ -151,6 +153,12 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                 <NavLink to="/environments" className={linkClass} onClick={onNavigate}>
                   <EnvironmentsIcon />
                   Environments
+                </NavLink>
+              )}
+              {who?.role === RoleSuperadmin && actAs === null && (
+                <NavLink to="/settings" className={linkClass} onClick={onNavigate}>
+                  <SettingsIcon />
+                  Settings
                 </NavLink>
               )}
             </div>

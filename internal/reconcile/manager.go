@@ -776,8 +776,8 @@ func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) 
 		return nil
 	}
 	if lf.GetLocked(c.Spec.Driver.Source, c.Spec.Driver.Version) == nil {
-		return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install`",
-			c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version)
+		return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install` (local mode), or check `kubectl get module` for %s@%s's own resolve error (cluster mode resolves this automatically per-reconcile — see internal/controller.resolveModuleIfNeeded — a private module repo needs a GITHUB_TOKEN via `hyve env secrets set GITHUB_TOKEN ...`)",
+			c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version, c.Spec.Driver.Source, c.Spec.Driver.Version)
 	}
 	return nil
 }
