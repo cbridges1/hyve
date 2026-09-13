@@ -83,11 +83,22 @@ export function AccountsIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
-export function EnvironmentsIcon(props: SVGProps<SVGSVGElement>) {
+export function OrganizationsIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
       <path d="M12 3l9 5-9 5-9-5 9-5z" />
       <path d="M3 13l9 5 9-5" />
+    </svg>
+  )
+}
+
+export function ReconcilingClustersIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="5" cy="6" r="2.5" />
+      <circle cx="19" cy="6" r="2.5" />
+      <circle cx="12" cy="18" r="2.5" />
+      <path d="M7 7.5L10 16M17 7.5L14 16" />
     </svg>
   )
 }

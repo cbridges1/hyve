@@ -21,9 +21,9 @@ export function AdminOnly({ children }: { children: ReactNode }) {
 
 /**
  * Renders children only for a superadmin caller — the one cluster-scoped
- * role that spans tenant namespaces (see POST/GET /environments and
- * PrimaryClusterProvider's access.method: primary gate). An ordinary
- * tenant admin, even of their own namespace, is not a superadmin.
+ * role that spans tenant namespaces (see POST/GET /organizations and
+ * HostProvider's access.method: primary gate). An ordinary tenant admin,
+ * even of their own namespace, is not a superadmin.
  */
 export function SuperadminOnly({ children }: { children: ReactNode }) {
   const { data: who } = useWhoami()

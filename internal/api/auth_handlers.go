@@ -9,6 +9,7 @@ import (
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,7 +73,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ns = s.Namespace
 	}
 
-	binding, err := FindBindingBySubject(r.Context(), s.Client, ns, hyvev1alpha1.SubjectTypeLocal, req.Username)
+	binding, err := s.findBindingBySubject(r.Context(), ns, orgdb.SubjectTypeLocal, req.Username)
 	if err != nil {
 		// Deliberately the same error as a wrong password below — a login
 		// endpoint shouldn't reveal which usernames exist.
@@ -80,7 +81,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := LoadPasswordHash(r.Context(), s.Client, ns, binding.Name)
+	hash, err := LoadPasswordHash(r.Context(), s.Client, ns, binding.Identity)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return

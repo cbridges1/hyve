@@ -177,19 +177,14 @@ func TestHyveConfig_DryRun_ReportsSkipWhenAlreadyExists(t *testing.T) {
 }
 
 func TestAccessBindings_DryRun_ReportsSkippedForExistingObject(t *testing.T) {
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "cedric", Namespace: testNamespace},
-		Spec:       hyvev1alpha1.HyveAccessBindingSpec{Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: "cedric"}},
-	}
-	source := newFakeClient(t, binding)
-	existing := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "cedric", Namespace: testNamespace},
-	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cedric-credentials", Namespace: testNamespace}}
+	source := newFakeClient(t, secret)
+	existing := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cedric-credentials", Namespace: testNamespace}}
 	dest := newFakeClient(t, existing)
 
 	summary, err := AccessBindings(context.Background(), source, dest, testNamespace, true, false)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"cedric"}, summary.Skipped)
+	assert.Equal(t, []string{"cedric-credentials"}, summary.Skipped)
 	assert.Empty(t, summary.Created)
 }
 
@@ -223,74 +218,70 @@ func TestHyveConfig_SkipsWhenAlreadyExists(t *testing.T) {
 	assert.Equal(t, "untouched", hc.Spec.DefaultWorkflowImage, "an existing HyveConfig must never be overwritten, even with force semantics elsewhere in this package — mirrors the Helm chart's own stance")
 }
 
-func TestAccessBindings_CopiesBindingAndCredentialsSecret(t *testing.T) {
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "cedric", Namespace: testNamespace},
-		Spec: hyvev1alpha1.HyveAccessBindingSpec{
-			Subject:           hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: "cedric"},
-			Role:              hyvev1alpha1.RoleAdmin,
-			ServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: "hyve-access-admin", Namespace: testNamespace},
-		},
-	}
+// TestAccessBindings_CopiesCredentialsSecret is the regression test for
+// what AccessBindings still does post-Milestone-4: copy every
+// "*-credentials" Secret verbatim. It deliberately does NOT recreate any
+// binding (access grant) on the destination — see AccessBindings' own doc
+// comment for why that's now a separate, out-of-scope concern (bindings
+// are Postgres/SQLite rows, not CRDs, so copying them means copying rows
+// between two independent databases, not something this
+// client.Client-based package does).
+func TestAccessBindings_CopiesCredentialsSecret(t *testing.T) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "cedric-credentials", Namespace: testNamespace},
 		Data:       map[string][]byte{"password-hash": []byte("bcrypt-hash-value")},
 	}
-	source := newFakeClient(t, binding, secret)
+	source := newFakeClient(t, secret)
 	dest := newFakeClient(t)
 
 	summary, err := AccessBindings(context.Background(), source, dest, testNamespace, false, false)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"cedric"}, summary.Created)
+	assert.Equal(t, []string{"cedric-credentials"}, summary.Created)
 	assert.True(t, summary.OK())
-
-	var gotBinding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "cedric"}, &gotBinding))
-	assert.Equal(t, hyvev1alpha1.RoleAdmin, gotBinding.Spec.Role)
 
 	var gotSecret corev1.Secret
 	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "cedric-credentials"}, &gotSecret))
-	assert.Equal(t, []byte("bcrypt-hash-value"), gotSecret.Data["password-hash"], "the paired credentials secret must be copied — a binding-only copy would leave this user unable to log in")
+	assert.Equal(t, []byte("bcrypt-hash-value"), gotSecret.Data["password-hash"])
 }
 
-func TestAccessBindings_MissingSecretDoesNotFailBinding(t *testing.T) {
-	// An OIDC-subject binding (or a local one mid-provisioning) has no
-	// paired credentials Secret at all — must not fail the run.
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "someone", Namespace: testNamespace},
-		Spec: hyvev1alpha1.HyveAccessBindingSpec{
-			Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeOIDC, Value: "someone@example.com"},
-			Role:    hyvev1alpha1.RoleReadOnly,
-		},
-	}
-	source := newFakeClient(t, binding)
+// TestAccessBindings_IgnoresUnrelatedSecrets proves the "*-credentials"
+// suffix filter actually filters — an ordinary Secret with an unrelated
+// name (e.g. a driver module's own credentials, or hyve-api-credentials
+// itself) must never be swept up by this copy.
+func TestAccessBindings_IgnoresUnrelatedSecrets(t *testing.T) {
+	unrelated := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "hyve-cli-secrets", Namespace: testNamespace}}
+	source := newFakeClient(t, unrelated)
 	dest := newFakeClient(t)
 
 	summary, err := AccessBindings(context.Background(), source, dest, testNamespace, false, false)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"someone"}, summary.Created)
-	assert.True(t, summary.OK())
+	assert.Empty(t, summary.Created)
+	assert.Empty(t, summary.Skipped)
+
+	var gotSecret corev1.Secret
+	err = dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "hyve-cli-secrets"}, &gotSecret)
+	assert.True(t, apierrors.IsNotFound(err), "an unrelated secret must never be copied by this credentials-only sweep")
 }
 
 func TestAccessBindings_SkipsExistingWithoutForce(t *testing.T) {
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "cedric", Namespace: testNamespace},
-		Spec:       hyvev1alpha1.HyveAccessBindingSpec{Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: "cedric"}, Role: hyvev1alpha1.RoleAdmin},
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cedric-credentials", Namespace: testNamespace},
+		Data:       map[string][]byte{"password-hash": []byte("new-hash")},
 	}
-	source := newFakeClient(t, binding)
-	existing := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "cedric", Namespace: testNamespace},
-		Spec:       hyvev1alpha1.HyveAccessBindingSpec{Role: hyvev1alpha1.RoleReadOnly},
+	source := newFakeClient(t, secret)
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cedric-credentials", Namespace: testNamespace},
+		Data:       map[string][]byte{"password-hash": []byte("old-hash")},
 	}
 	dest := newFakeClient(t, existing)
 
 	summary, err := AccessBindings(context.Background(), source, dest, testNamespace, false, false)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"cedric"}, summary.Skipped)
+	assert.Equal(t, []string{"cedric-credentials"}, summary.Skipped)
 
-	var gotBinding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "cedric"}, &gotBinding))
-	assert.Equal(t, hyvev1alpha1.RoleReadOnly, gotBinding.Spec.Role, "must not overwrite an existing binding without --force")
+	var gotSecret corev1.Secret
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "cedric-credentials"}, &gotSecret))
+	assert.Equal(t, []byte("old-hash"), gotSecret.Data["password-hash"], "must not overwrite an existing credentials secret without --force")
 }
 
 func TestClusterDefinitions_FailurePerCluster_DoesNotAbortTheRest(t *testing.T) {
@@ -484,32 +475,66 @@ func TestWorkflows_ForceOverwritesExisting(t *testing.T) {
 	assert.Equal(t, "new description", got.Spec.Description)
 }
 
-// ── Environments ──────────────────────────────────────────────────────────
-
-func TestEnvironments_ListsOnlyControlPlaneNamespace(t *testing.T) {
-	acme := &hyvev1alpha1.HyveEnvironment{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testNamespace},
-		Spec:       hyvev1alpha1.HyveEnvironmentSpec{Namespace: "acme"},
+func TestResources_CopiesFromSourceToDest(t *testing.T) {
+	res := &hyvev1alpha1.Resource{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-resource", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ResourceSpec{Manifest: "apiVersion: v1\nkind: ConfigMap"},
 	}
-	// A HyveEnvironment object living somewhere other than the
-	// control-plane namespace must never happen in practice, but proves
-	// this really does filter by namespace rather than listing globally.
-	stray := &hyvev1alpha1.HyveEnvironment{
-		ObjectMeta: metav1.ObjectMeta{Name: "stray", Namespace: "not-control-plane"},
-		Spec:       hyvev1alpha1.HyveEnvironmentSpec{Namespace: "stray"},
-	}
-	source := newFakeClient(t, acme, stray)
+	source := newFakeClient(t, res)
+	dest := newFakeClient(t)
 
-	envs, err := Environments(context.Background(), source, testNamespace)
+	summary, err := Resources(context.Background(), source, dest, testNamespace, false, false)
 	require.NoError(t, err)
-	require.Len(t, envs, 1)
-	assert.Equal(t, "acme", envs[0].Name)
-	assert.Equal(t, "acme", envs[0].Spec.Namespace)
+	assert.Equal(t, []string{"my-resource"}, summary.Created)
+
+	var got hyvev1alpha1.Resource
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-resource"}, &got))
+	assert.Equal(t, "apiVersion: v1\nkind: ConfigMap", got.Spec.Manifest)
 }
 
-func TestEnvironments_EmptyWhenNoneExist(t *testing.T) {
-	source := newFakeClient(t)
-	envs, err := Environments(context.Background(), source, testNamespace)
+func TestResources_ForceOverwritesExisting(t *testing.T) {
+	res := &hyvev1alpha1.Resource{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-resource", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ResourceSpec{Manifest: "new-manifest"},
+	}
+	source := newFakeClient(t, res)
+	existing := &hyvev1alpha1.Resource{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-resource", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ResourceSpec{Manifest: "old-manifest"},
+	}
+	dest := newFakeClient(t, existing)
+
+	summary, err := Resources(context.Background(), source, dest, testNamespace, false, true)
 	require.NoError(t, err)
-	assert.Empty(t, envs)
+	assert.Equal(t, []string{"my-resource"}, summary.Created)
+
+	var got hyvev1alpha1.Resource
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-resource"}, &got))
+	assert.Equal(t, "new-manifest", got.Spec.Manifest)
 }
+
+func TestResources_SkipsExistingWithoutForce(t *testing.T) {
+	res := &hyvev1alpha1.Resource{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-resource", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ResourceSpec{Manifest: "new-manifest"},
+	}
+	source := newFakeClient(t, res)
+	existing := &hyvev1alpha1.Resource{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-resource", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ResourceSpec{Manifest: "old-manifest"},
+	}
+	dest := newFakeClient(t, existing)
+
+	summary, err := Resources(context.Background(), source, dest, testNamespace, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-resource"}, summary.Skipped)
+
+	var got hyvev1alpha1.Resource
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "my-resource"}, &got))
+	assert.Equal(t, "old-manifest", got.Spec.Manifest, "without --force, the existing destination object must be left untouched")
+}
+
+// Tenant enumeration for `migrate cluster --namespace hyve-system` moved to
+// cmd/migrate_cluster.go against internal/orgdb.Store directly (see
+// migrate.go's own comment where Environments() used to live) — covered by
+// internal/orgdb's own ListOrganizations tests, not here.

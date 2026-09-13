@@ -2,38 +2,65 @@ package api
 
 import (
 	"context"
-	"fmt"
 
-	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
-// FindBindingBySubject returns the HyveAccessBinding matching
-// subjectType/subjectValue (e.g. "local"/"cedric") within namespace — a
-// HyveAccessBinding is namespaced (one install = one tenant = one
-// namespace), so this never sees or matches another install's bindings.
-// Used both at login time (to find the paired credentials Secret) and by
-// the authz middleware (to resolve a role per-request — see authz.go), so a
-// role change on a binding takes effect on the very next request, not just
-// the next login. More than one match is a configuration error (ambiguous),
-// not something to silently resolve by picking the first.
-func FindBindingBySubject(ctx context.Context, c client.Client, namespace, subjectType, subjectValue string) (*hyvev1alpha1.HyveAccessBinding, error) {
-	var list hyvev1alpha1.HyveAccessBindingList
-	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("list HyveAccessBindings: %w", err)
+// organizationIDForNamespace resolves a request-scoped namespace (from
+// Server.TenantNamespace) into the *string organizationID
+// orgdb.Store.FindBindingBySubject/ListBindingsForScope expect — nil means
+// "no organization" scope, covering two genuinely different cases the
+// caller doesn't need to (and shouldn't have to) tell apart:
+//
+//   - namespace == s.Namespace: the control-plane/superadmin scope,
+//     matching the retired CRD-based FindBindingBySubject's own
+//     "namespace == s.Namespace means the control plane" dispatch.
+//   - namespace has no matching Organization at all: a self-hosted,
+//     single-tenant install that never ran POST /organizations (Phase 1's
+//     original one-namespace-holds-everything model — see
+//     HYVE-MULTI-TENANCY-PLAN.md) — its ordinary admin/read-only bindings
+//     live directly in that one namespace, exactly like a superadmin's,
+//     with no Organization/Environment layer above them at all. This
+//     mirrors resolveResourceEnvironment's own identical "no organization
+//     for this namespace -> legacy behavior, not an error" stance for the
+//     four resource types (see environmentnaming.go) — bindings get the
+//     same additive, backward-compatible treatment.
+//
+// Only a genuine datastore failure (not "no organization found") returns a
+// non-nil error. A nil s.OrgStore is treated the same as "no organization
+// found" here (not an error) — see findBindingBySubject's own doc comment
+// for why callers resolving a *binding* still fail closed instead, at a
+// layer above this one.
+func (s *Server) organizationIDForNamespace(ctx context.Context, namespace string) (*string, error) {
+	if namespace == s.Namespace || s.OrgStore == nil {
+		return nil, nil
 	}
-	var matches []hyvev1alpha1.HyveAccessBinding
-	for _, b := range list.Items {
-		if b.Spec.Subject.Type == subjectType && b.Spec.Subject.Value == subjectValue {
-			matches = append(matches, b)
-		}
+	org, err := s.OrgStore.GetOrganizationByName(ctx, namespace)
+	if err == orgdb.ErrNotFound {
+		return nil, nil
 	}
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("no HyveAccessBinding found for %s subject %q", subjectType, subjectValue)
-	case 1:
-		return &matches[0], nil
-	default:
-		return nil, fmt.Errorf("%d HyveAccessBindings match %s subject %q — ambiguous, remove the duplicate", len(matches), subjectType, subjectValue)
+	if err != nil {
+		return nil, err
 	}
+	return &org.ID, nil
+}
+
+// findBindingBySubject looks up (subjectType, identity)'s binding within
+// namespace — the actual isolation boundary (see orgdb.Binding's own doc
+// comment) — the Server-method replacement for the retired CRD-based
+// package-level FindBindingBySubject(ctx, client.Client, namespace, ...),
+// now with an identical namespace-scoped signature. Used at login time (to
+// find the paired credentials Secret — see LoadPasswordHash) and by the
+// authz middleware (to resolve a role per-request — see server.go's
+// requireRole), so a role change on a binding takes effect on the very
+// next request, not just the next login, exactly as before.
+//
+// A nil s.OrgStore (a Server built before this field existed, including
+// any test not exercising binding lookups at all) fails closed with
+// orgdb.ErrNotFound rather than panicking.
+func (s *Server) findBindingBySubject(ctx context.Context, namespace, subjectType, identity string) (orgdb.Binding, error) {
+	if s.OrgStore == nil {
+		return orgdb.Binding{}, orgdb.ErrNotFound
+	}
+	return s.OrgStore.FindBindingBySubject(ctx, namespace, subjectType, identity)
 }

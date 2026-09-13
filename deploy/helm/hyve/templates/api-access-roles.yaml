@@ -1,5 +1,7 @@
 {{- if .Values.api.accessRoles.create }}
-# The two default roles HyveAccessBinding.spec.serviceAccountRef points at
+# The two default roles a Binding's own ServiceAccountName points at
+# (internal/orgdb; was HyveAccessBinding.spec.serviceAccountRef before
+# Milestone 4 moved bindings out of Kubernetes CRDs)
 # — a caller matched to an "admin" binding gets a token minted against
 # hyve-access-admin (bound to the built-in cluster-admin ClusterRole,
 # scoped to this install's own namespace by default — this cluster's own

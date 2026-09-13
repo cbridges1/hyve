@@ -10,6 +10,7 @@ import (
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,20 +25,19 @@ func newTestServerWithUser(t *testing.T, username, password, role string) *Serve
 	hash, err := HashPassword(password)
 	require.NoError(t, err)
 
-	bindingName := username + "-binding"
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: testNamespace},
-		Spec: hyvev1alpha1.HyveAccessBindingSpec{
-			Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeLocal, Value: username},
-			Role:    role,
-		},
-	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(bindingName), Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(username), Namespace: testNamespace},
 		Data:       map[string][]byte{"password-hash": []byte(hash)},
 	}
+	store := newTestOrgStore(t)
+	_, err = store.CreateBinding(context.Background(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: username, Role: role,
+		ServiceAccountName: orgdb.ServiceAccountNameForRole(role), ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
 	return &Server{
-		Client:     newFakeClient(t, binding, secret),
+		Client:     newFakeClient(t, secret),
+		OrgStore:   store,
 		Namespace:  testNamespace,
 		SigningKey: []byte("test-signing-key"),
 	}

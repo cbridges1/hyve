@@ -14,16 +14,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	internalcontroller "github.com/cbridges1/hyve/internal/controller"
-	"github.com/cbridges1/hyve/internal/k8sjob"
-	"github.com/cbridges1/hyve/internal/module"
-	"github.com/cbridges1/hyve/internal/reconcile"
-	"github.com/cbridges1/hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apitypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -46,6 +40,9 @@ var (
 	agentCAPath             string
 	hostServiceAccount      string
 	hostCAPath              string
+	reconcilingClusterID    string
+	controllerDBDriver      string
+	controllerDBDSN         string
 )
 
 // Cmd is the controller command.
@@ -86,6 +83,9 @@ func init() {
 	runCmd.Flags().StringVar(&agentCAPath, "agent-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --agent-control-plane-url — embedded as a literal ConfigMap on every remote cluster hyve-agent installs onto (a cross-cluster volume mount isn't possible, unlike --public-ca-path's same-cluster case) so hyve-agent's own POST /agent/bootstrap call trusts it. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/reconcile/agent.go")
 	runCmd.Flags().StringVar(&hostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) this controller mints a token against to reconcile spec.resources for a primary-marked ClusterDefinition with no real spec.driver — see internal/reconcile/host.go and deploy/helm/hyve/templates/api-access-roles.yaml. Must match hyve-api's own --host-service-account")
 	runCmd.Flags().StringVar(&hostCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used for the host-cluster kubeconfig's certificate-authority-data")
+	runCmd.Flags().StringVar(&reconcilingClusterID, "reconciling-cluster-id", "", "Milestone 6: id of the internal/orgdb.ReconcilingCluster this process reconciles (see HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs). Leave unset for Phase 1's default single-namespace mode (--namespace alone). When set, --db/--db-dsn must point at the same organization datastore hyve-api uses — this process queries it once at startup (read-only) for every organization mapped to this id, and reconciles exactly those namespaces, one full reconciler instance per namespace, all on this one process/manager")
+	runCmd.Flags().StringVar(&controllerDBDriver, "db", "sqlite", "Organization datastore driver — only read when --reconciling-cluster-id is set (\"sqlite\" or \"postgres\", matching hyve-api's own --db)")
+	runCmd.Flags().StringVar(&controllerDBDSN, "db-dsn", "/data/orgdb.sqlite", "Organization datastore DSN — only read when --reconciling-cluster-id is set. Must resolve to the SAME datastore hyve-api itself uses; a SQLite DSN only works here if this process can reach that same file, which in practice means --db=postgres is required for any real Milestone 6 deployment (see cmd/api/run.go's own SQLite/Postgres deployment gate)")
 
 	Cmd.AddCommand(runCmd)
 }
@@ -101,22 +101,60 @@ func runController() {
 		log.Fatalf("❌ Failed to register hyve.io/v1alpha1 scheme: %v", err)
 	}
 
+	// Milestone 6: resolve which namespace(s) this process reconciles (see
+	// HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Per-organization reconciling
+	// cluster" section, nexus-config/docs). --reconciling-cluster-id unset
+	// (the default) is exactly Phase 1's original single-namespace
+	// behavior — one namespace, from --namespace, one reconciler instance
+	// each of ClusterDefinition/WorkflowRun, unchanged. Set, this process
+	// instead makes one read-only query against the organization datastore
+	// — the proposal's own deliberate, narrow exception to "the controller
+	// never touches Store" — for every organization mapped to that id, and
+	// reconciles all of their namespaces instead, one full reconciler
+	// instance per namespace (see setupNamespaceReconcilers).
+	multiInstance := reconcilingClusterID != ""
+	var orgStore *orgdb.Store
+	if multiInstance {
+		var dbErr error
+		orgStore, dbErr = orgdb.Open(controllerDBDriver, controllerDBDSN)
+		if dbErr != nil {
+			log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", controllerDBDriver, controllerDBDSN, dbErr)
+		}
+		defer orgStore.Close()
+	}
+	targetNamespaces, resolveErr := resolveTargetNamespaces(context.Background(), orgStore, namespace, reconcilingClusterID)
+	if resolveErr != nil {
+		log.Fatalf("❌ Failed to list organizations for reconciling cluster %q: %v", reconcilingClusterID, resolveErr)
+	}
+	if multiInstance && len(targetNamespaces) == 0 {
+		log.Printf("⚠️  No organizations are currently mapped to reconciling cluster %q — this process will reconcile nothing until one is", reconcilingClusterID)
+	}
+
+	cacheNamespaces := make(map[string]cache.Config, len(targetNamespaces))
+	for _, ns := range targetNamespaces {
+		cacheNamespaces[ns] = cache.Config{}
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme.Scheme,
-		// ClusterDefinition/HyveConfig are both namespaced resources and
-		// this controller only ever cares about one namespace (--namespace)
-		// — scoping the cache's watch/list to just that namespace matches
+		// ClusterDefinition/HyveConfig are both namespaced resources, and
+		// this controller only ever cares about targetNamespaces (Phase 1:
+		// just --namespace; Milestone 6: every organization namespace
+		// mapped to --reconciling-cluster-id, resolved just above) — scoping
+		// the cache's watch/list to exactly that set matches
 		// deploy/helm/hyve-controller's own RBAC, which grants a namespaced
-		// Role, not a ClusterRole. Left unscoped (the controller-runtime
-		// default), the manager's cache tries to list/watch
-		// ClusterDefinition cluster-wide and fails outright when run with
-		// that Role's real, least-privilege permissions — confirmed live:
-		// this exact mismatch crash-looped the controller pod
-		// ("cannot list resource \"clusterdefinitions\" ... at the cluster
-		// scope") the first time this ran in-cluster with real RBAC rather
-		// than a local process's full-access kubeconfig.
+		// Role, not a ClusterRole (plus a narrow read-only ClusterRole for
+		// the handful of cluster-wide needs — see that chart's own comment).
+		// Left unscoped (the controller-runtime default), the manager's
+		// cache tries to list/watch ClusterDefinition cluster-wide and
+		// fails outright when run with that Role's real, least-privilege
+		// permissions — confirmed live: this exact mismatch crash-looped
+		// the controller pod ("cannot list resource \"clusterdefinitions\"
+		// ... at the cluster scope") the first time this ran in-cluster
+		// with real RBAC rather than a local process's full-access
+		// kubeconfig.
 		Cache: cache.Options{
-			DefaultNamespaces: map[string]cache.Config{namespace: {}},
+			DefaultNamespaces: cacheNamespaces,
 		},
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
@@ -127,117 +165,82 @@ func runController() {
 		log.Fatalf("❌ Failed to start manager: %v", err)
 	}
 
-	stateProvider := &internalcontroller.CRDStateProvider{
-		Client:         mgr.GetClient(),
-		Namespace:      namespace,
-		ConfigName:     configName,
-		ModulesDirPath: modulesDir,
-	}
-
 	// A plain client-go clientset — separate from the controller-runtime
 	// client above, since KubernetesJobStepRunner works with Jobs/Pods/pod
 	// logs, exactly the shape client-go's typed Interface (and its fake for
 	// tests) is built for, matching the plan's own "unit test against
-	// client-go's fake clientset" instruction.
+	// client-go's fake clientset" instruction. Process-level, shared across
+	// every namespace's own reconciler instances below — building a second
+	// one per namespace would buy nothing, it's the same rest.Config either
+	// way.
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		log.Fatalf("❌ Failed to build Kubernetes clientset: %v", err)
 	}
 
-	// mgr.GetClient() returns a cached client whose cache only starts
-	// syncing once mgr.Start() runs — reading through it here, before
-	// Start(), would always fail with "the cache is not started" (confirmed
-	// live: this exact bug shipped in an earlier version of this file).
-	// mgr.GetAPIReader() reads directly from the API server, bypassing the
-	// cache entirely, which is exactly what a one-time startup read needs.
-	var startupCfg hyvev1alpha1.HyveConfig
-	var defaultWorkflowImage, defaultModuleImage, defaultAgentImage string
-	var imagePullSecrets []string
-	var imageInstalls []k8sjob.ImageInstall
-	if err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: namespace, Name: configName}, &startupCfg); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Printf("⚠️  Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/defaultAgentImage/imagePullSecrets/imageInstalls at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", err)
-		}
-	} else {
-		defaultWorkflowImage = startupCfg.Spec.DefaultWorkflowImage
-		defaultModuleImage = startupCfg.Spec.DefaultModuleImage
-		defaultAgentImage = startupCfg.Spec.DefaultAgentImage
-		imagePullSecrets = startupCfg.Spec.ImagePullSecrets
-		imageInstalls = make([]k8sjob.ImageInstall, len(startupCfg.Spec.ImageInstalls))
-		for i, ii := range startupCfg.Spec.ImageInstalls {
-			imageInstalls[i] = k8sjob.ImageInstall{Image: ii.Image, Install: ii.Install}
-		}
-	}
-
-	hyveReconciler := reconcile.NewReconciler(stateProvider)
-	hyveReconciler.StepRunner = &workflow.KubernetesJobStepRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets, ImageInstalls: imageInstalls}
-	hyveReconciler.DefaultWorkflowImage = defaultWorkflowImage
-	hyveReconciler.ModuleRunner = &module.JobRunner{Client: clientset, Namespace: namespace, ImagePullSecrets: imagePullSecrets, ImageInstalls: imageInstalls}
-	hyveReconciler.DefaultModuleImage = defaultModuleImage
-
-	// hyve-agent installation (milestone 4 — see internal/reconcile/agent.go):
-	// soft-disabled, not fatal, when --agent-control-plane-url/
-	// --agent-tunnel-address are left unset, same "opt-in feature, missing
-	// config just disables it" stance as cmd/api/run.go's own AgentCA
-	// wiring. TargetNamespace and ControlPlaneNamespace happen to be the
-	// same value today (this controller's own --namespace) — see
-	// Reconciler.AgentControlPlaneNamespace's own doc comment for why
-	// that's not assumed permanent.
-	hyveReconciler.DefaultAgentImage = defaultAgentImage
-	hyveReconciler.AgentTokenIssuer = &agentpki.TokenIssuer{Clientset: clientset, ControlPlaneNamespace: namespace}
-	hyveReconciler.AgentControlPlaneNamespace = namespace
-	hyveReconciler.AgentControlPlaneURL = agentControlPlaneURL
-	hyveReconciler.AgentTunnelAddress = agentTunnelAddress
-	if agentControlPlaneURL == "" || agentTunnelAddress == "" {
-		log.Printf("ℹ️  --agent-control-plane-url/--agent-tunnel-address not set — spec.access.agent.enabled will be a no-op on every cluster")
-	}
-
 	// Optional — see --agent-ca-path's own doc comment. Empty path means
 	// "not configured," not an error: most real deployments use a
 	// publicly-trusted certificate and have no CA of their own to embed.
+	// Read once, shared: this is PEM bytes describing how to trust whatever
+	// terminates TLS in front of --agent-control-plane-url, not
+	// namespace-scoped data.
+	var agentCACertPEM string
 	if agentCAPath != "" {
 		agentCA, caErr := os.ReadFile(agentCAPath)
 		if caErr != nil {
 			log.Fatalf("❌ Failed to read --agent-ca-path %s: %v", agentCAPath, caErr)
 		}
-		hyveReconciler.AgentCACertPEM = string(agentCA)
+		agentCACertPEM = string(agentCA)
+	}
+	if agentControlPlaneURL == "" || agentTunnelAddress == "" {
+		log.Printf("ℹ️  --agent-control-plane-url/--agent-tunnel-address not set — spec.access.agent.enabled will be a no-op on every cluster")
 	}
 
-	// Host-cluster spec.resources reconciliation (a primary-marked
-	// ClusterDefinition with no real spec.driver — see
-	// docs/HYVE-AGENT-MIGRATION-GUIDE.md's "Host cluster access" section):
-	// mints a token against hostServiceAccount directly against
-	// https://kubernetes.default.svc, no /proxy hop needed since this
-	// process already runs inside the target cluster.
-	hyveReconciler.HostKubeconfigIssuer = &hostKubeconfigIssuer{
-		Clientset:              clientset,
-		Namespace:              namespace,
-		HostServiceAccountName: hostServiceAccount,
-		CAPath:                 hostCAPath,
+	deps := reconcilerSharedDeps{
+		clientset:               clientset,
+		configName:              configName,
+		modulesDir:              modulesDir,
+		maxConcurrentReconciles: maxConcurrentReconciles,
+		agentControlPlaneURL:    agentControlPlaneURL,
+		agentTunnelAddress:      agentTunnelAddress,
+		agentCACertPEM:          agentCACertPEM,
+		// hostServiceAccount/hostCAPath/AgentTokenIssuer's own
+		// ControlPlaneNamespace/AgentControlPlaneNamespace all stay tied to
+		// this single, shared --namespace — see setupNamespaceReconcilers'
+		// own doc comment for why these represent this control-plane
+		// process's own identity (which ServiceAccount it mints host/agent
+		// tokens against), not per-organization data, and so are
+		// deliberately NOT looped per target namespace the way
+		// StateProvider/StepRunner/ModuleRunner are.
+		controlNamespace:   namespace,
+		hostServiceAccount: hostServiceAccount,
+		hostCAPath:         hostCAPath,
 	}
 
-	reconciler := &internalcontroller.ClusterDefinitionReconciler{
-		Client:                  mgr.GetClient(),
-		APIReader:               mgr.GetAPIReader(),
-		Reconciler:              hyveReconciler,
-		StateProvider:           stateProvider,
-		Namespace:               namespace,
-		MaxConcurrentReconciles: maxConcurrentReconciles,
+	// One full reconciler instance per target namespace — see
+	// setupNamespaceReconcilers' own doc comment for exactly what that
+	// means and why Phase 1's single-namespace case (multiInstance false)
+	// preserves today's exact controller names/behavior unchanged.
+	for _, ns := range targetNamespaces {
+		namePrefix := ""
+		if multiInstance {
+			namePrefix = "org-" + ns
+		}
+		if err := setupNamespaceReconcilers(mgr, ns, namePrefix, deps); err != nil {
+			log.Fatalf("❌ Failed to set up reconcilers for namespace %q: %v", ns, err)
+		}
 	}
 
-	if err := reconciler.SetupWithManager(mgr); err != nil {
-		log.Fatalf("❌ Failed to set up ClusterDefinition controller: %v", err)
+	// Milestone 5's organization-deletion design (see
+	// HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs) — clears
+	// hyvev1alpha1.OrganizationNamespaceFinalizer once every hyve-owned
+	// object in a Terminating organization Namespace is confirmed gone.
+	namespaceReconciler := &internalcontroller.NamespaceReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
 	}
-
-	workflowRunReconciler := &internalcontroller.WorkflowRunReconciler{
-		Client:        mgr.GetClient(),
-		APIReader:     mgr.GetAPIReader(),
-		Reconciler:    hyveReconciler,
-		StateProvider: stateProvider,
-		Namespace:     namespace,
-	}
-	if err := workflowRunReconciler.SetupWithManager(mgr); err != nil {
-		log.Fatalf("❌ Failed to set up WorkflowRun controller: %v", err)
+	if err := namespaceReconciler.SetupWithManager(mgr); err != nil {
+		log.Fatalf("❌ Failed to set up Namespace controller: %v", err)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -247,7 +250,7 @@ func runController() {
 		log.Fatalf("❌ Failed to set up readiness check: %v", err)
 	}
 
-	log.Printf("🚀 hyve controller starting — namespace=%s modules-dir=%s config=%s", namespace, modulesDir, configName)
+	log.Printf("🚀 hyve controller starting — namespaces=%v modules-dir=%s config=%s reconciling-cluster-id=%q", targetNamespaces, modulesDir, configName, reconcilingClusterID)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Fatalf("❌ Manager exited with error: %v", err)
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cbridges1/hyve/internal/credentials"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -16,19 +18,20 @@ const (
 	// time; hyve itself never generates or stores it.
 	APICredentialsSecretName = "hyve-api-credentials"
 	signingKeyDataKey        = "session-signing-key"
-
-	// userCredentialsSecretSuffix names the Secret paired with a local
-	// HyveAccessBinding, holding its bcrypt password hash — never stored
-	// inline on the binding itself. Mirrors the <cluster-name>-access-
-	// kubeconfig Secret naming convention used elsewhere in this plan.
-	userCredentialsSecretSuffix = "-credentials"
-	passwordHashDataKey         = "password-hash"
+	passwordHashDataKey      = "password-hash"
 )
 
-// UserCredentialsSecretName returns the paired Secret name for a local
-// user's HyveAccessBinding.
+// UserCredentialsSecretSuffix/UserCredentialsSecretName re-export
+// internal/credentials' own — see that package's doc comment for why the
+// naming convention itself lives there, not here: internal/migrate needs
+// it too, and importing internal/api from internal/migrate (as it already
+// does, for exactly this) while internal/api imports internal/migrate back
+// (Milestone 6's PATCH /organizations/{name}, which reuses
+// internal/migrate's own copy primitives) would be a cycle.
+const UserCredentialsSecretSuffix = credentials.UserCredentialsSecretSuffix
+
 func UserCredentialsSecretName(bindingName string) string {
-	return bindingName + userCredentialsSecretSuffix
+	return credentials.UserCredentialsSecretName(bindingName)
 }
 
 // LoadSigningKey reads the session-signing key from the

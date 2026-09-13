@@ -256,10 +256,41 @@ export type WorkflowRunStatus = {
   completedAt?: string
 }
 
-// ── Environments (internal/api/environments.go) — superadmin-only, one
-// per tenant namespace (see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2").
+// ── Organizations (internal/api/organizations.go) — superadmin-only, one
+// per tenant namespace. Business record lives in hyve-api's own Postgres/
+// SQLite datastore (internal/orgdb), not a Kubernetes CRD — see
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md (nexus-config/docs).
 
-export type Environment = { name: string; namespace: string }
+export type Organization = {
+  name: string
+  namespace: string
+  plan?: string
+  // reconcilingCluster is the ReconcilingCluster.Name this organization's
+  // own resources currently live on (Milestone 6) — omitted/empty means
+  // the control plane's own home cluster, never a raw id.
+  reconcilingCluster?: string
+  // migrating reflects an in-flight PATCH /organizations/{name} move —
+  // every request against this organization's own resource types gets
+  // 423 until it completes.
+  migrating?: boolean
+}
+
+// An organization's own named sub-scope (Milestone 3 — see
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "What moves to Postgres" section).
+// Every organization gets a `default` environment automatically at
+// creation time; this type is for the ones after that first one.
+export type OrganizationEnvironment = { name: string }
+
+// A physical cluster hyve-controller can reconcile organizations'
+// infrastructure against (Milestone 6 — internal/orgdb.ReconcilingCluster).
+// Deliberately excludes the kubeconfig itself: the server never echoes it
+// back once registered (internal/api/reconcilingclusters.go).
+export type ReconcilingCluster = {
+  name: string
+  reachable?: boolean
+  lastCheckedAt?: string
+  lastError?: string
+}
 
 // ── HyveConfig (internal/api/config.go) — superadmin-only, one singleton
 // per install (GET/PATCH /config). Mirrors hyveConfigDTO field-for-field;

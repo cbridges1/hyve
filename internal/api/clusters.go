@@ -49,7 +49,17 @@ type clusterEventDTO struct {
 // GET /api/clusters/<name> — deliberately excludes driverOutputs and any
 // kubeconfig data, see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.4.
 type clusterDTO struct {
-	Name               string             `json:"name"`
+	// Name is always the short, user-facing name — cd.Name itself
+	// (metadata.name) when Environment is empty (legacy/unmanaged
+	// namespace), or cd.Name with its "<Environment>-" prefix stripped
+	// when it's set. See internal/api/environmentnaming.go's own doc
+	// comments for why this direction (given the environment) is safe,
+	// unlike blindly reverse-parsing an arbitrary name.
+	Name string `json:"name"`
+	// Environment is the hyve.io/environment label's value, empty when
+	// unset (every object created before Milestone 3, or in a namespace
+	// with no matching Organization — see resolveResourceEnvironment).
+	Environment        string             `json:"environment,omitempty"`
 	Driver             string             `json:"driver"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration"`
@@ -96,8 +106,13 @@ type clusterDTO struct {
 
 func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 	spec := cd.Spec
+	name, environment := cd.Name, cd.Labels[hyveEnvironmentLabel]
+	if environment != "" {
+		name = splitEnvironmentPrefix(cd.Name, environment)
+	}
 	return clusterDTO{
-		Name:               cd.Name,
+		Name:               name,
+		Environment:        environment,
 		Driver:             cd.Spec.Driver.Source,
 		Conditions:         cd.Status.Conditions,
 		ObservedGeneration: cd.Status.ObservedGeneration,
@@ -122,16 +137,24 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 // registerClusterRoutes wires the /clusters endpoints onto mux — mounted
 // under /api/ (and behind requireAuth+requireRole) by Server.Routes.
 func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /clusters", s.handleListClusters)
-	mux.HandleFunc("GET /clusters/{name}", s.handleGetCluster)
-	mux.HandleFunc("POST /clusters", s.handleCreateCluster)
-	mux.HandleFunc("PATCH /clusters/{name}", s.handleUpdateCluster)
-	mux.HandleFunc("DELETE /clusters/{name}", s.handleDeleteCluster)
-	mux.HandleFunc("GET /clusters/{name}/resources", s.handleGetClusterResources)
-	mux.HandleFunc("GET /clusters/{name}/events", s.handleGetClusterEvents)
+	mux.HandleFunc("GET /clusters", s.requireOrganizationNotMigrating(s.handleListClusters))
+	mux.HandleFunc("GET /clusters/{name}", s.requireOrganizationNotMigrating(s.handleGetCluster))
+	mux.HandleFunc("POST /clusters", s.requireOrganizationNotMigrating(s.handleCreateCluster))
+	mux.HandleFunc("PATCH /clusters/{name}", s.requireOrganizationNotMigrating(s.handleUpdateCluster))
+	mux.HandleFunc("DELETE /clusters/{name}", s.requireOrganizationNotMigrating(s.handleDeleteCluster))
+	mux.HandleFunc("GET /clusters/{name}/resources", s.requireOrganizationNotMigrating(s.handleGetClusterResources))
+	mux.HandleFunc("GET /clusters/{name}/events", s.requireOrganizationNotMigrating(s.handleGetClusterEvents))
 }
 
 func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to list clusters")
+		return
+	}
 	var list hyvev1alpha1.ClusterDefinitionList
 	// client.InNamespace is required, not optional: ClusterDefinition is a
 	// namespaced resource, but hyve-api's own Role (deploy/helm/hyve-api's
@@ -140,7 +163,7 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 	// that Role can never satisfy regardless of what it grants within
 	// s.Namespace. Confirmed live: this exact mismatch 500'd every request
 	// with no server-side log line at all until the error below was added.
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
+	if err := rc.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		log.Printf("api: failed to list clusters: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list clusters")
 		return
@@ -153,9 +176,17 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -177,9 +208,17 @@ type clusterResourcesDTO struct {
 }
 
 func (s *Server) handleGetClusterResources(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -224,14 +263,21 @@ const (
 const maxTrackedClusterEvents = 500
 
 func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	ctx := r.Context()
 	ns := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, ns, r.PathValue("name"))
 
 	limit := parseClusterEventsIntParam(r, "limit", defaultClusterEventsLimit, 1, maxClusterEventsLimit)
 	offset := parseClusterEventsIntParam(r, "offset", 0, 0, 1<<30)
 
+	rc, err := s.resourceClient(ctx, ns)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", ns, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -247,9 +293,15 @@ func (s *Server) handleGetClusterEvents(w http.ResponseWriter, r *http.Request) 
 		LastDeleteOutput: cd.Status.LastDeleteOutput,
 	}
 
-	if s.Clientset != nil {
+	clientset, err := s.resourceClientset(ctx, ns)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster clientset for %q: %v", ns, err)
+		writeError(w, http.StatusInternalServerError, "failed to list cluster events")
+		return
+	}
+	if clientset != nil {
 		selector := fmt.Sprintf("involvedObject.kind=ClusterDefinition,involvedObject.name=%s", name)
-		list, err := s.Clientset.CoreV1().Events(ns).List(r.Context(), metav1.ListOptions{FieldSelector: selector})
+		list, err := clientset.CoreV1().Events(ns).List(ctx, metav1.ListOptions{FieldSelector: selector})
 		if err != nil {
 			log.Printf("api: failed to list events for cluster %q: %v", name, err)
 			writeError(w, http.StatusInternalServerError, "failed to list cluster events")
@@ -352,10 +404,18 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(r.Context(), namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to create cluster")
+		return
+	}
+
 	spec := req.Spec
 	if req.Template != nil {
 		var tpl hyvev1alpha1.Template
-		if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: req.Template.Name}, &tpl); err != nil {
+		if err := rc.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: req.Template.Name}, &tpl); err != nil {
 			if apierrors.IsNotFound(err) {
 				writeError(w, http.StatusNotFound, fmt.Sprintf("template %q not found", req.Template.Name))
 				return
@@ -386,11 +446,19 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	envResult, ok := s.resolveCreateName(w, r, namespace, req.Name)
+	if !ok {
+		return
+	}
+	meta := metav1.ObjectMeta{Name: envResult.RealName, Namespace: namespace}
+	if envResult.HasEnvironment {
+		meta.Labels = map[string]string{hyveEnvironmentLabel: envResult.Label}
+	}
 	cd := &hyvev1alpha1.ClusterDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.TenantNamespace(r)},
+		ObjectMeta: meta,
 		Spec:       spec,
 	}
-	if err := s.Client.Create(r.Context(), cd); err != nil {
+	if err := rc.Create(r.Context(), cd); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "cluster already exists")
 			return
@@ -413,15 +481,23 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
 	var req updateClusterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to update cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return
@@ -431,7 +507,7 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cd.Spec = req.Spec
-	if err := s.Client.Update(r.Context(), &cd); err != nil {
+	if err := rc.Update(ctx, &cd); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update cluster: %v", err))
 		return
 	}
@@ -442,9 +518,17 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
-	cd := &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.TenantNamespace(r)}}
-	if err := s.Client.Delete(r.Context(), cd); err != nil {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete cluster")
+		return
+	}
+	cd := &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if err := rc.Delete(ctx, cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return

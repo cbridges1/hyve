@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,13 @@ func TestRequireAuth_ValidToken_PassesUsernameToContext(t *testing.T) {
 	assert.Equal(t, "cedric", gotUsername)
 }
 
-func TestRequireRole_UnboundIdentity_403(t *testing.T) {
+// TestRequireRole_UnboundIdentity_401 confirms an authenticated identity
+// with no binding at all gets 401, not 403 — deliberately the same status
+// as an expired/invalid session, since there's nothing the caller can do
+// but log in again either way. See requireRole's own doc comment for why
+// this is distinct from RequireRole's role-mismatch case (a bound
+// identity lacking permission for one action), which correctly stays 403.
+func TestRequireRole_UnboundIdentity_401(t *testing.T) {
 	s := &Server{Client: newFakeClient(t)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
@@ -79,11 +86,17 @@ func TestRequireRole_UnboundIdentity_403(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	s.requireRole(okHandler()).ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
 func TestRequireRole_BoundIdentity_PassesRoleToContext(t *testing.T) {
-	s := &Server{Client: newFakeClient(t, newBinding("cedric-admin", "cedric", hyvev1alpha1.RoleAdmin))}
+	store := newTestOrgStore(t)
+	_, err := store.CreateBinding(context.Background(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
 
 	var gotRole string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

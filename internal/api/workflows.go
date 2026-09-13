@@ -21,9 +21,14 @@ import (
 // by the controller purely for this listing (see that kind's own doc
 // comment). The two are mutually exclusive on any one row.
 type workflowDTO struct {
-	Name      string                     `json:"name"`
-	Spec      *hyvev1alpha1.WorkflowSpec `json:"spec,omitempty"`
-	RefStatus *workflowRefStatusDTO      `json:"refStatus,omitempty"`
+	// Name is the short, user-facing name — see clusterDTO's own doc
+	// comment on Name for the exact same convention. Never joined/split
+	// for a RefStatus row (see toWorkflowRefStatusDTO's own doc comment on
+	// why git-referenced workflows are outside this naming scheme).
+	Name        string                     `json:"name"`
+	Environment string                     `json:"environment,omitempty"`
+	Spec        *hyvev1alpha1.WorkflowSpec `json:"spec,omitempty"`
+	RefStatus   *workflowRefStatusDTO      `json:"refStatus,omitempty"`
 }
 
 // workflowRefStatusDTO mirrors WorkflowRefStatusStatus — nothing sensitive,
@@ -39,7 +44,11 @@ type workflowRefStatusDTO struct {
 
 func toWorkflowDTO(cr *hyvev1alpha1.Workflow) workflowDTO {
 	spec := cr.Spec
-	return workflowDTO{Name: cr.Name, Spec: &spec}
+	name, environment := cr.Name, cr.Labels[hyveEnvironmentLabel]
+	if environment != "" {
+		name = splitEnvironmentPrefix(cr.Name, environment)
+	}
+	return workflowDTO{Name: name, Environment: environment, Spec: &spec}
 }
 
 // toWorkflowRefStatusDTO builds a workflowDTO row from a mirrored
@@ -63,22 +72,30 @@ func toWorkflowRefStatusDTO(cr *hyvev1alpha1.WorkflowRefStatus) workflowDTO {
 // registerWorkflowRoutes wires the /workflows endpoints onto mux — mounted
 // under /api/ (and behind requireAuth+requireRole) by Server.Routes.
 func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /workflows", s.handleListWorkflows)
-	mux.HandleFunc("GET /workflows/{name}", s.handleGetWorkflow)
-	mux.HandleFunc("POST /workflows", s.handleCreateWorkflow)
-	mux.HandleFunc("PATCH /workflows/{name}", s.handleUpdateWorkflow)
-	mux.HandleFunc("DELETE /workflows/{name}", s.handleDeleteWorkflow)
+	mux.HandleFunc("GET /workflows", s.requireOrganizationNotMigrating(s.handleListWorkflows))
+	mux.HandleFunc("GET /workflows/{name}", s.requireOrganizationNotMigrating(s.handleGetWorkflow))
+	mux.HandleFunc("POST /workflows", s.requireOrganizationNotMigrating(s.handleCreateWorkflow))
+	mux.HandleFunc("PATCH /workflows/{name}", s.requireOrganizationNotMigrating(s.handleUpdateWorkflow))
+	mux.HandleFunc("DELETE /workflows/{name}", s.requireOrganizationNotMigrating(s.handleDeleteWorkflow))
 }
 
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to list workflows")
+		return
+	}
 	var list hyvev1alpha1.WorkflowList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
+	if err := rc.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		log.Printf("api: failed to list workflows: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list workflows")
 		return
 	}
 	var refStatusList hyvev1alpha1.WorkflowRefStatusList
-	if err := s.Client.List(r.Context(), &refStatusList, client.InNamespace(s.TenantNamespace(r))); err != nil {
+	if err := rc.List(ctx, &refStatusList, client.InNamespace(namespace)); err != nil {
 		log.Printf("api: failed to list workflow ref statuses: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list workflows")
 		return
@@ -94,9 +111,18 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
 	name := r.PathValue("name")
+	resolvedName := s.resolveAddressedName(r, namespace, name)
+	rc, rcErr := s.resourceClient(ctx, namespace)
+	if rcErr != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, rcErr)
+		writeError(w, http.StatusInternalServerError, "failed to get workflow")
+		return
+	}
 	var cr hyvev1alpha1.Workflow
-	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr)
+	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resolvedName}, &cr)
 	if err == nil {
 		writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
 		return
@@ -114,7 +140,7 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	// workflowref.NameCollision), the first match wins — full
 	// disambiguation isn't supported here yet.
 	var refStatusList hyvev1alpha1.WorkflowRefStatusList
-	if err := s.Client.List(r.Context(), &refStatusList, client.InNamespace(s.TenantNamespace(r))); err != nil {
+	if err := rc.List(ctx, &refStatusList, client.InNamespace(namespace)); err != nil {
 		log.Printf("api: failed to list workflow ref statuses: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to get workflow")
 		return
@@ -149,11 +175,26 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(r.Context(), namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to create workflow")
+		return
+	}
+	envResult, ok := s.resolveCreateName(w, r, namespace, req.Name)
+	if !ok {
+		return
+	}
+	meta := metav1.ObjectMeta{Name: envResult.RealName, Namespace: namespace}
+	if envResult.HasEnvironment {
+		meta.Labels = map[string]string{hyveEnvironmentLabel: envResult.Label}
+	}
 	cr := &hyvev1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.TenantNamespace(r)},
+		ObjectMeta: meta,
 		Spec:       req.Spec,
 	}
-	if err := s.Client.Create(r.Context(), cr); err != nil {
+	if err := rc.Create(r.Context(), cr); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "workflow already exists")
 			return
@@ -180,15 +221,23 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
 	var req updateWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to update workflow")
+		return
+	}
 	var cr hyvev1alpha1.Workflow
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "workflow not found")
 			return
@@ -198,7 +247,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cr.Spec = req.Spec
-	if err := s.Client.Update(r.Context(), &cr); err != nil {
+	if err := rc.Update(ctx, &cr); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update workflow: %v", err))
 		return
 	}
@@ -209,9 +258,17 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
-	cr := &hyvev1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.TenantNamespace(r)}}
-	if err := s.Client.Delete(r.Context(), cr); err != nil {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete workflow")
+		return
+	}
+	cr := &hyvev1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if err := rc.Delete(ctx, cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "workflow not found")
 			return

@@ -2,11 +2,13 @@
 // cmd/clusterconfig, see that package's own doc comment for why — the HTTP
 // API + auth layer described in HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
 // Phase 6. Not a
-// resurrection of the removed hyve serve: real, independent authz
-// (HyveAccessBinding-based) drives it, and it's a thin front door onto the
-// ClusterDefinition/HyveAccessBinding CRDs the controller already
-// reconciles, not a second implementation of hyve's logic. Cluster mode
-// never requires this API — plain kubectl against the CRDs always works.
+// resurrection of the removed hyve serve: real, independent authz (backed
+// by internal/orgdb's Postgres/SQLite Binding rows, not a Kubernetes CRD,
+// since HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 4)
+// drives it, and it's a thin front door onto the ClusterDefinition CRD the
+// controller already reconciles, not a second implementation of hyve's
+// logic. Cluster mode never requires this API — plain kubectl against the
+// CRDs always works.
 package api
 
 import (
@@ -14,18 +16,35 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/internal/agentpki"
 	hyveapi "github.com/cbridges1/hyve/internal/api"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// organizationDeletionSweepInterval is how often SweepPendingOrganizationDeletions
+// runs in the background — short enough that a caller deleting an
+// already-empty (or quick-to-terminate) organization sees its row actually
+// disappear soon after, without needing to wait on handleDeleteOrganization's
+// own opportunistic same-request check to have caught it.
+const organizationDeletionSweepInterval = 30 * time.Second
+
+// reconcilingClusterHealthSweepInterval is how often
+// SweepReconcilingClusterHealth runs — longer than the deletion sweep
+// since a reachability check is a real network round trip per registered
+// cluster (potentially many), not a handful of cheap Namespace Gets, and
+// "is this cluster up" doesn't need second-to-second freshness the way a
+// caller waiting on their own delete does.
+const reconcilingClusterHealthSweepInterval = 2 * time.Minute
 
 var (
 	apiNamespace          string
@@ -38,6 +57,8 @@ var (
 	apiAgentBindAddress   string
 	apiPublicCAPath       string
 	apiConfigName         string
+	apiDBDriver           string
+	apiDBDSN              string
 )
 
 // Cmd is the api command.
@@ -73,6 +94,8 @@ func init() {
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
 	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
 	runCmd.Flags().StringVar(&apiConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object within --namespace (GET/PATCH /api/config) — must match cmd/controller's own --config-name")
+	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters — see internal/orgdb and HYVE-ORGANIZATION-MODEL-PROPOSAL.md's 'Deployment strategy' section)")
+	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -118,6 +141,40 @@ func runAPI() {
 		log.Fatalf("❌ Failed to build Kubernetes clientset: %v", csErr)
 	}
 
+	// Fatal on failure, unlike AgentCA/agentpki's soft-fail stance just
+	// below — organization/environment/RBAC data isn't an opt-in
+	// capability the way hyve-agent is; every request that resolves an
+	// org needs this working. See internal/orgdb and
+	// HYVE-ORGANIZATION-MODEL-PROPOSAL.md for the design, and
+	// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 1 for why
+	// nothing reads/writes through this store yet — that starts at
+	// Milestone 2.
+	orgStore, dbErr := orgdb.Open(apiDBDriver, apiDBDSN)
+	if dbErr != nil {
+		log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", apiDBDriver, apiDBDSN, dbErr)
+	}
+
+	// The SQLite/Postgres deployment gate becomes real here (Milestone 6 —
+	// see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's own deployment-strategy
+	// section, nexus-config/docs): a single-file SQLite database has no
+	// story for the concurrent, cross-process access Milestone 6's
+	// reconciling-cluster migration (PATCH /organizations/{name}) assumes
+	// once any organization actually lives on a cluster other than this
+	// process's own home cluster. Checked once at startup, not per
+	// request — an org can only reach that state through this same API, so
+	// a fresh `--db=sqlite` process either already has one or doesn't; it
+	// can't newly acquire one without going through this same startup path
+	// again on its next restart.
+	if apiDBDriver == "sqlite" {
+		anyMigrated, checkErr := orgStore.AnyOrganizationHasReconcilingCluster(context.Background())
+		if checkErr != nil {
+			log.Fatalf("❌ Failed to check for organizations on a non-home reconciling cluster: %v", checkErr)
+		}
+		if anyMigrated {
+			log.Fatalf("❌ --db=sqlite refused: at least one organization has been moved to a reconciling cluster other than this install's own home cluster (Milestone 6) — switch to --db=postgres before restarting, see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's deployment-strategy section")
+		}
+	}
+
 	server := &hyveapi.Server{
 		Client:             c,
 		Namespace:          apiNamespace,
@@ -128,6 +185,7 @@ func runAPI() {
 		ModulesDir:         apiModulesDir,
 		Clientset:          clientset,
 		ConfigName:         apiConfigName,
+		OrgStore:           orgStore,
 	}
 
 	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)
@@ -159,6 +217,33 @@ func runAPI() {
 		}
 		server.Proxy = proxy
 	}
+
+	// Milestone 5's organization-deletion sweep — the periodic half of
+	// Server.SweepPendingOrganizationDeletions' "check on next relevant
+	// request, or a periodic sweep" design (see that method's own doc
+	// comment). Its own goroutine, like the agent tunnel listener below:
+	// logs are already handled inside the sweep itself, nothing here can
+	// fail startup.
+	go func() {
+		ticker := time.NewTicker(organizationDeletionSweepInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			server.SweepPendingOrganizationDeletions(context.Background())
+		}
+	}()
+
+	// Milestone 6's reconciling-cluster health check — the periodic
+	// discovery-call probe behind reconcilingClusterDTO's own
+	// reachable/lastCheckedAt/lastError fields (see
+	// Server.SweepReconcilingClusterHealth's own doc comment). Same
+	// standing-goroutine shape as the deletion sweep just above.
+	go func() {
+		ticker := time.NewTicker(reconcilingClusterHealthSweepInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			server.SweepReconcilingClusterHealth(context.Background())
+		}
+	}()
 
 	// The agent tunnel listener is a raw TCP+SSH listener, not an
 	// http.Handler — see Server.ServeAgentTunnel's own doc comment. Its

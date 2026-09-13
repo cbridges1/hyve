@@ -32,8 +32,8 @@ func randomHex(n int) (string, error) {
 // WorkflowRunReconciler (internal/controller) does the actual work, exactly
 // like POST /clusters only ever creates a ClusterDefinition CR.
 func (s *Server) registerWorkflowRunRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /workflow-runs", s.handleCreateWorkflowRun)
-	mux.HandleFunc("GET /workflow-runs/{name}", s.handleGetWorkflowRun)
+	mux.HandleFunc("POST /workflow-runs", s.requireOrganizationNotMigrating(s.handleCreateWorkflowRun))
+	mux.HandleFunc("GET /workflow-runs/{name}", s.requireOrganizationNotMigrating(s.handleGetWorkflowRun))
 }
 
 // createWorkflowRunRequest mirrors WorkflowRef's Name/Source/Path shape —
@@ -74,6 +74,14 @@ func (s *Server) handleCreateWorkflowRun(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to create workflow run")
+		return
+	}
 	name, err := randomHex(8)
 	if err != nil {
 		log.Printf("api: failed to generate workflow run name: %v", err)
@@ -85,14 +93,14 @@ func (s *Server) handleCreateWorkflowRun(w http.ResponseWriter, r *http.Request)
 		base = "run"
 	}
 	cr := &hyvev1alpha1.WorkflowRun{
-		ObjectMeta: metav1.ObjectMeta{Name: base + "-" + name, Namespace: s.TenantNamespace(r)},
+		ObjectMeta: metav1.ObjectMeta{Name: base + "-" + name, Namespace: namespace},
 		Spec: hyvev1alpha1.WorkflowRunSpec{
 			WorkflowRef: hyvev1alpha1.WorkflowRef{Name: req.Workflow, Source: req.Source, Path: req.Path},
 			ClusterRef:  req.Cluster,
 			Params:      req.Params,
 		},
 	}
-	if err := s.Client.Create(r.Context(), cr); err != nil {
+	if err := rc.Create(ctx, cr); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to create workflow run: %v", err))
 		return
 	}
@@ -113,9 +121,17 @@ type workflowRunStatusDTO struct {
 // restriction beyond requireRole's own authenticated+bound check, matching
 // handleGetWorkflow's read stance.
 func (s *Server) handleGetWorkflowRun(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
 	name := r.PathValue("name")
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to get workflow run")
+		return
+	}
 	var cr hyvev1alpha1.WorkflowRun
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "workflow run not found")
 			return

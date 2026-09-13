@@ -55,8 +55,8 @@ func (c *CA) PublicKey() ssh.PublicKey {
 // (hyve-agent-ca), generating and persisting a fresh Ed25519 keypair if
 // none exists yet. Safe to call concurrently from multiple pods racing to
 // bootstrap the same install: a losing Create falls back to reading what
-// the winner wrote, the same idiom internal/api/environments.go's
-// ensureNamespace/ensureHyveEnvironment already use for their own
+// the winner wrote, the same idiom internal/api/organizations.go's
+// ensureNamespace/ensureAccessRoleScaffolding already use for their own
 // check-then-create sequences.
 func LoadOrCreateCA(ctx context.Context, clientset kubernetes.Interface, namespace string) (*CA, error) {
 	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, caSecretName, metav1.GetOptions{})

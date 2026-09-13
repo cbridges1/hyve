@@ -200,7 +200,9 @@ api:
   # accessRoles controls whether this chart also creates the two default
   # roles' backing ServiceAccounts + RoleBindings/ClusterRoleBindings
   # (hyve-access-admin -> cluster-admin, hyve-access-readonly -> view) that
-  # HyveAccessBinding.spec.serviceAccountRef points at by default. Disable
+  # a Binding's own ServiceAccountName points at by default (internal/orgdb;
+  # was HyveAccessBinding.spec.serviceAccountRef before Milestone 4 moved
+  # bindings out of Kubernetes CRDs). Disable
   # if you'd rather define your own custom roles and reference those
   # instead.
   accessRoles:

@@ -13,11 +13,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
-	hyveapi "github.com/cbridges1/hyve/internal/api"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/controller"
 	"github.com/cbridges1/hyve/internal/crdconv"
+	"github.com/cbridges1/hyve/internal/credentials"
 	"github.com/cbridges1/hyve/internal/reconcile"
 	"github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/workflow"
@@ -217,25 +218,48 @@ func HyveConfig(ctx context.Context, source reconcile.StateProvider, dest client
 	return false, nil
 }
 
-// AccessBindings copies every HyveAccessBinding (and, for local subjects,
-// its paired credentials Secret — not part of the binding object itself,
-// so a binding-only copy would leave a user unable to log in on the new
-// primary) from namespace on source to the same namespace on dest. Used
-// only by `hyve migrate cluster` (moving the primary) — `to-cluster` has
-// no source HyveAccessBindings to migrate, since local/git mode has no
-// concept of hyve's own identity system at all.
+// AccessBindings previously copied every HyveAccessBinding CRD (+ its
+// paired credentials Secret) from namespace on source to dest — used only
+// by `hyve migrate cluster` (moving the primary/control plane), gated
+// behind --skip-access-bindings.
+//
+// As of HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 4,
+// bindings are Postgres/SQLite rows (internal/orgdb), not CRDs — copying
+// them now means copying rows between source's and dest's own,
+// independent databases, not CRDs between two kubeconfigs, which this
+// package (built entirely around client.Client/reconcile.StateProvider)
+// isn't structured for. That cross-database copy is real, scoped, future
+// work — deliberately not attempted here rather than rushed; see
+// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's own "Documentation
+// updates" section for the same "deferred, not silently" stance already
+// taken for the CLI --env flags this same milestone left undone.
+//
+// This function is kept, narrowed to what's still real and
+// Kubernetes-native: copying every namespace-scoped Secret named
+// "*-credentials" (see credentials.UserCredentialsSecretName) verbatim —
+// harmless on its own (an orphaned credentials Secret with no matching
+// binding row is inert, exactly like the "no binding but a Secret exists"
+// case handleDeleteAccount already tolerates), and saves a re-provisioned
+// account from needing a new password chosen for it if the same username
+// gets recreated on the destination. The binding (the actual access
+// grant) itself does not get recreated — every account needs
+// `hyve cluster-config api create-user`/`POST /accounts` run again on the
+// destination.
 func AccessBindings(ctx context.Context, source, dest client.Client, namespace string, dryRun, force bool) (*Summary, error) {
-	var list hyvev1alpha1.HyveAccessBindingList
+	var list corev1.SecretList
 	if err := source.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("list source HyveAccessBindings: %w", err)
+		return nil, fmt.Errorf("list source credentials secrets: %w", err)
 	}
 
 	summary := newSummary()
 	for i := range list.Items {
-		b := &list.Items[i]
-		name := b.Name
+		secret := &list.Items[i]
+		if !strings.HasSuffix(secret.Name, credentials.UserCredentialsSecretSuffix) {
+			continue
+		}
+		name := secret.Name
 
-		exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &hyvev1alpha1.HyveAccessBinding{})
+		exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &corev1.Secret{})
 		if err != nil {
 			summary.Failed[name] = err
 			continue
@@ -249,20 +273,10 @@ func AccessBindings(ctx context.Context, source, dest client.Client, namespace s
 			continue
 		}
 
-		cr := &hyvev1alpha1.HyveAccessBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Spec:       b.Spec,
-		}
-		if _, err := createOrUpdateBinding(ctx, dest, cr, force); err != nil {
+		bindingName := strings.TrimSuffix(name, credentials.UserCredentialsSecretSuffix)
+		if err := copyCredentialsSecret(ctx, source, dest, namespace, bindingName, force); err != nil {
 			summary.Failed[name] = err
 			continue
-		}
-
-		if b.Spec.Subject.Type == hyvev1alpha1.SubjectTypeLocal {
-			if err := copyCredentialsSecret(ctx, source, dest, namespace, name, force); err != nil {
-				summary.Failed[name] = err
-				continue
-			}
 		}
 		summary.Created = append(summary.Created, name)
 	}
@@ -292,29 +306,6 @@ func createOrUpdateSpec(ctx context.Context, dest client.Client, cr *hyvev1alpha
 	}
 }
 
-func createOrUpdateBinding(ctx context.Context, dest client.Client, cr *hyvev1alpha1.HyveAccessBinding, force bool) (created bool, err error) {
-	err = dest.Create(ctx, cr)
-	switch {
-	case err == nil:
-		return true, nil
-	case apierrors.IsAlreadyExists(err) && force:
-		var existing hyvev1alpha1.HyveAccessBinding
-		key := k8stypes.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}
-		if getErr := dest.Get(ctx, key, &existing); getErr != nil {
-			return false, fmt.Errorf("get existing %s for --force update: %w", cr.Name, getErr)
-		}
-		existing.Spec = cr.Spec
-		if updErr := dest.Update(ctx, &existing); updErr != nil {
-			return false, fmt.Errorf("update existing %s for --force: %w", cr.Name, updErr)
-		}
-		return true, nil
-	case apierrors.IsAlreadyExists(err):
-		return false, nil
-	default:
-		return false, fmt.Errorf("create %s: %w", cr.Name, err)
-	}
-}
-
 // copyCredentialsSecret copies bindingName's paired credentials Secret
 // verbatim (whatever Data keys it has — no assumption about the bcrypt
 // hash's exact key name baked in here) rather than failing the whole
@@ -322,7 +313,7 @@ func createOrUpdateBinding(ctx context.Context, dest client.Client, cr *hyvev1al
 // `hyve cluster-config api create-user` might legitimately have no
 // matching Secret yet, e.g. mid-provisioning).
 func copyCredentialsSecret(ctx context.Context, source, dest client.Client, namespace, bindingName string, force bool) error {
-	secretName := hyveapi.UserCredentialsSecretName(bindingName)
+	secretName := credentials.UserCredentialsSecretName(bindingName)
 	var secret corev1.Secret
 	if err := source.Get(ctx, k8stypes.NamespacedName{Namespace: namespace, Name: secretName}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -399,7 +390,7 @@ func TemplatesFromDir(ctx context.Context, localPath string, dest client.Client,
 			summary.Failed[name] = fmt.Errorf("convert template %q: %w", name, err)
 			continue
 		}
-		if err := createOrSkipTemplate(ctx, dest, name, destNamespace, spec, dryRun, force, summary); err != nil {
+		if err := createOrSkipTemplate(ctx, dest, name, destNamespace, spec, nil, dryRun, force, summary); err != nil {
 			summary.Failed[name] = err
 		}
 	}
@@ -425,7 +416,7 @@ func WorkflowsFromDir(ctx context.Context, localPath string, dest client.Client,
 			summary.Failed[name] = fmt.Errorf("convert workflow %q: %w", name, err)
 			continue
 		}
-		if err := createOrSkipWorkflow(ctx, dest, name, destNamespace, spec, dryRun, force, summary); err != nil {
+		if err := createOrSkipWorkflow(ctx, dest, name, destNamespace, spec, nil, dryRun, force, summary); err != nil {
 			summary.Failed[name] = err
 		}
 	}
@@ -435,7 +426,15 @@ func WorkflowsFromDir(ctx context.Context, localPath string, dest client.Client,
 // Templates copies every Template CRD source has (in namespace) onto dest
 // — cluster-to-cluster, used by `migrate cluster` (moving the primary/host
 // cluster, which needs the same Templates the old one had, not just tenant
-// ClusterDefinition/HyveConfig/HyveAccessBinding data).
+// ClusterDefinition/HyveConfig/HyveAccessBinding data) and by Milestone 6's
+// PATCH /organizations/{name} reconciling-cluster migration.
+// list.Items[i].Labels is carried through unchanged — most notably
+// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 3
+// hyve.io/environment label, whose loss during a Milestone 6 migration
+// would silently break environment-scoped naming/lookup on the
+// destination. Confirmed live: this was missing entirely before, since
+// both this function and createOrSkipTemplate only ever set Name/Namespace
+// on the destination object.
 func Templates(ctx context.Context, source, dest client.Client, namespace string, dryRun, force bool) (*Summary, error) {
 	var list hyvev1alpha1.TemplateList
 	if err := source.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -444,14 +443,15 @@ func Templates(ctx context.Context, source, dest client.Client, namespace string
 	summary := newSummary()
 	for i := range list.Items {
 		name := list.Items[i].Name
-		if err := createOrSkipTemplate(ctx, dest, name, namespace, list.Items[i].Spec, dryRun, force, summary); err != nil {
+		if err := createOrSkipTemplate(ctx, dest, name, namespace, list.Items[i].Spec, list.Items[i].Labels, dryRun, force, summary); err != nil {
 			summary.Failed[name] = err
 		}
 	}
 	return summary, nil
 }
 
-// Workflows is Templates' workflow equivalent — see its own doc comment.
+// Workflows is Templates' workflow equivalent — see its own doc comment,
+// including the label-preservation note.
 func Workflows(ctx context.Context, source, dest client.Client, namespace string, dryRun, force bool) (*Summary, error) {
 	var list hyvev1alpha1.WorkflowList
 	if err := source.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -460,14 +460,77 @@ func Workflows(ctx context.Context, source, dest client.Client, namespace string
 	summary := newSummary()
 	for i := range list.Items {
 		name := list.Items[i].Name
-		if err := createOrSkipWorkflow(ctx, dest, name, namespace, list.Items[i].Spec, dryRun, force, summary); err != nil {
+		if err := createOrSkipWorkflow(ctx, dest, name, namespace, list.Items[i].Spec, list.Items[i].Labels, dryRun, force, summary); err != nil {
 			summary.Failed[name] = err
 		}
 	}
 	return summary, nil
 }
 
-func createOrSkipTemplate(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.TemplateSpec, dryRun, force bool, summary *Summary) error {
+// Resources is Templates'/Workflows' Resource equivalent — see Templates'
+// own doc comment, including the label-preservation note. Added alongside
+// Milestone 6's PATCH /organizations/{name} reconciling-cluster migration
+// (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md), which needed it and
+// discovered it had never existed at all: neither `hyve migrate cluster`
+// nor any other path in this package ever copied Resource CRs — a
+// pre-existing gap, not introduced by this change, now closed for both
+// callers (this function is also wired into cmd/migrate_cluster.go
+// alongside Templates/Workflows).
+func Resources(ctx context.Context, source, dest client.Client, namespace string, dryRun, force bool) (*Summary, error) {
+	var list hyvev1alpha1.ResourceList
+	if err := source.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list source resources: %w", err)
+	}
+	summary := newSummary()
+	for i := range list.Items {
+		name := list.Items[i].Name
+		if err := createOrSkipResource(ctx, dest, name, namespace, list.Items[i].Spec, list.Items[i].Labels, dryRun, force, summary); err != nil {
+			summary.Failed[name] = err
+		}
+	}
+	return summary, nil
+}
+
+func createOrSkipResource(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.ResourceSpec, labels map[string]string, dryRun, force bool, summary *Summary) error {
+	exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &hyvev1alpha1.Resource{})
+	if err != nil {
+		return err
+	}
+	if exists && !force {
+		summary.Skipped = append(summary.Skipped, name)
+		return nil
+	}
+	if dryRun {
+		summary.Created = append(summary.Created, name)
+		return nil
+	}
+	cr := &hyvev1alpha1.Resource{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels}, Spec: spec}
+	err = dest.Create(ctx, cr)
+	switch {
+	case err == nil:
+		summary.Created = append(summary.Created, name)
+		return nil
+	case apierrors.IsAlreadyExists(err) && force:
+		var existing hyvev1alpha1.Resource
+		if getErr := dest.Get(ctx, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &existing); getErr != nil {
+			return fmt.Errorf("get existing resource %s for --force update: %w", name, getErr)
+		}
+		existing.Spec = spec
+		existing.Labels = labels
+		if updErr := dest.Update(ctx, &existing); updErr != nil {
+			return fmt.Errorf("update existing resource %s for --force: %w", name, updErr)
+		}
+		summary.Created = append(summary.Created, name)
+		return nil
+	case apierrors.IsAlreadyExists(err):
+		summary.Skipped = append(summary.Skipped, name)
+		return nil
+	default:
+		return fmt.Errorf("create resource %s: %w", name, err)
+	}
+}
+
+func createOrSkipTemplate(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.TemplateSpec, labels map[string]string, dryRun, force bool, summary *Summary) error {
 	exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &hyvev1alpha1.Template{})
 	if err != nil {
 		return err
@@ -480,7 +543,7 @@ func createOrSkipTemplate(ctx context.Context, dest client.Client, name, namespa
 		summary.Created = append(summary.Created, name)
 		return nil
 	}
-	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: spec}
+	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels}, Spec: spec}
 	err = dest.Create(ctx, cr)
 	switch {
 	case err == nil:
@@ -492,6 +555,7 @@ func createOrSkipTemplate(ctx context.Context, dest client.Client, name, namespa
 			return fmt.Errorf("get existing template %s for --force update: %w", name, getErr)
 		}
 		existing.Spec = spec
+		existing.Labels = labels
 		if updErr := dest.Update(ctx, &existing); updErr != nil {
 			return fmt.Errorf("update existing template %s for --force: %w", name, updErr)
 		}
@@ -505,7 +569,7 @@ func createOrSkipTemplate(ctx context.Context, dest client.Client, name, namespa
 	}
 }
 
-func createOrSkipWorkflow(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.WorkflowSpec, dryRun, force bool, summary *Summary) error {
+func createOrSkipWorkflow(ctx context.Context, dest client.Client, name, namespace string, spec hyvev1alpha1.WorkflowSpec, labels map[string]string, dryRun, force bool, summary *Summary) error {
 	exists, err := objectExists(ctx, dest, k8stypes.NamespacedName{Namespace: namespace, Name: name}, &hyvev1alpha1.Workflow{})
 	if err != nil {
 		return err
@@ -518,7 +582,7 @@ func createOrSkipWorkflow(ctx context.Context, dest client.Client, name, namespa
 		summary.Created = append(summary.Created, name)
 		return nil
 	}
-	cr := &hyvev1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: spec}
+	cr := &hyvev1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels}, Spec: spec}
 	err = dest.Create(ctx, cr)
 	switch {
 	case err == nil:
@@ -530,6 +594,7 @@ func createOrSkipWorkflow(ctx context.Context, dest client.Client, name, namespa
 			return fmt.Errorf("get existing workflow %s for --force update: %w", name, getErr)
 		}
 		existing.Spec = spec
+		existing.Labels = labels
 		if updErr := dest.Update(ctx, &existing); updErr != nil {
 			return fmt.Errorf("update existing workflow %s for --force: %w", name, updErr)
 		}
@@ -543,15 +608,10 @@ func createOrSkipWorkflow(ctx context.Context, dest client.Client, name, namespa
 	}
 }
 
-// Environments lists every HyveEnvironment in the install's control-plane
-// namespace (see HyveEnvironmentSpec's own doc comment on why this can't
-// be derived from which namespaces happen to have a ClusterDefinition) —
-// used by `migrate cluster --namespace hyve-system` to enumerate every
-// tenant to also migrate.
-func Environments(ctx context.Context, source client.Client, controlPlaneNamespace string) ([]hyvev1alpha1.HyveEnvironment, error) {
-	var list hyvev1alpha1.HyveEnvironmentList
-	if err := source.List(ctx, &list, client.InNamespace(controlPlaneNamespace)); err != nil {
-		return nil, fmt.Errorf("list source HyveEnvironments: %w", err)
-	}
-	return list.Items, nil
-}
+// Tenant enumeration for `migrate cluster --namespace hyve-system` moved to
+// cmd/migrate_cluster.go, querying the source host's own internal/orgdb
+// Store directly, as of HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's
+// Milestone 2 — organizations are Postgres/SQLite rows now, not
+// HyveEnvironment CRDs, so this package (which only ever talks to a
+// client.Client) isn't the right layer for that lookup any more. See this
+// package's own git history for the CRD-based version this replaced.

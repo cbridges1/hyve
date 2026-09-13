@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +16,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func newAccountsTestMux(s *Server) *http.ServeMux {
@@ -45,22 +45,35 @@ func doAccountRequest(t *testing.T, s *Server, caller, role, method, path string
 	return rec
 }
 
+// newTestServer builds a Server whose TenantNamespace resolves to
+// testNamespace with no Organization registered for it — the Phase-1,
+// self-hosted single-tenant shape most of these tests exercise (see
+// organizationIDForNamespace's own doc comment): an ordinary admin/
+// read-only binding lands with nil organization_id/environment_id here,
+// exactly like a superadmin's, which is what makes testNamespace usable
+// as a stand-in scope the same way the old CRD-based tests used it.
+func newTestServer(t *testing.T) *Server {
+	return &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+}
+
 func TestHandleListAccounts_ReadOnlyForbidden(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 	rec := doAccountRequest(t, s, "someone", hyvev1alpha1.RoleReadOnly, http.MethodGet, "/accounts", nil)
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestHandleListAccounts_ExcludesOIDCBindings(t *testing.T) {
-	local := newBinding("cedric", "cedric", hyvev1alpha1.RoleAdmin)
-	oidc := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "okta-someone", Namespace: testNamespace},
-		Spec: hyvev1alpha1.HyveAccessBindingSpec{
-			Subject: hyvev1alpha1.HyveAccessBindingSubject{Type: hyvev1alpha1.SubjectTypeOIDC, Value: "someone@example.com"},
-			Role:    hyvev1alpha1.RoleReadOnly,
-		},
-	}
-	s := &Server{Client: newFakeClient(t, local, oidc), Namespace: testNamespace}
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeOIDC, Identity: "someone@example.com", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -72,13 +85,18 @@ func TestHandleListAccounts_ExcludesOIDCBindings(t *testing.T) {
 	assert.Equal(t, hyvev1alpha1.RoleAdmin, accounts[0].Role)
 }
 
-// TestHandleListAccounts_ExcludesOtherNamespaces is the regression test for
-// the cross-tenant leak namespacing HyveAccessBinding closes: an install
+// TestHandleListAccounts_ExcludesOtherOrganizations is the regression test
+// for the cross-tenant leak organization scoping closes: an install
 // serving `testNamespace` must never list another tenant's accounts.
-func TestHandleListAccounts_ExcludesOtherNamespaces(t *testing.T) {
-	mine := newBinding("cedric", "cedric", hyvev1alpha1.RoleAdmin)
-	other := newBindingInNamespace("someone-else", "tenant-b", "someone-else", hyvev1alpha1.RoleAdmin)
-	s := &Server{Client: newFakeClient(t, mine, other), Namespace: testNamespace}
+func TestHandleListAccounts_ExcludesOtherOrganizations(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+	newOrgWithEnvironments(t, s.OrgStore, "tenant-b", orgdb.DefaultEnvironmentName)
+	newTestBinding(t, s.OrgStore, "tenant-b", "someone-else", hyvev1alpha1.RoleAdmin)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -90,14 +108,14 @@ func TestHandleListAccounts_ExcludesOtherNamespaces(t *testing.T) {
 }
 
 func TestHandleCreateAccount_ReadOnlyForbidden(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 	rec := doAccountRequest(t, s, "someone", hyvev1alpha1.RoleReadOnly, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "new-user", Password: "pw", Role: hyvev1alpha1.RoleAdmin})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestHandleCreateAccount_CreatesSecretAndBinding(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly})
@@ -109,9 +127,10 @@ func TestHandleCreateAccount_CreatesSecretAndBinding(t *testing.T) {
 	assert.Equal(t, hyvev1alpha1.RoleReadOnly, dto.Role)
 	assert.NotContains(t, rec.Body.String(), "s3cret", "the plaintext password must never appear in the response")
 
-	var binding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "new-user", Namespace: testNamespace}, &binding))
-	assert.Equal(t, "hyve-access-readonly", binding.Spec.ServiceAccountRef.Name)
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "new-user")
+	require.NoError(t, err)
+	assert.Equal(t, "hyve-access-readonly", binding.ServiceAccountName)
+	assert.Nil(t, binding.OrganizationID, "no Organization exists for testNamespace, so this binding must land with nil org/env, exactly like a superadmin's")
 
 	var secret corev1.Secret
 	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "new-user-credentials"}, &secret))
@@ -130,8 +149,36 @@ func TestHandleCreateAccount_CreatesSecretAndBinding(t *testing.T) {
 	assert.False(t, VerifyPassword(hash, "wrong-password"))
 }
 
+// TestHandleCreateAccount_WithRealOrganization_ScopesBinding proves the
+// other half: when a real Organization *does* exist for the target
+// namespace, the binding gets a real organization_id/environment_id, not
+// the nil-scope fallback the test above exercises.
+func TestHandleCreateAccount_WithRealOrganization_ScopesBinding(t *testing.T) {
+	s := newTestServer(t)
+	newOrgWithEnvironments(t, s.OrgStore, "acme", orgdb.DefaultEnvironmentName)
+	s.Namespace = "hyve-control-plane" // so "acme" != s.Namespace and resolves as a real organization
+
+	rec := doAccountRequestAs(t, s, "acme", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "acme-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "acme-user")
+	require.NoError(t, err)
+	require.NotNil(t, binding.OrganizationID)
+	require.NotNil(t, binding.EnvironmentID)
+
+	org, err := s.OrgStore.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	assert.Equal(t, org.ID, *binding.OrganizationID)
+}
+
 func TestHandleCreateAccount_DuplicateUsername_Conflict(t *testing.T) {
-	s := &Server{Client: newFakeClient(t, newBinding("existing", "existing", hyvev1alpha1.RoleAdmin)), Namespace: testNamespace}
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "existing", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "existing", Password: "pw", Role: hyvev1alpha1.RoleReadOnly})
@@ -139,7 +186,7 @@ func TestHandleCreateAccount_DuplicateUsername_Conflict(t *testing.T) {
 }
 
 func TestHandleCreateAccount_InvalidRole_400(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "new-user", Password: "pw", Role: "custom"})
@@ -147,7 +194,7 @@ func TestHandleCreateAccount_InvalidRole_400(t *testing.T) {
 }
 
 func TestHandleCreateAccount_MissingFields_400(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "new-user", Role: hyvev1alpha1.RoleAdmin})
@@ -155,32 +202,41 @@ func TestHandleCreateAccount_MissingFields_400(t *testing.T) {
 }
 
 func TestHandleDeleteAccount_ReadOnlyForbidden(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 	rec := doAccountRequest(t, s, "someone", hyvev1alpha1.RoleReadOnly, http.MethodDelete, "/accounts/x", nil)
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestHandleDeleteAccount_CannotDeleteSelf(t *testing.T) {
-	s := &Server{Client: newFakeClient(t, newBinding("cedric", "cedric", hyvev1alpha1.RoleAdmin)), Namespace: testNamespace}
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
 
 	rec := doAccountRequest(t, s, "cedric", hyvev1alpha1.RoleAdmin, http.MethodDelete, "/accounts/cedric", nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
-	var binding hyvev1alpha1.HyveAccessBinding
-	assert.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "cedric", Namespace: testNamespace}, &binding), "binding must survive a rejected self-delete")
+	_, err = s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "cedric")
+	assert.NoError(t, err, "binding must survive a rejected self-delete")
 }
 
 func TestHandleDeleteAccount_RemovesBindingAndSecret(t *testing.T) {
-	binding := newBinding("victim", "victim", hyvev1alpha1.RoleReadOnly)
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "victim-credentials", Namespace: testNamespace}, Data: map[string][]byte{passwordHashDataKey: []byte("hash")}}
-	s := &Server{Client: newFakeClient(t, binding, secret), Namespace: testNamespace}
+	require.NoError(t, s.Client.Create(t.Context(), secret))
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodDelete, "/accounts/victim", nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 
-	var gone hyvev1alpha1.HyveAccessBinding
-	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "victim", Namespace: testNamespace}, &gone)
-	assert.True(t, apierrors.IsNotFound(err))
+	_, err = s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound)
 
 	var goneSecret corev1.Secret
 	err = s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "victim-credentials"}, &goneSecret)
@@ -188,7 +244,7 @@ func TestHandleDeleteAccount_RemovesBindingAndSecret(t *testing.T) {
 }
 
 func TestHandleDeleteAccount_NotFound(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodDelete, "/accounts/missing", nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
@@ -217,21 +273,20 @@ func doAccountRequestAs(t *testing.T, s *Server, callerNamespace, role, method, 
 }
 
 // TestHandleCreateAccount_SuperadminExplicitNamespace is the regression
-// test for the one carve-out HYVE-MULTI-TENANCY-PLAN.md's "New endpoint:
-// POST /environments" section calls for: a superadmin has no namespace of
+// test for the one carve-out a superadmin needs: they have no namespace of
 // their own (RoleSuperadmin's whole point), so they must be able to target
 // an explicit tenant namespace — e.g. creating a brand new tenant's first
-// admin right after POST /environments.
+// admin right after POST /organizations.
 func TestHandleCreateAccount_SuperadminExplicitNamespace(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "acme-admin", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "acme"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
-	var binding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "acme-admin", Namespace: "acme"}, &binding),
-		"the binding must land in the explicitly-requested namespace, not the control-plane namespace")
+	binding, err := s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "acme-admin")
+	require.NoError(t, err, "the binding must land in the explicitly-requested namespace, not the control-plane namespace")
+	assert.Equal(t, hyvev1alpha1.RoleAdmin, binding.Role)
 
 	var secret corev1.Secret
 	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: "acme", Name: "acme-admin-credentials"}, &secret))
@@ -242,33 +297,32 @@ func TestHandleCreateAccount_SuperadminExplicitNamespace(t *testing.T) {
 // explicit Namespace for some OTHER tenant must be silently confined to
 // their own namespace instead, exactly as before this field existed.
 func TestHandleCreateAccount_OrdinaryAdminCannotTargetOtherNamespace(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "tenant-a", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "sneaky", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "tenant-b"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
-	var binding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky", Namespace: "tenant-a"}, &binding),
-		"an ordinary admin's explicit Namespace field must be ignored — the account belongs in their own session namespace")
+	_, err := s.findBindingBySubject(t.Context(), "tenant-a", orgdb.SubjectTypeLocal, "sneaky")
+	assert.NoError(t, err, "an ordinary admin's explicit Namespace field must be ignored — the account belongs in their own session namespace")
 
-	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky", Namespace: "tenant-b"}, &hyvev1alpha1.HyveAccessBinding{})
-	assert.True(t, apierrors.IsNotFound(err), "must not have been created in the requested-but-unauthorized namespace")
+	_, err = s.findBindingBySubject(t.Context(), "tenant-b", orgdb.SubjectTypeLocal, "sneaky")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "must not have been created in the requested-but-unauthorized namespace")
 }
 
 // TestHandleCreateAccount_SuperadminCanCreateSuperadmin proves a superadmin
 // can create another superadmin — the same "a role can create more of its
 // own role" principle already true for admin/admin, not a new escalation.
 func TestHandleCreateAccount_SuperadminCanCreateSuperadmin(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "second-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
-	var binding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "second-super", Namespace: testNamespace}, &binding))
-	assert.Equal(t, hyvev1alpha1.RoleSuperadmin, binding.Spec.Role)
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "second-super")
+	require.NoError(t, err)
+	assert.Equal(t, hyvev1alpha1.RoleSuperadmin, binding.Role)
 }
 
 // TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin is the actual
@@ -276,14 +330,14 @@ func TestHandleCreateAccount_SuperadminCanCreateSuperadmin(t *testing.T) {
 // role: superadmin, regardless of what namespace they're otherwise
 // confined to.
 func TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "sneaky-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 
-	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "sneaky-super", Namespace: testNamespace}, &hyvev1alpha1.HyveAccessBinding{})
-	assert.True(t, apierrors.IsNotFound(err), "must not have been created at all")
+	_, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "sneaky-super")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "must not have been created at all")
 }
 
 // TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace is the
@@ -293,16 +347,15 @@ func TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin(t *testing.T) {
 // points — otherwise the new account would be created somewhere login can
 // never find it.
 func TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "acme", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "third-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin, Namespace: "acme"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
-	var binding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, s.Client.Get(t.Context(), client.ObjectKey{Name: "third-super", Namespace: testNamespace}, &binding),
-		"a superadmin binding must land in the control-plane namespace regardless of act-as or an explicit Namespace field")
+	_, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "third-super")
+	assert.NoError(t, err, "a superadmin binding must land in the control-plane namespace regardless of act-as or an explicit Namespace field")
 
-	err := s.Client.Get(t.Context(), client.ObjectKey{Name: "third-super", Namespace: "acme"}, &hyvev1alpha1.HyveAccessBinding{})
-	assert.True(t, apierrors.IsNotFound(err), "must not have been created in the acted-as tenant namespace")
+	_, err = s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "third-super")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "must not have been created in the acted-as tenant namespace")
 }

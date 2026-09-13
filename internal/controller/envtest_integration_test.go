@@ -43,7 +43,7 @@ func TestEnvtest_ReconcileOneDrivesClusterDefinitionThroughCreate(t *testing.T) 
 	writeFakeModule(t, modulesDir)
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "deploy", "crds")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "deploy", "helm", "hyve", "crds")},
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := env.Start()

@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -110,5 +111,16 @@ func (r *WorkflowRunReconciler) finish(ctx context.Context, wr *hyvev1alpha1.Wor
 func (r *WorkflowRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyvev1alpha1.WorkflowRun{}).
+		Complete(r)
+}
+
+// SetupWithManagerNamed is SetupWithManager's own multi-instance variant —
+// see ClusterDefinitionReconciler.SetupWithManagerNamed's doc comment for
+// why this exists and what the namespace predicate actually does (this
+// mirrors it exactly, one kind down).
+func (r *WorkflowRunReconciler) SetupWithManagerNamed(mgr ctrl.Manager, name string) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(name).
+		For(&hyvev1alpha1.WorkflowRun{}, builder.WithPredicates(namespacePredicate(r.Namespace))).
 		Complete(r)
 }

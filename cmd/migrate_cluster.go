@@ -8,6 +8,7 @@ import (
 
 	"github.com/cbridges1/hyve/internal/controller"
 	"github.com/cbridges1/hyve/internal/migrate"
+	"github.com/cbridges1/hyve/internal/orgdb"
 	"github.com/cbridges1/hyve/internal/reconcile"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,6 +37,8 @@ var (
 	migrateClusterForce              bool
 	migrateClusterAckSourceStopped   bool
 	migrateClusterSkipAccessBindings bool
+	migrateClusterDBDriver           string
+	migrateClusterDBDSN              string
 )
 
 // migrateClusterCmd implements HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
@@ -63,7 +66,7 @@ own API reachable yet.
 tenant's ClusterDefinitions/HyveAccessBindings (+ credentials Secrets) —
 moving one tenant to a different cluster, leaving everything else on the
 source untouched. The special value "hyve-system" (the default) copies
-everything: every HyveEnvironment-registered tenant namespace in turn,
+everything: every registered tenant organization's namespace in turn,
 plus hyve-system's own control-plane objects (HyveConfig, the
 access.method: primary host ClusterDefinition, superadmin bindings) —
 moving the whole control plane, today's original use case.
@@ -101,6 +104,8 @@ func init() {
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterForce, "force", false, "Overwrite an existing object with the same name on the target instead of skipping it")
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterAckSourceStopped, "i-have-stopped-the-source-controller", false, "Required alongside --write: confirms the source cluster's controller is already stopped, avoiding dual-reconciliation (see this command's long help)")
 	migrateClusterCmd.Flags().BoolVar(&migrateClusterSkipAccessBindings, "skip-access-bindings", false, "Skip copying HyveAccessBindings + their credentials Secrets — only ClusterDefinitions/HyveConfig")
+	migrateClusterCmd.Flags().StringVar(&migrateClusterDBDriver, "db", "sqlite", "Backend for the source host's organization datastore, used only when --namespace=hyve-system to enumerate tenants to migrate alongside the control plane — must match that host's own hyve-api --db (see internal/orgdb)")
+	migrateClusterCmd.Flags().StringVar(&migrateClusterDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db — must point at the same database the source host's hyve-api uses, not the target's")
 	migrateCmd.AddCommand(migrateClusterCmd)
 }
 
@@ -149,14 +154,27 @@ func runMigrateCluster() {
 	allOK := true
 
 	if migrateClusterNamespace == "hyve-system" {
-		envs, err := migrate.Environments(ctx, source, migrateClusterNamespace)
+		// As of HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's
+		// Milestone 2, tenants are organizations in the source host's own
+		// Postgres/SQLite datastore, not HyveEnvironment CRDs — this needs
+		// direct database access (matching hyve-api's own --db/--db-dsn),
+		// unlike everything else in this command, which only ever needs a
+		// kubeconfig. There is no equivalent lookup through the API
+		// itself: this command is deliberately kubeconfig-direct, no login
+		// required (see this file's own doc comment).
+		orgStore, err := orgdb.Open(migrateClusterDBDriver, migrateClusterDBDSN)
 		if err != nil {
-			log.Fatalf("Failed to list HyveEnvironments on the current host: %v", err)
+			log.Fatalf("Failed to open source host's organization datastore (--db=%s --db-dsn=%s): %v", migrateClusterDBDriver, migrateClusterDBDSN, err)
 		}
-		log.Printf("Found %d tenant environment(s) to migrate alongside the control plane.", len(envs))
-		for _, env := range envs {
-			log.Printf("--- Tenant %q (namespace %q) ---", env.Name, env.Spec.Namespace)
-			if !migrateOneNamespace(ctx, source, dest, env.Spec.Namespace, dryRun) {
+		orgs, err := orgStore.ListOrganizations(ctx)
+		orgStore.Close()
+		if err != nil {
+			log.Fatalf("Failed to list organizations on the current host: %v", err)
+		}
+		log.Printf("Found %d tenant organization(s) to migrate alongside the control plane.", len(orgs))
+		for _, org := range orgs {
+			log.Printf("--- Tenant %q (namespace %q) ---", org.Name, org.Namespace)
+			if !migrateOneNamespace(ctx, source, dest, org.Namespace, dryRun) {
 				allOK = false
 			}
 		}
@@ -194,7 +212,13 @@ func runMigrateCluster() {
 		}
 		printMigrateSummary("workflow", workflowSummary, dryRun)
 
-		allOK = allOK && templateSummary.OK() && workflowSummary.OK()
+		resourceSummary, err := migrate.Resources(ctx, source, dest, migrateClusterNamespace, dryRun, migrateClusterForce)
+		if err != nil {
+			log.Fatalf("Failed to migrate resources: %v", err)
+		}
+		printMigrateSummary("resource", resourceSummary, dryRun)
+
+		allOK = allOK && templateSummary.OK() && workflowSummary.OK() && resourceSummary.OK()
 	}
 
 	if dryRun {

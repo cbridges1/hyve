@@ -1,9 +1,9 @@
 // Package api implements hyve's HTTP API + auth layer (see
 // HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6) — a thin, authorized
-// front door onto the ClusterDefinition/HyveAccessBinding CRDs the
-// controller already reconciles, not a second implementation of hyve's
-// logic. Cluster mode never requires this API: plain kubectl against the
-// CRDs always works. Local mode is entirely unaffected.
+// front door onto the ClusterDefinition CRD the controller already
+// reconciles, not a second implementation of hyve's logic. Cluster mode
+// never requires this API: plain kubectl against the CRDs always works.
+// Local mode is entirely unaffected.
 package api
 
 import (
@@ -13,10 +13,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 	"github.com/cbridges1/hyve/internal/webui"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -90,6 +92,31 @@ type Server struct {
 	// real install). Defaults to "hyve-config" if left unset (e.g. a test
 	// Server built without it).
 	ConfigName string
+
+	// OrgStore is hyve-api's own organization/environment/RBAC datastore
+	// (Postgres or SQLite) — see internal/orgdb and
+	// HYVE-ORGANIZATION-MODEL-PROPOSAL.md (nexus-config/docs) for the
+	// design. Opened at startup by cmd/api/run.go. Backs
+	// organizations.go's POST/GET/DELETE /organizations and every
+	// identity/binding lookup (accounts.go/auth_handlers.go) as of
+	// Milestones 2 and 4 (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md),
+	// which together retired HyveEnvironment and HyveAccessBinding
+	// entirely — nothing in this package reads either CRD any more. nil is
+	// not expected to occur in practice (cmd/api/run.go treats a failed
+	// Open as Fatal, unlike this file's other optional providers), but a
+	// Server built directly by a test must set it before calling any
+	// handler that touches organizations, accounts, or auth.
+	OrgStore *orgdb.Store
+
+	// reconcilingClusterClients lazily caches a *reconcilingClusterHandle
+	// per Milestone 6 reconciling cluster (internal/orgdb.ReconcilingCluster),
+	// keyed by its id — see resourceClient/reconcilingClusterClientHandle
+	// in reconcilingclusters.go. Zero value (nil map) is a valid, empty
+	// starting state; every access goes through reconcilingClientsMu,
+	// since concurrent requests can race to build the same cluster's
+	// handle for the first time.
+	reconcilingClusterClients map[string]*reconcilingClusterHandle
+	reconcilingClientsMu      sync.RWMutex
 }
 
 // Routes returns the API's full handler: /auth/*, /healthz, /docs, and
@@ -140,7 +167,8 @@ func (s *Server) Routes() http.Handler {
 	s.registerModuleRoutes(apiMux)
 	s.registerWhoamiRoute(apiMux)
 	s.registerAccountRoutes(apiMux)
-	s.registerEnvironmentRoutes(apiMux)
+	s.registerOrganizationRoutes(apiMux)
+	s.registerReconcilingClusterRoutes(apiMux)
 	s.registerConfigRoutes(apiMux)
 	s.registerAgentProxyRoutes(apiMux)
 
@@ -216,8 +244,10 @@ const actAsNamespaceHeader = "X-Hyve-Act-As-Namespace"
 // this instead of reading s.Namespace directly — see
 // HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section for why: s.Namespace is
 // now fixed per-install control-plane bookkeeping only (HyveConfig, the
-// primary ClusterDefinition, HyveEnvironment, HyveSession storage), not a
-// tenant's own namespace, which varies per login.
+// primary ClusterDefinition, HyveSession storage), not a tenant's own
+// namespace, which varies per login. Organizations themselves live in
+// OrgStore (Postgres/SQLite), not a namespaced Kubernetes object at all —
+// see internal/orgdb.
 //
 // A superadmin caller may override this via actAsNamespaceHeader — checked
 // only when RoleFromContext already resolves to RoleSuperadmin, which is
@@ -281,10 +311,25 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 }
 
 // requireRole resolves the authenticated username (set by requireAuth,
-// which must run first in the chain) to a role via its HyveAccessBinding
-// and puts both the role and the binding's ServiceAccountRef on the
-// request context. An authenticated identity with no matching binding gets
-// a hard 403 — never a silent default role.
+// which must run first in the chain) to a role via its binding (Postgres/
+// SQLite, internal/orgdb — see identity.go's findBindingBySubject) and
+// puts it on the request context. An authenticated identity with no
+// matching binding gets 401, not 403: a structurally valid, unexpired JWT
+// for an identity whose binding has since been deleted (the account was
+// removed, or — in local dev — the whole organization datastore was
+// recreated from scratch) can never succeed no matter what the caller
+// does short of logging in again, which is exactly what 401 means to
+// every caller of this API. 403 is reserved for RequireRole's own
+// role-mismatch case just below (a real, bound identity that legitimately
+// lacks permission for one specific action) — that caller IS a valid
+// principal, just not an authorized one, which is a genuinely different
+// case from "this identity doesn't exist here at all." Confirmed live:
+// returning 403 here left the web console silently stuck on stale
+// credentials — its own apiFetch only clears the local session and
+// falls back to the login screen on a literal 401 (see
+// web/src/lib/api/client.ts), so this specific 403 never triggered that,
+// no re-login prompt, no obvious way out short of manually clearing
+// localStorage.
 func (s *Server) requireRole(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, ok := UsernameFromContext(r.Context())
@@ -292,12 +337,12 @@ func (s *Server) requireRole(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		binding, err := FindBindingBySubject(r.Context(), s.Client, s.TenantNamespace(r), hyvev1alpha1.SubjectTypeLocal, username)
+		binding, err := s.findBindingBySubject(r.Context(), s.TenantNamespace(r), orgdb.SubjectTypeLocal, username)
 		if err != nil {
-			writeError(w, http.StatusForbidden, "no access binding for this identity")
+			writeError(w, http.StatusUnauthorized, "no access binding for this identity — please log in again")
 			return
 		}
-		ctx := context.WithValue(r.Context(), contextKeyRole, binding.Spec.Role)
+		ctx := context.WithValue(r.Context(), contextKeyRole, binding.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -722,6 +723,35 @@ func (r *ClusterDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyvev1alpha1.ClusterDefinition{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
+		Complete(r)
+}
+
+// SetupWithManagerNamed is SetupWithManager's multi-instance variant —
+// used when one manager registers more than one ClusterDefinitionReconciler
+// for different namespaces, one per organization namespace mapped to a
+// Milestone 6 reconciling cluster (see cmd/controller/run.go's own
+// --reconciling-cluster-id handling and
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Per-organization reconciling
+// cluster" section, nexus-config/docs). Every instance still shares the
+// manager's one underlying ClusterDefinition watch/cache — there's no
+// per-namespace cache in this design, only per-namespace *reconcilers* — so
+// the namespace predicate below is what actually keeps each instance from
+// reconciling every other instance's organization too, not the cache
+// itself. name must be unique across every controller registered on mgr
+// (controller-runtime requires this); r.Namespace is what the predicate
+// filters to, so it must already be set before calling this.
+func (r *ClusterDefinitionReconciler) SetupWithManagerNamed(mgr ctrl.Manager, name string) error {
+	maxConcurrent := r.MaxConcurrentReconciles
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("hyve-controller")
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(name).
+		For(&hyvev1alpha1.ClusterDefinition{}, builder.WithPredicates(namespacePredicate(r.Namespace))).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
 }

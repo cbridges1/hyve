@@ -3,7 +3,7 @@
 # already-cross-compiled binary for each target platform — GoReleaser's
 # docker build never runs this multi-stage Go build stage itself, only the
 # runtime stage's package list is what actually matters for release images.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

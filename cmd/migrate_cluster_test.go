@@ -54,17 +54,23 @@ func resetMigrateClusterFlags(t *testing.T) {
 	})
 }
 
-func TestMigrateOneNamespace_CopiesClusterDefinitionAndBinding(t *testing.T) {
+// TestMigrateOneNamespace_CopiesClusterDefinitionAndCredentialsSecret
+// covers the same "moves a tenant's whole namespace" path the retired
+// HyveAccessBinding-copying version did, now that bindings are Postgres/
+// SQLite rows (see internal/migrate.AccessBindings' own doc comment) —
+// what's left to verify here is the credentials Secret sweep, the one
+// still-Kubernetes-native half.
+func TestMigrateOneNamespace_CopiesClusterDefinitionAndCredentialsSecret(t *testing.T) {
 	resetMigrateClusterFlags(t)
 	cd := &hyvev1alpha1.ClusterDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme-cluster", Namespace: "acme"},
 		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Region: "PHX1"},
 	}
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme-admin", Namespace: "acme"},
-		Spec:       hyvev1alpha1.HyveAccessBindingSpec{Role: hyvev1alpha1.RoleAdmin},
+	credentials := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-admin-credentials", Namespace: "acme"},
+		Data:       map[string][]byte{"password-hash": []byte("hash")},
 	}
-	source := newMigrateFakeClient(t, cd, binding)
+	source := newMigrateFakeClient(t, cd, credentials)
 	dest := newMigrateFakeClient(t)
 
 	ok := migrateOneNamespace(context.Background(), source, dest, "acme", false)
@@ -74,27 +80,24 @@ func TestMigrateOneNamespace_CopiesClusterDefinitionAndBinding(t *testing.T) {
 	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: "acme", Name: "acme-cluster"}, &gotCD))
 	assert.Equal(t, "PHX1", gotCD.Spec.Region)
 
-	var gotBinding hyvev1alpha1.HyveAccessBinding
-	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: "acme", Name: "acme-admin"}, &gotBinding))
+	var gotSecret corev1.Secret
+	require.NoError(t, dest.Get(context.Background(), types.NamespacedName{Namespace: "acme", Name: "acme-admin-credentials"}, &gotSecret))
 }
 
 func TestMigrateOneNamespace_SkipAccessBindings(t *testing.T) {
 	resetMigrateClusterFlags(t)
 	migrateClusterSkipAccessBindings = true
 
-	binding := &hyvev1alpha1.HyveAccessBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme-admin", Namespace: "acme"},
-		Spec:       hyvev1alpha1.HyveAccessBindingSpec{Role: hyvev1alpha1.RoleAdmin},
-	}
-	source := newMigrateFakeClient(t, binding)
+	credentials := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "acme-admin-credentials", Namespace: "acme"}}
+	source := newMigrateFakeClient(t, credentials)
 	dest := newMigrateFakeClient(t)
 
 	ok := migrateOneNamespace(context.Background(), source, dest, "acme", false)
 	assert.True(t, ok)
 
-	var gotBinding hyvev1alpha1.HyveAccessBinding
-	err := dest.Get(context.Background(), types.NamespacedName{Namespace: "acme", Name: "acme-admin"}, &gotBinding)
-	assert.Error(t, err, "--skip-access-bindings must mean no HyveAccessBinding is copied")
+	var gotSecret corev1.Secret
+	err := dest.Get(context.Background(), types.NamespacedName{Namespace: "acme", Name: "acme-admin-credentials"}, &gotSecret)
+	assert.Error(t, err, "--skip-access-bindings must mean no credentials secret is copied either")
 }
 
 // TestMigrateOneNamespace_ScopesToGivenNamespaceOnly is the regression test

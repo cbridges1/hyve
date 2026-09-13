@@ -7,9 +7,10 @@ import { useSession } from './lib/useAuth'
 import { AccountsPage } from './routes/AccountsPage'
 import { ClusterDetailPage } from './routes/ClusterDetailPage'
 import { ClustersListPage } from './routes/ClustersListPage'
-import { EnvironmentsPage } from './routes/EnvironmentsPage'
 import { ModuleDetailPage } from './routes/ModuleDetailPage'
 import { ModulesPage } from './routes/ModulesPage'
+import { OrganizationsPage } from './routes/OrganizationsPage'
+import { ReconcilingClustersPage } from './routes/ReconcilingClustersPage'
 import { ResourceDetailPage } from './routes/ResourceDetailPage'
 import { ResourcesPage } from './routes/ResourcesPage'
 import { SecretsPage } from './routes/SecretsPage'
@@ -41,10 +42,18 @@ function App() {
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/workflows/:name" element={<WorkflowDetailPage />} />
             <Route
-              path="/environments"
+              path="/organizations"
               element={
                 <SuperadminOnly>
-                  <EnvironmentsPage />
+                  <OrganizationsPage />
+                </SuperadminOnly>
+              }
+            />
+            <Route
+              path="/reconciling-clusters"
+              element={
+                <SuperadminOnly>
+                  <ReconcilingClustersPage />
                 </SuperadminOnly>
               }
             />

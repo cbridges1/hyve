@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { environmentsApi } from '../lib/api/environments'
+import { organizationsApi } from '../lib/api/organizations'
 import { logout, RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
 import { useActAs } from '../lib/useActAs'
 import { useApi } from '../lib/useApi'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
+import { getOrganizationsVersion, subscribe as subscribeOrganizations } from '../lib/organizationsStore'
 import { Logo } from './Logo'
 import { ThemeToggle } from './ThemeToggle'
 import {
@@ -13,7 +14,8 @@ import {
   ChevronDownIcon,
   ClustersIcon,
   CloseIcon,
-  EnvironmentsIcon,
+  OrganizationsIcon,
+  ReconcilingClustersIcon,
   MenuIcon,
   ModulesIcon,
   ResourcesIcon,
@@ -25,7 +27,7 @@ import {
 
 // Grouped the way the sidebar renders them — each group gets its own small
 // uppercase section header, mirroring a typical nested-sidebar dashboard
-// layout. Accounts/Environments aren't here: their visibility depends on
+// layout. Accounts/Organizations aren't here: their visibility depends on
 // role/actAs state, so they're rendered as their own conditionally-shown
 // "Organization" group below instead of being filtered into this list.
 const navGroups: { label: string; items: { to: string; label: string; Icon: typeof ClustersIcon }[] }[] = [
@@ -65,9 +67,30 @@ const groupHeaderClass = 'px-3 pt-4 pb-1 text-[11px] font-semibold tracking-wide
 // Independent of, and never changes, the real session identity shown in
 // the header's own user menu (that's who's actually logged in; this is
 // which tenant's data every /api/* request currently resolves against).
-function EnvironmentSwitcher() {
+function OrganizationSwitcher() {
   const [actAs, setActAs] = useActAs()
-  const { data: environments } = useApi(() => environmentsApi.list())
+  const orgsVersion = useSyncExternalStore(subscribeOrganizations, getOrganizationsVersion)
+  const { data: organizations } = useApi(() => organizationsApi.list(), [orgsVersion])
+
+  // Self-heal a stale "Viewing" selection — e.g. localStorage still
+  // pointing at an organization's namespace that's since been deleted
+  // (or, in local dev, an orgdb wiped and recreated from scratch).
+  // Without this, a plain <select> silently falls back to displaying its
+  // first option ("Control plane") whenever its bound value matches no
+  // <option>, while actAs itself stays stuck at the stale namespace
+  // underneath — every /api/* request keeps carrying
+  // X-Hyve-Act-As-Namespace for a namespace that no longer exists (see
+  // apiFetch), and the whole Organizations/Reconciling clusters/Settings
+  // nav section (gated on actAs === null) silently vanishes with no
+  // error explaining why. Confirmed live. Only acts once organizations
+  // has actually loaded (undefined means "still loading," not "empty" —
+  // an empty real list is `[]`), so a page reload doesn't race a
+  // momentary false positive before the list arrives.
+  useEffect(() => {
+    if (actAs !== null && organizations && !organizations.some((org) => org.namespace === actAs)) {
+      setActAs(null)
+    }
+  }, [actAs, organizations, setActAs])
 
   return (
     <div className="border-b border-neutral-200 px-2.5 pt-3 pb-3 dark:border-neutral-800">
@@ -80,9 +103,9 @@ function EnvironmentSwitcher() {
         className="w-full rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
       >
         <option value="">Control plane</option>
-        {environments?.map((env) => (
-          <option key={env.name} value={env.namespace}>
-            {env.name}
+        {organizations?.map((org) => (
+          <option key={org.name} value={org.namespace}>
+            {org.name}
           </option>
         ))}
       </select>
@@ -90,7 +113,7 @@ function EnvironmentSwitcher() {
   )
 }
 
-// Non-superadmin counterpart to EnvironmentSwitcher above — there's nothing
+// Non-superadmin counterpart to OrganizationSwitcher above — there's nothing
 // to switch (one binding, one namespace), but still gives every role the
 // same permanent "which org am I looking at" orientation the switcher gives
 // a superadmin, addressed at a fixed spot rather than folded into a menu.
@@ -112,7 +135,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="flex h-full w-full flex-col">
       {who?.role === RoleSuperadmin ? (
-        <EnvironmentSwitcher />
+        <OrganizationSwitcher />
       ) : (
         who && <OrganizationLabel namespace={who.namespace} />
       )}
@@ -130,17 +153,19 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             </div>
           </div>
         ))}
-        {/* Accounts always follows whichever environment "Viewing" is
+        {/* Accounts always follows whichever organization "Viewing" is
             currently set to (see Server.TenantNamespace) — a superadmin
             managing hyve-system's own accounts is just "Viewing: Control
             plane" + Accounts, the same page a tenant admin already uses,
-            not a separate mechanism. Environments (creating/listing
-            tenants) and Settings (the install-wide HyveConfig singleton)
-            are both control-plane-only — neither is scoped to any one
-            tenant, so both only make sense while Viewing: Control plane,
-            unlike Accounts above. Grouped under its own header only when
-            at least one of the three is actually visible, so this
-            role-gated group never renders as an empty heading. */}
+            not a separate mechanism. Organizations (creating/listing
+            tenants), Reconciling clusters (registering physical clusters
+            and assigning them to organizations — Milestone 6), and
+            Settings (the install-wide HyveConfig singleton) are all
+            control-plane-only — none is scoped to any one tenant, so all
+            three only make sense while Viewing: Control plane, unlike
+            Accounts above. Grouped under its own header only when at
+            least one of the four is actually visible, so this role-gated
+            group never renders as an empty heading. */}
         {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <div>
             <div className={groupHeaderClass}>Organization</div>
@@ -150,9 +175,15 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                 Accounts
               </NavLink>
               {who?.role === RoleSuperadmin && actAs === null && (
-                <NavLink to="/environments" className={linkClass} onClick={onNavigate}>
-                  <EnvironmentsIcon />
-                  Environments
+                <NavLink to="/organizations" className={linkClass} onClick={onNavigate}>
+                  <OrganizationsIcon />
+                  Organizations
+                </NavLink>
+              )}
+              {who?.role === RoleSuperadmin && actAs === null && (
+                <NavLink to="/reconciling-clusters" className={linkClass} onClick={onNavigate}>
+                  <ReconcilingClustersIcon />
+                  Reconciling clusters
                 </NavLink>
               )}
               {who?.role === RoleSuperadmin && actAs === null && (

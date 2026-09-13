@@ -21,28 +21,43 @@ import (
 // sensitive (no driverOutputs/kubeconfig-equivalent), so this exposes the
 // CRD's own Spec directly rather than a narrower hand-picked view.
 type templateDTO struct {
-	Name string                    `json:"name"`
-	Spec hyvev1alpha1.TemplateSpec `json:"spec"`
+	// Name is the short, user-facing name — see clusterDTO's own doc
+	// comment on Name for the exact same convention.
+	Name        string                    `json:"name"`
+	Environment string                    `json:"environment,omitempty"`
+	Spec        hyvev1alpha1.TemplateSpec `json:"spec"`
 }
 
 func toTemplateDTO(cr *hyvev1alpha1.Template) templateDTO {
-	return templateDTO{Name: cr.Name, Spec: cr.Spec}
+	name, environment := cr.Name, cr.Labels[hyveEnvironmentLabel]
+	if environment != "" {
+		name = splitEnvironmentPrefix(cr.Name, environment)
+	}
+	return templateDTO{Name: name, Environment: environment, Spec: cr.Spec}
 }
 
 // registerTemplateRoutes wires the /templates endpoints onto mux — mounted
 // under /api/ (and behind requireAuth+requireRole) by Server.Routes.
 func (s *Server) registerTemplateRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /templates", s.handleListTemplates)
-	mux.HandleFunc("GET /templates/{name}", s.handleGetTemplate)
-	mux.HandleFunc("POST /templates", s.handleCreateTemplate)
-	mux.HandleFunc("PATCH /templates/{name}", s.handleUpdateTemplate)
-	mux.HandleFunc("DELETE /templates/{name}", s.handleDeleteTemplate)
-	mux.HandleFunc("POST /templates/{name}/render", s.handleRenderTemplate)
+	mux.HandleFunc("GET /templates", s.requireOrganizationNotMigrating(s.handleListTemplates))
+	mux.HandleFunc("GET /templates/{name}", s.requireOrganizationNotMigrating(s.handleGetTemplate))
+	mux.HandleFunc("POST /templates", s.requireOrganizationNotMigrating(s.handleCreateTemplate))
+	mux.HandleFunc("PATCH /templates/{name}", s.requireOrganizationNotMigrating(s.handleUpdateTemplate))
+	mux.HandleFunc("DELETE /templates/{name}", s.requireOrganizationNotMigrating(s.handleDeleteTemplate))
+	mux.HandleFunc("POST /templates/{name}/render", s.requireOrganizationNotMigrating(s.handleRenderTemplate))
 }
 
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to list templates")
+		return
+	}
 	var list hyvev1alpha1.TemplateList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
+	if err := rc.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		log.Printf("api: failed to list templates: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list templates")
 		return
@@ -55,9 +70,17 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to get template")
+		return
+	}
 	var cr hyvev1alpha1.Template
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
 			return
@@ -90,11 +113,26 @@ func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	namespace := s.TenantNamespace(r)
+	rc, err := s.resourceClient(r.Context(), namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to create template")
+		return
+	}
+	envResult, ok := s.resolveCreateName(w, r, namespace, req.Name)
+	if !ok {
+		return
+	}
+	meta := metav1.ObjectMeta{Name: envResult.RealName, Namespace: namespace}
+	if envResult.HasEnvironment {
+		meta.Labels = map[string]string{hyveEnvironmentLabel: envResult.Label}
+	}
 	cr := &hyvev1alpha1.Template{
-		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.TenantNamespace(r)},
+		ObjectMeta: meta,
 		Spec:       req.Spec,
 	}
-	if err := s.Client.Create(r.Context(), cr); err != nil {
+	if err := rc.Create(r.Context(), cr); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "template already exists")
 			return
@@ -115,15 +153,23 @@ func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
 	var req updateTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to update template")
+		return
+	}
 	var cr hyvev1alpha1.Template
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
 			return
@@ -133,7 +179,7 @@ func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cr.Spec = req.Spec
-	if err := s.Client.Update(r.Context(), &cr); err != nil {
+	if err := rc.Update(ctx, &cr); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update template: %v", err))
 		return
 	}
@@ -144,9 +190,17 @@ func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
-	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.TenantNamespace(r)}}
-	if err := s.Client.Delete(r.Context(), cr); err != nil {
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete template")
+		return
+	}
+	cr := &hyvev1alpha1.Template{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if err := rc.Delete(ctx, cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
 			return
@@ -176,9 +230,17 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
 		return
 	}
-	name := r.PathValue("name")
+	ctx := r.Context()
+	namespace := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	rc, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
+		writeError(w, http.StatusInternalServerError, "failed to get template")
+		return
+	}
 	var cr hyvev1alpha1.Template
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+	if err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "template not found")
 			return
