@@ -769,3 +769,59 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// ListAllBindings returns every binding across every namespace — unlike
+// ListBindingsForScope (one namespace's own accounts listing), this exists
+// purely for Migrate (Milestone 7's sqlite->postgres dump/restore tool),
+// which needs a whole-database enumeration with no namespace to scope by.
+func (s *Store) ListAllBindings(ctx context.Context) ([]Binding, error) {
+	rows, err := s.query(ctx, `SELECT `+bindingColumns+` FROM bindings ORDER BY namespace, identity`)
+	if err != nil {
+		return nil, fmt.Errorf("list all bindings: %w", err)
+	}
+	defer rows.Close()
+	return scanBindings(rows)
+}
+
+// ListSigningKeys returns every signing_keys row — in practice always
+// exactly one (UNIQUE(namespace), and every real install has one
+// namespace — see EnsureSigningKey), but Migrate enumerates rather than
+// assumes, matching how it treats every other table.
+func (s *Store) ListSigningKeys(ctx context.Context) ([]SigningKey, error) {
+	rows, err := s.query(ctx, `SELECT id, namespace, key_material, created_at FROM signing_keys ORDER BY namespace`)
+	if err != nil {
+		return nil, fmt.Errorf("list signing keys: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SigningKey
+	for rows.Next() {
+		var k SigningKey
+		if err := rows.Scan(&k.ID, &k.Namespace, &k.KeyMaterial, &k.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan signing key: %w", err)
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// ListSessions returns every session row — used only by Migrate; no
+// request-serving code needs a whole-database session listing (a session
+// is always looked up by its own id, see GetSession).
+func (s *Store) ListSessions(ctx context.Context) ([]Session, error) {
+	rows, err := s.query(ctx, `SELECT id, subject, tenant_namespace, token_hash, expires_at, created_at FROM sessions ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		if err := rows.Scan(&sess.ID, &sess.Subject, &sess.TenantNamespace, &sess.TokenHash, &sess.ExpiresAt, &sess.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}

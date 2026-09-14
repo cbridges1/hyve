@@ -66,7 +66,7 @@ var (
 var Cmd = &cobra.Command{
 	Use:   "api",
 	Short: "Run hyve's HTTP API + auth layer, or manage its local users",
-	Long:  "Commands for hyve's HTTP API + auth layer — a convenience layer in front of the ClusterDefinition/HyveAccessBinding CRDs, not a required gateway.",
+	Long:  "Commands for hyve's HTTP API + auth layer — a convenience layer in front of the ClusterDefinition CRD (and, for organizations/RBAC/sessions, internal/orgdb — see HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs), not a required gateway.",
 }
 
 var runCmd = &cobra.Command{
@@ -85,7 +85,7 @@ comment for how to create one.`,
 }
 
 func init() {
-	runCmd.Flags().StringVar(&apiNamespace, "namespace", "hyve-system", "Namespace ClusterDefinitions/HyveAccessBindings/credentials Secrets live in")
+	runCmd.Flags().StringVar(&apiNamespace, "namespace", "hyve-system", "Namespace ClusterDefinitions live in on this install's own home cluster, and this install's own control-plane Organization/namespace name in internal/orgdb")
 	runCmd.Flags().StringVar(&apiModulesDir, "modules-dir", "/var/lib/hyve/modules", "Directory containing the baked-in hyve.lock and resolved modules — see cmd/controller's --modules-dir")
 	runCmd.Flags().StringVar(&apiBindAddress, "bind-address", ":8090", "Address the API binds to")
 	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the host-cluster and agent-proxy kubeconfig paths' server: fields")

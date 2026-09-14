@@ -14,6 +14,21 @@ import (
 // what makes the registry itself part of "Multi-tenancy scoping of the
 // connection registry"'s cryptographic-identity story, not a caller-
 // suppliable value.
+//
+// Deliberately still just two fields, not three — confirmed, not
+// assumed, during Milestone 9's own investigation
+// (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs):
+// this doc comment's own earlier draft expected a third "environment"
+// field to be needed here, written before Milestone 3's environment-
+// addressing design actually shipped. ClusterName is always the real
+// Kubernetes object name end to end — cd.Name, the same value
+// AgentProvider.Kubeconfig mints the /agent-proxy/<name> URL from, which
+// Milestone 3 already makes environment-addressed at creation time (e.g.
+// "dev-web"/"staging-web" for a "web" cluster in two different
+// environments of the same organization). Two clusters that share a
+// short display name in different environments of the same organization
+// already have distinct ClusterName values by construction — adding an
+// explicit environment field here would be redundant, not a fix.
 type AgentConnectionKey struct {
 	Namespace   string
 	ClusterName string

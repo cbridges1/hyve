@@ -1,7 +1,14 @@
-# Example per-tenant override file for a multi-tenant install (one hyve
-# release per tenant namespace, sharing a cluster — see README.md's
-# "Multi-tenant installs" section). Copy this to values-tenant-<name>.yaml,
-# fill in the placeholders, and install with:
+# Example per-tenant override file for the "separate installs" multi-tenant
+# model (one hyve release per tenant namespace, sharing a cluster — see
+# README.md's "Multi-tenant installs" section). For most use cases, the
+# "Organizations" model (a single shared install, `hyve organization
+# create <tenant>`, no new Helm release per tenant) is simpler and needs
+# no file like this at all — reach for this one specifically when a
+# tenant needs full install-level isolation, not just namespace/RBAC
+# isolation within one shared install.
+#
+# Copy this to values-tenant-<name>.yaml, fill in the placeholders, and
+# install with:
 #
 #   kubectl create namespace <tenant-ns>
 #   helm install hyve-<tenant> deploy/helm/hyve \
@@ -29,7 +36,6 @@ api:
   # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md) — point whatever you're already
   # running at the hyve-api Service this release creates in <tenant-ns>.
   publicBaseURL: https://<tenant>.hyve.example.com
-  primaryClusterName: <tenant>-primary
 
   # Leave at the chart default (false) unless this tenant's cluster is
   # genuinely single-tenant — true grants this tenant's admin role

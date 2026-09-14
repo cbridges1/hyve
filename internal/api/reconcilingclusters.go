@@ -25,12 +25,12 @@ import (
 // design (see handlePatchOrganization). Applied at registration time to
 // every route whose handler resolves through resourceClient/
 // resourceClientset — clusters.go/templates.go/workflows.go/
-// workflowruns.go/resources.go, and (as of Milestone 10 Part C, which
+// workflowruns.go/resources.go, (as of Milestone 10 Part C, which
 // routed these through resourceClient too — see each file's own doc
-// comment) modules.go/secrets.go/auth_context.go/kubeconfig_handler.go —
-// never globally, since organization/account/config management itself
-// (Store rows, not cluster resources) isn't part of what a
-// reconciling-cluster migration actually moves.
+// comment) modules.go/secrets.go/auth_context.go/kubeconfig_handler.go,
+// and (Milestone 9) agent_proxy.go — never globally, since organization/
+// account/config management itself (Store rows, not cluster resources)
+// isn't part of what a reconciling-cluster migration actually moves.
 //
 // A resolution error here is treated as "not locked" (falls through to
 // next) rather than surfaced as its own 500 — the underlying handler's own

@@ -186,7 +186,7 @@ hyve env login                     # --api-url defaults to the active environmen
 
 `hyve env login --api-url ...` also registers the environment for you automatically if that URL isn't already known — so a single `hyve env login --api-url https://hyve-api.example.com` is enough on its own; a separate `hyve env create --api-url` step is only needed if you want to pre-register a cluster before authenticating against it. The auto-registered name is derived from the URL's host (deduplicated on collision), and it's only made the active environment if you had none registered yet — otherwise whatever local directory you're already working in stays active.
 
-`hyve env login` returns two credentials: a short-lived **access token** (30 minutes, used on every API call) and a long-lived **session token** (30 days, kept only to silently mint fresh access tokens via `POST /auth/refresh` — no password re-entry, which is what makes unattended use, e.g. a cron job, practical). The session itself is a real, revocable Kubernetes object (`HyveSession`, group `hyve.io`) on the cluster you logged into — `kubectl get hyvesessions -n hyve-system` lists every active login, and `hyve env logout` (or deleting the object directly) revokes it immediately.
+`hyve env login` returns two credentials: a short-lived **access token** (30 minutes, used on every API call) and a long-lived **session token** (30 days, kept only to silently mint fresh access tokens via `POST /auth/refresh` — no password re-entry, which is what makes unattended use, e.g. a cron job, practical). The session itself is a real, revocable row in hyve-api's own datastore (`internal/orgdb`, Postgres or SQLite — not a Kubernetes object, as of `HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`'s Milestone 10) — `hyve env logout` revokes it immediately, and any cached access token from it keeps working for at most its own short remaining TTL after that.
 
 `hyve migrate` bulk-imports a directory into whichever cluster the active environment is logged into (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). Its source is always explicit — a positional path, or `--dir`/`--file` — defaulting to the current working directory, never implicitly the active environment's own directory (you might migrate a one-off directory into whatever cluster you're logged into). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success.
 
@@ -194,9 +194,64 @@ hyve env login                     # --api-url defaults to the active environmen
 
 ### Multi-tenant installs
 
-Multiple hyve installs (controller + API pairs) can safely share one Kubernetes cluster, each isolated to its own namespace — one install per tenant, rather than one shared controller watching many namespaces. Every `hyve.io` CRD is namespaced, and by default (`api.accessRoles.clusterScoped: false`) each install's admin/read-only roles are scoped to its own namespace only, so one tenant's caller can never read, modify, or gain cluster-admin over another tenant's objects or namespace.
+Two ways to serve multiple tenants, and they compose (a reconciling
+cluster, below, can itself run a separate install if you want that extra
+isolation) — see `HYVE-ORGANIZATION-MODEL-PROPOSAL.md` (nexus-config/docs)
+for the full design.
 
-To add a tenant:
+**Organizations (the common case, one shared install).** A single
+controller + API pair serves any number of tenants, each an `Organization`
+— a row in hyve-api's own datastore (`internal/orgdb`, Postgres or
+SQLite), not a separate Helm release. `Namespace` scoping is still the
+real isolation boundary underneath (an Organization owns one Kubernetes
+Namespace, same as before), it's just provisioned and tracked through the
+API/CLI now instead of a second `helm install`:
+
+```bash
+hyve env login --api-url https://hyve-api.example.com   # as a superadmin
+
+hyve organization create <tenant-name>
+hyve cluster-config api create-user <username> --role admin --namespace <tenant-name>
+```
+
+Each organization can optionally live on its own **reconciling cluster** —
+a separate, registered Kubernetes cluster hyve-controller reconciles that
+tenant's `ClusterDefinition`/`Template`/`Workflow`/`Resource` objects
+against, distinct from wherever hyve-controller/hyve-api's own pods run
+(useful for real workload isolation between tenants sharing one control
+plane):
+
+```bash
+hyve reconciling-cluster create <name> --kubeconfig-file <path>
+hyve organization migrate <tenant-name> --reconciling-cluster <name>
+```
+
+See `hyve organization --help`/`hyve reconciling-cluster --help` for the
+full command surface (list/delete/environments), and the "Session and
+auth model"/"Multi-tenant installs" sections of `docs/ARCHITECTURE.md` for
+how isolation is actually enforced at the API layer.
+
+**SQLite vs. Postgres.** SQLite (the default) is the simplest choice —
+no external database to run — but only ever supports one API replica
+(SQLite has no story for concurrent multi-process writers) and is refused
+outright by hyve-api itself once any organization moves onto a reconciling
+cluster. Postgres (`--set api.db.driver=postgres --set
+api.db.postgresDSNSecret.name=<existing-secret>`) is required for
+horizontal API scaling or any real use of reconciling clusters. Switching
+between the two on an install that already has data needs `hyve
+cluster-config api migrate-db` — see that command's own `--help` and
+`values.yaml`'s `api.db` block for the full set of options (PVC sizing,
+an optional Litestream sidecar for continuous SQLite backup).
+
+**Separate installs (the older, still-supported alternative).** Multiple
+full hyve installs (controller + API pairs) can also share one Kubernetes
+cluster, each isolated to its own namespace — one Helm release per tenant,
+rather than one shared controller watching many namespaces via
+Organizations. Every `hyve.io` CRD is namespaced, and by default
+(`api.accessRoles.clusterScoped: false`) each install's admin/read-only
+roles are scoped to its own namespace only, so one tenant's caller can
+never read, modify, or gain cluster-admin over another tenant's objects or
+namespace:
 
 ```bash
 kubectl create namespace <tenant-ns>
@@ -206,12 +261,15 @@ helm install hyve-<tenant> deploy/helm/hyve \
   --set namespace=<tenant-ns> \
   --set api.publicBaseURL=https://<tenant>.hyve.example.com
 
-hyve cluster-config api create-user <username> --role admin --namespace <tenant-ns> | kubectl apply -f -
+kubectl exec -n <tenant-ns> deployment/hyve-api -- \
+  hyve cluster-config api create-user <username> --role admin --namespace <tenant-ns>
 ```
 
 This chart has no Ingress/LoadBalancer of its own to enable — point whatever exposure you're already running (an existing Ingress controller, a cloud LoadBalancer, your own routing) at the `hyve-api`/`hyve-ui` Services this release creates in `<tenant-ns>`. See `deploy/helm/hyve/values-tenant-example.yaml` for the full set of per-tenant overrides, and `docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md` for why exposure is deliberately left out of the chart.
 
-**CRDs are cluster-global, shared by every tenant install.** `helm install` only applies `deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm upgrade` never touches them (standard Helm behavior). So only the very first tenant's install actually creates them; a later CRD schema change needs a manual `kubectl apply -f deploy/helm/hyve/crds/` before any tenant runs `helm upgrade`, or that tenant's upgrade will run against a stale schema.
+**CRDs are cluster-global, shared by every install on the cluster (both models above).** `helm install` only applies `deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm upgrade` never touches them (standard Helm behavior). So only the very first install actually creates them; a later CRD schema change needs a manual `kubectl apply -f deploy/helm/hyve/crds/` before any install runs `helm upgrade`, or that upgrade will run against a stale schema.
+
+**Upgrading an install that predates the organization model?** See `docs/HYVE-ORGANIZATION-MODEL-MIGRATION-GUIDE.md`.
 
 ## Module System
 

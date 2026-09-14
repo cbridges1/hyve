@@ -9,6 +9,8 @@ import (
 	"github.com/cbridges1/hyve/cmd/clusterconfig"
 	"github.com/cbridges1/hyve/cmd/env"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
+	"github.com/cbridges1/hyve/cmd/organization"
+	"github.com/cbridges1/hyve/cmd/reconcilingcluster"
 	rescmd "github.com/cbridges1/hyve/cmd/resource"
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/cmd/template"
@@ -73,6 +75,12 @@ func init() {
 	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(rescmd.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
+
+	// Multi-tenant control-plane management (Milestone 2/6,
+	// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs) —
+	// cluster-mode only, unlike everything above.
+	rootCmd.AddCommand(organization.Cmd)
+	rootCmd.AddCommand(reconcilingcluster.Cmd)
 
 	// 'controller'/'api' run are ops-only (Helm's own Deployment args call
 	// them directly — `hyve cluster-config controller run` / `... api

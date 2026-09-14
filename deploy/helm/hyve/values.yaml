@@ -114,6 +114,83 @@ controller:
 api:
   bindAddress: ":8090"
 
+  # replicaCount is api-deployment.yaml's own Deployment.spec.replicas —
+  # chart-level validated (not just documented) against db.driver: sqlite
+  # only ever supports 1, since SQLite has no story for concurrent
+  # multi-process writers (a second replica writing to the same file would
+  # corrupt it) — a values override setting this above 1 while
+  # db.driver is still sqlite fails the template render outright with a
+  # clear message, rather than silently clamping to 1 and masking what's
+  # almost certainly a real misconfiguration. Only db.driver: postgres
+  # supports more than one.
+  replicaCount: 1
+
+  # db controls hyve-api's own organization/environment/RBAC/session
+  # datastore (internal/orgdb) — see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's
+  # "Deployment strategy" section and
+  # HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 7
+  # (nexus-config/docs) for the full design this implements.
+  db:
+    # driver: "sqlite" (default) or "postgres". sqlite is the simplest
+    # choice for a single-tenant/low-traffic install — no external
+    # database to run — but caps replicaCount at 1 (see above) and is
+    # refused outright by hyve-api itself once any organization is moved
+    # to a reconciling cluster other than this install's own home cluster
+    # (Milestone 6's own deployment gate, cmd/api/run.go). postgres is
+    # required for horizontal API scaling or any real use of per-
+    # organization reconciling clusters. Switching between the two after
+    # an install already has data needs `hyve cluster-config api
+    # migrate-db` (Milestone 7) — this chart has no in-place conversion of
+    # its own.
+    driver: sqlite
+
+    # sqlite-only: this chart provisions a ReadWriteOnce PersistentVolumeClaim
+    # (api-orgdb-pvc.yaml) mounted at /data, so the orgdb file survives a
+    # pod reschedule/restart — without this, every redeploy silently loses
+    # every organization/account/session (the actual gap that made this
+    # milestone necessary; a fresh install before Milestone 7 had no /data
+    # volume declared at all). A PVC alone only protects against pod
+    # rescheduling, not a lost/corrupted underlying volume or a
+    # accidentally-deleted PVC — see litestream below for real backup.
+    sqliteVolumeSize: 1Gi
+    # sqlite-only: StorageClass for the PVC above. Empty (default) uses
+    # the cluster's own default StorageClass.
+    sqliteStorageClassName: ""
+
+    # postgres-only: name of an existing Secret (in .namespace) holding
+    # the full Postgres connection string under `key` — this chart never
+    # creates or sees the value of this Secret, same bring-your-own-secret
+    # stance as publicCABundle below takes for TLS material: a database
+    # credential isn't something a values.yaml file (typically committed
+    # to git) should ever hold, even indirectly.
+    postgresDSNSecret:
+      name: ""
+      key: dsn
+
+    # litestream: an optional sidecar container (sqlite only) that
+    # continuously streams the orgdb SQLite file to S3-compatible object
+    # storage — see https://litestream.io. Disabled by default: this
+    # chart never requires an object-storage bucket to exist, matching
+    # every other genuinely-optional, bring-your-own-backing-resource
+    # feature here (e.g. publicCABundle below). A PVC (above) already
+    # protects against pod rescheduling; litestream additionally protects
+    # against losing or corrupting the PVC itself.
+    litestream:
+      enabled: false
+      image: "litestream/litestream:0.3.13"
+      # replicaURL: the litestream replica destination, e.g.
+      # s3://my-bucket/hyve-orgdb — see litestream's own config
+      # documentation for the exact URL shape per backend.
+      replicaURL: ""
+      # credentialsSecret: an existing Secret (in .namespace) holding
+      # object-storage credentials as literal env vars this sidecar reads
+      # directly (e.g. LITESTREAM_ACCESS_KEY_ID/LITESTREAM_SECRET_ACCESS_KEY
+      # for S3-compatible storage — adjust the key names to match whatever
+      # backend replicaURL points at) — never created or seen by this
+      # chart, same stance as postgresDSNSecret above.
+      credentialsSecret:
+        name: ""
+
   # modulesDir must match whatever the controller's own image bakes its
   # state/modules under — ModuleAuthProvider (internal/api/access.go)
   # resolves driver modules the same way internal/reconcile does.

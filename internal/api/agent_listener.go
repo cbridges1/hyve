@@ -260,7 +260,15 @@ func (s *Server) drainAgentRequests(reqs <-chan *ssh.Request, agentConn *AgentCo
 // resourceVersion; a merge patch scoped to one subfield doesn't need to.
 // Best-effort: a cluster that's been deleted out from under a still-
 // connecting agent logs a warning rather than blocking the connection
-// lifecycle on it.
+// lifecycle on it. Resolves through resourceClient, not s.Client directly
+// (Milestone 9, HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md,
+// nexus-config/docs) — an organization on a Milestone 6 reconciling
+// cluster has its ClusterDefinition there too, not on this control
+// plane's own home cluster; without this, a connected/disconnected agent
+// belonging to such an organization would silently never update its own
+// status.agent field, even though the tunnel connection itself (routed
+// through AgentRegistry, not any Kubernetes cluster) works correctly
+// either way.
 func (s *Server) writeAgentStatus(key AgentConnectionKey, connected bool, version string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	agentStatus := hyvev1alpha1.AgentStatus{Connected: connected, Version: version}
@@ -281,7 +289,12 @@ func (s *Server) writeAgentStatus(key AgentConnectionKey, connected bool, versio
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := s.Client.Status().Patch(ctx, cd, client.RawPatch(types.MergePatchType, patch)); err != nil {
+	c, err := s.resourceClient(ctx, key.Namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client to patch agent status for %s/%s: %v", key.Namespace, key.ClusterName, err)
+		return
+	}
+	if err := c.Status().Patch(ctx, cd, client.RawPatch(types.MergePatchType, patch)); err != nil {
 		log.Printf("api: failed to patch agent status for %s/%s: %v", key.Namespace, key.ClusterName, err)
 	}
 }

@@ -90,22 +90,32 @@ credentials.
   round trip on the hot path.
 - **Session token** — 30 days (`api.SessionTTL`), the credential presented to
   `POST /auth/refresh` to silently mint a new access token, no password
-  needed. Shape: `"<HyveSession object name>.<raw secret>"`. Backed by a real
-  `HyveSession` custom resource in the cluster — `kubectl get hyvesessions`
-  lists every active login. Only `hex(SHA-256(secret))` is stored on the
-  object (`spec.tokenHash`); the raw secret itself is never persisted, so
-  read access to the CR alone can never reconstruct a working credential.
-  Not rotated on refresh — it stays valid until its own expiry or an
-  explicit `hyve env logout` (which deletes the `HyveSession`, revoking it
-  immediately; the still-cached access token keeps working for at most its
-  own short TTL after that).
+  needed. Shape: `"<Session id>.<raw secret>"`. Backed by a row in
+  hyve-api's own datastore (`internal/orgdb.Session`, Postgres or SQLite —
+  see below, and `HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`'s
+  Milestone 10 Part D, nexus-config/docs). Only `hex(SHA-256(secret))` is
+  stored on the row (`token_hash`); the raw secret itself is never
+  persisted, so read access to the row alone can never reconstruct a
+  working credential. Not rotated on refresh — it stays valid until its
+  own expiry or an explicit `hyve env logout` (which deletes the row,
+  revoking it immediately; the still-cached access token keeps working
+  for at most its own short TTL after that).
 
-Precedent for storing this kind of state as a CRD rather than a new database
-table: Dex's `--storage kubernetes` backend and Rancher's own
-`management.cattle.io/v3` `Token` resource both keep their auth state as
-cluster-native objects. Hyve-api has no SQL database of its own — Kubernetes
-is already the persistence layer everywhere else in this codebase, so this
-follows the same pattern rather than introducing a new kind of storage.
+Sessions, RBAC bindings, organizations/environments, and registered
+reconciling-cluster kubeconfigs (see "Multi-tenant installs" below) all
+live in this same `internal/orgdb` datastore, not as Kubernetes objects —
+a deliberate design point, not the original one: earlier phases of this
+codebase (still referenced in some historical docs/comments) stored
+equivalent state as Kubernetes CRDs, following the precedent Dex's
+`--storage kubernetes` backend and Rancher's own
+`management.cattle.io/v3` `Token` resource both set. That stopped working
+once Milestone 10 (`HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`,
+nexus-config/docs) made hyve-api deployable with *no* Kubernetes cluster
+of its own at all — a CRD needs a cluster to live on; a Postgres/SQLite
+row doesn't. See `HYVE-ORGANIZATION-MODEL-PROPOSAL.md`'s own "Deployment
+strategy" section for the SQLite-vs-Postgres tradeoff, and
+`docs/HYVE-ORGANIZATION-MODEL-MIGRATION-GUIDE.md` if you're upgrading an
+install old enough to still have the CRDs this replaced.
 
 `cmd/shared.EnsureValidSession` is the one place every CLI command goes
 through: if the cached access token is still valid, use it; if it's expired
@@ -163,19 +173,64 @@ service like Rancher/Teleport minting on hyve's behalf) has been removed
 outright, not merely deprecated — see `docs/HYVE-AGENT-MIGRATION-GUIDE.md`
 for the (now-historical) migration steps off it.
 
+**The agent-proxy connection registry's identity is (namespace,
+clusterName) — two fields, deliberately, even for an organization with
+several environments** (`internal/api/agentregistry.go`'s
+`AgentConnectionKey`; see Milestone 9,
+`HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`, nexus-config/docs, for
+the investigation this note summarizes). `clusterName` is always the real
+Kubernetes `ClusterDefinition` object name, not a short display name — and
+that object name is already environment-addressed at creation time
+(Milestone 3's own convention: a "web" cluster in the `dev` and `staging`
+environments of one organization is really named `dev-web`/`staging-web`).
+`AgentProvider.Kubeconfig` mints its `/api/agent-proxy/<name>` URL from
+this same `cd.Name`, and `handleAgentProxy`/`writeAgentStatus` both
+resolve the same value straight through to `AgentConnectionKey` — so two
+same-short-named clusters in different environments already have distinct
+registry entries with no risk of collision, and no separate environment
+field is needed in the key itself. What *does* need to resolve
+per-organization is which cluster a caller's `ClusterDefinition` Get
+actually reaches: both handlers go through `resourceClient`
+(`internal/api/reconcilingclusters.go`), the same Milestone 6/10 routing
+every other resource-type handler uses, so an organization whose
+`ClusterDefinition`s live on a registered reconciling cluster (not this
+control plane's own home cluster) still resolves correctly.
+
 ## Multi-tenant installs
 
-Multiple hyve installs (controller + API pairs) can share one cluster, each
-scoped to its own namespace — see the README's
+Two isolation models, and they compose — see the README's
 [Multi-tenant installs](../README.md#multi-tenant-installs) section for the
-operator-facing walkthrough. Two things make this actually safe rather than
-just namespace-flavored:
+operator-facing walkthrough, and `HYVE-ORGANIZATION-MODEL-PROPOSAL.md`
+(nexus-config/docs) for the full design.
 
-- `HyveAccessBinding` is namespaced (not cluster-scoped, as it originally
-  was) — `FindBindingBySubject` (`internal/api/identity.go`) always lists
-  within `Server.Namespace`, so one install can never see or resolve another
-  install's identities, and the backing RBAC is a `Role`, not a `ClusterRole`
-  (`deploy/helm/hyve/templates/api-rbac.yaml`).
+**Organizations — one shared install, many tenants (the common case).**
+An `internal/orgdb.Organization` row is the real isolation unit: name,
+plan/metadata, and the id ↔ Kubernetes-Namespace mapping. `Binding`
+(`internal/orgdb`, not a CRD as of Milestone 4/10 — see "Session and auth
+model" above) is always scoped by `Namespace`, the actual isolation
+boundary that never depends on whether a Namespace even has a matching
+Organization row — `FindBindingBySubject`/every resource handler resolve
+through this the same way regardless. A tenant can additionally be
+assigned its own **reconciling cluster** (Milestone 6) — a separate,
+registered Kubernetes cluster hyve-controller reconciles that
+organization's `ClusterDefinition`/`Template`/`Workflow`/`Resource`
+objects against — giving real workload isolation between tenants sharing
+one control plane, not just namespace isolation on one shared cluster.
+`internal/api/reconcilingclusters.go`'s `resourceClient`/`resourceClientset`
+are the one place every such handler resolves *which* cluster to talk to;
+see that file's own doc comments for the full routing logic, including
+the control plane's own namespace resolving through the identical path as
+of Milestone 10 Part A/B.
+
+**Separate installs — one Helm release per tenant namespace (the older,
+still-supported alternative).** Multiple hyve installs (controller + API
+pairs) can share one cluster, each scoped to its own namespace. Two things
+make this actually safe rather than just namespace-flavored:
+
+- Every `hyve.io` CRD is namespaced (not cluster-scoped) — the backing
+  RBAC is a `Role`, not a `ClusterRole`
+  (`deploy/helm/hyve/templates/api-rbac.yaml`), so one install can never
+  see or modify another install's objects.
 - The default `admin`/`read-only` roles bind to the built-in
   `cluster-admin`/`view` `ClusterRole`s via a namespaced `RoleBinding`, not a
   `ClusterRoleBinding` (`api.accessRoles.clusterScoped: false`, the chart
@@ -183,12 +238,20 @@ just namespace-flavored:
   (`internal/api/access.go`, served via `/proxy`) only grants admin/view over
   that install's own namespace, never the whole shared cluster.
 
-**CRD scope is a one-time, breaking migration for any cluster still running
-the pre-multi-tenancy, cluster-scoped `HyveAccessBinding`.** Kubernetes
-can't change a CRD's scope in place: existing bindings must be exported, the
-old CRD deleted (which deletes every instance), the new namespaced CRD
-applied, then each binding re-applied with `namespace:` set. Do this before
-any tenant install relies on `HyveAccessBinding` namespacing for isolation.
+**CRDs are cluster-global, shared by every install on the cluster
+(both models above).** `helm install` only applies
+`deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm
+upgrade` never touches them (standard Helm behavior). So only the very
+first install actually creates them; a later CRD schema change needs a
+manual `kubectl apply -f deploy/helm/hyve/crds/` before any install runs
+`helm upgrade`, or that upgrade will run against a stale schema.
+
+**Upgrading an install old enough to still have `HyveEnvironment`/
+`HyveAccessBinding`/`HyveSession` objects, or Kubernetes-Secret-backed
+credentials?** See `docs/HYVE-ORGANIZATION-MODEL-MIGRATION-GUIDE.md` for
+the concrete export/recreate steps — every one of those was retired
+outright (no coexisting fallback), matching this plan's own explicit,
+accepted-breaking-change precedent throughout.
 
 ## Module and workflow execution
 

@@ -51,7 +51,7 @@ import (
 // kubectl issues GET/POST/PUT/PATCH/DELETE and upgrade requests against
 // arbitrary Kubernetes API subpaths, all through this one handler.
 func (s *Server) registerAgentProxyRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/agent-proxy/{name}/{rest...}", s.handleAgentProxy)
+	mux.HandleFunc("/agent-proxy/{name}/{rest...}", s.requireOrganizationNotMigrating(s.handleAgentProxy))
 }
 
 func (s *Server) handleAgentProxy(w http.ResponseWriter, r *http.Request) {
@@ -64,9 +64,26 @@ func (s *Server) handleAgentProxy(w http.ResponseWriter, r *http.Request) {
 	// namespace), never a URL path segment — the same pattern
 	// handleGetCluster already uses, which is what makes a namespace-B
 	// caller's request against a namespace-A cluster 404 here rather
-	// than ever reaching the registry lookup at all.
+	// than ever reaching the registry lookup at all. Milestone 9
+	// (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs):
+	// resolves through resourceClient, not s.Client directly — an
+	// organization on a Milestone 6 reconciling cluster has its
+	// ClusterDefinition there too, not on this control plane's own home
+	// cluster. name itself needs no separate environment disambiguation
+	// here or in AgentConnectionKey: it's always the real Kubernetes
+	// object name, already environment-addressed end to end (see
+	// AgentProvider.Kubeconfig, which mints this same /agent-proxy/<name>
+	// URL from cd.Name, not a short display name) — "dev-web" and
+	// "staging-web" are simply different name values throughout this
+	// entire path, never colliding.
+	c, err := s.resourceClient(r.Context(), ns)
+	if err != nil {
+		log.Printf("api: agent-proxy: failed to resolve resource client for %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
+	if err := c.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return

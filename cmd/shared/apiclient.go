@@ -699,6 +699,149 @@ func (c *APIClient) GetWorkflowRun(name string) (*WorkflowRunStatusDTO, error) {
 	return &out, nil
 }
 
+// OrganizationDTO mirrors internal/api's organizationDTO — see
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md (nexus-config/docs). ReconcilingCluster
+// is always a name, never a raw id (a CLI has no other way to show
+// something meaningful) — empty means the control plane's own home
+// cluster.
+type OrganizationDTO struct {
+	Name               string `json:"name"`
+	Namespace          string `json:"namespace"`
+	Plan               string `json:"plan,omitempty"`
+	ReconcilingCluster string `json:"reconcilingCluster,omitempty"`
+	Migrating          bool   `json:"migrating,omitempty"`
+}
+
+// OrganizationEnvironmentDTO mirrors internal/api's organizationEnvironmentDTO.
+type OrganizationEnvironmentDTO struct {
+	Name string `json:"name"`
+}
+
+// ReconcilingClusterDTO mirrors internal/api's reconcilingClusterDTO —
+// deliberately excludes the kubeconfig itself, which this API never
+// echoes back under any circumstance.
+type ReconcilingClusterDTO struct {
+	Name          string  `json:"name"`
+	Reachable     *bool   `json:"reachable,omitempty"`
+	LastCheckedAt *string `json:"lastCheckedAt,omitempty"`
+	LastError     *string `json:"lastError,omitempty"`
+}
+
+// ListOrganizations requires the superadmin role server-side (a
+// cross-namespace-by-design view) — a non-superadmin caller sees the
+// server's own 403 surfaced as an ordinary error, same as every other
+// role-gated call through this client.
+func (c *APIClient) ListOrganizations() ([]OrganizationDTO, error) {
+	var out []OrganizationDTO
+	if err := c.do(http.MethodGet, "/api/organizations", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateOrganization turns namespace name into a real, hyve-recognized
+// tenant. adminIdentity/adminRole/reconcilingCluster are each optional —
+// see internal/api's createOrganizationRequest doc comment for what
+// omitting them means.
+func (c *APIClient) CreateOrganization(name, adminIdentity, adminRole, reconcilingCluster string) (*OrganizationDTO, error) {
+	body, err := json.Marshal(struct {
+		Name               string `json:"name"`
+		AdminIdentity      string `json:"adminIdentity,omitempty"`
+		AdminRole          string `json:"adminRole,omitempty"`
+		ReconcilingCluster string `json:"reconcilingCluster,omitempty"`
+	}{Name: name, AdminIdentity: adminIdentity, AdminRole: adminRole, ReconcilingCluster: reconcilingCluster})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out OrganizationDTO
+	if err := c.do(http.MethodPost, "/api/organizations", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) DeleteOrganization(name string) error {
+	return c.do(http.MethodDelete, "/api/organizations/"+url.PathEscape(name), nil, nil)
+}
+
+// PatchOrganizationReconcilingCluster moves name onto reconcilingCluster —
+// pass "" to move it back to the control plane's own home cluster (see
+// internal/api's patchOrganizationRequest.ReconcilingCluster doc comment:
+// this endpoint exists for exactly this one purpose, so there's no other
+// meaning a PATCH here could have).
+func (c *APIClient) PatchOrganizationReconcilingCluster(name, reconcilingCluster string) (*OrganizationDTO, error) {
+	body, err := json.Marshal(struct {
+		ReconcilingCluster *string `json:"reconcilingCluster"`
+	}{ReconcilingCluster: &reconcilingCluster})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out OrganizationDTO
+	if err := c.do(http.MethodPatch, "/api/organizations/"+url.PathEscape(name), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListOrganizationEnvironments requires either the superadmin role or
+// being an admin of orgName itself (see internal/api's requireOrgAccess)
+// — unlike ListOrganizations, an ordinary tenant admin can use this for
+// their own organization.
+func (c *APIClient) ListOrganizationEnvironments(orgName string) ([]OrganizationEnvironmentDTO, error) {
+	var out []OrganizationEnvironmentDTO
+	if err := c.do(http.MethodGet, "/api/organizations/"+url.PathEscape(orgName)+"/environments", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateOrganizationEnvironment adds a new named environment to an
+// existing organization — every environment after its automatically-
+// created `default` one (see internal/api's handleCreateOrgEnvironment).
+func (c *APIClient) CreateOrganizationEnvironment(orgName, envName string) (*OrganizationEnvironmentDTO, error) {
+	body, err := json.Marshal(struct {
+		Name string `json:"name"`
+	}{Name: envName})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out OrganizationEnvironmentDTO
+	if err := c.do(http.MethodPost, "/api/organizations/"+url.PathEscape(orgName)+"/environments", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListReconcilingClusters requires the superadmin role server-side, same
+// as ListOrganizations.
+func (c *APIClient) ListReconcilingClusters() ([]ReconcilingClusterDTO, error) {
+	var out []ReconcilingClusterDTO
+	if err := c.do(http.MethodGet, "/api/reconciling-clusters", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateReconcilingCluster registers a new physical cluster hyve-controller
+// can reconcile organizations' infrastructure against (Milestone 6) —
+// kubeconfig is the raw kubeconfig content, never stored or echoed back by
+// this API under any circumstance. Idempotent by name: re-registering an
+// existing name rotates its stored kubeconfig content.
+func (c *APIClient) CreateReconcilingCluster(name, kubeconfig string) (*ReconcilingClusterDTO, error) {
+	body, err := json.Marshal(struct {
+		Name       string `json:"name"`
+		Kubeconfig string `json:"kubeconfig"`
+	}{Name: name, Kubeconfig: kubeconfig})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out ReconcilingClusterDTO
+	if err := c.do(http.MethodPost, "/api/reconciling-clusters", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // do sends the request and, on a non-2xx response, returns an error
 // including the server's own {"error": "..."} body — unlike
 // internal/api's own handlers (which deliberately hide internal details

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,6 +77,75 @@ func TestHandleAgentProxy_CrossTenantRejection(t *testing.T) {
 	// everything).
 	rec = doAgentProxyRequest(t, s, "namespace-a", hyvev1alpha1.RoleAdmin, "/agent-proxy/web/api/v1/pods")
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// TestHandleAgentProxy_CrossEnvironmentDisambiguation is Milestone 9's own
+// required case (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md,
+// nexus-config/docs) — see AgentConnectionKey's own doc comment for the
+// correction this milestone made to its own original premise: this proves
+// the *existing* two-field key already disambiguates correctly via
+// environment-addressed ClusterDefinition names (Milestone 3's own
+// convention), not that a third "environment" field needed adding. Two
+// clusters named "web" in different environments of the same
+// organization — addressed as "dev-web"/"staging-web" — each with its own
+// (dis)connected agent state; a caller addressing one must never reach
+// the other's connection.
+func TestHandleAgentProxy_CrossEnvironmentDisambiguation(t *testing.T) {
+	devCD := proxyEnabledCluster("acme", "dev-web")
+	stagingCD := proxyEnabledCluster("acme", "staging-web")
+	s := &Server{
+		Client:        newFakeClient(t, devCD, stagingCD),
+		Namespace:     testNamespace,
+		AgentRegistry: NewAgentRegistry(),
+	}
+	// Only dev-web has a registered, credentialed connection — staging-web
+	// is proxy-enabled but its own agent has never connected.
+	devConn := &AgentConnection{}
+	devConn.SetHeartbeat("dev", "dev-token")
+	s.AgentRegistry.Register(AgentConnectionKey{Namespace: "acme", ClusterName: "dev-web"}, devConn)
+
+	rec := doAgentProxyRequest(t, s, "acme", "made-up-role", "/agent-proxy/dev-web/api/v1/pods")
+	assert.Equal(t, http.StatusForbidden, rec.Code, "dev-web must reach all the way to the role check (made-up-role is the only thing that fails) — proving its own registered connection was found")
+
+	rec = doAgentProxyRequest(t, s, "acme", hyvev1alpha1.RoleAdmin, "/agent-proxy/staging-web/api/v1/pods")
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "staging-web has no registered connection of its own — must not fall back to dev-web's just because both are named \"web\"")
+}
+
+// TestHandleAgentProxy_RoutesThroughReconcilingCluster proves the other
+// real bug Milestone 9 found: handleAgentProxy used s.Client directly for
+// its ClusterDefinition existence check, unlike every sibling handler
+// Milestone 10 Part C already routed through resourceClient — meaning an
+// organization whose resources live on a Milestone 6 reconciling cluster
+// would 404 here even with a live, connected agent, since its
+// ClusterDefinition was never looked up on the right cluster at all.
+func TestHandleAgentProxy_RoutesThroughReconcilingCluster(t *testing.T) {
+	store := newTestOrgStore(t)
+	homeClient := newFakeClient(t)
+	cd := proxyEnabledCluster("acme", "web")
+	destClient := newFakeClient(t, cd)
+
+	_, _, err := store.CreateOrganizationWithDefaults(t.Context(), orgdb.Organization{Name: "acme", Namespace: "acme"}, "", "")
+	require.NoError(t, err)
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
+	require.NoError(t, err)
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	require.NoError(t, store.SetOrganizationReconcilingCluster(t.Context(), org.ID, &rc.ID))
+
+	s := &Server{
+		Client:        homeClient,
+		OrgStore:      store,
+		Namespace:     testNamespace,
+		AgentRegistry: NewAgentRegistry(),
+	}
+	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: destClient}}
+
+	conn := &AgentConnection{}
+	conn.SetHeartbeat("dev", "fake-token")
+	s.AgentRegistry.Register(AgentConnectionKey{Namespace: "acme", ClusterName: "web"}, conn)
+
+	rec := doAgentProxyRequest(t, s, "acme", "made-up-role", "/agent-proxy/web/api/v1/pods")
+	assert.Equal(t, http.StatusForbidden, rec.Code, "the cluster must be found on the reconciling cluster it actually lives on, not 404 against the (empty) home client")
 }
 
 func TestHandleAgentProxy_ProxyNotEnabled_403(t *testing.T) {

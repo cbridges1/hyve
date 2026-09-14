@@ -1,3 +1,12 @@
+{{- if and (eq .Values.api.db.driver "sqlite") (gt (.Values.api.replicaCount | int) 1) }}
+{{- fail "api.db.driver=sqlite only supports a single API replica (SQLite has no story for concurrent multi-process writers) — set api.replicaCount: 1, or switch to api.db.driver=postgres for horizontal scaling (see Milestone 7, HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md)" }}
+{{- end }}
+{{- if and (eq .Values.api.db.driver "postgres") (not .Values.api.db.postgresDSNSecret.name) }}
+{{- fail "api.db.driver=postgres requires api.db.postgresDSNSecret.name — this chart never generates or stores a database credential itself, see values.yaml's own comment" }}
+{{- end }}
+{{- if and .Values.api.db.litestream.enabled (ne .Values.api.db.driver "sqlite") }}
+{{- fail "api.db.litestream.enabled only applies to api.db.driver=sqlite — it streams the /data orgdb SQLite file, which only exists in sqlite mode" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +15,17 @@ metadata:
   labels:
     app.kubernetes.io/name: hyve-api
 spec:
-  replicas: 1
+  replicas: {{ .Values.api.replicaCount }}
+  {{- if eq .Values.api.db.driver "sqlite" }}
+  # Recreate, not the default RollingUpdate: a rolling update briefly runs
+  # old+new pods together, and the old one won't release its ReadWriteOnce
+  # PVC mount (api-orgdb-pvc.yaml) until it terminates — the new pod's
+  # mount would hang waiting for it. Recreate fully terminates the old pod
+  # first, matching how every other ReadWriteOnce-PVC-backed single-replica
+  # workload in Kubernetes is normally deployed.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: hyve-api
@@ -45,16 +64,41 @@ spec:
             {{- if .Values.api.publicCABundle.configMapName }}
             - --public-ca-path=/etc/hyve/public-ca/{{ .Values.api.publicCABundle.key }}
             {{- end }}
+            - --db={{ .Values.api.db.driver }}
+            {{- if eq .Values.api.db.driver "sqlite" }}
+            - --db-dsn=/data/orgdb.sqlite
+            {{- else }}
+            # $(HYVE_DB_DSN) is Kubernetes' own container-command variable
+            # expansion (substituted from this container's env: list below
+            # before exec, no shell involved) — not a shell substitution,
+            # so the Secret-sourced connection string never appears in
+            # plaintext in this Deployment object itself.
+            - --db-dsn=$(HYVE_DB_DSN)
+            {{- end }}
+          {{- if eq .Values.api.db.driver "postgres" }}
+          env:
+            - name: HYVE_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.db.postgresDSNSecret.name }}
+                  key: {{ .Values.api.db.postgresDSNSecret.key }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
             - name: agent
               containerPort: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
-          {{- if .Values.api.publicCABundle.configMapName }}
+          {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") }}
           volumeMounts:
+            {{- if .Values.api.publicCABundle.configMapName }}
             - name: public-ca
               mountPath: /etc/hyve/public-ca
               readOnly: true
+            {{- end }}
+            {{- if eq .Values.api.db.driver "sqlite" }}
+            - name: orgdb
+              mountPath: /data
+            {{- end }}
           {{- end }}
           livenessProbe:
             httpGet:
@@ -70,9 +114,38 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if .Values.api.publicCABundle.configMapName }}
+        {{- if .Values.api.db.litestream.enabled }}
+        # Streams continuous backups of the /data orgdb SQLite file to
+        # object storage — see values.yaml's own api.db.litestream comment
+        # for the full design/tradeoffs. Shares the orgdb volume read-write
+        # (litestream needs write access for its own WAL-tracking metadata
+        # alongside the database file) with the api container above.
+        - name: litestream
+          image: "{{ .Values.api.db.litestream.image }}"
+          command: ["litestream"]
+          args:
+            - replicate
+            - /data/orgdb.sqlite
+            - "{{ .Values.api.db.litestream.replicaURL }}"
+          {{- if .Values.api.db.litestream.credentialsSecret.name }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.api.db.litestream.credentialsSecret.name }}
+          {{- end }}
+          volumeMounts:
+            - name: orgdb
+              mountPath: /data
+        {{- end }}
+      {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") }}
       volumes:
+        {{- if .Values.api.publicCABundle.configMapName }}
         - name: public-ca
           configMap:
             name: {{ .Values.api.publicCABundle.configMapName }}
+        {{- end }}
+        {{- if eq .Values.api.db.driver "sqlite" }}
+        - name: orgdb
+          persistentVolumeClaim:
+            claimName: hyve-api-orgdb
+        {{- end }}
       {{- end }}
