@@ -551,3 +551,74 @@ func TestHandlePatchOrganization_FailedMigration_LeavesOrganizationOnOriginalClu
 	assert.Nil(t, org.ReconcilingClusterID, "a failed migration must leave the organization on its original (home) cluster")
 	assert.Nil(t, org.ReconcilingClusterMigrationStatus, "a failed migration must clear the lock, not leave it stuck")
 }
+
+func doListEnvironmentsRequest(t *testing.T, s *Server, role, callerNamespace, orgName string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/organizations/"+orgName+"/environments", nil)
+	req = req.WithContext(contextWithRole(req.Context(), role))
+	req = req.WithContext(contextWithNamespace(req.Context(), callerNamespace))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+func doCreateEnvironmentRequest(t *testing.T, s *Server, role, callerNamespace, orgName string, body createOrgEnvironmentRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/organizations/"+orgName+"/environments", bytes.NewReader(data))
+	req = req.WithContext(contextWithRole(req.Context(), role))
+	req = req.WithContext(contextWithNamespace(req.Context(), callerNamespace))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// TestOrgEnvironments_AdminCanManageOwnOrganization proves the Milestone
+// 6 follow-up: an ordinary admin (not just a superadmin) can list and
+// create environments for their own organization, reachable from their
+// own tenant view — environments are entirely within one organization's
+// own scope, unlike the genuinely cross-namespace endpoints elsewhere in
+// this file.
+func TestOrgEnvironments_AdminCanManageOwnOrganization(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	listRec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	require.Equal(t, http.StatusOK, listRec.Code)
+	var envs []organizationEnvironmentDTO
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &envs))
+	require.Len(t, envs, 1)
+	assert.Equal(t, orgdb.DefaultEnvironmentName, envs[0].Name)
+
+	createRec := doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", createOrgEnvironmentRequest{Name: "staging"})
+	assert.Equal(t, http.StatusCreated, createRec.Code)
+}
+
+// TestOrgEnvironments_AdminCannotReachAnotherOrganization proves the other
+// half: an admin naming a *different* organization in the URL — not their
+// own TenantNamespace — is rejected, not silently redirected to their own
+// org or allowed through.
+func TestOrgEnvironments_AdminCannotReachAnotherOrganization(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "globex"}).Code)
+
+	// alice is globex's own admin, trying to reach acme's environments.
+	listRec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme")
+	assert.Equal(t, http.StatusForbidden, listRec.Code)
+
+	createRec := doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme", createOrgEnvironmentRequest{Name: "staging"})
+	assert.Equal(t, http.StatusForbidden, createRec.Code)
+}
+
+// TestOrgEnvironments_SuperadminReachesAnyOrganization proves the
+// superadmin half is unchanged — cross-organization access, matching
+// every other endpoint in this file.
+func TestOrgEnvironments_SuperadminReachesAnyOrganization(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleSuperadmin, testNamespace, "acme")
+	assert.Equal(t, http.StatusOK, rec.Code)
+}

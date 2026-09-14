@@ -616,20 +616,46 @@ func toOrganizationEnvironmentDTO(env orgdb.Environment) organizationEnvironment
 	return organizationEnvironmentDTO{Name: env.Name}
 }
 
-// handleListOrgEnvironments lists every environment for the named
-// organization — superadmin-only, matching every other cross-namespace
-// organization-management endpoint in this file.
-func (s *Server) handleListOrgEnvironments(w http.ResponseWriter, r *http.Request) {
-	if !RequireRole(w, r, hyvev1alpha1.RoleSuperadmin) {
-		return
+// requireOrgAccess resolves orgName and authorizes the caller against it —
+// unlike every other organization-management endpoint in this file
+// (create/delete/patch/list, all genuinely cross-namespace-by-design and
+// so superadmin-only), environments and reconciling-cluster visibility are
+// entirely within one organization's own scope, so an ordinary admin
+// managing their own tenant should be able to reach them too — a
+// superadmin is authorized for any organization by name (matching every
+// other endpoint here); an admin is authorized only when orgName resolves
+// to exactly their own TenantNamespace, never an arbitrary name in the
+// URL, so one tenant's admin can never manage another tenant's
+// environments just by naming it. Writes its own error response and
+// returns ok=false when access should be denied.
+func (s *Server) requireOrgAccess(w http.ResponseWriter, r *http.Request, orgName string) (org orgdb.Organization, ok bool) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
+		return orgdb.Organization{}, false
 	}
-	org, err := s.OrgStore.GetOrganizationByName(r.Context(), r.PathValue("name"))
+	org, err := s.OrgStore.GetOrganizationByName(r.Context(), orgName)
 	if err == orgdb.ErrNotFound {
 		writeError(w, http.StatusNotFound, "organization not found")
-		return
-	} else if err != nil {
-		log.Printf("api: failed to get organization %q: %v", r.PathValue("name"), err)
-		writeError(w, http.StatusInternalServerError, "failed to list environments")
+		return orgdb.Organization{}, false
+	}
+	if err != nil {
+		log.Printf("api: failed to get organization %q: %v", orgName, err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve organization")
+		return orgdb.Organization{}, false
+	}
+	role, _ := RoleFromContext(r.Context())
+	if role != hyvev1alpha1.RoleSuperadmin && org.Namespace != s.TenantNamespace(r) {
+		writeError(w, http.StatusForbidden, "not permitted to manage this organization")
+		return orgdb.Organization{}, false
+	}
+	return org, true
+}
+
+// handleListOrgEnvironments lists every environment for the named
+// organization — a superadmin can reach any organization by name; an
+// ordinary admin only their own (see requireOrgAccess).
+func (s *Server) handleListOrgEnvironments(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
+	if !ok {
 		return
 	}
 	envs, err := s.OrgStore.ListEnvironments(r.Context(), org.ID)
@@ -655,9 +681,11 @@ type createOrgEnvironmentRequest struct {
 // `default` environment is created automatically by
 // CreateOrganizationWithDefaults (see handleCreateOrganization); this
 // endpoint is for every environment after that first one (`staging`,
-// `production`, ...).
+// `production`, ...). A superadmin can target any organization by name; an
+// ordinary admin only their own (see requireOrgAccess).
 func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !RequireRole(w, r, hyvev1alpha1.RoleSuperadmin) {
+	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
+	if !ok {
 		return
 	}
 	var req createOrgEnvironmentRequest
@@ -671,15 +699,6 @@ func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := r.Context()
-	org, err := s.OrgStore.GetOrganizationByName(ctx, r.PathValue("name"))
-	if err == orgdb.ErrNotFound {
-		writeError(w, http.StatusNotFound, "organization not found")
-		return
-	} else if err != nil {
-		log.Printf("api: failed to get organization %q: %v", r.PathValue("name"), err)
-		writeError(w, http.StatusInternalServerError, "failed to create environment")
-		return
-	}
 
 	if existing, err := s.OrgStore.GetEnvironmentByName(ctx, org.ID, req.Name); err == nil {
 		writeJSON(w, http.StatusCreated, toOrganizationEnvironmentDTO(existing))

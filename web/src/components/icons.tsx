@@ -103,6 +103,16 @@ export function ReconcilingClustersIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
+export function EnvironmentsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 3 21 8 12 13 3 8Z" />
+      <path d="M3 12l9 5 9-5" />
+      <path d="M3 16l9 5 9-5" />
+    </svg>
+  )
+}
+
 export function MenuIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>

@@ -14,6 +14,7 @@ import {
   ChevronDownIcon,
   ClustersIcon,
   CloseIcon,
+  EnvironmentsIcon,
   OrganizationsIcon,
   ReconcilingClustersIcon,
   MenuIcon,
@@ -153,19 +154,22 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             </div>
           </div>
         ))}
-        {/* Accounts always follows whichever organization "Viewing" is
-            currently set to (see Server.TenantNamespace) — a superadmin
-            managing hyve-system's own accounts is just "Viewing: Control
-            plane" + Accounts, the same page a tenant admin already uses,
-            not a separate mechanism. Organizations (creating/listing
-            tenants), Reconciling clusters (registering physical clusters
-            and assigning them to organizations — Milestone 6), and
-            Settings (the install-wide HyveConfig singleton) are all
-            control-plane-only — none is scoped to any one tenant, so all
-            three only make sense while Viewing: Control plane, unlike
-            Accounts above. Grouped under its own header only when at
-            least one of the four is actually visible, so this role-gated
-            group never renders as an empty heading. */}
+        {/* Accounts and Environments always follow whichever organization
+            "Viewing" is currently set to (see Server.TenantNamespace) — a
+            superadmin managing hyve-system's own accounts/environments is
+            just "Viewing: Control plane" + these links, the same pages a
+            tenant admin already uses, not a separate mechanism.
+            Environments is genuinely within-one-organization's-own-scope
+            (see internal/api's requireOrgAccess), so it's reachable by an
+            ordinary admin the same way Accounts already is — unlike
+            Organizations (creating/listing every tenant), Reconciling
+            clusters (registering physical clusters and assigning them to
+            organizations — Milestone 6), and Settings (the install-wide
+            HyveConfig singleton), which stay genuinely control-plane-only
+            and superadmin-only, since none of those three is scoped to
+            any one tenant. Grouped under its own header only when at
+            least one item is actually visible, so this role-gated group
+            never renders as an empty heading. */}
         {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <div>
             <div className={groupHeaderClass}>Organization</div>
@@ -173,6 +177,10 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               <NavLink to="/accounts" className={linkClass} onClick={onNavigate}>
                 <AccountsIcon />
                 Accounts
+              </NavLink>
+              <NavLink to="/environments" className={linkClass} onClick={onNavigate}>
+                <EnvironmentsIcon />
+                Environments
               </NavLink>
               {who?.role === RoleSuperadmin && actAs === null && (
                 <NavLink to="/organizations" className={linkClass} onClick={onNavigate}>

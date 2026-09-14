@@ -7,6 +7,7 @@ import { useSession } from './lib/useAuth'
 import { AccountsPage } from './routes/AccountsPage'
 import { ClusterDetailPage } from './routes/ClusterDetailPage'
 import { ClustersListPage } from './routes/ClustersListPage'
+import { EnvironmentsPage } from './routes/EnvironmentsPage'
 import { ModuleDetailPage } from './routes/ModuleDetailPage'
 import { ModulesPage } from './routes/ModulesPage'
 import { OrganizationsPage } from './routes/OrganizationsPage'
@@ -57,6 +58,7 @@ function App() {
                 </SuperadminOnly>
               }
             />
+            <Route path="/environments" element={<EnvironmentsPage />} />
             <Route path="/resources" element={<ResourcesPage />} />
             <Route path="/resources/:name" element={<ResourceDetailPage />} />
             <Route path="/modules" element={<ModulesPage />} />

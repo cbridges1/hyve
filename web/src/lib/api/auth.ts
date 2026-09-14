@@ -61,7 +61,16 @@ export async function logout(): Promise<void> {
   setSession(null)
 }
 
-export type Whoami = { username: string; role: string; namespace: string }
+export type Whoami = {
+  username: string
+  role: string
+  namespace: string
+  // reconcilingCluster/migrating mirror Organization's own fields for this
+  // caller's own namespace — omitted for a namespace with no registered
+  // organization (see internal/api's whoamiResponse).
+  reconcilingCluster?: string
+  migrating?: boolean
+}
 
 export const whoami = () => apiFetch<Whoami>('/whoami')
 
