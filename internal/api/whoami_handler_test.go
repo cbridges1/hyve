@@ -61,7 +61,7 @@ func TestHandleWhoami_SuperadminNamespaceIsControlPlane(t *testing.T) {
 func TestHandleWhoami_ShowsOwnOrganizationReconcilingCluster(t *testing.T) {
 	store := newTestOrgStore(t)
 	ctx := t.Context()
-	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", KubeconfigSecretNamespace: "hyve-system", KubeconfigSecretName: "cell-a-kubeconfig"})
+	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
 	org, err := store.CreateOrganization(ctx, orgdb.Organization{Name: "acme", Namespace: "acme", ReconcilingClusterID: &rc.ID})
 	require.NoError(t, err)

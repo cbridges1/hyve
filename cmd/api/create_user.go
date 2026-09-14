@@ -13,15 +13,7 @@ import (
 
 	hyveapi "github.com/cbridges1/hyve/internal/api"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
-	"github.com/cbridges1/hyve/internal/migrate"
 	"github.com/cbridges1/hyve/internal/orgdb"
-
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/yaml"
 )
 
 var (
@@ -32,42 +24,29 @@ var (
 	createUserServiceAccountNS string
 	createUserPassword         string
 	createUserBindingName      string
-	createUserApply            bool
-	createUserKubeconfig       string
 	createUserDBDriver         string
 	createUserDBDSN            string
 )
 
 var createUserCmd = &cobra.Command{
 	Use:   "create-user <username>",
-	Short: "Bcrypt-hash a password and write a new local API user's binding + credentials Secret",
+	Short: "Bcrypt-hash a password and write a new local API user's binding",
 	Long: `Bcrypt-hashes a password (prompted interactively, or via --password for
-scripting) and writes the user's access grant directly to hyve-api's own
-organization/environment/RBAC datastore (internal/orgdb — Postgres or
-SQLite, matching --db/--db-dsn to whatever that same install's hyve-api
-process uses) — this is a real database write, not YAML you can pipe to
-'kubectl apply -f -', since a binding is a Postgres/SQLite row now, not a
-Kubernetes object (see HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/
-docs, and this command's own predecessor before
-HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 4).
-
-The paired credentials Secret (holding the bcrypt hash itself — never the
-binding row) is still a real Kubernetes object, and still defaults to
-printing its YAML to stdout for 'kubectl apply -f -', matching this
-command's original, kubectl-manageable design for that one remaining half.
-Pass --apply to create it directly instead, using the same kubeconfig
-resolution as a bare kubectl invocation ($KUBECONFIG, else ~/.kube/config
-— override with --kubeconfig). Either way, the binding write to --db-dsn
-always happens — there's no "print it and apply later" option for that
-part.
+scripting) and writes the user's access grant — including the password hash
+itself (Milestone 10 Part C: bindings.password_hash, no separate credentials
+Secret anymore) — directly to hyve-api's own organization/environment/RBAC
+datastore (internal/orgdb — Postgres or SQLite, matching --db/--db-dsn to
+whatever that same install's hyve-api process uses). This is a real
+database write, not something 'kubectl apply -f -' can create (see
+HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs, and this command's
+own predecessor before HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's
+Milestone 4).
 
 Safe to re-run: an already-existing binding for the same identity+scope is
-replaced (delete then recreate) rather than erroring, and an
-already-existing Secret is updated in place under --apply.
+replaced (delete then recreate) rather than erroring.
 
 Example:
-  hyve cluster-config api create-user cedric --role admin --db-dsn /data/orgdb.sqlite | kubectl apply -f -
-  hyve cluster-config api create-user cedric --role admin --db-dsn /data/orgdb.sqlite --apply`,
+  hyve cluster-config api create-user cedric --role admin --db-dsn /data/orgdb.sqlite`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		runCreateUser(args[0])
@@ -76,14 +55,12 @@ Example:
 
 func init() {
 	createUserCmd.Flags().StringVar(&createUserRole, "role", "", "Role: admin, read-only, superadmin, or custom (required)")
-	createUserCmd.Flags().StringVar(&createUserNamespace, "namespace", "hyve-system", "Namespace this binding is scoped to (the actual isolation boundary — see internal/orgdb.Binding) and the credentials Secret is created in. For --role superadmin, this must match whatever namespace the target install's own hyve-api --namespace flag uses (its control-plane namespace) — that's the one place login looks for a superadmin binding; this command has no live Server to read that value from, so it isn't enforced here the way POST /accounts enforces it server-side.")
+	createUserCmd.Flags().StringVar(&createUserNamespace, "namespace", "hyve-system", "Namespace this binding is scoped to (the actual isolation boundary — see internal/orgdb.Binding). For --role superadmin, this must match whatever namespace the target install's own hyve-api --namespace flag uses (its control-plane namespace) — that's the one place login looks for a superadmin binding; this command has no live Server to read that value from, so it isn't enforced here the way POST /accounts enforces it server-side.")
 	createUserCmd.Flags().StringVar(&createUserEnvironment, "env", "", "Environment within --namespace's own Organization, if one is registered (omit to default to that organization's own environment, when it has exactly one — see internal/api.resolveResourceEnvironment's identical rule). Ignored when --namespace has no registered Organization at all, or for --role superadmin.")
 	createUserCmd.Flags().StringVar(&createUserServiceAccount, "service-account", "", "ServiceAccount this binding's grant maps to (defaults per --role: hyve-access-admin / hyve-access-readonly; required for --role custom)")
 	createUserCmd.Flags().StringVar(&createUserServiceAccountNS, "service-account-namespace", "hyve-system", "Namespace of --service-account")
 	createUserCmd.Flags().StringVar(&createUserPassword, "password", "", "Password (scripting only — omit to be prompted interactively without echo)")
 	createUserCmd.Flags().StringVar(&createUserBindingName, "binding-name", "", "Deprecated, ignored — a binding's identity is always the username now; kept only so an old invocation setting this doesn't hard-fail. Will be removed.")
-	createUserCmd.Flags().BoolVar(&createUserApply, "apply", false, "Create the credentials Secret directly instead of printing its YAML to stdout — the binding write to --db-dsn happens either way")
-	createUserCmd.Flags().StringVar(&createUserKubeconfig, "kubeconfig", "", "Kubeconfig path for --apply (default: $KUBECONFIG, else ~/.kube/config, same as kubectl)")
 	createUserCmd.Flags().StringVar(&createUserDBDriver, "db", "sqlite", "Backend for hyve-api's own organization datastore this binding is written to — must match that install's own hyve-api --db (see internal/orgdb)")
 	createUserCmd.Flags().StringVar(&createUserDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db — must point at the same database the target install's own hyve-api uses")
 }
@@ -129,20 +106,7 @@ func runCreateUser(username string) {
 	// responsible for passing the target install's actual control-plane
 	// namespace here — this command has no live Server to resolve or
 	// enforce that value the way POST /accounts does.
-	bindingNamespace := createUserNamespace
-	secret := &corev1.Secret{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: hyveapi.UserCredentialsSecretName(username), Namespace: bindingNamespace},
-		StringData: map[string]string{"password-hash": hash},
-	}
-
-	writeBindingToStore(username, role, bindingNamespace, saName)
-
-	if createUserApply {
-		applySecret(secret)
-		return
-	}
-	printYAML(secret)
+	writeBindingToStore(username, role, createUserNamespace, saName, hash)
 }
 
 // writeBindingToStore is the actual access-grant write — a
@@ -155,7 +119,7 @@ func runCreateUser(username string) {
 // that organization's own single environment); otherwise nil-scope,
 // exactly like a superadmin's — the self-hosted, no-Organization-
 // registered case.
-func writeBindingToStore(username, role, namespace, serviceAccountName string) {
+func writeBindingToStore(username, role, namespace, serviceAccountName, passwordHash string) {
 	store, err := orgdb.Open(createUserDBDriver, createUserDBDSN)
 	if err != nil {
 		log.Fatalf("Failed to open --db=%s organization datastore at %q: %v", createUserDBDriver, createUserDBDSN, err)
@@ -171,6 +135,7 @@ func writeBindingToStore(username, role, namespace, serviceAccountName string) {
 		Role:                    role,
 		ServiceAccountName:      serviceAccountName,
 		ServiceAccountNamespace: createUserServiceAccountNS,
+		PasswordHash:            &passwordHash,
 	}
 
 	if role != hyvev1alpha1.RoleSuperadmin {
@@ -190,7 +155,7 @@ func writeBindingToStore(username, role, namespace, serviceAccountName string) {
 		case orgErr == orgdb.ErrNotFound:
 			// No Organization registered for this namespace — the
 			// self-hosted, single-tenant fallback (see
-			// internal/api/identity.go's organizationIDForNamespace doc
+			// internal/api/environmentnaming.go's resolveResourceEnvironment
 			// comment for the identical rule POST /accounts follows).
 			if createUserEnvironment != "" {
 				log.Fatalf("--env %q given, but no organization is registered for namespace %q — nothing to resolve it against", createUserEnvironment, namespace)
@@ -203,10 +168,10 @@ func writeBindingToStore(username, role, namespace, serviceAccountName string) {
 	// Safe to re-run: replace an already-existing binding for this exact
 	// identity+scope rather than erroring — the same "an already-existing
 	// object is updated in place" contract this command has always had,
-	// now expressed as delete-then-recreate rather than a Kubernetes
-	// Update, since a binding's own identity fields (namespace, org,
-	// environment) are exactly what a re-run might legitimately be
-	// changing (e.g. moving a user from read-only to admin).
+	// now expressed as delete-then-recreate, since a binding's own identity
+	// fields (namespace, org, environment) are exactly what a re-run might
+	// legitimately be changing (e.g. moving a user from read-only to
+	// admin, or rotating their password).
 	if existing, findErr := store.FindBindingBySubject(ctx, namespace, orgdb.SubjectTypeLocal, username); findErr == nil {
 		if delErr := store.DeleteBinding(ctx, existing.ID); delErr != nil {
 			log.Fatalf("Failed to replace existing binding for %q: %v", username, delErr)
@@ -248,56 +213,6 @@ func resolveEnvironment(envs []orgdb.Environment, requested, orgName string) (or
 		}
 		return orgdb.Environment{}, fmt.Errorf("organization %q has multiple environments (%s) — specify --env", orgName, strings.Join(names, ", "))
 	}
-}
-
-// applySecret creates the credentials Secret directly against the cluster
-// (--apply), rather than printing YAML for a separate 'kubectl apply -f -'.
-// Uses migrate.BuildClient's same kubeconfig resolution
-// (clientcmd.BuildConfigFromFlags with an empty path falling through to
-// $KUBECONFIG/~/.kube/config, exactly like a bare kubectl invocation —
-// confirmed against cmd/migrate_resolve.go's own identical precedent) so
-// this behaves the same as the 'kubectl apply -f -' it's replacing.
-func applySecret(secret *corev1.Secret) {
-	c, err := migrate.BuildClient(createUserKubeconfig)
-	if err != nil {
-		log.Fatalf("Failed to build Kubernetes client: %v", err)
-	}
-	ctx := context.Background()
-
-	if err := createOrUpdate(ctx, c, secret); err != nil {
-		log.Fatalf("Failed to apply Secret %s/%s: %v", secret.Namespace, secret.Name, err)
-	}
-	fmt.Printf("✅ Secret %s/%s applied\n", secret.Namespace, secret.Name)
-}
-
-// createOrUpdate creates obj, or — if it already exists — fetches the
-// current resourceVersion and updates it in place. client.Object's own
-// Create/Update calls mutate obj's ResourceVersion/UID on success, so a
-// caller inspecting obj afterward sees the live server state either way.
-func createOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
-	err := c.Create(ctx, obj)
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-
-	existing := obj.DeepCopyObject().(client.Object)
-	key := k8stypes.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
-	if getErr := c.Get(ctx, key, existing); getErr != nil {
-		return fmt.Errorf("fetch existing object to update: %w", getErr)
-	}
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	return c.Update(ctx, obj)
-}
-
-func printYAML(obj interface{}) {
-	data, err := yaml.Marshal(obj)
-	if err != nil {
-		log.Fatalf("Failed to marshal YAML: %v", err)
-	}
-	fmt.Print(string(data))
 }
 
 // promptPassword reads a password from the terminal without echoing it —

@@ -2,72 +2,62 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 
-	"github.com/cbridges1/hyve/internal/credentials"
-
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
 const (
-	// APICredentialsSecretName holds the session-signing key — see
-	// LoadSigningKey. An operator creates this Secret once at install
-	// time; hyve itself never generates or stores it.
-	APICredentialsSecretName = "hyve-api-credentials"
-	signingKeyDataKey        = "session-signing-key"
-	passwordHashDataKey      = "password-hash"
+	// signingKeyByteLength is how much entropy EnsureSigningKey generates
+	// for a fresh key — matches the 32-byte (256-bit) length the old
+	// LoadSigningKey doc comment's own `openssl rand -hex 32` example
+	// produced, just generated in-process now instead of by an operator.
+	signingKeyByteLength = 32
 )
 
-// UserCredentialsSecretSuffix/UserCredentialsSecretName re-export
-// internal/credentials' own — see that package's doc comment for why the
-// naming convention itself lives there, not here: internal/migrate needs
-// it too, and importing internal/api from internal/migrate (as it already
-// does, for exactly this) while internal/api imports internal/migrate back
-// (Milestone 6's PATCH /organizations/{name}, which reuses
-// internal/migrate's own copy primitives) would be a cycle.
-const UserCredentialsSecretSuffix = credentials.UserCredentialsSecretSuffix
+// EnsureSigningKey returns hyve-api's own session-signing key for namespace,
+// generating and persisting a fresh one on first call (Milestone 10 Part C)
+// — the same get-or-create-once idiom cmd/api's ensureControlPlaneOrganization
+// already established for the control-plane organization row. This replaces
+// the old design, which required an operator to provision a
+// hyve-api-credentials Kubernetes Secret by hand before the API would even
+// start ("hyve itself never generates or stores it") — a manual bootstrap
+// step with no corresponding security benefit now that orgdb is a store
+// this same process already owns and controls directly. Safe for concurrent
+// callers: a UNIQUE(namespace) constraint means at most one Create ever
+// wins; a loser's error is treated as "someone else just created it" and
+// retried once as a Get, not surfaced as a startup failure.
+func EnsureSigningKey(ctx context.Context, store *orgdb.Store, namespace string) ([]byte, error) {
+	if existing, err := store.GetSigningKeyByNamespace(ctx, namespace); err == nil {
+		return decodeSigningKey(existing.KeyMaterial)
+	} else if err != orgdb.ErrNotFound {
+		return nil, fmt.Errorf("check for signing key: %w", err)
+	}
 
-func UserCredentialsSecretName(bindingName string) string {
-	return credentials.UserCredentialsSecretName(bindingName)
+	raw := make([]byte, signingKeyByteLength)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("generate signing key: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+
+	if _, err := store.CreateSigningKey(ctx, orgdb.SigningKey{Namespace: namespace, KeyMaterial: encoded}); err != nil {
+		// Another process (a second API replica starting concurrently) may
+		// have just won the same race — re-fetch rather than fail startup
+		// over what's actually a benign, expected outcome.
+		if existing, getErr := store.GetSigningKeyByNamespace(ctx, namespace); getErr == nil {
+			return decodeSigningKey(existing.KeyMaterial)
+		}
+		return nil, fmt.Errorf("create signing key: %w", err)
+	}
+	return raw, nil
 }
 
-// LoadSigningKey reads the session-signing key from the
-// hyve-api-credentials Secret in namespace. Create it once with e.g.:
-//
-//	kubectl create secret generic hyve-api-credentials -n hyve-system \
-//	  --from-literal=session-signing-key=$(openssl rand -hex 32)
-func LoadSigningKey(ctx context.Context, c client.Client, namespace string) ([]byte, error) {
-	var secret corev1.Secret
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: APICredentialsSecretName}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("secret %s/%s not found — create it with a %q key before starting the API (see LoadSigningKey's doc comment)", namespace, APICredentialsSecretName, signingKeyDataKey)
-		}
-		return nil, fmt.Errorf("get signing key secret: %w", err)
+func decodeSigningKey(encoded string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode stored signing key: %w", err)
 	}
-	key, ok := secret.Data[signingKeyDataKey]
-	if !ok || len(key) == 0 {
-		return nil, fmt.Errorf("secret %s/%s has no %q key", namespace, APICredentialsSecretName, signingKeyDataKey)
-	}
-	return key, nil
-}
-
-// LoadPasswordHash reads bindingName's paired credentials Secret and
-// returns its stored bcrypt hash.
-func LoadPasswordHash(ctx context.Context, c client.Client, namespace, bindingName string) (string, error) {
-	var secret corev1.Secret
-	name := UserCredentialsSecretName(bindingName)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", fmt.Errorf("credentials secret %s/%s not found", namespace, name)
-		}
-		return "", fmt.Errorf("get credentials secret: %w", err)
-	}
-	hash, ok := secret.Data[passwordHashDataKey]
-	if !ok || len(hash) == 0 {
-		return "", fmt.Errorf("secret %s/%s has no %q key", namespace, name, passwordHashDataKey)
-	}
-	return string(hash), nil
+	return raw, nil
 }

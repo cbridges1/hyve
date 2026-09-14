@@ -12,10 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 func newAccountsTestMux(s *Server) *http.ServeMux {
@@ -48,7 +44,7 @@ func doAccountRequest(t *testing.T, s *Server, caller, role, method, path string
 // newTestServer builds a Server whose TenantNamespace resolves to
 // testNamespace with no Organization registered for it — the Phase-1,
 // self-hosted single-tenant shape most of these tests exercise (see
-// organizationIDForNamespace's own doc comment): an ordinary admin/
+// resolveResourceEnvironment's own doc comment): an ordinary admin/
 // read-only binding lands with nil organization_id/environment_id here,
 // exactly like a superadmin's, which is what makes testNamespace usable
 // as a stand-in scope the same way the old CRD-based tests used it.
@@ -114,7 +110,11 @@ func TestHandleCreateAccount_ReadOnlyForbidden(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
-func TestHandleCreateAccount_CreatesSecretAndBinding(t *testing.T) {
+// TestHandleCreateAccount_CreatesBindingWithPasswordHash proves account
+// creation writes a single Store row (Milestone 10 Part C — password_hash
+// lives on the binding itself, no paired Kubernetes Secret anymore, see
+// orgdb.Binding.PasswordHash's own doc comment).
+func TestHandleCreateAccount_CreatesBindingWithPasswordHash(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
@@ -132,21 +132,9 @@ func TestHandleCreateAccount_CreatesSecretAndBinding(t *testing.T) {
 	assert.Equal(t, "hyve-access-readonly", binding.ServiceAccountName)
 	assert.Nil(t, binding.OrganizationID, "no Organization exists for testNamespace, so this binding must land with nil org/env, exactly like a superadmin's")
 
-	var secret corev1.Secret
-	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "new-user-credentials"}, &secret))
-	// The handler writes via Secret.StringData (matching cmd/api/create_user.go's
-	// existing convention) — a real API server merges that into .Data
-	// (base64-encoded) on write, which is what LoadPasswordHash reads back
-	// in production. The fake client used here doesn't perform that same
-	// merge, so fall back to StringData directly rather than asserting a
-	// fake-client fidelity gap that doesn't reflect real behavior.
-	hash := string(secret.Data[passwordHashDataKey])
-	if hash == "" {
-		hash = secret.StringData[passwordHashDataKey]
-	}
-	require.NotEmpty(t, hash)
-	assert.True(t, VerifyPassword(hash, "s3cret"))
-	assert.False(t, VerifyPassword(hash, "wrong-password"))
+	require.NotNil(t, binding.PasswordHash)
+	assert.True(t, VerifyPassword(*binding.PasswordHash, "s3cret"))
+	assert.False(t, VerifyPassword(*binding.PasswordHash, "wrong-password"))
 }
 
 // TestHandleCreateAccount_WithRealOrganization_ScopesBinding proves the
@@ -222,25 +210,24 @@ func TestHandleDeleteAccount_CannotDeleteSelf(t *testing.T) {
 	assert.NoError(t, err, "binding must survive a rejected self-delete")
 }
 
-func TestHandleDeleteAccount_RemovesBindingAndSecret(t *testing.T) {
+// TestHandleDeleteAccount_RemovesBinding proves deletion removes the whole
+// binding row — password_hash included, in the same write, unlike the old
+// design's separate paired Secret (Milestone 10 Part C).
+func TestHandleDeleteAccount_RemovesBinding(t *testing.T) {
 	s := newTestServer(t)
-	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	hash, err := HashPassword("whatever")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
-		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
 	})
 	require.NoError(t, err)
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "victim-credentials", Namespace: testNamespace}, Data: map[string][]byte{passwordHashDataKey: []byte("hash")}}
-	require.NoError(t, s.Client.Create(t.Context(), secret))
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodDelete, "/accounts/victim", nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 
 	_, err = s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
 	assert.ErrorIs(t, err, orgdb.ErrNotFound)
-
-	var goneSecret corev1.Secret
-	err = s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "victim-credentials"}, &goneSecret)
-	assert.True(t, apierrors.IsNotFound(err))
 }
 
 func TestHandleDeleteAccount_NotFound(t *testing.T) {
@@ -287,9 +274,8 @@ func TestHandleCreateAccount_SuperadminExplicitNamespace(t *testing.T) {
 	binding, err := s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "acme-admin")
 	require.NoError(t, err, "the binding must land in the explicitly-requested namespace, not the control-plane namespace")
 	assert.Equal(t, hyvev1alpha1.RoleAdmin, binding.Role)
-
-	var secret corev1.Secret
-	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: "acme", Name: "acme-admin-credentials"}, &secret))
+	require.NotNil(t, binding.PasswordHash)
+	assert.True(t, VerifyPassword(*binding.PasswordHash, "s3cret"))
 }
 
 // TestHandleCreateAccount_OrdinaryAdminCannotTargetOtherNamespace proves the

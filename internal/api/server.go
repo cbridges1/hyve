@@ -29,8 +29,26 @@ import (
 // Server holds the API's shared dependencies, constructed once at startup
 // and referenced by every handler.
 type Server struct {
-	Client     client.Client
-	Namespace  string // hyve-system by convention — where credentials Secrets/ClusterDefinitions live
+	// Client is this control plane's own home-cluster client — genuinely
+	// optional as of Milestone 10 Part C (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md,
+	// nexus-config/docs): nil means this install was started with
+	// --home-cluster=none (cmd/api/run.go), and every code path that used
+	// to assume it's always set now resolves through resourceClient/
+	// resourceClientset (reconcilingclusters.go) instead, which returns a
+	// clear error rather than a nil-pointer panic when both it and a
+	// namespace's own reconciling-cluster override are absent. A handful of
+	// genuinely home-cluster-only features (HostProvider, /proxy, GET/PATCH
+	// /config's HyveConfig singleton) simply become unavailable when this
+	// is nil, the same soft-fail stance they already had for other missing
+	// prerequisites.
+	Client client.Client
+	// Namespace is where ClusterDefinitions/credentials live on the home
+	// cluster (hyve-system by convention) when Client is non-nil — as of
+	// Milestone 10 Part A this is also always a real orgdb.Organization's
+	// own Namespace (seeded at startup, see cmd/api's ensureControlPlaneOrganization),
+	// used for organization/environment/session/RBAC-binding resolution
+	// regardless of whether Client itself is set.
+	Namespace  string
 	SigningKey []byte
 
 	ModuleAuthProvider AccessProvider
@@ -244,7 +262,7 @@ const actAsNamespaceHeader = "X-Hyve-Act-As-Namespace"
 // this instead of reading s.Namespace directly — see
 // HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section for why: s.Namespace is
 // now fixed per-install control-plane bookkeeping only (HyveConfig, the
-// primary ClusterDefinition, HyveSession storage), not a tenant's own
+// primary ClusterDefinition), not a tenant's own
 // namespace, which varies per login. Organizations themselves live in
 // OrgStore (Postgres/SQLite), not a namespaced Kubernetes object at all —
 // see internal/orgdb.

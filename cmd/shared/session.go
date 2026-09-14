@@ -60,7 +60,7 @@ func EnsureValidSession() (*session.Session, error) {
 }
 
 // RevokeSession calls POST /auth/logout with sess's session token, telling
-// the server to delete the underlying HyveSession — real, immediate
+// the server to delete the underlying Session row — real, immediate
 // revocation (see internal/api's handleLogout). Callers should still clear
 // the local record (session.Clear) even if this fails: the end state the
 // user actually cares about ("hyve no longer treats me as logged in on

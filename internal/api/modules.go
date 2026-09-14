@@ -34,13 +34,20 @@ func toModuleDTO(cr *hyvev1alpha1.Module) moduleDTO {
 // user-triggered — see this session's design discussion on why cluster
 // mode has no `hyve module install` equivalent.
 func (s *Server) registerModuleRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /modules", s.handleListModules)
-	mux.HandleFunc("GET /modules/{name}", s.handleGetModule)
+	mux.HandleFunc("GET /modules", s.requireOrganizationNotMigrating(s.handleListModules))
+	mux.HandleFunc("GET /modules/{name}", s.requireOrganizationNotMigrating(s.handleGetModule))
 }
 
 func (s *Server) handleListModules(w http.ResponseWriter, r *http.Request) {
+	ns := s.TenantNamespace(r)
+	c, err := s.resourceClient(r.Context(), ns)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for modules: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to list modules")
+		return
+	}
 	var list hyvev1alpha1.ModuleList
-	if err := s.Client.List(r.Context(), &list, client.InNamespace(s.TenantNamespace(r))); err != nil {
+	if err := c.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
 		log.Printf("api: failed to list modules: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list modules")
 		return
@@ -54,8 +61,15 @@ func (s *Server) handleListModules(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetModule(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	ns := s.TenantNamespace(r)
+	c, err := s.resourceClient(r.Context(), ns)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for module %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get module")
+		return
+	}
 	var cr hyvev1alpha1.Module
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cr); err != nil {
+	if err := c.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cr); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "module not found")
 			return

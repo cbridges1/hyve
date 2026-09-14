@@ -14,10 +14,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func newTestServerWithUser(t *testing.T, username, password, role string) *Server {
@@ -25,18 +21,15 @@ func newTestServerWithUser(t *testing.T, username, password, role string) *Serve
 	hash, err := HashPassword(password)
 	require.NoError(t, err)
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(username), Namespace: testNamespace},
-		Data:       map[string][]byte{"password-hash": []byte(hash)},
-	}
 	store := newTestOrgStore(t)
 	_, err = store.CreateBinding(context.Background(), orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: username, Role: role,
 		ServiceAccountName: orgdb.ServiceAccountNameForRole(role), ServiceAccountNamespace: testNamespace,
+		PasswordHash: &hash,
 	})
 	require.NoError(t, err)
 	return &Server{
-		Client:     newFakeClient(t, secret),
+		Client:     newFakeClient(t),
 		OrgStore:   store,
 		Namespace:  testNamespace,
 		SigningKey: []byte("test-signing-key"),
@@ -70,8 +63,8 @@ func TestHandleLogin_Success(t *testing.T) {
 }
 
 // TestHandleLogin_CreatesRevocableSession confirms a login actually
-// persists a HyveSession object — the thing that makes logout a real
-// revocation instead of the old no-op.
+// persists a Session row (Milestone 10 Part D) — the thing that makes
+// logout a real revocation instead of the old no-op.
 func TestHandleLogin_CreatesRevocableSession(t *testing.T) {
 	s := newTestServerWithUser(t, "cedric", "correct-password", hyvev1alpha1.RoleAdmin)
 
@@ -80,15 +73,13 @@ func TestHandleLogin_CreatesRevocableSession(t *testing.T) {
 	var resp loginResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 
-	name, _, ok := splitSessionToken(resp.SessionToken)
+	id, _, ok := splitSessionToken(resp.SessionToken)
 	require.True(t, ok)
 
-	var list hyvev1alpha1.HyveSessionList
-	require.NoError(t, s.Client.List(context.Background(), &list))
-	require.Len(t, list.Items, 1)
-	assert.Equal(t, name, list.Items[0].Name)
-	assert.Equal(t, "cedric", list.Items[0].Spec.Subject)
-	assert.NotEmpty(t, list.Items[0].Spec.TokenHash)
+	sess, err := s.OrgStore.GetSession(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "cedric", sess.Subject)
+	assert.NotEmpty(t, sess.TokenHash)
 }
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
@@ -133,7 +124,7 @@ func TestHandleLogin_InvalidBody(t *testing.T) {
 }
 
 func TestHandleLogout_NoBodyStillOK(t *testing.T) {
-	s := &Server{Client: newFakeClient(t)}
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t)}
 	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
 	rec := httptest.NewRecorder()
 	s.handleLogout(rec, req)
@@ -142,7 +133,7 @@ func TestHandleLogout_NoBodyStillOK(t *testing.T) {
 
 // TestHandleLogout_ActuallyRevokesSession is the regression test for the
 // old design's biggest gap — logout used to be a documented no-op with
-// nothing to invalidate. It now deletes the HyveSession, and a refresh
+// nothing to invalidate. It now deletes the Session row, and a refresh
 // against it afterward must fail.
 func TestHandleLogout_ActuallyRevokesSession(t *testing.T) {
 	s := newTestServerWithUser(t, "cedric", "correct-password", hyvev1alpha1.RoleAdmin)
@@ -156,9 +147,9 @@ func TestHandleLogout_ActuallyRevokesSession(t *testing.T) {
 	s.handleLogout(logoutRec, logoutReq)
 	require.Equal(t, http.StatusOK, logoutRec.Code)
 
-	name, _, _ := splitSessionToken(loginResp.SessionToken)
-	err := s.Client.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &hyvev1alpha1.HyveSession{})
-	assert.True(t, apierrors.IsNotFound(err), "session object should be gone after logout")
+	id, _, _ := splitSessionToken(loginResp.SessionToken)
+	_, err := s.OrgStore.GetSession(context.Background(), id)
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "session row should be gone after logout")
 
 	refreshBody, _ := json.Marshal(sessionTokenRequest{SessionToken: loginResp.SessionToken})
 	refreshReq := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(refreshBody))
@@ -193,8 +184,8 @@ func TestHandleRefresh_WrongSecretRejected(t *testing.T) {
 	var loginResp loginResponse
 	require.NoError(t, json.Unmarshal(loginRec.Body.Bytes(), &loginResp))
 
-	name, _, _ := splitSessionToken(loginResp.SessionToken)
-	body, _ := json.Marshal(sessionTokenRequest{SessionToken: name + ".not-the-real-secret"})
+	id, _, _ := splitSessionToken(loginResp.SessionToken)
+	body, _ := json.Marshal(sessionTokenRequest{SessionToken: id + ".not-the-real-secret"})
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleRefresh(rec, req)
@@ -202,7 +193,7 @@ func TestHandleRefresh_WrongSecretRejected(t *testing.T) {
 }
 
 func TestHandleRefresh_UnknownSessionRejected(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace, SigningKey: []byte("key")}
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace, SigningKey: []byte("key")}
 	body, _ := json.Marshal(sessionTokenRequest{SessionToken: "does-not-exist.some-secret"})
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -211,18 +202,15 @@ func TestHandleRefresh_UnknownSessionRejected(t *testing.T) {
 }
 
 func TestHandleRefresh_ExpiredSessionRejected(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace, SigningKey: []byte("key")}
-	session := &hyvev1alpha1.HyveSession{
-		ObjectMeta: metav1.ObjectMeta{Name: "expired-session", Namespace: testNamespace},
-		Spec: hyvev1alpha1.HyveSessionSpec{
-			Subject:   "cedric",
-			TokenHash: HashSessionSecret("the-secret"),
-			ExpiresAt: metav1.NewTime(time.Now().Add(-time.Hour)),
-		},
-	}
-	require.NoError(t, s.Client.Create(context.Background(), session))
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace, SigningKey: []byte("key")}
+	sess, err := s.OrgStore.CreateSession(context.Background(), orgdb.Session{
+		Subject:   "cedric",
+		TokenHash: HashSessionSecret("the-secret"),
+		ExpiresAt: time.Now().Add(-time.Hour),
+	})
+	require.NoError(t, err)
 
-	body, _ := json.Marshal(sessionTokenRequest{SessionToken: "expired-session.the-secret"})
+	body, _ := json.Marshal(sessionTokenRequest{SessionToken: sess.ID + ".the-secret"})
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleRefresh(rec, req)
@@ -230,7 +218,7 @@ func TestHandleRefresh_ExpiredSessionRejected(t *testing.T) {
 }
 
 func TestHandleRefresh_MalformedTokenRejected(t *testing.T) {
-	s := &Server{Client: newFakeClient(t), Namespace: testNamespace, SigningKey: []byte("key")}
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace, SigningKey: []byte("key")}
 	for _, bad := range []string{"", "no-dot-at-all", ".leading-dot-empty-name", "trailing-dot."} {
 		body, _ := json.Marshal(sessionTokenRequest{SessionToken: bad})
 		req := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(body))

@@ -232,6 +232,11 @@ func (s *Store) CreateOrganizationWithDefaults(ctx context.Context, org Organiza
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		saName := ServiceAccountNameForRole(adminRole)
+		// No password_hash column here: this binding has no password of
+		// its own yet (adminIdentity is an OIDC subject or a placeholder
+		// identity — a real local account's own password is always set via
+		// CreateBinding directly, e.g. handleCreateAccount, never through
+		// this convenience path).
 		if _, err := tx.ExecContext(ctx, insertBinding, newID(), org.Namespace, org.ID, envID, SubjectTypeLocal, adminIdentity, adminRole, saName, org.Namespace); err != nil {
 			return Organization{}, Environment{}, fmt.Errorf("insert initial admin binding: %w", err)
 		}
@@ -311,7 +316,7 @@ func (s *Store) ListEnvironments(ctx context.Context, organizationID string) ([]
 	return out, rows.Err()
 }
 
-const bindingColumns = `id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, created_at`
+const bindingColumns = `id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, created_at`
 
 // ServiceAccountNameForRole is the role -> ServiceAccount convention
 // preserved from the retired HyveAccessBindingSpec.ServiceAccountRef (see
@@ -374,9 +379,9 @@ func (s *Store) CreateBinding(ctx context.Context, b Binding) (Binding, error) {
 		b.SubjectType = SubjectTypeLocal
 	}
 	_, err := s.exec(ctx, `
-		INSERT INTO bindings (id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, b.ID, b.Namespace, b.OrganizationID, b.EnvironmentID, b.SubjectType, b.Identity, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace)
+		INSERT INTO bindings (id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, b.ID, b.Namespace, b.OrganizationID, b.EnvironmentID, b.SubjectType, b.Identity, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace, b.PasswordHash)
 	if err != nil {
 		return Binding{}, fmt.Errorf("insert binding: %w", err)
 	}
@@ -385,7 +390,7 @@ func (s *Store) CreateBinding(ctx context.Context, b Binding) (Binding, error) {
 
 func scanBinding(row *sql.Row) (Binding, error) {
 	var b Binding
-	err := row.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.CreatedAt)
+	err := row.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Binding{}, ErrNotFound
 	}
@@ -446,7 +451,7 @@ func scanBindings(rows *sql.Rows) ([]Binding, error) {
 	var out []Binding
 	for rows.Next() {
 		var b Binding
-		if err := rows.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan binding: %w", err)
 		}
 		out = append(out, b)
@@ -477,34 +482,45 @@ func (s *Store) DeleteBinding(ctx context.Context, id string) error {
 	return nil
 }
 
-// CreateReconcilingCluster registers a new physical cluster. The
-// kubeconfig itself is never passed to or stored by this method — only
-// the Secret reference the caller already wrote it to (see
-// HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Schema addition" for why).
+// CreateReconcilingCluster registers a new physical cluster, storing its
+// kubeconfig content directly (Milestone 10 Part C — see ReconcilingCluster's
+// own doc comment for why this replaced a Kubernetes-Secret-reference
+// design).
 func (s *Store) CreateReconcilingCluster(ctx context.Context, rc ReconcilingCluster) (ReconcilingCluster, error) {
 	if rc.ID == "" {
 		rc.ID = newID()
 	}
 	_, err := s.exec(ctx, `
-		INSERT INTO reconciling_clusters (id, name, kubeconfig_secret_namespace, kubeconfig_secret_name)
-		VALUES (?, ?, ?, ?)
-	`, rc.ID, rc.Name, rc.KubeconfigSecretNamespace, rc.KubeconfigSecretName)
+		INSERT INTO reconciling_clusters (id, name, kubeconfig)
+		VALUES (?, ?, ?)
+	`, rc.ID, rc.Name, rc.Kubeconfig)
 	if err != nil {
 		return ReconcilingCluster{}, fmt.Errorf("insert reconciling cluster: %w", err)
 	}
 	return s.GetReconcilingCluster(ctx, rc.ID)
 }
 
+// SetReconcilingClusterKubeconfig rotates rc's stored kubeconfig content in
+// place — the Store-backed counterpart of the old "re-POST rotates the
+// Secret" precedent (see handleCreateReconcilingCluster).
+func (s *Store) SetReconcilingClusterKubeconfig(ctx context.Context, id, kubeconfig string) error {
+	_, err := s.exec(ctx, `UPDATE reconciling_clusters SET kubeconfig = ? WHERE id = ?`, kubeconfig, id)
+	if err != nil {
+		return fmt.Errorf("set reconciling cluster kubeconfig: %w", err)
+	}
+	return nil
+}
+
 // GetReconcilingCluster looks up a reconciling cluster by id.
 func (s *Store) GetReconcilingCluster(ctx context.Context, id string) (ReconcilingCluster, error) {
 	row := s.queryRow(ctx, `
-		SELECT id, name, kubeconfig_secret_namespace, kubeconfig_secret_name,
+		SELECT id, name, kubeconfig,
 		       reachable, last_checked_at, last_error, created_at
 		FROM reconciling_clusters WHERE id = ?
 	`, id)
 	var rc ReconcilingCluster
 	err := row.Scan(
-		&rc.ID, &rc.Name, &rc.KubeconfigSecretNamespace, &rc.KubeconfigSecretName,
+		&rc.ID, &rc.Name, &rc.Kubeconfig,
 		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -541,13 +557,13 @@ func (s *Store) SetReconcilingClusterHealth(ctx context.Context, id string, reac
 // way every other cross-reference in this API does, never by raw id.
 func (s *Store) GetReconcilingClusterByName(ctx context.Context, name string) (ReconcilingCluster, error) {
 	row := s.queryRow(ctx, `
-		SELECT id, name, kubeconfig_secret_namespace, kubeconfig_secret_name,
+		SELECT id, name, kubeconfig,
 		       reachable, last_checked_at, last_error, created_at
 		FROM reconciling_clusters WHERE name = ?
 	`, name)
 	var rc ReconcilingCluster
 	err := row.Scan(
-		&rc.ID, &rc.Name, &rc.KubeconfigSecretNamespace, &rc.KubeconfigSecretName,
+		&rc.ID, &rc.Name, &rc.Kubeconfig,
 		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -564,7 +580,7 @@ func (s *Store) GetReconcilingClusterByName(ctx context.Context, name string) (R
 // periodic health-check loop walks each tick.
 func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingCluster, error) {
 	rows, err := s.query(ctx, `
-		SELECT id, name, kubeconfig_secret_namespace, kubeconfig_secret_name,
+		SELECT id, name, kubeconfig,
 		       reachable, last_checked_at, last_error, created_at
 		FROM reconciling_clusters ORDER BY name
 	`)
@@ -577,7 +593,7 @@ func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingClust
 	for rows.Next() {
 		var rc ReconcilingCluster
 		if err := rows.Scan(
-			&rc.ID, &rc.Name, &rc.KubeconfigSecretNamespace, &rc.KubeconfigSecretName,
+			&rc.ID, &rc.Name, &rc.Kubeconfig,
 			&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan reconciling cluster: %w", err)
@@ -676,6 +692,80 @@ func (s *Store) SetOrganizationReconcilingCluster(ctx context.Context, id string
 	`, reconcilingClusterID, id)
 	if err != nil {
 		return fmt.Errorf("set organization reconciling cluster: %w", err)
+	}
+	return nil
+}
+
+// GetSigningKeyByNamespace looks up hyve-api's own session-signing key by
+// its install's control-plane namespace (Milestone 10 Part C) — see
+// SigningKey's own doc comment.
+func (s *Store) GetSigningKeyByNamespace(ctx context.Context, namespace string) (SigningKey, error) {
+	row := s.queryRow(ctx, `SELECT id, namespace, key_material, created_at FROM signing_keys WHERE namespace = ?`, namespace)
+	var k SigningKey
+	err := row.Scan(&k.ID, &k.Namespace, &k.KeyMaterial, &k.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SigningKey{}, ErrNotFound
+	}
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("scan signing key: %w", err)
+	}
+	return k, nil
+}
+
+// CreateSigningKey inserts a new signing key row — called once per install,
+// on first startup, by cmd/api's ensureSigningKey.
+func (s *Store) CreateSigningKey(ctx context.Context, k SigningKey) (SigningKey, error) {
+	if k.ID == "" {
+		k.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO signing_keys (id, namespace, key_material) VALUES (?, ?, ?)
+	`, k.ID, k.Namespace, k.KeyMaterial)
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("insert signing key: %w", err)
+	}
+	return s.GetSigningKeyByNamespace(ctx, k.Namespace)
+}
+
+// CreateSession inserts a new session row (Milestone 10 Part D) — see
+// Session's own doc comment.
+func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error) {
+	if sess.ID == "" {
+		sess.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO sessions (id, subject, tenant_namespace, token_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, sess.ID, sess.Subject, sess.TenantNamespace, sess.TokenHash, sess.ExpiresAt)
+	if err != nil {
+		return Session{}, fmt.Errorf("insert session: %w", err)
+	}
+	return s.GetSession(ctx, sess.ID)
+}
+
+// GetSession looks up a session by id — the lookup-key half of a session
+// token (see auth_handlers.go's splitSessionToken).
+func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
+	row := s.queryRow(ctx, `SELECT id, subject, tenant_namespace, token_hash, expires_at, created_at FROM sessions WHERE id = ?`, id)
+	var sess Session
+	err := row.Scan(&sess.ID, &sess.Subject, &sess.TenantNamespace, &sess.TokenHash, &sess.ExpiresAt, &sess.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("scan session: %w", err)
+	}
+	return sess, nil
+}
+
+// DeleteSession removes a session by id — real, immediate revocation (see
+// handleLogout). A missing row is not an error: the caller's own
+// best-effort, always-succeeds stance already treats "already gone" and
+// "just deleted" identically.
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
 	}
 	return nil
 }

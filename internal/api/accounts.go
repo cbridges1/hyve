@@ -7,10 +7,6 @@ import (
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
-
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // accountDTO is the response shape for GET /api/accounts — deliberately
@@ -158,7 +154,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 
 		// No Organization for ns at all is not an error — it's a
 		// self-hosted, single-tenant install that never ran POST
-		// /organizations (see organizationIDForNamespace's own doc
+		// /organizations (see resolveResourceEnvironment's own doc
 		// comment), and this binding lands with organizationID/
 		// environmentID both nil, exactly like a superadmin's, rather than
 		// being rejected. Only when an Organization genuinely exists does
@@ -194,16 +190,6 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(req.Username), Namespace: secretNamespace},
-		StringData: map[string]string{passwordHashDataKey: hash},
-	}
-	if err := s.Client.Create(ctx, secret); err != nil {
-		log.Printf("api: failed to create credentials secret for %q: %v", req.Username, err)
-		writeError(w, http.StatusInternalServerError, "failed to create account")
-		return
-	}
-
 	binding, err := s.OrgStore.CreateBinding(ctx, orgdb.Binding{
 		Namespace:               secretNamespace,
 		OrganizationID:          organizationID,
@@ -213,13 +199,9 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		Role:                    req.Role,
 		ServiceAccountName:      serviceAccount,
 		ServiceAccountNamespace: secretNamespace,
+		PasswordHash:            &hash,
 	})
 	if err != nil {
-		// Best-effort rollback of the Secret we just created — an orphaned
-		// credentials Secret with no binding is inert (nothing looks it up
-		// without a binding to name it), but cleaning up on a clear failure
-		// is still better than leaving it.
-		_ = s.Client.Delete(ctx, secret)
 		log.Printf("api: failed to create access binding for %q: %v", req.Username, err)
 		writeError(w, http.StatusInternalServerError, "failed to create account")
 		return
@@ -264,14 +246,9 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: UserCredentialsSecretName(binding.Identity), Namespace: ns}}
-	if err := s.Client.Delete(r.Context(), secret); err != nil && !apierrors.IsNotFound(err) {
-		// The binding (the actual access grant) is already gone, which is
-		// what matters for security — an orphaned credentials Secret left
-		// behind is inert leftover state, not worth failing the request
-		// over.
-		log.Printf("api: warning: failed to delete credentials secret for %q: %v", username, err)
-	}
+	// The password hash lived on the binding row itself (password_hash,
+	// Milestone 10 Part C) — deleting the binding above already removed it
+	// in the same write, unlike the old design's separate paired Secret.
 
 	w.WriteHeader(http.StatusNoContent)
 }

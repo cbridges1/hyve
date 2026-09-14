@@ -29,9 +29,9 @@ func TestResolveTargetNamespaces_FiltersToOrganizationsMappedToThisID(t *testing
 	t.Cleanup(func() { store.Close() })
 	ctx := t.Context()
 
-	cellA, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", KubeconfigSecretNamespace: "hyve-system", KubeconfigSecretName: "cell-a-kubeconfig"})
+	cellA, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
-	cellB, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-b", KubeconfigSecretNamespace: "hyve-system", KubeconfigSecretName: "cell-b-kubeconfig"})
+	cellB, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-b", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
 
 	_, err = store.CreateOrganization(ctx, orgdb.Organization{Name: "acme", Namespace: "acme"}) // home cluster
@@ -58,7 +58,7 @@ func TestResolveTargetNamespaces_NoOrganizationsMappedYet_ReturnsEmptyNotError(t
 	t.Cleanup(func() { store.Close() })
 	ctx := t.Context()
 
-	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", KubeconfigSecretNamespace: "hyve-system", KubeconfigSecretName: "cell-a-kubeconfig"})
+	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
 
 	got, err := resolveTargetNamespaces(ctx, store, "hyve-system", rc.ID)

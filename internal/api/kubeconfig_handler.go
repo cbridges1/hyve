@@ -14,7 +14,7 @@ import (
 // registerKubeconfigRoutes wires GET /kubeconfig — mounted under /api/
 // (behind requireAuth+requireRole) by Server.Routes.
 func (s *Server) registerKubeconfigRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /kubeconfig", s.handleKubeconfig)
+	mux.HandleFunc("GET /kubeconfig", s.requireOrganizationNotMigrating(s.handleKubeconfig))
 }
 
 // handleKubeconfig resolves ?cluster=<name> and dispatches to the right
@@ -41,8 +41,15 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ns := s.TenantNamespace(r)
+	c, err := s.resourceClient(r.Context(), ns)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for cluster %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
+	if err := c.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return

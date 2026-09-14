@@ -333,6 +333,10 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 	}
 	var destClient client.Client
 	if targetClusterID == nil {
+		if s.Client == nil {
+			writeError(w, http.StatusBadRequest, "this install has no home cluster of its own (Milestone 10 Part C) — an empty reconcilingCluster (\"migrate back to home\") isn't possible here")
+			return
+		}
 		destClient = s.Client
 	} else {
 		handle, err := s.reconcilingClusterClientHandle(ctx, *targetClusterID)
@@ -727,7 +731,13 @@ func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Reque
 //     make ensureNamespace/ensureAccessRoleScaffolding operate directly on
 //     the control plane's own namespace instead of a new tenant one,
 //     injecting tenant-style ServiceAccounts into it and listing it
-//     alongside real tenants.
+//     alongside real tenants. As of Milestone 10 Part A
+//     (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs)
+//     this namespace already has a real Organization row — seeded once,
+//     at API startup (cmd/api/run.go), never through this endpoint — so
+//     this check's job narrows slightly but doesn't go away: it still
+//     stops a caller from re-creating or otherwise colliding with that
+//     row through the ordinary tenant-creation path.
 //   - "control plane" (any case/spacing): not a real collision — Kubernetes
 //     namespace names can't contain a space or uppercase letter, so the
 //     literal EnvironmentSwitcher label could never collide at the

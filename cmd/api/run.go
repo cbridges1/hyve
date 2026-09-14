@@ -59,6 +59,7 @@ var (
 	apiConfigName         string
 	apiDBDriver           string
 	apiDBDSN              string
+	apiHomeCluster        string
 )
 
 // Cmd is the api command.
@@ -96,6 +97,7 @@ func init() {
 	runCmd.Flags().StringVar(&apiConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object within --namespace (GET/PATCH /api/config) — must match cmd/controller's own --config-name")
 	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters — see internal/orgdb and HYVE-ORGANIZATION-MODEL-PROPOSAL.md's 'Deployment strategy' section)")
 	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
+	runCmd.Flags().StringVar(&apiHomeCluster, "home-cluster", "required", "Whether this process needs a Kubernetes cluster of its own (Milestone 10 Part C) — 'required' (default, matches every pre-Milestone-10 install's behavior: in-cluster config or --kubeconfig must resolve, Fatal if not) or 'none' (skip Kubernetes client construction entirely; every organization's resources must be reachable through a registered reconciling cluster instead — see HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 10 Part C, nexus-config/docs). Features that are inherently home-cluster-only (GET/PATCH /api/config, the host-cluster kubeconfig path, /proxy) become unavailable under 'none', same soft-fail stance those already have for other missing prerequisites.")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -106,20 +108,67 @@ func runAPI() {
 		log.Fatalf("❌ Failed to register hyve.io/v1alpha1 scheme: %v", err)
 	}
 
-	cfg := ctrl.GetConfigOrDie()
-
-	c, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	if err != nil {
-		log.Fatalf("❌ Failed to build Kubernetes client: %v", err)
+	if apiHomeCluster != "required" && apiHomeCluster != "none" {
+		log.Fatalf("❌ --home-cluster must be \"required\" or \"none\", got %q", apiHomeCluster)
 	}
 
-	signingKey, err := hyveapi.LoadSigningKey(context.Background(), c, apiNamespace)
-	if err != nil {
-		log.Fatalf("❌ %v", err)
+	// Opened before any Kubernetes client construction below (Milestone 10
+	// Part C — HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs):
+	// organization/environment/RBAC data isn't an opt-in capability the way
+	// hyve-agent is, and — as of Part C — neither is hyve-api's own signing
+	// key or any local account's password hash, both of which now live here
+	// too (see EnsureSigningKey). Fatal on failure, unlike AgentCA/
+	// agentpki's soft-fail stance further below.
+	orgStore, dbErr := orgdb.Open(apiDBDriver, apiDBDSN)
+	if dbErr != nil {
+		log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", apiDBDriver, apiDBDSN, dbErr)
+	}
+
+	signingKey, skErr := hyveapi.EnsureSigningKey(context.Background(), orgStore, apiNamespace)
+	if skErr != nil {
+		log.Fatalf("❌ Failed to load/generate session-signing key: %v", skErr)
+	}
+
+	// This process's own Kubernetes client/clientset — genuinely optional
+	// as of Milestone 10 Part C (see Server.Client's own doc comment and
+	// --home-cluster's flag help above). "required" (the default) matches
+	// every pre-Milestone-10 install's behavior exactly: an unresolvable
+	// config is still Fatal, not a silent downgrade — deliberately not
+	// "auto-detect and soft-fail," since that would turn a genuine
+	// misconfiguration on an install that expects a home cluster into a
+	// silently reduced-capability start instead of the clear failure an
+	// operator needs to see.
+	var c client.Client
+	var clientset kubernetes.Interface
+	if apiHomeCluster == "none" {
+		log.Printf("ℹ️  --home-cluster=none: this process has no Kubernetes client of its own — every organization's resources must be reachable through a registered reconciling cluster")
+	} else {
+		cfg := ctrl.GetConfigOrDie()
+
+		var err error
+		c, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+		if err != nil {
+			log.Fatalf("❌ Failed to build Kubernetes client: %v", err)
+		}
+
+		// Needed for agent bootstrap token validation (agentpki), the agent
+		// tunnel CA, and raw Events() reads/writes — see Server.Clientset's
+		// own doc comment.
+		clientset, err = kubernetes.NewForConfig(cfg)
+		if err != nil {
+			log.Fatalf("❌ Failed to build Kubernetes clientset: %v", err)
+		}
 	}
 
 	moduleAuthProvider := &hyveapi.ModuleAuthProvider{ModulesDir: apiModulesDir}
-	tunnelProvider := &hyveapi.TunnelProvider{Client: c, Namespace: apiNamespace}
+	// TunnelProvider needs a home-cluster client — left nil under
+	// --home-cluster=none, same as every other home-cluster-only provider
+	// below; handleKubeconfig's own dispatch already treats a nil provider
+	// as "unavailable" (503-equivalent), not a panic.
+	var tunnelProvider hyveapi.AccessProvider
+	if c != nil {
+		tunnelProvider = &hyveapi.TunnelProvider{Client: c, Namespace: apiNamespace}
+	}
 
 	// Optional — see --public-ca-path's own doc comment. Empty path means
 	// "not configured," not an error: most real deployments use a
@@ -131,27 +180,6 @@ func runAPI() {
 		if caErr != nil {
 			log.Fatalf("❌ Failed to read --public-ca-path %s: %v", apiPublicCAPath, caErr)
 		}
-	}
-
-	// Needed for agent bootstrap token validation (agentpki), the agent
-	// tunnel CA, and raw Events() reads/writes — see Server.Clientset's
-	// own doc comment.
-	clientset, csErr := kubernetes.NewForConfig(cfg)
-	if csErr != nil {
-		log.Fatalf("❌ Failed to build Kubernetes clientset: %v", csErr)
-	}
-
-	// Fatal on failure, unlike AgentCA/agentpki's soft-fail stance just
-	// below — organization/environment/RBAC data isn't an opt-in
-	// capability the way hyve-agent is; every request that resolves an
-	// org needs this working. See internal/orgdb and
-	// HYVE-ORGANIZATION-MODEL-PROPOSAL.md for the design, and
-	// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 1 for why
-	// nothing reads/writes through this store yet — that starts at
-	// Milestone 2.
-	orgStore, dbErr := orgdb.Open(apiDBDriver, apiDBDSN)
-	if dbErr != nil {
-		log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", apiDBDriver, apiDBDSN, dbErr)
 	}
 
 	// The SQLite/Postgres deployment gate becomes real here (Milestone 6 —
@@ -175,6 +203,15 @@ func runAPI() {
 		}
 	}
 
+	// Milestone 10 Part A (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md,
+	// nexus-config/docs) — see ensureControlPlaneOrganization's own doc
+	// comment for what/why.
+	if seeded, err := ensureControlPlaneOrganization(context.Background(), orgStore, apiNamespace); err != nil {
+		log.Fatalf("❌ Failed to seed control-plane organization %q: %v", apiNamespace, err)
+	} else if seeded {
+		log.Printf("ℹ️  Seeded control-plane organization %q (Milestone 10 Part A)", apiNamespace)
+	}
+
 	server := &hyveapi.Server{
 		Client:             c,
 		Namespace:          apiNamespace,
@@ -192,17 +229,23 @@ func runAPI() {
 	// is an opt-in capability — an install that never uses it shouldn't be
 	// unable to start API just because CA bootstrap hit a transient
 	// problem. Server.AgentCA's own doc comment covers the left-nil case
-	// (POST /agent/bootstrap 500s with a clear message instead).
-	agentCA, agentCAErr := agentpki.LoadOrCreateCA(context.Background(), clientset, apiNamespace)
-	if agentCAErr != nil {
+	// (POST /agent/bootstrap 500s with a clear message instead). clientset
+	// == nil (--home-cluster=none, Milestone 10 Part C) gets the identical
+	// treatment — nothing here needs a home cluster of its own to be
+	// available, so this is folded into the same soft-fail branch rather
+	// than a separate check.
+	if clientset == nil {
+		log.Printf("⚠️  No home cluster (--home-cluster=none) — POST /agent/bootstrap will be unavailable")
+	} else if agentCA, agentCAErr := agentpki.LoadOrCreateCA(context.Background(), clientset, apiNamespace); agentCAErr != nil {
 		log.Printf("⚠️  Could not load/create hyve-agent's internal CA (%v) — POST /agent/bootstrap will be unavailable", agentCAErr)
 	} else {
 		server.AgentCA = agentCA
 		server.AgentRegistry = hyveapi.NewAgentRegistry()
 	}
 
-	caData, caErr := os.ReadFile(apiInClusterCAPath)
-	if caErr != nil {
+	if clientset == nil {
+		log.Printf("⚠️  No home cluster (--home-cluster=none) — the host-cluster kubeconfig path and /proxy will be unavailable")
+	} else if caData, caErr := os.ReadFile(apiInClusterCAPath); caErr != nil {
 		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the host-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
 	} else {
 		server.HostProvider = &hyveapi.HostProvider{

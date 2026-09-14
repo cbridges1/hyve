@@ -21,7 +21,7 @@ import (
 // Session is the CLI's locally-cached record of a `hyve env login` — both
 // halves of what POST /auth/login (or /auth/refresh) returns. SessionID/
 // SessionSecret together are the long-lived, revocable credential
-// (internal/api's HyveSession object, identified by SessionID, verified
+// (orgdb.Session, identified by SessionID, verified
 // against SessionSecret's hash) used to silently mint a new AccessToken
 // once the cached one expires, without the user re-entering a password —
 // see AccessTokenValid/SessionValid and cmd/shared's UseClusterMode.

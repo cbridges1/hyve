@@ -32,20 +32,27 @@ const cliSecretsName = "hyve-cli-secrets"
 var secretKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (s *Server) registerSecretsRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /secrets", s.handleListSecrets)
-	mux.HandleFunc("GET /secrets/{key}", s.handleGetSecret)
-	mux.HandleFunc("PUT /secrets/{key}", s.handleSetSecret)
-	mux.HandleFunc("DELETE /secrets/{key}", s.handleUnsetSecret)
+	mux.HandleFunc("GET /secrets", s.requireOrganizationNotMigrating(s.handleListSecrets))
+	mux.HandleFunc("GET /secrets/{key}", s.requireOrganizationNotMigrating(s.handleGetSecret))
+	mux.HandleFunc("PUT /secrets/{key}", s.requireOrganizationNotMigrating(s.handleSetSecret))
+	mux.HandleFunc("DELETE /secrets/{key}", s.requireOrganizationNotMigrating(s.handleUnsetSecret))
 }
 
 // getCliSecret fetches the shared secret, treating NotFound as an empty
 // object rather than an error — it's created lazily on first handleSetSecret
 // call, mirroring internal/repository's own "configured but doesn't exist
-// yet" stance for the local env store.
+// yet" stance for the local env store. Resolves through resourceClient
+// (Milestone 10 Part C), not s.Client directly — an organization on a
+// remote reconciling cluster has its hyve-cli-secrets Secret there too, not
+// on this control plane's own home cluster.
 func (s *Server) getCliSecret(r *http.Request) (*corev1.Secret, error) {
 	tenantNS := s.TenantNamespace(r)
+	c, err := s.resourceClient(r.Context(), tenantNS)
+	if err != nil {
+		return nil, err
+	}
 	var secret corev1.Secret
-	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
+	err = c.Get(r.Context(), types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		return &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: tenantNS},
@@ -135,14 +142,20 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	tenantNS := s.TenantNamespace(r)
+	c, err := s.resourceClient(ctx, tenantNS)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for cli secrets: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to set secret")
+		return
+	}
 	var secret corev1.Secret
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
+	err = c.Get(ctx, types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		secret = corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: tenantNS},
 			Data:       map[string][]byte{key: []byte(req.Value)},
 		}
-		if err := s.Client.Create(ctx, &secret); err != nil {
+		if err := c.Create(ctx, &secret); err != nil {
 			log.Printf("api: failed to create cli secrets: %v", err)
 			writeError(w, http.StatusInternalServerError, "failed to set secret")
 			return
@@ -160,7 +173,7 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 		secret.Data = map[string][]byte{}
 	}
 	secret.Data[key] = []byte(req.Value)
-	if err := s.Client.Update(ctx, &secret); err != nil {
+	if err := c.Update(ctx, &secret); err != nil {
 		log.Printf("api: failed to update cli secrets: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to set secret")
 		return
@@ -175,8 +188,15 @@ func (s *Server) handleUnsetSecret(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 
 	ctx := r.Context()
+	tenantNS := s.TenantNamespace(r)
+	c, err := s.resourceClient(ctx, tenantNS)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for cli secrets: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to unset secret")
+		return
+	}
 	var secret corev1.Secret
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.TenantNamespace(r), Name: cliSecretsName}, &secret)
+	err = c.Get(ctx, types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		w.WriteHeader(http.StatusNoContent) // nothing to unset — idempotent, matches local UnsetSecret
 		return
@@ -188,7 +208,7 @@ func (s *Server) handleUnsetSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	delete(secret.Data, key)
-	if err := s.Client.Update(ctx, &secret); err != nil {
+	if err := c.Update(ctx, &secret); err != nil {
 		log.Printf("api: failed to update cli secrets: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to unset secret")
 		return

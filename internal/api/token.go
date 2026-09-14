@@ -18,7 +18,7 @@ import (
 // round trip), so every request stays cheap regardless of this value. The
 // hyve CLI's own cluster-mode calls never notice this directly: a client
 // silently exchanges an expiring access token for a fresh one via
-// POST /auth/refresh as long as its underlying HyveSession (see SessionTTL)
+// POST /auth/refresh as long as its underlying Session row (see SessionTTL)
 // is still valid (see cmd/shared's UseClusterMode).
 //
 // What this value actually bounds in practice is AgentProvider's own
@@ -36,7 +36,7 @@ import (
 // AgentProvider-minted kubeconfigs, not by reverting this alone.
 const AccessTokenTTL = 8 * time.Hour
 
-// SessionTTL is how long a HyveSession (created by POST /auth/login,
+// SessionTTL is how long a Session row (created by POST /auth/login,
 // re-validated by every POST /auth/refresh) stays valid before a real
 // `hyve env login` is required again. Long relative to AccessTokenTTL — this
 // is the credential that makes unattended/automated use practical without
@@ -70,7 +70,7 @@ type tokenPayload struct {
 // role — internal/api's authz middleware re-resolves the caller's role
 // from HyveAccessBindings on every request (see internal/api/authz.go), so
 // a role change on a binding takes effect immediately without needing a
-// new token. Deliberately stateless: unlike the HyveSession it's issued
+// new token. Deliberately stateless: unlike the Session row it's issued
 // from, an individual access token can't be revoked early — that's the
 // trade for not needing a Kubernetes round trip on every request. Keeping
 // AccessTokenTTL short is what bounds that window.
@@ -133,7 +133,7 @@ func sign(signingKey, data []byte) []byte {
 }
 
 // GenerateSessionSecret returns a fresh, high-entropy random secret for a
-// new HyveSession — the long-lived credential POST /auth/refresh consumes.
+// new Session row — the long-lived credential POST /auth/refresh consumes.
 // Only its hash (see HashSessionSecret) is ever persisted; this raw value
 // is returned to the client exactly once, at login, the same way a
 // password is only ever known to its owner.
@@ -146,7 +146,7 @@ func GenerateSessionSecret() (string, error) {
 }
 
 // HashSessionSecret returns hex(SHA-256(raw)) — what's actually stored on a
-// HyveSession's spec.tokenHash, and what POST /auth/refresh recomputes from
+// Session's own TokenHash, and what POST /auth/refresh recomputes from
 // a presented secret to compare against. A plain fast hash (not bcrypt) is
 // appropriate here, unlike password.go's login-password hashing: this
 // input is already a 32-byte random secret, not a human-memorable password

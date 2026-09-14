@@ -14,11 +14,27 @@
 -- (unlike SQLite) rejects a forward reference to a not-yet-existing
 -- table, so table order here matters for real, not just cosmetically.
 
+-- kubeconfig holds the registered cluster's kubeconfig content directly, as
+-- of Milestone 10 Part C — a deliberate reversal of this table's original
+-- design (a pointer to a Kubernetes Secret holding the content, see this
+-- proposal's earlier reasoning for reusing Kubernetes Secret storage/RBAC
+-- over a new Postgres-side encryption-at-rest story). That reasoning
+-- assumed a home cluster always exists to host the Secret; Part C's own
+-- goal — hyve-api deployable with zero Kubernetes access of its own —
+-- means a registered reconciling cluster's kubeconfig can no longer depend
+-- on one existing. Storing it here instead means this column is
+-- plaintext-at-rest in whatever Postgres/SQLite database backs this
+-- Store — a real, accepted regression from "protected by Kubernetes Secret
+-- + RBAC," not yet mitigated by any application-level encryption (unlike
+-- bindings.password_hash, which is bcrypt-hashed regardless of where it's
+-- stored, this is the raw credential itself). Flagged here as a known,
+-- deliberate gap — see HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's
+-- Milestone 10 Part C section for the tradeoff discussion; encryption-at-
+-- rest for this column is a good candidate for a future hardening pass.
 CREATE TABLE IF NOT EXISTS reconciling_clusters (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    kubeconfig_secret_namespace TEXT NOT NULL,
-    kubeconfig_secret_name TEXT NOT NULL,
+    kubeconfig TEXT NOT NULL,
     -- NULL = never checked yet, not "unreachable" — distinct states.
     reachable INTEGER,
     last_checked_at TIMESTAMP,
@@ -83,6 +99,16 @@ CREATE TABLE IF NOT EXISTS environments (
 -- operator-defined) kept for the same reason its CRD predecessor's doc
 -- comment gave: a still-plausible convention independent of which
 -- mechanism (if any) currently reads it back.
+-- password_hash (Milestone 10 Part C) holds a local binding's bcrypt
+-- password hash directly — replaces the paired <identity>-credentials
+-- Kubernetes Secret every local account previously needed (see
+-- internal/api/credentials.go's LoadPasswordHash, now Store-backed), the
+-- same "hyve-api deployable with zero Kubernetes access" motivation as
+-- reconciling_clusters.kubeconfig above. NULL for every OIDC binding
+-- (subject_type = 'oidc'), which never had a password of its own, and for
+-- any binding created before this column existed — bcrypt hashing is
+-- unaffected by where the hash itself is stored, so this is a straight
+-- storage-location change, not a weaker credential.
 CREATE TABLE IF NOT EXISTS bindings (
     id TEXT PRIMARY KEY,
     namespace TEXT NOT NULL,
@@ -93,6 +119,7 @@ CREATE TABLE IF NOT EXISTS bindings (
     role TEXT NOT NULL,
     service_account_name TEXT NOT NULL,
     service_account_namespace TEXT NOT NULL,
+    password_hash TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 -- COALESCE(environment_id, '') rather than a plain column list: a bare
@@ -104,3 +131,45 @@ CREATE TABLE IF NOT EXISTS bindings (
 -- second application-level check.
 CREATE UNIQUE INDEX IF NOT EXISTS bindings_namespace_env_identity
     ON bindings (namespace, COALESCE(environment_id, ''), subject_type, identity);
+
+-- signing_keys (Milestone 10 Part C) holds hyve-api's own session-signing
+-- key — previously an operator-provisioned hyve-api-credentials Kubernetes
+-- Secret (see internal/api/credentials.go's old LoadSigningKey doc
+-- comment: "hyve itself never generates or stores it"). Now generated and
+-- stored here on first startup instead (see cmd/api's ensureSigningKey),
+-- removing a manual bootstrap step with no corresponding security
+-- downside — same entropy source (crypto/rand) either way, and orgdb is
+-- already the store this same process owns and controls directly. One row
+-- per install in practice (namespace is UNIQUE, and every --db-dsn is
+-- dedicated to exactly one hyve-api install — see that flag's own doc
+-- comment), keyed by namespace rather than a bare singleton purely so the
+-- schema doesn't need a special-cased "the one row" convention.
+CREATE TABLE IF NOT EXISTS signing_keys (
+    id TEXT PRIMARY KEY,
+    namespace TEXT NOT NULL UNIQUE,
+    key_material TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- sessions (Milestone 10 Part D) mirrors the retired HyveSession CRD
+-- field-for-field (see internal/apis/hyve/v1alpha1/session_types.go's own
+-- doc comment for the full design this preserves) — the last piece of
+-- hyve-api's own state that lived directly in Kubernetes rather than here.
+-- id replaces HyveSession's own generated object name as the session
+-- token's lookup-key half (see internal/api/token.go's session token
+-- shape: "<id>.<raw secret>"). token_hash is
+-- hex(SHA-256(the raw session secret)), never the secret itself — read
+-- access to this row alone can never reconstruct a working credential,
+-- same principle as bindings.password_hash above.
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    -- '' means the control-plane namespace itself (a superadmin login) —
+    -- mirrors HyveSessionSpec.TenantNamespace's own "empty means..."
+    -- convention exactly, so the Go-level rewrite needed no behavior
+    -- change here, only a storage-location change.
+    tenant_namespace TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

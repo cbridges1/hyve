@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +40,7 @@ func openTestPostgres(t *testing.T) *Store {
 	// runs — truncate before each test so leftover rows from a prior run
 	// (or a prior test in this same run) can't collide with this one's
 	// fixed fixture names/unique constraints.
-	_, err = s.db.Exec(`TRUNCATE bindings, environments, organizations, reconciling_clusters CASCADE`)
+	_, err = s.db.Exec(`TRUNCATE bindings, environments, organizations, reconciling_clusters, signing_keys, sessions CASCADE`)
 	require.NoError(t, err)
 
 	return s
@@ -84,14 +85,19 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	binding, err := s.CreateBinding(ctx, Binding{
 		Namespace: "acme", OrganizationID: &org.ID, EnvironmentID: &env.ID, SubjectType: SubjectTypeLocal,
 		Identity: "alice", Role: "admin", ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: "acme",
+		PasswordHash: ptr("$2a$10$fakebcrypthash"),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, binding.EnvironmentID)
 	assert.Equal(t, env.ID, *binding.EnvironmentID)
+	require.NotNil(t, binding.PasswordHash, "Milestone 10 Part C: a local binding's password hash must round-trip through Store, not just a Kubernetes Secret")
+	assert.Equal(t, "$2a$10$fakebcrypthash", *binding.PasswordHash)
 
 	found, err := s.FindBindingBySubject(ctx, "acme", SubjectTypeLocal, "alice")
 	require.NoError(t, err)
 	assert.Equal(t, "admin", found.Role)
+	require.NotNil(t, found.PasswordHash)
+	assert.Equal(t, "$2a$10$fakebcrypthash", *found.PasswordHash)
 
 	all, err := s.ListBindingsForScope(ctx, "acme")
 	require.NoError(t, err)
@@ -103,9 +109,8 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	rc, err := s.CreateReconcilingCluster(ctx, ReconcilingCluster{
-		Name:                      "cell-a",
-		KubeconfigSecretNamespace: "hyve-system",
-		KubeconfigSecretName:      "cell-a-kubeconfig",
+		Name:       "cell-a",
+		Kubeconfig: "apiVersion: v1\nkind: Config\n",
 	})
 	require.NoError(t, err)
 	assert.Nil(t, rc.Reachable, "reachability is unknown, not false, before the first health check")
@@ -120,6 +125,12 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	byName, err := s.GetReconcilingClusterByName(ctx, "cell-a")
 	require.NoError(t, err)
 	assert.Equal(t, rc.ID, byName.ID)
+	assert.Equal(t, "apiVersion: v1\nkind: Config\n", byName.Kubeconfig, "Milestone 10 Part C: kubeconfig content itself must round-trip through Store")
+
+	require.NoError(t, s.SetReconcilingClusterKubeconfig(ctx, rc.ID, "apiVersion: v1\nkind: Config\n# rotated\n"))
+	rotated, err := s.GetReconcilingCluster(ctx, rc.ID)
+	require.NoError(t, err)
+	assert.Contains(t, rotated.Kubeconfig, "# rotated", "a re-registration must actually rotate the stored kubeconfig content")
 
 	list, err := s.ListReconcilingClusters(ctx)
 	require.NoError(t, err)
@@ -165,6 +176,41 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	movedBack, err := s.GetOrganization(ctx, org.ID)
 	require.NoError(t, err)
 	assert.Nil(t, movedBack.ReconcilingClusterID, "moving back to nil (the home cluster) must actually clear the FK, not just leave it stale")
+
+	// Milestone 10 Part C: hyve-api's own session-signing key.
+	_, err = s.GetSigningKeyByNamespace(ctx, "hyve-system")
+	assert.ErrorIs(t, err, ErrNotFound, "no signing key exists yet on a fresh database")
+
+	key, err := s.CreateSigningKey(ctx, SigningKey{Namespace: "hyve-system", KeyMaterial: "ZmFrZS1rZXk="})
+	require.NoError(t, err)
+	assert.NotEmpty(t, key.ID)
+
+	fetchedKey, err := s.GetSigningKeyByNamespace(ctx, "hyve-system")
+	require.NoError(t, err)
+	assert.Equal(t, key.ID, fetchedKey.ID)
+	assert.Equal(t, "ZmFrZS1rZXk=", fetchedKey.KeyMaterial)
+
+	_, err = s.CreateSigningKey(ctx, SigningKey{Namespace: "hyve-system", KeyMaterial: "should-collide"})
+	assert.Error(t, err, "UNIQUE(namespace) must actually be enforced by both backends — one signing key per install")
+
+	// Milestone 10 Part D: sessions (replaces the retired HyveSession CRD).
+	sess, err := s.CreateSession(ctx, Session{
+		Subject: "jbridges", TenantNamespace: "", TokenHash: "deadbeef", ExpiresAt: time.Now().Add(time.Hour).UTC().Truncate(time.Second),
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, sess.ID)
+
+	fetchedSess, err := s.GetSession(ctx, sess.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "jbridges", fetchedSess.Subject)
+	assert.Equal(t, "deadbeef", fetchedSess.TokenHash)
+	assert.WithinDuration(t, sess.ExpiresAt, fetchedSess.ExpiresAt, time.Second)
+
+	require.NoError(t, s.DeleteSession(ctx, sess.ID))
+	_, err = s.GetSession(ctx, sess.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, s.DeleteSession(ctx, sess.ID), "deleting an already-gone session must not error — best-effort, matching handleLogout's own stance")
 }
 
 func ptr(s string) *string { return &s }

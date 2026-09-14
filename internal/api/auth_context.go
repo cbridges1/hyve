@@ -75,10 +75,17 @@ type authToolRequirement struct {
 // namespace is the caller's own TenantNamespace(r), threaded in by every
 // call site rather than derived here — this Secret is per-tenant (see
 // secrets.go's own doc comment on cliSecretsName), and this function has no
-// *http.Request of its own to resolve it from.
+// *http.Request of its own to resolve it from. Resolves through
+// resourceClient (Milestone 10 Part C), not s.Client directly — an
+// organization on a remote reconciling cluster has its hyve-cli-secrets
+// Secret there too, not on this control plane's own home cluster.
 func (s *Server) githubToken(ctx context.Context, namespace string) string {
+	c, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		return ""
+	}
 	var secret corev1.Secret
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cliSecretsName}, &secret); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cliSecretsName}, &secret); err != nil {
 		return ""
 	}
 	return string(secret.Data["GITHUB_TOKEN"])
@@ -87,7 +94,7 @@ func (s *Server) githubToken(ctx context.Context, namespace string) string {
 // registerAuthContextRoutes wires GET /clusters/{name}/auth-context —
 // mounted under /api/ (behind requireAuth+requireRole) by Server.Routes.
 func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /clusters/{name}/auth-context", s.handleAuthContext)
+	mux.HandleFunc("GET /clusters/{name}/auth-context", s.requireOrganizationNotMigrating(s.handleAuthContext))
 }
 
 // handleAuthContext only serves clusters using the default client-side auth
@@ -109,9 +116,16 @@ func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
 // module-side check — see moduleEnvForClusterDefinition).
 func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	ns := s.TenantNamespace(r)
 
+	c, err := s.resourceClient(r.Context(), ns)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for auth-context %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
 	var cd hyvev1alpha1.ClusterDefinition
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.TenantNamespace(r), Name: name}, &cd); err != nil {
+	if err := c.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "cluster not found")
 			return

@@ -73,21 +73,32 @@ type Binding struct {
 	ServiceAccountName      string
 	ServiceAccountNamespace string
 
+	// PasswordHash is this binding's bcrypt password hash (Milestone 10
+	// Part C) — nil for every OIDC binding (SubjectTypeOIDC), which never
+	// had a password of its own. Replaces the paired <identity>-credentials
+	// Kubernetes Secret every local account previously needed — see
+	// internal/api/credentials.go's LoadPasswordHash.
+	PasswordHash *string
+
 	CreatedAt time.Time
 }
 
 // ReconcilingCluster is a physical Kubernetes cluster hyve's control plane
 // can reconcile organizations' infrastructure against, distinct from the
-// cluster hyve-api's own pods happen to run on. The kubeconfig itself is
-// never stored here — only a pointer to the Secret holding it, in the
-// control plane's own home cluster (see the proposal doc's own reasoning
-// for reusing Kubernetes Secret storage/RBAC over a new Postgres-side
-// encryption-at-rest story).
+// cluster hyve-api's own pods happen to run on. Kubeconfig holds the raw
+// kubeconfig content directly (Milestone 10 Part C) — this table originally
+// stored only a pointer to a Kubernetes Secret holding it, in the control
+// plane's own home cluster, deliberately reusing Kubernetes Secret storage/
+// RBAC over a new Postgres-side encryption-at-rest story (see the proposal
+// doc's earlier reasoning). That assumed a home cluster always exists to
+// host the Secret; Part C's own "hyve-api deployable with zero Kubernetes
+// access" goal means it can't anymore. See the migration files' own
+// reconciling_clusters comment for the accepted plaintext-at-rest tradeoff
+// this reversal carries.
 type ReconcilingCluster struct {
-	ID                        string
-	Name                      string
-	KubeconfigSecretNamespace string
-	KubeconfigSecretName      string
+	ID         string
+	Name       string
+	Kubeconfig string
 
 	// Reachable is nil until the first health check has run — a real,
 	// distinct third state from "reachable" and "unreachable", not
@@ -96,6 +107,30 @@ type ReconcilingCluster struct {
 	LastCheckedAt *time.Time
 	LastError     *string
 	CreatedAt     time.Time
+}
+
+// SigningKey is hyve-api's own session-signing key (Milestone 10 Part C) —
+// see the migration files' own signing_keys comment for why this replaced
+// an operator-provisioned Kubernetes Secret. KeyMaterial is the raw key
+// bytes, base64-encoded for TEXT-column storage.
+type SigningKey struct {
+	ID          string
+	Namespace   string
+	KeyMaterial string
+	CreatedAt   time.Time
+}
+
+// Session is one `hyve env login` session (Milestone 10 Part D) — mirrors
+// the retired HyveSession CRD's HyveSessionSpec field-for-field, see that
+// type's own doc comment for the full design. TokenHash is
+// hex(SHA-256(the raw session secret)), never the secret itself.
+type Session struct {
+	ID              string
+	Subject         string
+	TenantNamespace string
+	TokenHash       string
+	ExpiresAt       time.Time
+	CreatedAt       time.Time
 }
 
 // DefaultEnvironmentName is the environment every organization gets

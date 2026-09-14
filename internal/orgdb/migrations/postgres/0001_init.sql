@@ -7,11 +7,14 @@
 -- scanning either way. Table order matters here — Postgres rejects a
 -- forward reference to a not-yet-existing table.
 
+-- kubeconfig holds the registered cluster's kubeconfig content directly —
+-- see migrations/sqlite/0001_init.sql's own reconciling_clusters comment
+-- for the full Milestone 10 Part C reasoning (a deliberate, flagged
+-- plaintext-at-rest tradeoff, not yet mitigated by encryption).
 CREATE TABLE IF NOT EXISTS reconciling_clusters (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    kubeconfig_secret_namespace TEXT NOT NULL,
-    kubeconfig_secret_name TEXT NOT NULL,
+    kubeconfig TEXT NOT NULL,
     reachable BOOLEAN,
     last_checked_at TIMESTAMPTZ,
     last_error TEXT,
@@ -45,6 +48,8 @@ CREATE TABLE IF NOT EXISTS environments (
 -- environment_id are optional metadata for environment resolution only,
 -- nil together whenever namespace has no matching Organization (a
 -- self-hosted single-tenant install, or a superadmin binding).
+-- password_hash — see migrations/sqlite/0001_init.sql's own bindings
+-- comment for the full Milestone 10 Part C reasoning.
 CREATE TABLE IF NOT EXISTS bindings (
     id TEXT PRIMARY KEY,
     namespace TEXT NOT NULL,
@@ -55,7 +60,28 @@ CREATE TABLE IF NOT EXISTS bindings (
     role TEXT NOT NULL,
     service_account_name TEXT NOT NULL,
     service_account_namespace TEXT NOT NULL,
+    password_hash TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS bindings_namespace_env_identity
     ON bindings (namespace, COALESCE(environment_id, ''), subject_type, identity);
+
+-- signing_keys — see migrations/sqlite/0001_init.sql's own comment.
+CREATE TABLE IF NOT EXISTS signing_keys (
+    id TEXT PRIMARY KEY,
+    namespace TEXT NOT NULL UNIQUE,
+    key_material TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- sessions (Milestone 10 Part D) — see migrations/sqlite/0001_init.sql's
+-- own comment for the full design this preserves from the retired
+-- HyveSession CRD.
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    tenant_namespace TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

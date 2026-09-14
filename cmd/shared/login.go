@@ -19,7 +19,7 @@ import (
 // PerformLogin authenticates against apiURL's local (username/password)
 // auth and returns the resulting session — both the short-lived access
 // token (used on every /api/* request) and the longer-lived session token
-// (used to silently refresh it — see internal/api's HyveSession/
+// (used to silently refresh it — see internal/api's Session/
 // AccessTokenTTL/SessionTTL doc comments). Username is carried onto the
 // returned Session purely for display (e.g. `hyve env whoami`'s local-only
 // summary before its own server round trip). namespace is the already-

@@ -354,7 +354,7 @@ func TestOrganizationDTO_ShowsReconcilingClusterNameAndMigratingFlag(t *testing.
 	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
 
 	ctx := t.Context()
-	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", KubeconfigSecretNamespace: testNamespace, KubeconfigSecretName: "cell-a-kubeconfig"})
+	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
 	org, err := store.GetOrganizationByName(ctx, "acme")
 	require.NoError(t, err)
@@ -487,7 +487,7 @@ func TestHandlePatchOrganization_MigratesEverythingAndFlipsReconcilingCluster(t 
 	require.NoError(t, homeClient.Create(ctx, res))
 
 	destClient := newFakeClient(t)
-	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", KubeconfigSecretNamespace: testNamespace, KubeconfigSecretName: "cell-a-kubeconfig"})
+	rc, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
 	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: destClient}}
 
@@ -536,7 +536,7 @@ func TestHandlePatchOrganization_FailedMigration_LeavesOrganizationOnOriginalClu
 	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
 
 	ctx := t.Context()
-	_, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", KubeconfigSecretNamespace: testNamespace, KubeconfigSecretName: "cell-a-kubeconfig"})
+	_, err := store.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	require.NoError(t, err)
 	// No kubeconfig Secret was ever created for cell-a, and it's not
 	// pre-seeded into the client cache — reconcilingClusterClientHandle
