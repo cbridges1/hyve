@@ -81,9 +81,9 @@ function OrganizationSwitcher() {
   // <option>, while actAs itself stays stuck at the stale namespace
   // underneath — every /api/* request keeps carrying
   // X-Hyve-Act-As-Namespace for a namespace that no longer exists (see
-  // apiFetch), and the whole Organizations/Reconciling clusters/Settings
-  // nav section (gated on actAs === null) silently vanishes with no
-  // error explaining why. Confirmed live. Only acts once organizations
+  // apiFetch), and the Organizations link (gated on actAs === null)
+  // silently vanishes with no error explaining why. Confirmed live. Only
+  // acts once organizations
   // has actually loaded (undefined means "still loading," not "empty" —
   // an empty real list is `[]`), so a page reload doesn't race a
   // momentary false positive before the list arrives.
@@ -164,19 +164,24 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             ordinary admin the same way Accounts already is — unlike
             Organizations (creating/listing every tenant), which stays
             genuinely control-plane-only and superadmin-only, since it
-            isn't scoped to any one tenant. Reconciling cluster and
-            Settings, by contrast, are each self-service within one
-            organization's own scope now (GET/PUT
-            /organizations/{name}/reconciling-cluster,
-            GET/PATCH /organizations/{name}/config) — reachable by that
-            organization's own admin, or a superadmin currently "Viewing"
-            it, the same way Accounts/Environments already are; only the
-            control-plane-wide registry (/reconciling-clusters) and the
-            control plane's own home-cluster HyveConfig (/settings) stay
-            superadmin-and-control-plane-only, since those two are
-            genuinely install-wide. Grouped under its own header only when
-            at least one item is actually visible, so this role-gated
-            group never renders as an empty heading. */}
+            isn't scoped to any one tenant. Reconciling cluster, by
+            contrast, is entirely self-service within one organization's
+            own scope now (GET/PUT/DELETE /organizations/{name}/reconciling-cluster)
+            — reachable by that organization's own admin, or a superadmin
+            currently "Viewing" it, the same way Accounts/Environments
+            already are, with no separate control-plane-wide registry page
+            at all: "Viewing: Control plane" resolves to the control
+            plane's own organization (hyve-system) server-side, so this
+            same link and page is how the control plane manages its own
+            reconciling cluster too — it's just never concerned with any
+            other organization's. Settings is similar but keeps one
+            genuinely install-wide exception: the control plane's own
+            home-cluster HyveConfig (/settings, superadmin-and-control-
+            plane-only) — an organization actually on its own reconciling
+            cluster instead gets its own self-service Settings
+            (GET/PATCH /organizations/{name}/config). Grouped under its
+            own header only when at least one item is actually visible, so
+            this role-gated group never renders as an empty heading. */}
         {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <div>
             <div className={groupHeaderClass}>Organization</div>
@@ -197,7 +202,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               )}
               <NavLink to="/reconciling-clusters" className={linkClass} onClick={onNavigate}>
                 <ReconcilingClustersIcon />
-                {who?.role === RoleSuperadmin && actAs === null ? 'Reconciling clusters' : 'Reconciling cluster'}
+                Reconciling cluster
               </NavLink>
               {((who?.role === RoleSuperadmin && actAs === null) || Boolean(who?.reconcilingCluster)) && (
                 <NavLink to="/settings" className={linkClass} onClick={onNavigate}>

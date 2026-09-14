@@ -511,6 +511,26 @@ func (s *Store) SetReconcilingClusterKubeconfig(ctx context.Context, id, kubecon
 	return nil
 }
 
+// DeleteReconcilingCluster permanently removes a registered reconciling
+// cluster's row, including its stored kubeconfig — the self-service
+// "remove" counterpart to CreateReconcilingCluster/SetReconcilingClusterKubeconfig,
+// used once an organization's own dedicated cluster (named identically to
+// its own namespace — see handlePutOrgReconcilingCluster's own doc
+// comment) is no longer wanted. A hard delete, not a soft one, matching
+// this table's own "never echo the kubeconfig back once stored" stance —
+// once removed, the credential is gone. The caller is responsible for
+// detaching every organization from id first (organizations.reconciling_cluster_id
+// has no FK-cascade behavior defined here); see
+// handleDeleteOrgReconcilingCluster's own doc comment for why it always
+// does that first.
+func (s *Store) DeleteReconcilingCluster(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `DELETE FROM reconciling_clusters WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete reconciling cluster: %w", err)
+	}
+	return nil
+}
+
 // GetReconcilingCluster looks up a reconciling cluster by id.
 func (s *Store) GetReconcilingCluster(ctx context.Context, id string) (ReconcilingCluster, error) {
 	row := s.queryRow(ctx, `

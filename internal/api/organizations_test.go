@@ -790,8 +790,8 @@ func TestGetOrgReconcilingCluster_OnHomeCluster(t *testing.T) {
 
 // TestOrgReconcilingCluster_AdminCannotReachAnotherOrganization mirrors
 // TestOrgEnvironments_AdminCannotReachAnotherOrganization: an admin naming a
-// different organization in the URL is rejected for both GET and PUT, not
-// silently redirected to their own org.
+// different organization in the URL is rejected for GET, PUT, and DELETE
+// alike, not silently redirected to their own org.
 func TestOrgReconcilingCluster_AdminCannotReachAnotherOrganization(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
 	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
@@ -802,6 +802,9 @@ func TestOrgReconcilingCluster_AdminCannotReachAnotherOrganization(t *testing.T)
 
 	putRec := doPutOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme", putOrgReconcilingClusterRequest{Kubeconfig: "apiVersion: v1\nkind: Config\n"})
 	assert.Equal(t, http.StatusForbidden, putRec.Code)
+
+	deleteRec := doDeleteOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme")
+	assert.Equal(t, http.StatusForbidden, deleteRec.Code)
 }
 
 // TestPutOrgReconcilingCluster_AdminRegistersOwnDedicatedCluster proves the
@@ -864,4 +867,119 @@ func TestPutOrgReconcilingCluster_EmptyKubeconfig_MigratesHome(t *testing.T) {
 	var dto orgReconcilingClusterDTO
 	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &dto))
 	assert.True(t, dto.OnHomeCluster)
+}
+
+func doDeleteOrgReconcilingClusterRequest(t *testing.T, s *Server, role, callerNamespace, orgName string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/organizations/"+orgName+"/reconciling-cluster", nil)
+	req = req.WithContext(contextWithRole(req.Context(), role))
+	req = req.WithContext(contextWithNamespace(req.Context(), callerNamespace))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// TestDeleteOrgReconcilingCluster_NotFound_404 proves an organization with
+// no dedicated reconciling cluster of its own registered (never PUT one,
+// or already removed it) gets a clear 404, not a confusing 204/500.
+func TestDeleteOrgReconcilingCluster_NotFound_404(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doDeleteOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestDeleteOrgReconcilingCluster_AdminRemovesOwnDedicatedCluster proves
+// the full self-service "remove" flow: an ordinary admin (not a
+// superadmin) deleting their own organization's currently-assigned
+// dedicated reconciling cluster migrates it back to the home cluster
+// first, and the underlying orgdb.ReconcilingCluster row is then gone
+// entirely — not just detached, matching handleCreateReconcilingCluster's
+// own "never echo the kubeconfig back" stance carried through to full
+// removal.
+func TestDeleteOrgReconcilingCluster_AdminRemovesOwnDedicatedCluster(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "acme", Kubeconfig: validTestKubeconfig})
+	require.NoError(t, err)
+	sourceClient := newFakeClient(t) // the dedicated cluster acme is currently assigned to
+	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: sourceClient}}
+
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	require.NoError(t, store.SetOrganizationReconcilingCluster(t.Context(), org.ID, &rc.ID))
+
+	rec := doDeleteOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	updated, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	assert.Nil(t, updated.ReconcilingClusterID, "must have migrated back to the home cluster first")
+
+	_, err = store.GetReconcilingClusterByName(t.Context(), "acme")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "the underlying row must be permanently deleted, not just detached")
+}
+
+// TestDeleteOrgReconcilingCluster_RefusesWhenAnotherOrganizationUsesIt
+// proves the defensive safety check: even though self-service registration
+// always follows the 1:1 org-namespace naming convention, a superadmin
+// could in principle have pointed a second organization at the same
+// cluster via the CLI's own shared-registry path (PATCH
+// /organizations/{name}) — deleting it out from under that other
+// organization must be refused, not silently break it.
+func TestDeleteOrgReconcilingCluster_RefusesWhenAnotherOrganizationUsesIt(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "globex"}).Code)
+
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "acme", Kubeconfig: validTestKubeconfig})
+	require.NoError(t, err)
+	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: newFakeClient(t)}}
+
+	// acme's own dedicated cluster, but globex was also pointed at it
+	// (simulating a superadmin's direct CLI use of the shared registry).
+	globex, err := store.GetOrganizationByName(t.Context(), "globex")
+	require.NoError(t, err)
+	require.NoError(t, store.SetOrganizationReconcilingCluster(t.Context(), globex.ID, &rc.ID))
+
+	rec := doDeleteOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	assert.Equal(t, http.StatusConflict, rec.Code)
+
+	_, err = store.GetReconcilingClusterByName(t.Context(), "acme")
+	assert.NoError(t, err, "the row must survive since globex still depends on it")
+}
+
+// TestDeleteOrgReconcilingCluster_OnSharedClusterByDifferentName_404WithClearMessage
+// covers the case a plain "no cluster registered" 404 would be confusing
+// for: an organization currently assigned to a cluster a superadmin
+// registered and attached directly via the CLI's shared-registry path
+// (PATCH /organizations/{name}), under some other name entirely — this
+// endpoint correctly refuses to touch it (see this handler's own doc
+// comment for why it only ever recognizes org.Namespace-named rows as "its
+// own"), but the error must say so clearly rather than implying the
+// organization has no cluster at all when GET /organizations/{name}/reconciling-cluster
+// would show one right there on the same page.
+func TestDeleteOrgReconcilingCluster_OnSharedClusterByDifferentName_404WithClearMessage(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "shared-cell", Kubeconfig: validTestKubeconfig})
+	require.NoError(t, err)
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	require.NoError(t, store.SetOrganizationReconcilingCluster(t.Context(), org.ID, &rc.ID))
+
+	rec := doDeleteOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Contains(t, body["error"], "shared-cell", "must name the actual cluster, not just say none is registered")
+
+	_, err = store.GetReconcilingClusterByName(t.Context(), "shared-cell")
+	assert.NoError(t, err, "the shared cluster must survive untouched")
 }

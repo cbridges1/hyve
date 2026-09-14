@@ -4,9 +4,8 @@ import { Card, EmptyState } from '../components/Card'
 import { ChevronDownIcon, ChevronRightIcon } from '../components/icons'
 import { EnvironmentsSection } from '../components/EnvironmentsManager'
 import { organizationsApi } from '../lib/api/organizations'
-import { reconcilingClustersApi } from '../lib/api/reconcilingClusters'
 import { ApiError } from '../lib/api/client'
-import type { Organization, ReconcilingCluster } from '../lib/api/types'
+import type { Organization } from '../lib/api/types'
 import { useApi } from '../lib/useApi'
 import { getOrganizationsVersion, invalidateOrganizations, subscribe as subscribeOrganizations } from '../lib/organizationsStore'
 
@@ -28,15 +27,8 @@ function reservedOrganizationNameError(name: string): string | null {
   return null
 }
 
-function CreateOrganizationForm({
-  reconcilingClusters,
-  onCreated,
-}: {
-  reconcilingClusters: ReconcilingCluster[] | null
-  onCreated: () => void
-}) {
+function CreateOrganizationForm({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = useState('')
-  const [reconcilingCluster, setReconcilingCluster] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -52,10 +44,14 @@ function CreateOrganizationForm({
     }
     setSubmitting(true)
     try {
-      await organizationsApi.create(name, reconcilingCluster || undefined)
+      // Always created on this install's own home cluster — registering a
+      // reconciling cluster for it is entirely self-service, this
+      // organization's own admin (or a superadmin "Viewing" it) doing it
+      // from its own Reconciling cluster page, not something bundled into
+      // creation here.
+      await organizationsApi.create(name)
       setMessage(`"${name}" is ready.`)
       setName('')
-      setReconcilingCluster('')
       invalidateOrganizations()
       onCreated()
     } catch (err) {
@@ -72,7 +68,8 @@ function CreateOrganizationForm({
     <Card title="Create organization">
       <p className="mb-3 text-xs text-neutral-500">
         Turns a name into a real tenant: its own namespace, RBAC scaffolding, and datastore record. Re-submitting an
-        existing name is safe — each step only fills in what's missing.
+        existing name is safe — each step only fills in what's missing. Assign a reconciling cluster to it afterward
+        from its own Reconciling cluster page.
       </p>
       <form onSubmit={onSubmit} className="flex flex-wrap gap-2">
         <input
@@ -82,20 +79,6 @@ function CreateOrganizationForm({
           required
           className="min-w-0 flex-1 rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
         />
-        {reconcilingClusters && reconcilingClusters.length > 0 && (
-          <select
-            value={reconcilingCluster}
-            onChange={(e) => setReconcilingCluster(e.target.value)}
-            className="rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
-          >
-            <option value="">Home cluster</option>
-            {reconcilingClusters.map((rc) => (
-              <option key={rc.name} value={rc.name}>
-                {rc.name}
-              </option>
-            ))}
-          </select>
-        )}
         <button
           type="submit"
           disabled={!name || submitting}
@@ -110,83 +93,7 @@ function CreateOrganizationForm({
   )
 }
 
-function ReconcilingClusterControl({
-  org,
-  reconcilingClusters,
-  onChanged,
-}: {
-  org: Organization
-  reconcilingClusters: ReconcilingCluster[] | null
-  onChanged: () => void
-}) {
-  const [selected, setSelected] = useState(org.reconcilingCluster ?? '')
-  const [error, setError] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  const dirty = selected !== (org.reconcilingCluster ?? '')
-
-  async function onMove() {
-    setError(null)
-    setSubmitting(true)
-    try {
-      await organizationsApi.setReconcilingCluster(org.name, selected)
-      invalidateOrganizations()
-      onChanged()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to move organization')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div>
-      <div className="mb-1 text-xs font-medium tracking-wide text-neutral-500 uppercase dark:text-neutral-500">
-        Reconciling cluster
-      </div>
-      {org.migrating ? (
-        <p className="text-sm text-amber-700 dark:text-amber-400">
-          Migration in progress — every request against this organization returns 423 until it completes.
-        </p>
-      ) : (
-        <div className="flex items-center gap-2">
-          <select
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-            className="rounded-lg border border-neutral-300 px-2.5 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
-          >
-            <option value="">Home cluster</option>
-            {reconcilingClusters?.map((rc) => (
-              <option key={rc.name} value={rc.name}>
-                {rc.name}
-              </option>
-            ))}
-          </select>
-          {dirty && (
-            <button
-              onClick={onMove}
-              disabled={submitting}
-              className="rounded-lg border border-neutral-300 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-            >
-              {submitting ? 'Moving…' : 'Move'}
-            </button>
-          )}
-        </div>
-      )}
-      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
-    </div>
-  )
-}
-
-function OrganizationRow({
-  org,
-  reconcilingClusters,
-  onChanged,
-}: {
-  org: Organization
-  reconcilingClusters: ReconcilingCluster[] | null
-  onChanged: () => void
-}) {
+function OrganizationRow({ org }: { org: Organization }) {
   const [expanded, setExpanded] = useState(false)
 
   return (
@@ -214,7 +121,6 @@ function OrganizationRow({
       {expanded && (
         <div className="space-y-4 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
           <EnvironmentsSection orgName={org.name} />
-          <ReconcilingClusterControl org={org} reconcilingClusters={reconcilingClusters} onChanged={onChanged} />
         </div>
       )}
     </div>
@@ -224,7 +130,6 @@ function OrganizationRow({
 export function OrganizationsPage() {
   const orgsVersion = useSyncExternalStore(subscribeOrganizations, getOrganizationsVersion)
   const { data: organizations, loading, error, reload } = useApi(() => organizationsApi.list(), [orgsVersion])
-  const { data: reconcilingClusters } = useApi(() => reconcilingClustersApi.list())
 
   return (
     <div className="space-y-4">
@@ -232,11 +137,12 @@ export function OrganizationsPage() {
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Organizations</h1>
         <p className="mt-0.5 text-sm text-neutral-500">
           Every tenant on this install — superadmin-only. Log in with <code>--org &lt;name&gt;</code> to reach one.
-          Click a row to manage its environments or reconciling cluster.
+          Click a row to manage its environments. Assign a reconciling cluster to one by "Viewing" it, then its own
+          Reconciling cluster page.
         </p>
       </div>
 
-      <CreateOrganizationForm reconcilingClusters={reconcilingClusters} onCreated={reload} />
+      <CreateOrganizationForm onCreated={reload} />
 
       {loading && <p className="text-sm text-neutral-500">Loading…</p>}
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
@@ -245,7 +151,7 @@ export function OrganizationsPage() {
         {organizations?.length === 0 && <EmptyState>No organizations yet.</EmptyState>}
         <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
           {organizations?.map((org) => (
-            <OrganizationRow key={org.name} org={org} reconcilingClusters={reconcilingClusters} onChanged={reload} />
+            <OrganizationRow key={org.name} org={org} />
           ))}
         </div>
       </div>

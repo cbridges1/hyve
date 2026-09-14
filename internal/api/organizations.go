@@ -42,6 +42,7 @@ func (s *Server) registerOrganizationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /organizations/{name}/environments", s.handleListOrgEnvironments)
 	mux.HandleFunc("GET /organizations/{name}/reconciling-cluster", s.handleGetOrgReconcilingCluster)
 	mux.HandleFunc("PUT /organizations/{name}/reconciling-cluster", s.handlePutOrgReconcilingCluster)
+	mux.HandleFunc("DELETE /organizations/{name}/reconciling-cluster", s.handleDeleteOrgReconcilingCluster)
 }
 
 type organizationDTO struct {
@@ -926,6 +927,80 @@ func (s *Server) handlePutOrgReconcilingCluster(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, dto)
+}
+
+// handleDeleteOrgReconcilingCluster permanently removes the named
+// organization's own dedicated reconciling cluster — the orgdb.ReconcilingCluster
+// row named identically to its own namespace (see handlePutOrgReconcilingCluster's
+// own doc comment for why that 1:1 naming convention exists), the "remove"
+// half of the self-service register/rotate/remove trio an organization's
+// own admin (or a superadmin "Viewing" it) has over their own reconciling
+// cluster — see requireOrgAccess. If currently assigned, this migrates the
+// organization back to the control plane's own home cluster first (reusing
+// migrateOrganizationToTarget's own lock/pending-deletion/
+// RequireReconcilingCluster guarantees) — never leaves the organization
+// pointing at a row that's about to disappear. Refuses with 409 if some
+// other organization is somehow also currently assigned to this same
+// cluster (only reachable via a superadmin using the CLI directly against
+// the shared registry — self-service registration here always follows the
+// 1:1 naming convention, so this is a rare, defensive check, not the
+// common case) — deleting it out from under that other organization would
+// break it.
+func (s *Server) handleDeleteOrgReconcilingCluster(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+
+	rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, org.Namespace)
+	if err == orgdb.ErrNotFound {
+		// A clearer message than a bare 404 when the organization IS
+		// currently on some cluster, just not one this endpoint's own
+		// naming convention recognizes as "its own" — e.g. a superadmin
+		// assigned it a shared cluster directly via the CLI
+		// (PATCH /organizations/{name}), which this endpoint deliberately
+		// never touches (see this handler's own doc comment).
+		if org.ReconcilingClusterID != nil {
+			current, currentErr := s.OrgStore.GetReconcilingCluster(ctx, *org.ReconcilingClusterID)
+			if currentErr == nil {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("this organization's current cluster (%q) isn't its own dedicated one — nothing to remove", current.Name))
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "this organization has no reconciling cluster of its own registered")
+		return
+	} else if err != nil {
+		log.Printf("api: failed to look up reconciling cluster for organization %q: %v", org.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to remove reconciling cluster")
+		return
+	}
+
+	if org.ReconcilingClusterID != nil && *org.ReconcilingClusterID == rc.ID {
+		if _, ok := s.migrateOrganizationToTarget(w, r, org, nil); !ok {
+			return
+		}
+	}
+
+	others, err := s.OrgStore.ListOrganizationsByReconcilingCluster(ctx, &rc.ID)
+	if err != nil {
+		log.Printf("api: failed to check for other organizations on reconciling cluster %q: %v", rc.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to remove reconciling cluster")
+		return
+	}
+	if len(others) > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf("reconciling cluster %q is still in use by another organization — cannot remove it", rc.Name))
+		return
+	}
+
+	if err := s.OrgStore.DeleteReconcilingCluster(ctx, rc.ID); err != nil {
+		log.Printf("api: failed to delete reconciling cluster %q: %v", rc.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to remove reconciling cluster")
+		return
+	}
+	s.invalidateReconcilingClusterClientByName(ctx, org.Namespace)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // validateOrganizationName rejects the two names that would collide with,

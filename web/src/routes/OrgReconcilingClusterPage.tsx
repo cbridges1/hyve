@@ -2,10 +2,21 @@ import { useState, type FormEvent } from 'react'
 import { Card } from '../components/Card'
 import { organizationsApi } from '../lib/api/organizations'
 import { ApiError } from '../lib/api/client'
+import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
 import { useActAs } from '../lib/useActAs'
 import { useWhoami } from '../lib/useWhoami'
-import { ReachableBadge } from './ReconcilingClustersPage'
+
+function ReachableBadge({ reachable }: { reachable?: boolean }) {
+  if (reachable === undefined) {
+    return <span className="text-xs text-neutral-400 dark:text-neutral-600">not checked yet</span>
+  }
+  return reachable ? (
+    <span className="text-xs font-medium text-green-700 dark:text-green-400">reachable</span>
+  ) : (
+    <span className="text-xs font-medium text-red-600 dark:text-red-400">unreachable</span>
+  )
+}
 
 function SetKubeconfigForm({ orgName, hasOwnCluster, onChanged }: { orgName: string; hasOwnCluster: boolean; onChanged: () => void }) {
   const [kubeconfig, setKubeconfig] = useState('')
@@ -20,7 +31,7 @@ function SetKubeconfigForm({ orgName, hasOwnCluster, onChanged }: { orgName: str
     setSubmitting(true)
     try {
       await organizationsApi.setOwnReconcilingCluster(orgName, kubeconfig)
-      setMessage(hasOwnCluster ? 'Kubeconfig rotated.' : "Reconciling cluster registered — migrating your organization's resources onto it now.")
+      setMessage(hasOwnCluster ? 'Kubeconfig replaced.' : "Reconciling cluster registered — migrating your organization's resources onto it now.")
       setKubeconfig('')
       onChanged()
     } catch (err) {
@@ -31,10 +42,10 @@ function SetKubeconfigForm({ orgName, hasOwnCluster, onChanged }: { orgName: str
   }
 
   return (
-    <Card title={hasOwnCluster ? 'Rotate kubeconfig' : 'Register a dedicated reconciling cluster'}>
+    <Card title={hasOwnCluster ? 'Edit / replace kubeconfig' : 'Register a dedicated reconciling cluster'}>
       <p className="mb-3 text-xs text-neutral-500">
         {hasOwnCluster
-          ? "Replace the stored kubeconfig for this organization's own reconciling cluster — a real, expected operational need (kubeconfigs expire/get regenerated). This does not move your resources anywhere; they stay on the same physical cluster."
+          ? "Replace the stored kubeconfig for this organization's own reconciling cluster — a real, expected operational need (kubeconfigs expire/get regenerated, or point the same name at genuinely different cluster credentials). This does not move your resources anywhere; they stay wherever this cluster's own server: actually points."
           : "A physical Kubernetes cluster your organization's own resources will live on, instead of this install's shared home cluster. Submitting this migrates everything you currently have onto it."}
       </p>
       <form onSubmit={onSubmit} className="space-y-2">
@@ -52,7 +63,7 @@ function SetKubeconfigForm({ orgName, hasOwnCluster, onChanged }: { orgName: str
           disabled={!kubeconfig || submitting}
           className="rounded-lg bg-neutral-900 px-3.5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
-          {submitting ? 'Saving…' : hasOwnCluster ? 'Rotate' : 'Register & migrate'}
+          {submitting ? 'Saving…' : hasOwnCluster ? 'Replace' : 'Register & migrate'}
         </button>
       </form>
       {message && <p className="mt-2 text-sm text-green-700 dark:text-green-400">{message}</p>}
@@ -93,11 +104,68 @@ function MoveHomeControl({ orgName, onChanged }: { orgName: string; onChanged: (
   )
 }
 
-// OrgReconcilingClusterPage is the organization-admin-facing counterpart to
-// ReconcilingClustersPage (the superadmin-only shared registry + assignment
-// view, shown only for the control plane itself) — reachable by an
-// ordinary admin for their own organization, or a superadmin currently
-// "Viewing" one, via GET/PUT /organizations/{name}/reconciling-cluster.
+// RemoveReconcilingClusterControl is the "remove" half of the self-service
+// register/edit/remove trio — distinct from MoveHomeControl above (which
+// only detaches, keeping the stored kubeconfig around for later reuse):
+// this permanently deletes it via DELETE
+// /organizations/{name}/reconciling-cluster, migrating back home first.
+// Irreversible, so gated behind the same confirm() dialog every other
+// destructive action in this console uses.
+function RemoveReconcilingClusterControl({ orgName, onChanged }: { orgName: string; onChanged: () => void }) {
+  const confirm = useConfirm()
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function onRemove() {
+    const ok = await confirm({
+      title: 'Remove this reconciling cluster?',
+      message:
+        'Permanently deletes the stored kubeconfig, migrating your resources back to the home cluster first. This cannot be undone — you would need to paste the kubeconfig again to use it, or a different one, later.',
+      confirmLabel: 'Remove reconciling cluster',
+      danger: true,
+    })
+    if (!ok) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      await organizationsApi.deleteOwnReconcilingCluster(orgName)
+      onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to remove reconciling cluster')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={submitting}
+        className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+      >
+        {submitting ? 'Removing…' : 'Remove reconciling cluster'}
+      </button>
+      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+// OrgReconcilingClusterPage is this console's one and only reconciling-
+// cluster page — reachable by an ordinary admin for their own
+// organization, or a superadmin currently "Viewing" one, including the
+// control plane's own default view: Server.TenantNamespace already
+// resolves "Viewing: Control plane" to the control plane's own namespace
+// (hyve-system) for every request, so orgName below lands on exactly that
+// organization the same way it would for any tenant, with no special
+// control-plane-wide registry page layered on top — the control plane is
+// only ever concerned with its own reconciling-cluster configuration here,
+// never any other organization's. Registration, editing/replacing the
+// stored kubeconfig, and permanently removing it are all self-service via
+// GET/PUT/DELETE /organizations/{name}/reconciling-cluster — a superadmin
+// "Viewing" an organization acts exactly like its own admin would, not
+// through some other, superadmin-only path.
 export function OrgReconcilingClusterPage() {
   const who = useWhoami().data
   const [actAs] = useActAs()
@@ -155,7 +223,12 @@ export function OrgReconcilingClusterPage() {
             </Card>
 
             <SetKubeconfigForm orgName={orgName} hasOwnCluster={!status.onHomeCluster} onChanged={reload} />
-            {!status.onHomeCluster && <MoveHomeControl orgName={orgName} onChanged={reload} />}
+            {!status.onHomeCluster && (
+              <div className="flex items-center gap-3">
+                <MoveHomeControl orgName={orgName} onChanged={reload} />
+                <RemoveReconcilingClusterControl orgName={orgName} onChanged={reload} />
+              </div>
+            )}
           </>
         )
       )}

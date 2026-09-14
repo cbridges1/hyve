@@ -11,7 +11,7 @@ import { EnvironmentsPage } from './routes/EnvironmentsPage'
 import { ModuleDetailPage } from './routes/ModuleDetailPage'
 import { ModulesPage } from './routes/ModulesPage'
 import { OrganizationsPage } from './routes/OrganizationsPage'
-import { ReconcilingClusterRoute } from './routes/ReconcilingClusterRoute'
+import { OrgReconcilingClusterPage } from './routes/OrgReconcilingClusterPage'
 import { ResourceDetailPage } from './routes/ResourceDetailPage'
 import { ResourcesPage } from './routes/ResourcesPage'
 import { SecretsPage } from './routes/SecretsPage'
@@ -54,7 +54,7 @@ function App() {
               path="/reconciling-clusters"
               element={
                 <AdminOnly>
-                  <ReconcilingClusterRoute />
+                  <OrgReconcilingClusterPage />
                 </AdminOnly>
               }
             />
