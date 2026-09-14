@@ -75,6 +75,9 @@ spec:
             # plaintext in this Deployment object itself.
             - --db-dsn=$(HYVE_DB_DSN)
             {{- end }}
+            {{- if .Values.api.requireReconcilingCluster }}
+            - --require-reconciling-cluster
+            {{- end }}
           {{- if eq .Values.api.db.driver "postgres" }}
           env:
             - name: HYVE_DB_DSN

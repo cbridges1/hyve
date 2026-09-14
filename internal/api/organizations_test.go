@@ -184,6 +184,39 @@ func TestHandleCreateOrganization_MismatchedAdminFields_400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "adminIdentity without adminRole must be rejected, not silently create an unscoped/malformed binding")
 }
 
+// TestHandleCreateOrganization_RequireReconcilingCluster_RejectsHomeCluster
+// is the create-time half of Server.RequireReconcilingCluster's own two
+// enforcement points (see its own doc comment) — the operator-facing
+// guarantee that no tenant organization can ever land on the control
+// plane's own home cluster when this is enabled.
+func TestHandleCreateOrganization_RequireReconcilingCluster_RejectsHomeCluster(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace, RequireReconcilingCluster: true}
+	rec := doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "no reconcilingCluster given, and RequireReconcilingCluster is on — must be refused, not silently created on the home cluster")
+
+	_, err := s.OrgStore.GetOrganizationByName(t.Context(), "acme")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "the rejected organization must not have been created at all")
+}
+
+// TestHandleCreateOrganization_RequireReconcilingCluster_AllowsExplicitCluster
+// proves the flag doesn't block organization creation outright — only the
+// home-cluster fallback. Injects the destination client directly into
+// Server.reconcilingClusterClients, bypassing real kubeconfig parsing —
+// same reasoning and precedent as
+// TestHandlePatchOrganization_MigratesEverythingAndFlipsReconcilingCluster's
+// own doc comment: this test is scoped to proving RequireReconcilingCluster
+// doesn't block the explicit-cluster path, not kubeconfig parsing.
+func TestHandleCreateOrganization_RequireReconcilingCluster_AllowsExplicitCluster(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace, RequireReconcilingCluster: true}
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
+	require.NoError(t, err)
+	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: newFakeClient(t)}}
+
+	rec := doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme", ReconcilingCluster: "cell-a"})
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+}
+
 // TestHandleCreateOrganization_IdempotentAfterPartialFailure proves a
 // re-POST fills in whatever's missing instead of erroring on "already
 // exists" — the whole point of checking existence before creating each
@@ -521,6 +554,59 @@ func TestHandlePatchOrganization_MigratesEverythingAndFlipsReconcilingCluster(t 
 	require.NotNil(t, org.ReconcilingClusterID)
 	assert.Equal(t, rc.ID, *org.ReconcilingClusterID)
 	assert.Nil(t, org.ReconcilingClusterMigrationStatus, "the migration lock must be cleared once the copy completes")
+}
+
+// TestHandlePatchOrganization_RequireReconcilingCluster_RejectsMigrateHome is
+// the migrate-time half of Server.RequireReconcilingCluster's two
+// enforcement points — a tenant organization already on a reconciling
+// cluster must not be able to migrate itself back to the home cluster
+// when this is enabled.
+func TestHandlePatchOrganization_RequireReconcilingCluster_RejectsMigrateHome(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace, RequireReconcilingCluster: true}
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
+	require.NoError(t, err)
+	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: newFakeClient(t)}}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme", ReconcilingCluster: "cell-a"}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{ReconcilingCluster: strPtr("")})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "migrating back to the home cluster must be refused while RequireReconcilingCluster is on")
+
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	require.NotNil(t, org.ReconcilingClusterID, "the organization must stay on cell-a, not have been moved")
+	assert.Equal(t, rc.ID, *org.ReconcilingClusterID)
+}
+
+// TestHandlePatchOrganization_RequireReconcilingCluster_ExemptsControlPlaneOrg
+// proves the one deliberate exception: the control plane's own organization
+// (Milestone 10 Part A/B, org.Namespace == s.Namespace) can still migrate
+// back to its own home cluster even when RequireReconcilingCluster is on —
+// an operator infrastructure decision about where the control plane itself
+// runs, not a tenant ever touching host-cluster resources (the exact thing
+// this flag exists to prevent).
+func TestHandlePatchOrganization_RequireReconcilingCluster_ExemptsControlPlaneOrg(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace, RequireReconcilingCluster: true}
+	rc, err := store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "cell-a", Kubeconfig: "apiVersion: v1\nkind: Config\n"})
+	require.NoError(t, err)
+	destClient := newFakeClient(t)
+	s.reconcilingClusterClients = map[string]*reconcilingClusterHandle{rc.ID: {Client: destClient}}
+
+	// Simulate ensureControlPlaneOrganization's own startup seeding
+	// (cmd/api, not exercised by a bare test Server), then move it onto
+	// cell-a the same way a real superadmin already migrated it in this
+	// session's own live verification (Milestone 10 Part C).
+	_, _, err = store.CreateOrganizationWithDefaults(t.Context(), orgdb.Organization{Name: testNamespace, Namespace: testNamespace}, "", "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, testNamespace, patchOrganizationRequest{ReconcilingCluster: strPtr("cell-a")}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, testNamespace, patchOrganizationRequest{ReconcilingCluster: strPtr("")})
+	assert.Equal(t, http.StatusOK, rec.Code, "the control plane's own organization must still be able to migrate back to its home cluster")
+
+	org, err := store.GetOrganizationByName(t.Context(), testNamespace)
+	require.NoError(t, err)
+	assert.Nil(t, org.ReconcilingClusterID)
 }
 
 // TestHandlePatchOrganization_FailedMigration_LeavesOrganizationOnOriginalCluster

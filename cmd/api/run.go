@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,19 +48,20 @@ const organizationDeletionSweepInterval = 30 * time.Second
 const reconcilingClusterHealthSweepInterval = 2 * time.Minute
 
 var (
-	apiNamespace          string
-	apiModulesDir         string
-	apiBindAddress        string
-	apiPublicBaseURL      string
-	apiProxyTarget        string
-	apiInClusterCAPath    string
-	apiHostServiceAccount string
-	apiAgentBindAddress   string
-	apiPublicCAPath       string
-	apiConfigName         string
-	apiDBDriver           string
-	apiDBDSN              string
-	apiHomeCluster        string
+	apiNamespace                 string
+	apiModulesDir                string
+	apiBindAddress               string
+	apiPublicBaseURL             string
+	apiProxyTarget               string
+	apiInClusterCAPath           string
+	apiHostServiceAccount        string
+	apiAgentBindAddress          string
+	apiPublicCAPath              string
+	apiConfigName                string
+	apiDBDriver                  string
+	apiDBDSN                     string
+	apiHomeCluster               string
+	apiRequireReconcilingCluster bool
 )
 
 // Cmd is the api command.
@@ -98,6 +100,7 @@ func init() {
 	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters — see internal/orgdb and HYVE-ORGANIZATION-MODEL-PROPOSAL.md's 'Deployment strategy' section)")
 	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
 	runCmd.Flags().StringVar(&apiHomeCluster, "home-cluster", "required", "Whether this process needs a Kubernetes cluster of its own (Milestone 10 Part C) — 'required' (default, matches every pre-Milestone-10 install's behavior: in-cluster config or --kubeconfig must resolve, Fatal if not) or 'none' (skip Kubernetes client construction entirely; every organization's resources must be reachable through a registered reconciling cluster instead — see HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 10 Part C, nexus-config/docs). Features that are inherently home-cluster-only (GET/PATCH /api/config, the host-cluster kubeconfig path, /proxy) become unavailable under 'none', same soft-fail stance those already have for other missing prerequisites.")
+	runCmd.Flags().BoolVar(&apiRequireReconcilingCluster, "require-reconciling-cluster", false, "Refuse to let any organization other than this install's own control-plane one land on, or migrate back to, the home cluster — every organization must be assigned an explicit registered reconciling cluster (see 'hyve reconciling-cluster create') instead. Off by default, preserving every existing install's behavior. For a self-hosted install that wants a hard guarantee tenants can never touch the cluster hyve-controller/hyve-api themselves run on, or a hosted/managed offering where end users must never reach the operator's own shared infrastructure at all — see internal/api.Server.RequireReconcilingCluster's own doc comment. Startup refuses to proceed if any existing organization is already on the home cluster when this is set.")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -212,17 +215,45 @@ func runAPI() {
 		log.Printf("ℹ️  Seeded control-plane organization %q (Milestone 10 Part A)", apiNamespace)
 	}
 
+	// --require-reconciling-cluster: fail loud at startup, not silently
+	// allow an inconsistent state, the same stance the SQLite/Postgres
+	// deployment gate above already takes — an operator turning this flag
+	// on for the first time against a database with existing tenant
+	// organizations still on the home cluster needs to know that
+	// explicitly, not discover it one rejected POST/PATCH at a time.
+	// ListOrganizationsByReconcilingCluster(ctx, nil) is the same
+	// "everything currently on the home cluster" query Milestone 6's own
+	// controller-side namespace resolution already uses; apiNamespace
+	// (the control plane's own organization) is exempt, matching
+	// handlePatchOrganization's own exemption for it.
+	if apiRequireReconcilingCluster {
+		homeOrgs, err := orgStore.ListOrganizationsByReconcilingCluster(context.Background(), nil)
+		if err != nil {
+			log.Fatalf("❌ Failed to check for organizations still on the home cluster: %v", err)
+		}
+		var offenders []string
+		for _, org := range homeOrgs {
+			if org.Namespace != apiNamespace {
+				offenders = append(offenders, org.Name)
+			}
+		}
+		if len(offenders) > 0 {
+			log.Fatalf("❌ --require-reconciling-cluster refused: %d organization(s) still on the home cluster: %s — migrate each with 'hyve organization migrate <name> --reconciling-cluster <name>' before enabling this flag", len(offenders), strings.Join(offenders, ", "))
+		}
+	}
+
 	server := &hyveapi.Server{
-		Client:             c,
-		Namespace:          apiNamespace,
-		SigningKey:         signingKey,
-		ModuleAuthProvider: moduleAuthProvider,
-		TunnelProvider:     tunnelProvider,
-		AgentProvider:      &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL, PublicCA: publicCA},
-		ModulesDir:         apiModulesDir,
-		Clientset:          clientset,
-		ConfigName:         apiConfigName,
-		OrgStore:           orgStore,
+		Client:                    c,
+		Namespace:                 apiNamespace,
+		SigningKey:                signingKey,
+		ModuleAuthProvider:        moduleAuthProvider,
+		TunnelProvider:            tunnelProvider,
+		AgentProvider:             &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL, PublicCA: publicCA},
+		ModulesDir:                apiModulesDir,
+		Clientset:                 clientset,
+		ConfigName:                apiConfigName,
+		OrgStore:                  orgStore,
+		RequireReconcilingCluster: apiRequireReconcilingCluster,
 	}
 
 	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)

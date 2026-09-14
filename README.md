@@ -231,6 +231,18 @@ full command surface (list/delete/environments), and the "Session and
 auth model"/"Multi-tenant installs" sections of `docs/ARCHITECTURE.md` for
 how isolation is actually enforced at the API layer.
 
+**`api.requireReconcilingCluster`** (`--require-reconciling-cluster`,
+values.yaml, default `false`) refuses to let any organization other than
+this install's own control-plane one land on, or migrate back to, the
+home cluster — every organization must have an explicit reconciling
+cluster. Two use cases: a self-hosted install that wants a hard guarantee
+tenant organizations can never touch the cluster hyve-controller/hyve-api
+themselves run on, and a hosted/managed offering where end users must
+never reach the operator's own shared infrastructure at all. Turning this
+on against an install that already has tenant organizations on the home
+cluster needs each one migrated first (`hyve organization migrate <name>
+--reconciling-cluster <name>`) — hyve-api refuses to start otherwise.
+
 **SQLite vs. Postgres.** SQLite (the default) is the simplest choice —
 no external database to run — but only ever supports one API replica
 (SQLite has no story for concurrent multi-process writers) and is refused

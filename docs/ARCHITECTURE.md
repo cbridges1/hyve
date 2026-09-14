@@ -222,6 +222,19 @@ see that file's own doc comments for the full routing logic, including
 the control plane's own namespace resolving through the identical path as
 of Milestone 10 Part A/B.
 
+By default an organization with no reconciling cluster assigned lands on
+the control plane's own home cluster — `Server.RequireReconcilingCluster`
+(`--require-reconciling-cluster`, `api.requireReconcilingCluster` in the
+chart) turns that off: no organization other than the control plane's own
+may land on, or migrate back to, the home cluster once set, enforced in
+`handleCreateOrganization`/`handlePatchOrganization`
+(`internal/api/organizations.go`) and checked again at startup (refuses to
+start if any existing tenant organization is still on the home cluster).
+The operator intent: a self-hosted install that wants a hard guarantee
+tenants can never touch the cluster hyve-controller/hyve-api themselves
+run on, or a hosted/managed offering where end users must never reach the
+operator's own shared infrastructure at all.
+
 **Separate installs — one Helm release per tenant namespace (the older,
 still-supported alternative).** Multiple hyve installs (controller + API
 pairs) can share one cluster, each scoped to its own namespace. Two things

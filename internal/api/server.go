@@ -126,6 +126,32 @@ type Server struct {
 	// handler that touches organizations, accounts, or auth.
 	OrgStore *orgdb.Store
 
+	// RequireReconcilingCluster refuses to let any organization other than
+	// the control plane's own (org.Namespace == Namespace) land on, or
+	// migrate back to, the home cluster — set via --require-reconciling-
+	// cluster (cmd/api/run.go), surfaced in the chart as
+	// api.requireReconcilingCluster. Off (the default) preserves every
+	// pre-existing install's behavior exactly: an organization with no
+	// reconcilingCluster given is the original, still-supported shape.
+	// The operator intent this exists for: prevent a tenant's own
+	// resources/RBAC from ever being provisioned on the same cluster
+	// hyve-controller/hyve-api themselves run on — both for a
+	// self-hosted install that wants a hard guarantee installations can
+	// never "tamper with" the host cluster, and for a hosted/managed
+	// offering where end users must never reach the operator's own shared
+	// infrastructure at all. Enforced at the two places an organization's
+	// own reconciling_cluster_id can ever become nil:
+	// handleCreateOrganization (POST /organizations with no
+	// reconcilingCluster) and handlePatchOrganization (PATCH
+	// /organizations/{name} {"reconcilingCluster":""}, the "migrate back
+	// to home" case) — see each handler's own doc comment for why the
+	// control-plane exemption is (or isn't) needed at that specific call
+	// site. cmd/api/run.go also refuses to start at all when this is
+	// enabled if any existing organization is already on the home
+	// cluster, the same "fail loud at startup, not silently allow an
+	// inconsistent state" stance as the SQLite/Postgres deployment gate.
+	RequireReconcilingCluster bool
+
 	// reconcilingClusterClients lazily caches a *reconcilingClusterHandle
 	// per Milestone 6 reconciling cluster (internal/orgdb.ReconcilingCluster),
 	// keyed by its id — see resourceClient/reconcilingClusterClientHandle

@@ -163,6 +163,20 @@ func (s *Server) handleCreateOrganization(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "adminIdentity and adminRole must be set together, or both omitted")
 		return
 	}
+	// RequireReconcilingCluster (a --require-reconciling-cluster install):
+	// no organization may land on the control plane's own home cluster at
+	// all — see this field's own doc comment on Server for the operator
+	// intent (hosted/multi-tenant installs that must never let a tenant's
+	// resources touch the cluster hyve-controller/hyve-api themselves run
+	// on). No exemption needed here the way handlePatchOrganization needs
+	// one for the control plane's own organization: validateOrganizationName
+	// above already refuses to ever create an organization named
+	// s.Namespace through this endpoint, so this check can never
+	// mistakenly reject that one legitimate case.
+	if s.RequireReconcilingCluster && req.ReconcilingCluster == "" {
+		writeError(w, http.StatusBadRequest, "this install requires every organization to have an explicit reconcilingCluster (see --require-reconciling-cluster) — register one first with POST /reconciling-clusters")
+		return
+	}
 
 	ctx := r.Context()
 	name := req.Name
@@ -300,6 +314,20 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 	}
 	if org.ReconcilingClusterMigrationStatus != nil {
 		writeError(w, http.StatusLocked, fmt.Sprintf("organization %q is already migrating", name))
+		return
+	}
+	// RequireReconcilingCluster: migrating *back* to the home cluster
+	// (reconcilingCluster: "") is refused for every organization except
+	// the control plane's own — see Server.RequireReconcilingCluster's own
+	// doc comment. The control-plane exemption matters here in a way it
+	// doesn't for handleCreateOrganization above: Milestone 10 Part A/B
+	// deliberately made hyve-system migratable "just like any tenant"
+	// (including back to its own home cluster), and that's an operator
+	// infrastructure decision about where the control plane itself runs,
+	// not a tenant ever touching host-cluster resources — the exact thing
+	// this flag exists to prevent.
+	if s.RequireReconcilingCluster && *req.ReconcilingCluster == "" && org.Namespace != s.Namespace {
+		writeError(w, http.StatusBadRequest, "this install requires every organization to have an explicit reconcilingCluster (see --require-reconciling-cluster) — migrating back to the home cluster is not allowed")
 		return
 	}
 

@@ -191,6 +191,24 @@ api:
       credentialsSecret:
         name: ""
 
+  # requireReconcilingCluster (default false, preserving every existing
+  # install's behavior) refuses to let any organization other than this
+  # install's own control-plane one land on, or migrate back to, the home
+  # cluster — every organization must be assigned an explicit registered
+  # reconciling cluster (`hyve reconciling-cluster create`, Milestone 6)
+  # instead. See internal/api.Server.RequireReconcilingCluster's own doc
+  # comment for the full design. Two use cases this exists for: a
+  # self-hosted install that wants a hard guarantee tenant organizations
+  # can never touch the cluster hyve-controller/hyve-api themselves run
+  # on, and a hosted/managed offering where end users must never reach
+  # the operator's own shared infrastructure at all. Turning this on
+  # against an install that already has tenant organizations on the home
+  # cluster requires migrating each of them first
+  # (`hyve organization migrate <name> --reconciling-cluster <name>`) —
+  # hyve-api refuses to start otherwise, the same "fail loud at startup"
+  # stance the db.driver=sqlite deployment gate already takes.
+  requireReconcilingCluster: false
+
   # modulesDir must match whatever the controller's own image bakes its
   # state/modules under — ModuleAuthProvider (internal/api/access.go)
   # resolves driver modules the same way internal/reconcile does.
