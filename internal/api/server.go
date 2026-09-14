@@ -214,6 +214,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerOrganizationRoutes(apiMux)
 	s.registerReconcilingClusterRoutes(apiMux)
 	s.registerConfigRoutes(apiMux)
+	s.registerOrgConfigRoutes(apiMux)
 	s.registerAgentProxyRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))

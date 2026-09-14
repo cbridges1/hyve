@@ -98,7 +98,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Client == nil {
-		writeError(w, http.StatusServiceUnavailable, "this install has no home cluster of its own (Milestone 10 Part C) — HyveConfig is a home-cluster-only singleton")
+		writeError(w, http.StatusServiceUnavailable, "this install has no home cluster of its own — HyveConfig is a home-cluster-only singleton")
 		return
 	}
 	var cfg hyvev1alpha1.HyveConfig
@@ -126,7 +126,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Client == nil {
-		writeError(w, http.StatusServiceUnavailable, "this install has no home cluster of its own (Milestone 10 Part C) — HyveConfig is a home-cluster-only singleton")
+		writeError(w, http.StatusServiceUnavailable, "this install has no home cluster of its own — HyveConfig is a home-cluster-only singleton")
 		return
 	}
 	var req hyveConfigDTO

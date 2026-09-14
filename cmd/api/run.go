@@ -68,7 +68,7 @@ var (
 var Cmd = &cobra.Command{
 	Use:   "api",
 	Short: "Run hyve's HTTP API + auth layer, or manage its local users",
-	Long:  "Commands for hyve's HTTP API + auth layer — a convenience layer in front of the ClusterDefinition CRD (and, for organizations/RBAC/sessions, internal/orgdb — see HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs), not a required gateway.",
+	Long:  "Commands for hyve's HTTP API + auth layer — a convenience layer in front of the ClusterDefinition CRD (and, for organizations/RBAC/sessions, its own Postgres/SQLite datastore), not a required gateway.",
 }
 
 var runCmd = &cobra.Command{
@@ -76,7 +76,7 @@ var runCmd = &cobra.Command{
 	Short: "Start the HTTP API + auth layer",
 	Long: `Starts hyve's API server: local (username/password) login, role-gated
 ClusterDefinition CRUD, and GET /api/kubeconfig kubeconfig minting for any
-managed cluster. See HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.
+managed cluster.
 
 Requires a hyve-api-credentials Secret (session-signing-key) in
 --namespace before it will start — see internal/api.LoadSigningKey's doc
@@ -97,10 +97,10 @@ func init() {
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
 	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
 	runCmd.Flags().StringVar(&apiConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object within --namespace (GET/PATCH /api/config) — must match cmd/controller's own --config-name")
-	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters — see internal/orgdb and HYVE-ORGANIZATION-MODEL-PROPOSAL.md's 'Deployment strategy' section)")
+	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters)")
 	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
-	runCmd.Flags().StringVar(&apiHomeCluster, "home-cluster", "required", "Whether this process needs a Kubernetes cluster of its own (Milestone 10 Part C) — 'required' (default, matches every pre-Milestone-10 install's behavior: in-cluster config or --kubeconfig must resolve, Fatal if not) or 'none' (skip Kubernetes client construction entirely; every organization's resources must be reachable through a registered reconciling cluster instead — see HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 10 Part C, nexus-config/docs). Features that are inherently home-cluster-only (GET/PATCH /api/config, the host-cluster kubeconfig path, /proxy) become unavailable under 'none', same soft-fail stance those already have for other missing prerequisites.")
-	runCmd.Flags().BoolVar(&apiRequireReconcilingCluster, "require-reconciling-cluster", false, "Refuse to let any organization other than this install's own control-plane one land on, or migrate back to, the home cluster — every organization must be assigned an explicit registered reconciling cluster (see 'hyve reconciling-cluster create') instead. Off by default, preserving every existing install's behavior. For a self-hosted install that wants a hard guarantee tenants can never touch the cluster hyve-controller/hyve-api themselves run on, or a hosted/managed offering where end users must never reach the operator's own shared infrastructure at all — see internal/api.Server.RequireReconcilingCluster's own doc comment. Startup refuses to proceed if any existing organization is already on the home cluster when this is set.")
+	runCmd.Flags().StringVar(&apiHomeCluster, "home-cluster", "required", "Whether this process needs a Kubernetes cluster of its own — 'required' (default: in-cluster config or --kubeconfig must resolve, Fatal if not) or 'none' (skip Kubernetes client construction entirely; every organization's resources must be reachable through a registered reconciling cluster instead). Features that are inherently home-cluster-only (GET/PATCH /api/config, the host-cluster kubeconfig path, /proxy) become unavailable under 'none', same soft-fail stance those already have for other missing prerequisites.")
+	runCmd.Flags().BoolVar(&apiRequireReconcilingCluster, "require-reconciling-cluster", false, "Refuse to let any organization other than this install's own control-plane one land on, or migrate back to, the home cluster — every organization must be assigned an explicit registered reconciling cluster (see 'hyve reconciling-cluster create') instead. Off by default, preserving every existing install's behavior. For a self-hosted install that wants a hard guarantee tenants can never touch the cluster hyve-controller/hyve-api themselves run on, or a hosted/managed offering where end users must never reach the operator's own shared infrastructure at all. Startup refuses to proceed if any existing organization is already on the home cluster when this is set.")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -202,7 +202,7 @@ func runAPI() {
 			log.Fatalf("❌ Failed to check for organizations on a non-home reconciling cluster: %v", checkErr)
 		}
 		if anyMigrated {
-			log.Fatalf("❌ --db=sqlite refused: at least one organization has been moved to a reconciling cluster other than this install's own home cluster (Milestone 6) — switch to --db=postgres before restarting, see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's deployment-strategy section")
+			log.Fatalf("❌ --db=sqlite refused: at least one organization has been moved to a reconciling cluster other than this install's own home cluster — switch to --db=postgres before restarting")
 		}
 	}
 
@@ -212,7 +212,7 @@ func runAPI() {
 	if seeded, err := ensureControlPlaneOrganization(context.Background(), orgStore, apiNamespace); err != nil {
 		log.Fatalf("❌ Failed to seed control-plane organization %q: %v", apiNamespace, err)
 	} else if seeded {
-		log.Printf("ℹ️  Seeded control-plane organization %q (Milestone 10 Part A)", apiNamespace)
+		log.Printf("ℹ️  Seeded control-plane organization %q", apiNamespace)
 	}
 
 	// --require-reconciling-cluster: fail loud at startup, not silently

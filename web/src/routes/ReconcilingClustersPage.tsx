@@ -69,7 +69,7 @@ function RegisterClusterForm({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function ReachableBadge({ reachable }: { reachable?: boolean }) {
+export function ReachableBadge({ reachable }: { reachable?: boolean }) {
   if (reachable === undefined) {
     return <span className="text-xs text-neutral-400 dark:text-neutral-600">not checked yet</span>
   }

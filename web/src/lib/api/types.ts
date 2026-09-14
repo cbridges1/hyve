@@ -292,6 +292,22 @@ export type ReconcilingCluster = {
   lastError?: string
 }
 
+// GET/PUT /organizations/{name}/reconciling-cluster (internal/api's
+// orgReconcilingClusterDTO) — an organization's own admin-facing view of
+// its current reconciling-cluster placement, distinct from
+// ReconcilingCluster above (an entry in the superadmin-only shared
+// registry, GET /reconciling-clusters): onHomeCluster stands in for "no
+// override" instead of an empty name being ambiguous with a lookup
+// failure.
+export type OrgReconcilingClusterStatus = {
+  onHomeCluster: boolean
+  name?: string
+  reachable?: boolean
+  lastCheckedAt?: string
+  lastError?: string
+  migrating?: boolean
+}
+
 // ── HyveConfig (internal/api/config.go) — superadmin-only, one singleton
 // per install (GET/PATCH /config). Mirrors hyveConfigDTO field-for-field;
 // exists distinguishes "no HyveConfig object yet" (the common starting

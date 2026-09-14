@@ -28,18 +28,17 @@ isn't preserved — created_at timestamps are reset to migration time, ids
 and every other column are not).
 
 This is a one-shot tool, not a live sync: stop hyve-api (and hyve-controller,
-if running in Milestone 6's --reconciling-cluster-id mode against this same
-database) before running it, and point every process at the new database
-only after it completes successfully. The destination must already exist
-and be completely empty — this refuses to run otherwise, to avoid silently
+if running in --reconciling-cluster-id mode against this same database)
+before running it, and point every process at the new database only after
+it completes successfully. The destination must already exist and be
+completely empty — this refuses to run otherwise, to avoid silently
 duplicating or partially overwriting data.
 
-The common direction is sqlite -> postgres (see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's
-"Deployment strategy" section for why: SQLite has no story for the
-concurrent, cross-process access horizontal API scaling or any use of
-Milestone 6's per-organization reconciling clusters assumes), but nothing
-here is sqlite-specific — postgres -> sqlite (e.g. for a local reproduction
-of a production issue) works identically.
+The common direction is sqlite -> postgres: SQLite has no story for the
+concurrent, cross-process access that horizontal API scaling or any use of
+per-organization reconciling clusters assumes, but nothing here is
+sqlite-specific — postgres -> sqlite (e.g. for a local reproduction of a
+production issue) works identically.
 
 Example:
   hyve cluster-config api migrate-db \

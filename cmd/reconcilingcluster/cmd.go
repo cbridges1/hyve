@@ -23,10 +23,8 @@ var Cmd = &cobra.Command{
 	Short: "Register and list reconciling clusters (cluster mode only)",
 	Long: `Register a physical Kubernetes cluster hyve-controller can
 reconcile organizations' infrastructure against, distinct from whichever
-cluster hyve-api's own pods happen to run on (see Milestone 6,
-HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Per-organization reconciling
-cluster" section, nexus-config/docs). Requires cluster mode: run 'hyve env
-login' against a hyve-api server first.
+cluster hyve-api's own pods happen to run on. Requires cluster mode: run
+'hyve env login' against a hyve-api server first.
 
 Move an organization onto a registered reconciling cluster with 'hyve
 organization migrate'.`,

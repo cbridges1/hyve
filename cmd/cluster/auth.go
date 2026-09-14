@@ -50,8 +50,7 @@ any driver module's auth op at all. It points back at this API's own
 /api/agent-proxy/<name> path: every kubectl request against the resulting
 context is relayed through hyve-api, over hyve-agent's own outbound SSH
 tunnel, to the cluster's real apiserver — the cluster never needs a
-directly reachable endpoint or its own native driver auth. See
-docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md.`,
+directly reachable endpoint or its own native driver auth.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		runClusterAuth(args[0], authMethodFlag)

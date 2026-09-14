@@ -1,7 +1,7 @@
 import { Navigate, Route, HashRouter, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { LoginForm } from './components/LoginForm'
-import { SuperadminOnly } from './components/RoleGate'
+import { AdminOnly, SuperadminOnly } from './components/RoleGate'
 import { ConfirmProvider } from './lib/confirm'
 import { useSession } from './lib/useAuth'
 import { AccountsPage } from './routes/AccountsPage'
@@ -11,11 +11,11 @@ import { EnvironmentsPage } from './routes/EnvironmentsPage'
 import { ModuleDetailPage } from './routes/ModuleDetailPage'
 import { ModulesPage } from './routes/ModulesPage'
 import { OrganizationsPage } from './routes/OrganizationsPage'
-import { ReconcilingClustersPage } from './routes/ReconcilingClustersPage'
+import { ReconcilingClusterRoute } from './routes/ReconcilingClusterRoute'
 import { ResourceDetailPage } from './routes/ResourceDetailPage'
 import { ResourcesPage } from './routes/ResourcesPage'
 import { SecretsPage } from './routes/SecretsPage'
-import { SettingsPage } from './routes/SettingsPage'
+import { SettingsRoute } from './routes/SettingsRoute'
 import { TemplateDetailPage } from './routes/TemplateDetailPage'
 import { TemplatesPage } from './routes/TemplatesPage'
 import { WorkflowDetailPage } from './routes/WorkflowDetailPage'
@@ -53,9 +53,9 @@ function App() {
             <Route
               path="/reconciling-clusters"
               element={
-                <SuperadminOnly>
-                  <ReconcilingClustersPage />
-                </SuperadminOnly>
+                <AdminOnly>
+                  <ReconcilingClusterRoute />
+                </AdminOnly>
               }
             />
             <Route path="/environments" element={<EnvironmentsPage />} />
@@ -68,9 +68,9 @@ function App() {
             <Route
               path="/settings"
               element={
-                <SuperadminOnly>
-                  <SettingsPage />
-                </SuperadminOnly>
+                <AdminOnly>
+                  <SettingsRoute />
+                </AdminOnly>
               }
             />
             <Route path="*" element={<Navigate to="/clusters" replace />} />

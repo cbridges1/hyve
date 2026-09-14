@@ -33,14 +33,11 @@ var createUserCmd = &cobra.Command{
 	Short: "Bcrypt-hash a password and write a new local API user's binding",
 	Long: `Bcrypt-hashes a password (prompted interactively, or via --password for
 scripting) and writes the user's access grant — including the password hash
-itself (Milestone 10 Part C: bindings.password_hash, no separate credentials
-Secret anymore) — directly to hyve-api's own organization/environment/RBAC
-datastore (internal/orgdb — Postgres or SQLite, matching --db/--db-dsn to
-whatever that same install's hyve-api process uses). This is a real
-database write, not something 'kubectl apply -f -' can create (see
-HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs, and this command's
-own predecessor before HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's
-Milestone 4).
+itself (bindings.password_hash, no separate credentials Secret) — directly
+to hyve-api's own organization/environment/RBAC datastore (internal/orgdb —
+Postgres or SQLite, matching --db/--db-dsn to whatever that same install's
+hyve-api process uses). This is a real database write, not something
+'kubectl apply -f -' can create.
 
 Safe to re-run: an already-existing binding for the same identity+scope is
 replaced (delete then recreate) rather than erroring.

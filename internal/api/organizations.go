@@ -19,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -39,6 +40,8 @@ func (s *Server) registerOrganizationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /organizations/{name}", s.handleDeleteOrganization)
 	mux.HandleFunc("POST /organizations/{name}/environments", s.handleCreateOrgEnvironment)
 	mux.HandleFunc("GET /organizations/{name}/environments", s.handleListOrgEnvironments)
+	mux.HandleFunc("GET /organizations/{name}/reconciling-cluster", s.handleGetOrgReconcilingCluster)
+	mux.HandleFunc("PUT /organizations/{name}/reconciling-cluster", s.handlePutOrgReconcilingCluster)
 }
 
 type organizationDTO struct {
@@ -308,26 +311,18 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to migrate organization")
 		return
 	}
+	// Checked here, ahead of the target-cluster-name lookup below, so an
+	// invalid --reconciling-cluster name against an already-pending-deletion
+	// or already-migrating organization still reports *that* conflict
+	// (409/423), not an unrelated 400 about the name lookup —
+	// migrateOrganizationToTarget re-checks both anyway, but only after it
+	// already has a resolved targetClusterID to work with.
 	if org.PendingDeletion {
 		writeError(w, http.StatusConflict, fmt.Sprintf("organization %q is pending deletion", name))
 		return
 	}
 	if org.ReconcilingClusterMigrationStatus != nil {
 		writeError(w, http.StatusLocked, fmt.Sprintf("organization %q is already migrating", name))
-		return
-	}
-	// RequireReconcilingCluster: migrating *back* to the home cluster
-	// (reconcilingCluster: "") is refused for every organization except
-	// the control plane's own — see Server.RequireReconcilingCluster's own
-	// doc comment. The control-plane exemption matters here in a way it
-	// doesn't for handleCreateOrganization above: Milestone 10 Part A/B
-	// deliberately made hyve-system migratable "just like any tenant"
-	// (including back to its own home cluster), and that's an operator
-	// infrastructure decision about where the control plane itself runs,
-	// not a tenant ever touching host-cluster resources — the exact thing
-	// this flag exists to prevent.
-	if s.RequireReconcilingCluster && *req.ReconcilingCluster == "" && org.Namespace != s.Namespace {
-		writeError(w, http.StatusBadRequest, "this install requires every organization to have an explicit reconcilingCluster (see --require-reconciling-cluster) — migrating back to the home cluster is not allowed")
 		return
 	}
 
@@ -345,25 +340,69 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 		targetClusterID = &rc.ID
 	}
 
+	dto, ok := s.migrateOrganizationToTarget(w, r, org, targetClusterID)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// migrateOrganizationToTarget moves org onto targetClusterID (nil for the
+// control plane's own home cluster) — the shared core of
+// handlePatchOrganization's superadmin-driven migration and
+// handlePutOrgReconcilingCluster's org-self-service equivalent (an ordinary
+// admin reaching this for their own organization only, via
+// requireOrgAccess). Every check that used to live inline in
+// handlePatchOrganization (pending-deletion, already-migrating,
+// --require-reconciling-cluster, the already-there no-op) now lives here so
+// both callers get the identical safety guarantees. Writes its own error
+// response and returns ok=false on any failure, matching this file's other
+// w-writing helpers (e.g. requireOrgAccess); returns the freshly reloaded
+// organizationDTO on success.
+func (s *Server) migrateOrganizationToTarget(w http.ResponseWriter, r *http.Request, org orgdb.Organization, targetClusterID *string) (organizationDTO, bool) {
+	ctx := r.Context()
+	name := org.Name
+
+	if org.PendingDeletion {
+		writeError(w, http.StatusConflict, fmt.Sprintf("organization %q is pending deletion", name))
+		return organizationDTO{}, false
+	}
+	if org.ReconcilingClusterMigrationStatus != nil {
+		writeError(w, http.StatusLocked, fmt.Sprintf("organization %q is already migrating", name))
+		return organizationDTO{}, false
+	}
+	// RequireReconcilingCluster: migrating *back* to the home cluster
+	// (targetClusterID == nil) is refused for every organization except the
+	// control plane's own — see Server.RequireReconcilingCluster's own doc
+	// comment. The control-plane exemption matters here in a way it doesn't
+	// for handleCreateOrganization: Milestone 10 Part A/B deliberately made
+	// hyve-system migratable "just like any tenant" (including back to its
+	// own home cluster), and that's an operator infrastructure decision
+	// about where the control plane itself runs, not a tenant ever touching
+	// host-cluster resources — the exact thing this flag exists to prevent.
+	if s.RequireReconcilingCluster && targetClusterID == nil && org.Namespace != s.Namespace {
+		writeError(w, http.StatusBadRequest, "this install requires every organization to have an explicit reconcilingCluster (see --require-reconciling-cluster) — migrating back to the home cluster is not allowed")
+		return organizationDTO{}, false
+	}
+
 	if reconcilingClusterIDsEqual(org.ReconcilingClusterID, targetClusterID) {
-		// Already there — a no-op PATCH, matching this file's own
+		// Already there — a no-op, matching this file's own
 		// idempotent-by-design precedent elsewhere (handleCreateOrganization,
 		// handleDeleteOrganization).
-		writeJSON(w, http.StatusOK, s.toOrganizationDTO(ctx, org))
-		return
+		return s.toOrganizationDTO(ctx, org), true
 	}
 
 	sourceClient, err := s.resourceClient(ctx, org.Namespace)
 	if err != nil {
 		log.Printf("api: failed to resolve source reconciling cluster for organization %q: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "failed to migrate organization")
-		return
+		return organizationDTO{}, false
 	}
 	var destClient client.Client
 	if targetClusterID == nil {
 		if s.Client == nil {
-			writeError(w, http.StatusBadRequest, "this install has no home cluster of its own (Milestone 10 Part C) — an empty reconcilingCluster (\"migrate back to home\") isn't possible here")
-			return
+			writeError(w, http.StatusBadRequest, "this install has no home cluster of its own — an empty reconcilingCluster (\"migrate back to home\") isn't possible here")
+			return organizationDTO{}, false
 		}
 		destClient = s.Client
 	} else {
@@ -371,7 +410,7 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			log.Printf("api: failed to resolve destination reconciling cluster for organization %q: %v", name, err)
 			writeError(w, http.StatusInternalServerError, "failed to migrate organization")
-			return
+			return organizationDTO{}, false
 		}
 		destClient = handle.Client
 	}
@@ -380,7 +419,7 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 	if err := s.OrgStore.SetOrganizationMigrationStatus(ctx, org.ID, &migrating); err != nil {
 		log.Printf("api: failed to lock organization %q for migration: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "failed to migrate organization")
-		return
+		return organizationDTO{}, false
 	}
 
 	if err := s.runOrganizationMigration(ctx, org, sourceClient, destClient); err != nil {
@@ -389,22 +428,22 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 			log.Printf("api: failed to clear migration lock for organization %q after a failed migration: %v", name, unlockErr)
 		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("migration failed, organization left on its original reconciling cluster: %v", err))
-		return
+		return organizationDTO{}, false
 	}
 
 	if err := s.OrgStore.SetOrganizationReconcilingCluster(ctx, org.ID, targetClusterID); err != nil {
 		log.Printf("api: failed to finalize reconciling cluster for organization %q: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "migration data copied, but finalizing the organization's reconciling cluster failed — retry this same request to finish")
-		return
+		return organizationDTO{}, false
 	}
 
 	updated, err := s.OrgStore.GetOrganization(ctx, org.ID)
 	if err != nil {
 		log.Printf("api: failed to reload organization %q after migration: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "migration completed, but reloading the organization record failed")
-		return
+		return organizationDTO{}, false
 	}
-	writeJSON(w, http.StatusOK, s.toOrganizationDTO(ctx, updated))
+	return s.toOrganizationDTO(ctx, updated), true
 }
 
 func reconcilingClusterIDsEqual(a, b *string) bool {
@@ -556,6 +595,20 @@ func (s *Server) handleDeleteOrganization(w http.ResponseWriter, r *http.Request
 	} else if err != nil {
 		log.Printf("api: failed to get organization %q: %v", name, err)
 		writeError(w, http.StatusInternalServerError, "failed to delete organization")
+		return
+	}
+	// The control plane's own organization is not a tenant — nothing else
+	// in this file has ever let it be created via this API
+	// (validateOrganizationName), and it must never be destroyable through
+	// it either: this Namespace is the one hyve-controller/hyve-api
+	// themselves (or, if s.Client is nil, the process that still needs
+	// this row to resolve identity/sessions) actually run in. Checked
+	// ahead of the idempotent-by-design PendingDeletion branch below on
+	// purpose — an already-"successfully" pending-deletion control-plane
+	// organization is not a state that should ever exist, but this stays
+	// a hard refuse either way, not a silent no-op.
+	if org.Namespace == s.Namespace {
+		writeError(w, http.StatusBadRequest, "the control plane's own organization cannot be deleted")
 		return
 	}
 
@@ -748,6 +801,131 @@ func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusCreated, toOrganizationEnvironmentDTO(env))
+}
+
+// orgReconcilingClusterDTO is GET/PUT /organizations/{name}/reconciling-cluster's
+// own response shape — deliberately not reconcilingClusterDTO itself: an
+// org admin reaching this endpoint has no visibility into (and no business
+// knowing about) the superadmin-managed shared registry GET
+// /reconciling-clusters exposes, only their own organization's current
+// placement, so OnHomeCluster stands in for "no reconciling cluster
+// override" instead of an empty/omitted name being ambiguous with a lookup
+// failure.
+type orgReconcilingClusterDTO struct {
+	OnHomeCluster bool    `json:"onHomeCluster"`
+	Name          string  `json:"name,omitempty"`
+	Reachable     *bool   `json:"reachable,omitempty"`
+	LastCheckedAt *string `json:"lastCheckedAt,omitempty"`
+	LastError     *string `json:"lastError,omitempty"`
+	Migrating     bool    `json:"migrating,omitempty"`
+}
+
+// handleGetOrgReconcilingCluster reports the named organization's current
+// reconciling-cluster placement — a superadmin can target any organization
+// by name; an ordinary admin only their own (see requireOrgAccess).
+func (s *Server) handleGetOrgReconcilingCluster(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
+	if !ok {
+		return
+	}
+	dto := orgReconcilingClusterDTO{Migrating: org.ReconcilingClusterMigrationStatus != nil}
+	if org.ReconcilingClusterID == nil {
+		dto.OnHomeCluster = true
+		writeJSON(w, http.StatusOK, dto)
+		return
+	}
+	rc, err := s.OrgStore.GetReconcilingCluster(r.Context(), *org.ReconcilingClusterID)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for organization %q: %v", org.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve organization's reconciling cluster")
+		return
+	}
+	rcDTO := toReconcilingClusterDTO(rc)
+	dto.Name, dto.Reachable, dto.LastCheckedAt, dto.LastError = rcDTO.Name, rcDTO.Reachable, rcDTO.LastCheckedAt, rcDTO.LastError
+	writeJSON(w, http.StatusOK, dto)
+}
+
+type putOrgReconcilingClusterRequest struct {
+	// Kubeconfig is this organization's own dedicated reconciling cluster's
+	// kubeconfig — set (or rotate) it here, scoped to exactly this
+	// organization, never the shared superadmin-managed registry (POST
+	// /reconciling-clusters) PATCH /organizations/{name} draws from. Empty
+	// moves the organization back onto the control plane's own home
+	// cluster (refused when --require-reconciling-cluster is set, except
+	// for the control plane's own organization — see
+	// migrateOrganizationToTarget).
+	Kubeconfig string `json:"kubeconfig"`
+}
+
+// handlePutOrgReconcilingCluster is the organization-admin-facing
+// counterpart to PATCH /organizations/{name}: rather than picking from the
+// superadmin-managed shared registry (POST/GET /reconciling-clusters, still
+// superadmin-only), an organization's own admin sets or rotates a
+// reconciling cluster dedicated to exactly their organization here, by
+// kubeconfig directly. The underlying orgdb.ReconcilingCluster row is named
+// identically to the organization's own Namespace — a deliberate 1:1
+// relationship: it keeps this cluster out of the shared-pool list an org
+// admin has no visibility into, and avoids any naming collision with a
+// same-named cluster a superadmin might separately register there. A
+// superadmin can target any organization by name; an ordinary admin only
+// their own (see requireOrgAccess).
+func (s *Server) handlePutOrgReconcilingCluster(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
+	if !ok {
+		return
+	}
+	var req putOrgReconcilingClusterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Kubeconfig == "" {
+		dto, ok := s.migrateOrganizationToTarget(w, r, org, nil)
+		if !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, dto)
+		return
+	}
+
+	if _, err := clientcmd.RESTConfigFromKubeConfig([]byte(req.Kubeconfig)); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid kubeconfig: %v", err))
+		return
+	}
+
+	ctx := r.Context()
+
+	rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, org.Namespace)
+	switch {
+	case err == nil:
+		if err := s.OrgStore.SetReconcilingClusterKubeconfig(ctx, rc.ID, req.Kubeconfig); err != nil {
+			log.Printf("api: failed to rotate kubeconfig for organization %q's reconciling cluster: %v", org.Name, err)
+			writeError(w, http.StatusInternalServerError, "failed to update reconciling cluster")
+			return
+		}
+		// A rotated kubeconfig invalidates any cached client for this
+		// cluster — see handleCreateReconcilingCluster's own identical
+		// precedent for why.
+		s.invalidateReconcilingClusterClientByName(ctx, org.Namespace)
+	case err == orgdb.ErrNotFound:
+		rc, err = s.OrgStore.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: org.Namespace, Kubeconfig: req.Kubeconfig})
+		if err != nil {
+			log.Printf("api: failed to register reconciling cluster for organization %q: %v", org.Name, err)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to register reconciling cluster: %v", err))
+			return
+		}
+	default:
+		log.Printf("api: failed to check existing reconciling cluster for organization %q: %v", org.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to update reconciling cluster")
+		return
+	}
+
+	dto, ok := s.migrateOrganizationToTarget(w, r, org, &rc.ID)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // validateOrganizationName rejects the two names that would collide with,

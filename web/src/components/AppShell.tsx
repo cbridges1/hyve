@@ -162,14 +162,21 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             Environments is genuinely within-one-organization's-own-scope
             (see internal/api's requireOrgAccess), so it's reachable by an
             ordinary admin the same way Accounts already is — unlike
-            Organizations (creating/listing every tenant), Reconciling
-            clusters (registering physical clusters and assigning them to
-            organizations — Milestone 6), and Settings (the install-wide
-            HyveConfig singleton), which stay genuinely control-plane-only
-            and superadmin-only, since none of those three is scoped to
-            any one tenant. Grouped under its own header only when at
-            least one item is actually visible, so this role-gated group
-            never renders as an empty heading. */}
+            Organizations (creating/listing every tenant), which stays
+            genuinely control-plane-only and superadmin-only, since it
+            isn't scoped to any one tenant. Reconciling cluster and
+            Settings, by contrast, are each self-service within one
+            organization's own scope now (GET/PUT
+            /organizations/{name}/reconciling-cluster,
+            GET/PATCH /organizations/{name}/config) — reachable by that
+            organization's own admin, or a superadmin currently "Viewing"
+            it, the same way Accounts/Environments already are; only the
+            control-plane-wide registry (/reconciling-clusters) and the
+            control plane's own home-cluster HyveConfig (/settings) stay
+            superadmin-and-control-plane-only, since those two are
+            genuinely install-wide. Grouped under its own header only when
+            at least one item is actually visible, so this role-gated
+            group never renders as an empty heading. */}
         {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <div>
             <div className={groupHeaderClass}>Organization</div>
@@ -188,13 +195,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                   Organizations
                 </NavLink>
               )}
-              {who?.role === RoleSuperadmin && actAs === null && (
-                <NavLink to="/reconciling-clusters" className={linkClass} onClick={onNavigate}>
-                  <ReconcilingClustersIcon />
-                  Reconciling clusters
-                </NavLink>
-              )}
-              {who?.role === RoleSuperadmin && actAs === null && (
+              <NavLink to="/reconciling-clusters" className={linkClass} onClick={onNavigate}>
+                <ReconcilingClustersIcon />
+                {who?.role === RoleSuperadmin && actAs === null ? 'Reconciling clusters' : 'Reconciling cluster'}
+              </NavLink>
+              {((who?.role === RoleSuperadmin && actAs === null) || Boolean(who?.reconcilingCluster)) && (
                 <NavLink to="/settings" className={linkClass} onClick={onNavigate}>
                   <SettingsIcon />
                   Settings

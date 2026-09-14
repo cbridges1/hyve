@@ -124,7 +124,7 @@ func resolveCurrentHostKubeconfigPath() (path string, cleanup func(), err error)
 		}
 	}
 	if hostName == "" {
-		return "", noopCleanup, fmt.Errorf("no ClusterDefinition with access.method: primary found — the current host has no self-registered ClusterDefinition yet (see HYVE-MULTI-TENANCY-PLAN.md's \"Bootstrap and migration flow\")")
+		return "", noopCleanup, fmt.Errorf("no ClusterDefinition with access.method: primary found — the current host has no self-registered ClusterDefinition yet")
 	}
 
 	return resolveViaAuthContext(client, hostName)

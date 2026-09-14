@@ -106,3 +106,11 @@ tasks:
         platforms: [linux, darwin]
       - cmd: echo "install:local needs bash — run scripts/install-local.sh via WSL or Git Bash on Windows"
         platforms: [windows]
+
+  api:docker:
+    desc: 'Run hyve-api as a standalone Docker container (no Kubernetes Deployment of its own — Milestone 10''s --home-cluster=none) pointed at an existing k3d cluster for reconciliation (Milestone 6). Usage: task api:docker -- <k3d-cluster-name>. Persistent, not a self-cleaning smoke test. Needs docker/k3d/kubectl/python3.'
+    cmds:
+      - cmd: bash ./scripts/run-api-docker.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "api:docker needs bash — run scripts/run-api-docker.sh via WSL or Git Bash on Windows"
+        platforms: [windows]

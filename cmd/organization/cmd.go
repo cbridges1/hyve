@@ -24,8 +24,7 @@ var Cmd = &cobra.Command{
 	Short: "Manage organizations (cluster mode only)",
 	Long: `Create, list, delete, and manage organizations — hyve-api's own
 multi-tenant isolation unit, one Kubernetes namespace plus a set of
-environments/RBAC bindings/reconciling-cluster assignment (see
-HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs). Requires
+environments/RBAC bindings/reconciling-cluster assignment. Requires
 cluster mode: run 'hyve env login' against a hyve-api server first.
 
 Creating an organization only provisions the namespace/environment — it
@@ -69,7 +68,7 @@ internal/api's SweepPendingOrganizationDeletions).`,
 
 var migrateCmd = &cobra.Command{
 	Use:   "migrate <name>",
-	Short: "Move an organization onto a different reconciling cluster (Milestone 6)",
+	Short: "Move an organization onto a different reconciling cluster",
 	Long: `Copies every ClusterDefinition/Template/Workflow/Resource/AccessBinding
 this organization owns onto the target reconciling cluster, then flips its
 own reconciling-cluster assignment — see internal/migrate's own copy
@@ -80,8 +79,8 @@ organization stays on its original cluster.
 Exactly one of --reconciling-cluster or --home is required: --reconciling-cluster
 names an already-registered cluster (see 'hyve reconciling-cluster
 create'/'list'); --home moves it back to the control plane's own home
-cluster (only possible for an install that has one — see Milestone 10
-Part C, --home-cluster=none).`,
+cluster (only possible for an install that has one — see --home-cluster
+on 'hyve cluster-config api run').`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		reconcilingCluster, _ := cmd.Flags().GetString("reconciling-cluster")

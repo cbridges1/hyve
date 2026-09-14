@@ -20,6 +20,28 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
+// validTestKubeconfig is a minimal kubeconfig that actually parses via
+// clientcmd.RESTConfigFromKubeConfig (unlike the bare "apiVersion: v1\nkind:
+// Config\n" this file's other tests write directly into Store, bypassing
+// that validation) — needed by any test exercising a handler that validates
+// the kubeconfig itself, e.g. handlePutOrgReconcilingCluster.
+const validTestKubeconfig = `apiVersion: v1
+kind: Config
+current-context: test
+clusters:
+- name: test
+  cluster:
+    server: https://test.example.com
+contexts:
+- name: test
+  context:
+    cluster: test
+    user: test
+users:
+- name: test
+  user: {}
+`
+
 func newTestOrgStore(t *testing.T) *orgdb.Store {
 	t.Helper()
 	s, err := orgdb.Open("sqlite", filepath.Join(t.TempDir(), "orgdb.sqlite"))
@@ -264,6 +286,25 @@ func TestHandleDeleteOrganization_UnknownName_404(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
 	rec := doDeleteOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "does-not-exist")
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandleDeleteOrganization_RefusesControlPlaneOrg proves the control
+// plane's own organization (Milestone 10 Part A/B — a real Organization
+// row since it's seeded at startup) can never be deleted through this
+// endpoint, even by a superadmin — deleting it would mark hyve-controller/
+// hyve-api's own home Namespace for deletion.
+func TestHandleDeleteOrganization_RefusesControlPlaneOrg(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	_, _, err := store.CreateOrganizationWithDefaults(t.Context(), orgdb.Organization{Name: testNamespace, Namespace: testNamespace}, "", "")
+	require.NoError(t, err)
+
+	rec := doDeleteOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, testNamespace)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	org, err := store.GetOrganizationByName(t.Context(), testNamespace)
+	require.NoError(t, err)
+	assert.False(t, org.PendingDeletion, "must not have been marked pending deletion")
 }
 
 // TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSweep
@@ -707,4 +748,120 @@ func TestOrgEnvironments_SuperadminReachesAnyOrganization(t *testing.T) {
 
 	rec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleSuperadmin, testNamespace, "acme")
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func doGetOrgReconcilingClusterRequest(t *testing.T, s *Server, role, callerNamespace, orgName string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/organizations/"+orgName+"/reconciling-cluster", nil)
+	req = req.WithContext(contextWithRole(req.Context(), role))
+	req = req.WithContext(contextWithNamespace(req.Context(), callerNamespace))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+func doPutOrgReconcilingClusterRequest(t *testing.T, s *Server, role, callerNamespace, orgName string, body putOrgReconcilingClusterRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/organizations/"+orgName+"/reconciling-cluster", bytes.NewReader(data))
+	req = req.WithContext(contextWithRole(req.Context(), role))
+	req = req.WithContext(contextWithNamespace(req.Context(), callerNamespace))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// TestGetOrgReconcilingCluster_OnHomeCluster proves the default, unmigrated
+// state reports onHomeCluster with no name — the shape an org-scoped admin
+// UI needs to distinguish "no reconciling cluster override" from "a lookup
+// failed" without ever seeing the shared superadmin-only registry.
+func TestGetOrgReconcilingCluster_OnHomeCluster(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doGetOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var dto orgReconcilingClusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.True(t, dto.OnHomeCluster)
+	assert.Empty(t, dto.Name)
+}
+
+// TestOrgReconcilingCluster_AdminCannotReachAnotherOrganization mirrors
+// TestOrgEnvironments_AdminCannotReachAnotherOrganization: an admin naming a
+// different organization in the URL is rejected for both GET and PUT, not
+// silently redirected to their own org.
+func TestOrgReconcilingCluster_AdminCannotReachAnotherOrganization(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "globex"}).Code)
+
+	getRec := doGetOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme")
+	assert.Equal(t, http.StatusForbidden, getRec.Code)
+
+	putRec := doPutOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme", putOrgReconcilingClusterRequest{Kubeconfig: "apiVersion: v1\nkind: Config\n"})
+	assert.Equal(t, http.StatusForbidden, putRec.Code)
+}
+
+// TestPutOrgReconcilingCluster_AdminRegistersOwnDedicatedCluster proves the
+// registration half of the self-service flow: an ordinary admin (not a
+// superadmin) setting their own organization's dedicated reconciling
+// cluster by kubeconfig causes a new orgdb.ReconcilingCluster row to be
+// created, named identically to the organization's own namespace. The
+// subsequent migration itself can't complete here without a real reachable
+// destination cluster (buildReconcilingClusterHandle dials for real) — that
+// full round trip is already covered by
+// TestHandlePatchOrganization_MigratesEverythingAndFlipsReconcilingCluster
+// via the pre-seeded-fake-client trick, which only works once the cluster's
+// id is already known; here the id is minted inside the handler itself, so
+// this test is scoped to proving the row gets created under the right name.
+func TestPutOrgReconcilingCluster_AdminRegistersOwnDedicatedCluster(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	kubeconfig := validTestKubeconfig
+	doPutOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", putOrgReconcilingClusterRequest{Kubeconfig: kubeconfig})
+
+	rc, err := store.GetReconcilingClusterByName(t.Context(), "acme")
+	require.NoError(t, err, "the PUT must register a dedicated reconciling cluster named after the organization's own namespace")
+	assert.Equal(t, kubeconfig, rc.Kubeconfig)
+}
+
+// TestPutOrgReconcilingCluster_InvalidKubeconfig_400 proves a malformed
+// kubeconfig is rejected before any orgdb.ReconcilingCluster row is
+// created or touched — matching handleCreateReconcilingCluster's own
+// identical validation.
+func TestPutOrgReconcilingCluster_InvalidKubeconfig_400(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doPutOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", putOrgReconcilingClusterRequest{Kubeconfig: "not a kubeconfig"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	_, err := store.GetReconcilingClusterByName(t.Context(), "acme")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "an invalid kubeconfig must not register anything")
+}
+
+// TestPutOrgReconcilingCluster_EmptyKubeconfig_MigratesHome proves the
+// other direction: an empty kubeconfig moves the organization back onto
+// the control plane's own home cluster, reusing migrateOrganizationToTarget
+// exactly like PATCH /organizations/{name} with reconcilingCluster: "".
+func TestPutOrgReconcilingCluster_EmptyKubeconfig_MigratesHome(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	// Already on the home cluster — this is a no-op migration (equal
+	// target), which doesn't require a reachable destination client.
+	rec := doPutOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", putOrgReconcilingClusterRequest{Kubeconfig: ""})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	getRec := doGetOrgReconcilingClusterRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var dto orgReconcilingClusterDTO
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &dto))
+	assert.True(t, dto.OnHomeCluster)
 }
