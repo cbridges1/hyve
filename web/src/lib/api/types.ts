@@ -281,30 +281,27 @@ export type Organization = {
 // creation time; this type is for the ones after that first one.
 export type OrganizationEnvironment = { name: string }
 
-// A physical cluster hyve-controller can reconcile organizations'
-// infrastructure against (Milestone 6 — internal/orgdb.ReconcilingCluster).
+// GET/PUT/DELETE /organizations/{name}/reconciling-cluster (internal/api's
+// orgReconcilingClusterDTO) — an organization's own self-service view of
+// its current reconciling-cluster placement (internal/orgdb.ReconcilingCluster).
 // Deliberately excludes the kubeconfig itself: the server never echoes it
-// back once registered (internal/api/reconcilingclusters.go).
-export type ReconcilingCluster = {
-  name: string
-  reachable?: boolean
-  lastCheckedAt?: string
-  lastError?: string
-}
-
-// GET/PUT /organizations/{name}/reconciling-cluster (internal/api's
-// orgReconcilingClusterDTO) — an organization's own admin-facing view of
-// its current reconciling-cluster placement, distinct from
-// ReconcilingCluster above (an entry in the superadmin-only shared
-// registry, GET /reconciling-clusters): onHomeCluster stands in for "no
-// override" instead of an empty name being ambiguous with a lookup
-// failure.
+// back once registered (internal/api/reconcilingclusters.go). onHomeCluster
+// stands in for "no override" instead of an empty name being ambiguous
+// with a lookup failure. server/kubernetesVersion/registeredAt are display
+// detail only — server is parsed fresh from the stored kubeconfig on every
+// read (never cached), kubernetesVersion is captured by the same periodic
+// reachability check that sets reachable/lastCheckedAt (undefined until
+// the first successful one, and left at its last known value across a
+// failed one — see that check's own Go-side doc comment).
 export type OrgReconcilingClusterStatus = {
   onHomeCluster: boolean
   name?: string
+  server?: string
   reachable?: boolean
   lastCheckedAt?: string
   lastError?: string
+  kubernetesVersion?: string
+  registeredAt?: string
   migrating?: boolean
 }
 

@@ -535,13 +535,13 @@ func (s *Store) DeleteReconcilingCluster(ctx context.Context, id string) error {
 func (s *Store) GetReconcilingCluster(ctx context.Context, id string) (ReconcilingCluster, error) {
 	row := s.queryRow(ctx, `
 		SELECT id, name, kubeconfig,
-		       reachable, last_checked_at, last_error, created_at
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
 		FROM reconciling_clusters WHERE id = ?
 	`, id)
 	var rc ReconcilingCluster
 	err := row.Scan(
 		&rc.ID, &rc.Name, &rc.Kubeconfig,
-		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.CreatedAt,
+		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReconcilingCluster{}, ErrNotFound
@@ -555,13 +555,26 @@ func (s *Store) GetReconcilingCluster(ctx context.Context, id string) (Reconcili
 // SetReconcilingClusterHealth records the result of a reachability check —
 // written by the API server's own periodic health-check loop (Milestone
 // 6), never by the controller, which never touches this store at all.
-func (s *Store) SetReconcilingClusterHealth(ctx context.Context, id string, reachable bool, checkErr error) error {
+// version is the cluster's own reported Kubernetes version from that same
+// check (empty on a failed check) — see ReconcilingCluster.KubernetesVersion's
+// own doc comment for why a failed check leaves the previously observed
+// value alone rather than clearing it.
+func (s *Store) SetReconcilingClusterHealth(ctx context.Context, id string, reachable bool, checkErr error, version string) error {
 	var lastError *string
 	if checkErr != nil {
 		msg := checkErr.Error()
 		lastError = &msg
 	}
 	now := time.Now().UTC()
+	if version != "" {
+		_, err := s.exec(ctx, `
+			UPDATE reconciling_clusters SET reachable = ?, last_checked_at = ?, last_error = ?, kubernetes_version = ? WHERE id = ?
+		`, reachable, now, lastError, version, id)
+		if err != nil {
+			return fmt.Errorf("update reconciling cluster health: %w", err)
+		}
+		return nil
+	}
 	_, err := s.exec(ctx, `
 		UPDATE reconciling_clusters SET reachable = ?, last_checked_at = ?, last_error = ? WHERE id = ?
 	`, reachable, now, lastError, id)
@@ -578,13 +591,13 @@ func (s *Store) SetReconcilingClusterHealth(ctx context.Context, id string, reac
 func (s *Store) GetReconcilingClusterByName(ctx context.Context, name string) (ReconcilingCluster, error) {
 	row := s.queryRow(ctx, `
 		SELECT id, name, kubeconfig,
-		       reachable, last_checked_at, last_error, created_at
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
 		FROM reconciling_clusters WHERE name = ?
 	`, name)
 	var rc ReconcilingCluster
 	err := row.Scan(
 		&rc.ID, &rc.Name, &rc.Kubeconfig,
-		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.CreatedAt,
+		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReconcilingCluster{}, ErrNotFound
@@ -601,7 +614,7 @@ func (s *Store) GetReconcilingClusterByName(ctx context.Context, name string) (R
 func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingCluster, error) {
 	rows, err := s.query(ctx, `
 		SELECT id, name, kubeconfig,
-		       reachable, last_checked_at, last_error, created_at
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
 		FROM reconciling_clusters ORDER BY name
 	`)
 	if err != nil {
@@ -614,7 +627,7 @@ func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingClust
 		var rc ReconcilingCluster
 		if err := rows.Scan(
 			&rc.ID, &rc.Name, &rc.Kubeconfig,
-			&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.CreatedAt,
+			&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan reconciling cluster: %w", err)
 		}

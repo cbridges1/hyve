@@ -813,12 +813,15 @@ func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Reque
 // override" instead of an empty/omitted name being ambiguous with a lookup
 // failure.
 type orgReconcilingClusterDTO struct {
-	OnHomeCluster bool    `json:"onHomeCluster"`
-	Name          string  `json:"name,omitempty"`
-	Reachable     *bool   `json:"reachable,omitempty"`
-	LastCheckedAt *string `json:"lastCheckedAt,omitempty"`
-	LastError     *string `json:"lastError,omitempty"`
-	Migrating     bool    `json:"migrating,omitempty"`
+	OnHomeCluster     bool    `json:"onHomeCluster"`
+	Name              string  `json:"name,omitempty"`
+	Server            string  `json:"server,omitempty"`
+	Reachable         *bool   `json:"reachable,omitempty"`
+	LastCheckedAt     *string `json:"lastCheckedAt,omitempty"`
+	LastError         *string `json:"lastError,omitempty"`
+	KubernetesVersion *string `json:"kubernetesVersion,omitempty"`
+	RegisteredAt      string  `json:"registeredAt,omitempty"`
+	Migrating         bool    `json:"migrating,omitempty"`
 }
 
 // handleGetOrgReconcilingCluster reports the named organization's current
@@ -842,7 +845,13 @@ func (s *Server) handleGetOrgReconcilingCluster(w http.ResponseWriter, r *http.R
 		return
 	}
 	rcDTO := toReconcilingClusterDTO(rc)
-	dto.Name, dto.Reachable, dto.LastCheckedAt, dto.LastError = rcDTO.Name, rcDTO.Reachable, rcDTO.LastCheckedAt, rcDTO.LastError
+	dto.Name = rcDTO.Name
+	dto.Server = rcDTO.Server
+	dto.Reachable = rcDTO.Reachable
+	dto.LastCheckedAt = rcDTO.LastCheckedAt
+	dto.LastError = rcDTO.LastError
+	dto.KubernetesVersion = rcDTO.KubernetesVersion
+	dto.RegisteredAt = rcDTO.RegisteredAt
 	writeJSON(w, http.StatusOK, dto)
 }
 

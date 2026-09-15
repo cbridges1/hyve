@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Card } from '../components/Card'
+import { Card, Field } from '../components/Card'
 import { organizationsApi } from '../lib/api/organizations'
 import { ApiError } from '../lib/api/client'
 import { useConfirm } from '../lib/confirm'
@@ -201,23 +201,30 @@ export function OrgReconcilingClusterPage() {
               {status.onHomeCluster ? (
                 <p className="text-sm text-neutral-700 dark:text-neutral-300">On this install's own shared home cluster.</p>
               ) : (
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="font-medium text-neutral-900 dark:text-neutral-100">{status.name}</div>
+                <div>
+                  <Field label="Name">{status.name}</Field>
+                  {status.server && (
+                    <Field label="Server">
+                      <span className="font-mono text-xs">{status.server}</span>
+                    </Field>
+                  )}
+                  <Field label="Kubernetes">{status.kubernetesVersion ?? 'unknown — no successful check yet'}</Field>
+                  <Field label="Reachability">
+                    <div className="flex items-center gap-2">
+                      <ReachableBadge reachable={status.reachable} />
+                      {status.lastCheckedAt && (
+                        <span className="text-xs text-neutral-400 dark:text-neutral-600">
+                          checked {new Date(status.lastCheckedAt).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
                     {status.lastError && (
-                      <div className="mt-0.5 max-w-md truncate text-xs text-red-600 dark:text-red-400" title={status.lastError}>
+                      <div className="mt-1 max-w-md truncate text-xs text-red-600 dark:text-red-400" title={status.lastError}>
                         {status.lastError}
                       </div>
                     )}
-                  </div>
-                  <div className="text-right">
-                    <ReachableBadge reachable={status.reachable} />
-                    {status.lastCheckedAt && (
-                      <div className="mt-0.5 text-xs text-neutral-400 dark:text-neutral-600">
-                        checked {new Date(status.lastCheckedAt).toLocaleString()}
-                      </div>
-                    )}
-                  </div>
+                  </Field>
+                  {status.registeredAt && <Field label="Registered">{new Date(status.registeredAt).toLocaleString()}</Field>}
                 </div>
               )}
             </Card>

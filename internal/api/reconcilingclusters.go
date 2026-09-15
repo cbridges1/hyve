@@ -61,19 +61,40 @@ func (s *Server) registerReconcilingClusterRoutes(mux *http.ServeMux) {
 // though internal/orgdb.ReconcilingCluster does store the content directly
 // as of Milestone 10 Part C (see that type's own doc comment) — this DTO's
 // field list is the actual guard against leaking it, not the storage shape
-// underneath.
+// underneath. Server is the one piece of the kubeconfig this DTO does
+// surface — just the API server endpoint URL (parsed fresh from the
+// stored kubeconfig on every read, never cached, so it always reflects
+// whatever was most recently registered/rotated), which identifies *where*
+// this cluster physically is without exposing any credential material.
 type reconcilingClusterDTO struct {
-	Name          string  `json:"name"`
-	Reachable     *bool   `json:"reachable,omitempty"`
-	LastCheckedAt *string `json:"lastCheckedAt,omitempty"`
-	LastError     *string `json:"lastError,omitempty"`
+	Name              string  `json:"name"`
+	Server            string  `json:"server,omitempty"`
+	Reachable         *bool   `json:"reachable,omitempty"`
+	LastCheckedAt     *string `json:"lastCheckedAt,omitempty"`
+	LastError         *string `json:"lastError,omitempty"`
+	KubernetesVersion *string `json:"kubernetesVersion,omitempty"`
+	RegisteredAt      string  `json:"registeredAt"`
 }
 
 func toReconcilingClusterDTO(rc orgdb.ReconcilingCluster) reconcilingClusterDTO {
-	dto := reconcilingClusterDTO{Name: rc.Name, Reachable: rc.Reachable, LastError: rc.LastError}
+	dto := reconcilingClusterDTO{
+		Name:              rc.Name,
+		Reachable:         rc.Reachable,
+		LastError:         rc.LastError,
+		KubernetesVersion: rc.KubernetesVersion,
+		RegisteredAt:      rc.CreatedAt.Format(time.RFC3339),
+	}
 	if rc.LastCheckedAt != nil {
 		s := rc.LastCheckedAt.Format(time.RFC3339)
 		dto.LastCheckedAt = &s
+	}
+	// A parse failure here is a cosmetic display detail, not something an
+	// otherwise-successful response should fail over — the same stance
+	// toOrganizationDTO's own reconciling-cluster-name lookup takes.
+	if restCfg, err := clientcmd.RESTConfigFromKubeConfig([]byte(rc.Kubeconfig)); err == nil {
+		dto.Server = restCfg.Host
+	} else {
+		log.Printf("api: failed to parse stored kubeconfig for reconciling cluster %q to display its server endpoint: %v", rc.Name, err)
 	}
 	return dto
 }
@@ -383,24 +404,30 @@ func (s *Server) SweepReconcilingClusterHealth(ctx context.Context) {
 		return
 	}
 	for _, rc := range clusters {
-		reachable, checkErr := s.checkReconcilingClusterHealth(ctx, rc)
-		if err := s.OrgStore.SetReconcilingClusterHealth(ctx, rc.ID, reachable, checkErr); err != nil {
+		reachable, version, checkErr := s.checkReconcilingClusterHealth(ctx, rc)
+		if err := s.OrgStore.SetReconcilingClusterHealth(ctx, rc.ID, reachable, checkErr, version); err != nil {
 			log.Printf("api: failed to record health for reconciling cluster %q: %v", rc.Name, err)
 		}
 	}
 }
 
-func (s *Server) checkReconcilingClusterHealth(ctx context.Context, rc orgdb.ReconcilingCluster) (bool, error) {
+// checkReconcilingClusterHealth's version return is the cluster's own
+// reported Kubernetes version (empty on any failure) — captured on this
+// same discovery call rather than a second round trip, since
+// disco.ServerVersion() already fetches it as part of proving
+// reachability.
+func (s *Server) checkReconcilingClusterHealth(ctx context.Context, rc orgdb.ReconcilingCluster) (bool, string, error) {
 	restCfg, err := clientcmd.RESTConfigFromKubeConfig([]byte(rc.Kubeconfig))
 	if err != nil {
-		return false, fmt.Errorf("parse kubeconfig: %w", err)
+		return false, "", fmt.Errorf("parse kubeconfig: %w", err)
 	}
 	disco, err := discovery.NewDiscoveryClientForConfig(restCfg)
 	if err != nil {
-		return false, fmt.Errorf("build discovery client: %w", err)
+		return false, "", fmt.Errorf("build discovery client: %w", err)
 	}
-	if _, err := disco.ServerVersion(); err != nil {
-		return false, fmt.Errorf("server version check failed: %w", err)
+	info, err := disco.ServerVersion()
+	if err != nil {
+		return false, "", fmt.Errorf("server version check failed: %w", err)
 	}
-	return true, nil
+	return true, info.GitVersion, nil
 }

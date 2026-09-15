@@ -106,7 +106,14 @@ type ReconcilingCluster struct {
 	Reachable     *bool
 	LastCheckedAt *time.Time
 	LastError     *string
-	CreatedAt     time.Time
+	// KubernetesVersion is this cluster's own reported version (client-go's
+	// discovery.ServerVersion().GitVersion) — captured on the same
+	// reachability check that sets Reachable/LastCheckedAt, nil under the
+	// identical "never checked yet" convention, and left at its last known
+	// value on a failed check (a transient unreachable blip shouldn't
+	// erase a version that was successfully observed moments earlier).
+	KubernetesVersion *string
+	CreatedAt         time.Time
 }
 
 // SigningKey is hyve-api's own session-signing key (Milestone 10 Part C) —

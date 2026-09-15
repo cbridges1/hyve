@@ -2,6 +2,7 @@ package orgdb
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,12 +116,25 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	require.NoError(t, err)
 	assert.Nil(t, rc.Reachable, "reachability is unknown, not false, before the first health check")
 
-	require.NoError(t, s.SetReconcilingClusterHealth(ctx, rc.ID, true, nil))
+	require.NoError(t, s.SetReconcilingClusterHealth(ctx, rc.ID, true, nil, "v1.31.5+k3s1"))
 	rc, err = s.GetReconcilingCluster(ctx, rc.ID)
 	require.NoError(t, err)
 	require.NotNil(t, rc.Reachable)
 	assert.True(t, *rc.Reachable)
 	assert.Nil(t, rc.LastError)
+	require.NotNil(t, rc.KubernetesVersion)
+	assert.Equal(t, "v1.31.5+k3s1", *rc.KubernetesVersion)
+
+	// A failed check (empty version) must not erase the version already
+	// observed on a prior successful one — a transient unreachable blip
+	// shouldn't wipe out known-good detail.
+	require.NoError(t, s.SetReconcilingClusterHealth(ctx, rc.ID, false, errors.New("dial timeout"), ""))
+	rc, err = s.GetReconcilingCluster(ctx, rc.ID)
+	require.NoError(t, err)
+	require.NotNil(t, rc.Reachable)
+	assert.False(t, *rc.Reachable)
+	require.NotNil(t, rc.KubernetesVersion)
+	assert.Equal(t, "v1.31.5+k3s1", *rc.KubernetesVersion, "must survive a failed check")
 
 	byName, err := s.GetReconcilingClusterByName(ctx, "cell-a")
 	require.NoError(t, err)
