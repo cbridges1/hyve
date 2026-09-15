@@ -125,14 +125,16 @@ func PromptSecret(label string) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// ResolveOrgToNamespace maps a `--org` value to the namespace `hyve env login`
-// actually sends. Today this is a trivial identity mapping — org name *is*
-// namespace name — deliberately kept as its own isolated function rather
-// than inlined at the call site: see HYVE-MULTI-TENANCY-PLAN.md's "Phase 2"
-// section — a future hosted directory swaps this one function's body for a
-// real `org -> {apiURL, namespace}` lookup without touching anything else
-// in the login path, since /auth/login itself was never taught "org" as a
-// concept, only "namespace".
+// ResolveOrgToNamespace maps a `--org` value to the `namespace` field
+// `hyve env login` actually sends. A trivial identity mapping deliberately
+// kept as its own isolated function rather than inlined at the call site:
+// resolving an org's current name to its real (renamable-independently)
+// namespace now happens server-side instead (see internal/api's
+// resolveLoginNamespace) — this function only needs to exist at all so a
+// future hosted directory (multiple API URLs, not just multiple
+// namespaces on one) can swap its body for a real
+// `org -> {apiURL, namespace}` lookup without touching anything else in
+// the login path.
 func ResolveOrgToNamespace(org string) string {
 	return org
 }

@@ -44,6 +44,53 @@ func doLogin(s *Server, username, password string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func doLoginWithNamespace(s *Server, username, password, namespace string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(map[string]string{"username": username, "password": password, "namespace": namespace})
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleLogin(rec, req)
+	return rec
+}
+
+// TestHandleLogin_ResolvesRenamedOrganizationName proves resolveLoginNamespace's
+// whole reason for existing: PATCH /organizations/{name}'s own rename
+// (organizations.go) actually takes effect for login, not just display.
+// After renaming "acme" to "acme-corp" (its own Namespace, "acme", never
+// changes — see that handler's own doc comment), logging in with the *new*
+// name resolves to the same real namespace the binding itself lives in.
+func TestHandleLogin_ResolvesRenamedOrganizationName(t *testing.T) {
+	hash, err := HashPassword("correct-password")
+	require.NoError(t, err)
+	store := newTestOrgStore(t)
+	_, _, err = store.CreateOrganizationWithDefaults(t.Context(), orgdb.Organization{Name: "acme", Namespace: "acme"}, "", "")
+	require.NoError(t, err)
+	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: "acme", SubjectType: orgdb.SubjectTypeLocal, Identity: "alice", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleAdmin), ServiceAccountNamespace: "acme",
+		PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace, SigningKey: []byte("test-signing-key")}
+
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	require.NoError(t, store.RenameOrganization(t.Context(), org.ID, "acme-corp"))
+
+	rec := doLoginWithNamespace(s, "alice", "correct-password", "acme-corp")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp loginResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	_, namespace, err := VerifyToken(s.SigningKey, resp.AccessToken)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", namespace, "the token must carry the real namespace, never the renamable display name")
+
+	// The original name/namespace value must keep working too — nothing
+	// forces every client to learn about a rename immediately, and it's
+	// still literally the organization's own real namespace.
+	rec = doLoginWithNamespace(s, "alice", "correct-password", "acme")
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestHandleLogin_Success(t *testing.T) {
 	s := newTestServerWithUser(t, "cedric", "correct-password", hyvev1alpha1.RoleAdmin)
 

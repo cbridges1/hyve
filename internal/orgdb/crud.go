@@ -729,6 +729,22 @@ func (s *Store) SetOrganizationReconcilingCluster(ctx context.Context, id string
 	return nil
 }
 
+// RenameOrganization changes an organization's own display Name — its
+// Namespace (the real, immutable Kubernetes namespace everything else
+// actually resolves against: bindings, resourceClient, login) is never
+// touched, so this is purely cosmetic/addressing, not a migration of any
+// kind. The caller is responsible for uniqueness (see
+// handlePatchOrganization's own pre-check, GetOrganizationByName) — this is
+// a raw UPDATE relying on the name column's own UNIQUE constraint as the
+// actual backstop, not a second check here.
+func (s *Store) RenameOrganization(ctx context.Context, id, name string) error {
+	_, err := s.exec(ctx, `UPDATE organizations SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("rename organization: %w", err)
+	}
+	return nil
+}
+
 // GetSigningKeyByNamespace looks up hyve-api's own session-signing key by
 // its install's control-plane namespace (Milestone 10 Part C) — see
 // SigningKey's own doc comment.

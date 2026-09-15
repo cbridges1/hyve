@@ -273,6 +273,10 @@ export type Organization = {
   // every request against this organization's own resource types gets
   // 423 until it completes.
   migrating?: boolean
+  // pendingDeletion reflects DELETE /organizations/{name} already having
+  // been called — the namespace teardown is in flight, and the row
+  // disappears on its own once it finishes. Nothing further to call.
+  pendingDeletion?: boolean
 }
 
 // An organization's own named sub-scope (Milestone 3 — see

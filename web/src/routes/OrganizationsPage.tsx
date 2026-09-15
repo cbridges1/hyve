@@ -5,6 +5,7 @@ import { ChevronDownIcon, ChevronRightIcon } from '../components/icons'
 import { EnvironmentsSection } from '../components/EnvironmentsManager'
 import { organizationsApi } from '../lib/api/organizations'
 import { ApiError } from '../lib/api/client'
+import { useConfirm } from '../lib/confirm'
 import type { Organization } from '../lib/api/types'
 import { useApi } from '../lib/useApi'
 import { getOrganizationsVersion, invalidateOrganizations, subscribe as subscribeOrganizations } from '../lib/organizationsStore'
@@ -15,7 +16,8 @@ import { getOrganizationsVersion, invalidateOrganizations, subscribe as subscrib
 // system" is hardcoded here (unlike the server's own check against its
 // actual configured s.Namespace) since the console has no other way to
 // know the control plane's namespace short of asking the API for it —
-// every real deployment uses this name by convention anyway.
+// every real deployment uses this name by convention anyway. Shared by
+// both create and rename — the same names are reserved either way.
 function reservedOrganizationNameError(name: string): string | null {
   if (name.toLowerCase() === 'hyve-system') {
     return `"${name}" is the control plane's own namespace — choose a different organization name`
@@ -93,7 +95,114 @@ function CreateOrganizationForm({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function OrganizationRow({ org }: { org: Organization }) {
+// RenameOrganizationForm changes only the organization's own display
+// Name — its Namespace (the real Kubernetes namespace everything else
+// resolves against) is fixed forever at creation, shown alongside for
+// context so it's clear renaming doesn't touch it.
+function RenameOrganizationForm({ org, onChanged }: { org: Organization; onChanged: () => void }) {
+  const [name, setName] = useState(org.name)
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const dirty = name.trim() !== '' && name !== org.name
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    if (!dirty) return
+    const reserved = reservedOrganizationNameError(name)
+    if (reserved) {
+      setError(reserved)
+      return
+    }
+    setSubmitting(true)
+    try {
+      await organizationsApi.rename(org.name, name)
+      invalidateOrganizations()
+      onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to rename organization')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-1 text-xs font-medium tracking-wide text-neutral-500 uppercase dark:text-neutral-500">Name</div>
+      <form onSubmit={onSubmit} className="flex items-center gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="rounded-lg border border-neutral-300 px-2.5 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+        />
+        <span className="font-mono text-xs text-neutral-400 dark:text-neutral-600">namespace: {org.namespace}</span>
+        {dirty && (
+          <button
+            type="submit"
+            disabled={submitting}
+            className="rounded-lg border border-neutral-300 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+        )}
+      </form>
+      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+// DeleteOrganizationControl is shown for every row, including the control
+// plane's own organization — deliberately not hidden client-side: this
+// page can be reached (by direct URL) even while a superadmin is
+// "Viewing" some other organization, and Server.TenantNamespace resolves
+// to *that* organization's namespace in that state, not the control
+// plane's own — there's no reliable way to tell which row is the control
+// plane's own from here. The server itself always refuses to delete it
+// regardless (see handleDeleteOrganization) with a clear message, which
+// this surfaces the same way as any other failure.
+function DeleteOrganizationControl({ org, onChanged }: { org: Organization; onChanged: () => void }) {
+  const confirm = useConfirm()
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function onDelete() {
+    const ok = await confirm({
+      title: `Delete organization "${org.name}"?`,
+      message:
+        'Permanently deletes its namespace and everything in it — clusters, templates, workflows, resources, accounts, environments. This cannot be undone.',
+      confirmLabel: 'Delete organization',
+      danger: true,
+    })
+    if (!ok) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      await organizationsApi.delete(org.name)
+      invalidateOrganizations()
+      onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to delete organization')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={submitting}
+        className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+      >
+        {submitting ? 'Deleting…' : 'Delete organization'}
+      </button>
+      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+function OrganizationRow({ org, onChanged }: { org: Organization; onChanged: () => void }) {
   const [expanded, setExpanded] = useState(false)
 
   return (
@@ -115,12 +224,19 @@ function OrganizationRow({ org }: { org: Organization }) {
               migrating
             </span>
           )}
+          {org.pendingDeletion && (
+            <span className="rounded-full border border-red-300 px-2 py-0.5 text-xs text-red-600 dark:border-red-800 dark:text-red-400">
+              deleting…
+            </span>
+          )}
         </span>
         <span className="font-mono text-xs text-neutral-500 dark:text-neutral-500">{org.namespace}</span>
       </button>
       {expanded && (
         <div className="space-y-4 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
+          {!org.pendingDeletion && <RenameOrganizationForm org={org} onChanged={onChanged} />}
           <EnvironmentsSection orgName={org.name} />
+          {!org.pendingDeletion && <DeleteOrganizationControl org={org} onChanged={onChanged} />}
         </div>
       )}
     </div>
@@ -137,8 +253,8 @@ export function OrganizationsPage() {
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Organizations</h1>
         <p className="mt-0.5 text-sm text-neutral-500">
           Every tenant on this install — superadmin-only. Log in with <code>--org &lt;name&gt;</code> to reach one.
-          Click a row to manage its environments. Assign a reconciling cluster to one by "Viewing" it, then its own
-          Reconciling cluster page.
+          Click a row to rename it, manage its environments, or delete it. Assign a reconciling cluster to one by
+          "Viewing" it, then its own Reconciling cluster page.
         </p>
       </div>
 
@@ -151,7 +267,7 @@ export function OrganizationsPage() {
         {organizations?.length === 0 && <EmptyState>No organizations yet.</EmptyState>}
         <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
           {organizations?.map((org) => (
-            <OrganizationRow key={org.name} org={org} />
+            <OrganizationRow key={org.namespace} org={org} onChanged={reload} />
           ))}
         </div>
       </div>

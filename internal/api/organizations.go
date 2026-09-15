@@ -61,6 +61,11 @@ type organizationDTO struct {
 	// 423 (see requireOrganizationNotMigrating) until the in-flight
 	// PATCH /organizations/{name} migration completes.
 	Migrating bool `json:"migrating,omitempty"`
+	// PendingDeletion reflects pending_deletion — DELETE /organizations/{name}
+	// was already called and the namespace teardown is in flight (see that
+	// handler's own doc comment); the row disappears on its own once the
+	// namespace finishes terminating, nothing further to call.
+	PendingDeletion bool `json:"pendingDeletion,omitempty"`
 }
 
 // toOrganizationDTO resolves org's own reconciling cluster name for
@@ -71,10 +76,11 @@ type organizationDTO struct {
 // list/create/patch response should 500 over.
 func (s *Server) toOrganizationDTO(ctx context.Context, org orgdb.Organization) organizationDTO {
 	dto := organizationDTO{
-		Name:      org.Name,
-		Namespace: org.Namespace,
-		Plan:      org.Plan,
-		Migrating: org.ReconcilingClusterMigrationStatus != nil,
+		Name:            org.Name,
+		Namespace:       org.Namespace,
+		Plan:            org.Plan,
+		Migrating:       org.ReconcilingClusterMigrationStatus != nil,
+		PendingDeletion: org.PendingDeletion,
 	}
 	if org.ReconcilingClusterID != nil {
 		rc, err := s.OrgStore.GetReconcilingCluster(ctx, *org.ReconcilingClusterID)
@@ -250,17 +256,38 @@ func (s *Server) handleCreateOrganization(w http.ResponseWriter, r *http.Request
 }
 
 type patchOrganizationRequest struct {
+	// Name renames the organization's own display Name — its Namespace
+	// (the real, immutable Kubernetes namespace everything else actually
+	// keys on: bindings, resourceClient, login resolution) is never
+	// touched, so this is purely cosmetic/addressing, not a migration of
+	// any kind. Must stay unique across every organization (checked
+	// explicitly below, ahead of the name column's own UNIQUE constraint,
+	// for a clean 409 instead of a raw DB error) and passes through the
+	// same reserved-name rules creation does (validateOrganizationName).
+	// A pointer so omitted (no rename) is distinguishable from — though
+	// never actually reachable via the JSON wire format the same way as
+	// ReconcilingCluster's own "" — an empty string, which is rejected as
+	// invalid rather than silently ignored. Optional independently of
+	// ReconcilingCluster: a request may rename, migrate, or both in one
+	// call.
+	Name *string `json:"name,omitempty"`
+
 	// ReconcilingCluster names the reconciling cluster (POST
 	// /reconciling-clusters) to move this organization onto — "" moves it
 	// back to the control plane's own home cluster. A pointer so an
-	// omitted field can be distinguished from an explicit "": this
-	// endpoint exists for exactly one purpose (Milestone 6's reconciling-
-	// cluster migration), so there's nothing else a PATCH here would mean.
-	ReconcilingCluster *string `json:"reconcilingCluster"`
+	// omitted field can be distinguished from an explicit "". Optional
+	// independently of Name — see that field's own doc comment.
+	ReconcilingCluster *string `json:"reconcilingCluster,omitempty"`
 }
 
-// handlePatchOrganization implements Milestone 6's reconciling-cluster
-// migration (HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Per-organization
+// handlePatchOrganization handles two independent, optional changes to an
+// organization — renaming it (see patchOrganizationRequest.Name's own doc
+// comment) and/or Milestone 6's reconciling-cluster migration, in that
+// order, in one request. The rename half is simple: validate, check
+// uniqueness, update the name column, done — it never touches the
+// Namespace anything else in this codebase actually resolves against. The
+// migration half implements Milestone 6's reconciling-cluster migration
+// (HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Per-organization
 // reconciling cluster" section, nexus-config/docs): moves name's Namespace
 // and everything hyve-managed inside it — ClusterDefinitions, Templates,
 // Workflows, Resources, its own HyveConfig singleton, and (per Milestone
@@ -298,8 +325,12 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ReconcilingCluster == nil {
-		writeError(w, http.StatusBadRequest, "reconcilingCluster is required")
+	if req.Name == nil && req.ReconcilingCluster == nil {
+		writeError(w, http.StatusBadRequest, "at least one of name or reconcilingCluster is required")
+		return
+	}
+	if req.Name != nil && *req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name must not be empty")
 		return
 	}
 
@@ -309,21 +340,51 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 		return
 	} else if err != nil {
 		log.Printf("api: failed to get organization %q: %v", name, err)
-		writeError(w, http.StatusInternalServerError, "failed to migrate organization")
+		writeError(w, http.StatusInternalServerError, "failed to update organization")
 		return
 	}
-	// Checked here, ahead of the target-cluster-name lookup below, so an
-	// invalid --reconciling-cluster name against an already-pending-deletion
-	// or already-migrating organization still reports *that* conflict
-	// (409/423), not an unrelated 400 about the name lookup —
-	// migrateOrganizationToTarget re-checks both anyway, but only after it
-	// already has a resolved targetClusterID to work with.
+	// Pending-deletion blocks a rename too — nothing about renaming an
+	// organization on its way out makes sense. Checked here, ahead of both
+	// the rename block below and the target-cluster-name lookup further
+	// down, so either kind of request against an already-pending-deletion
+	// or already-migrating organization reports *that* conflict (409/423)
+	// first — migrateOrganizationToTarget re-checks both anyway, but only
+	// after it already has a resolved targetClusterID to work with, and
+	// only for the reconciling-cluster half of this request.
 	if org.PendingDeletion {
 		writeError(w, http.StatusConflict, fmt.Sprintf("organization %q is pending deletion", name))
 		return
 	}
 	if org.ReconcilingClusterMigrationStatus != nil {
 		writeError(w, http.StatusLocked, fmt.Sprintf("organization %q is already migrating", name))
+		return
+	}
+
+	if req.Name != nil && *req.Name != org.Name {
+		newName := *req.Name
+		if err := validateOrganizationName(newName, s.Namespace); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		switch existing, err := s.OrgStore.GetOrganizationByName(ctx, newName); {
+		case err == nil && existing.ID != org.ID:
+			writeError(w, http.StatusConflict, fmt.Sprintf("an organization named %q already exists", newName))
+			return
+		case err != nil && err != orgdb.ErrNotFound:
+			log.Printf("api: failed to check name %q availability: %v", newName, err)
+			writeError(w, http.StatusInternalServerError, "failed to rename organization")
+			return
+		}
+		if err := s.OrgStore.RenameOrganization(ctx, org.ID, newName); err != nil {
+			log.Printf("api: failed to rename organization %q to %q: %v", org.Name, newName, err)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to rename organization: %v", err))
+			return
+		}
+		org.Name = newName
+	}
+
+	if req.ReconcilingCluster == nil {
+		writeJSON(w, http.StatusOK, s.toOrganizationDTO(ctx, org))
 		return
 	}
 

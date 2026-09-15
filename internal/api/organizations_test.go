@@ -478,6 +478,117 @@ func TestHandlePatchOrganization_MissingReconcilingClusterField_400(t *testing.T
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestHandlePatchOrganization_RenamesOrganization proves the core rename
+// flow: the organization becomes addressable by its new name, its own
+// Namespace (what login/resourceClient/bindings actually key on) stays
+// completely untouched, and the old name no longer resolves to anything.
+func TestHandlePatchOrganization_RenamesOrganization(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{Name: strPtr("acme-corp")})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var dto organizationDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "acme-corp", dto.Name)
+	assert.Equal(t, "acme", dto.Namespace, "the real Kubernetes namespace must never change")
+
+	renamed, err := store.GetOrganizationByName(t.Context(), "acme-corp")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", renamed.Namespace)
+
+	_, err = store.GetOrganizationByName(t.Context(), "acme")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "the old name must no longer resolve")
+}
+
+// TestHandlePatchOrganization_RenameSameName_NoOp proves renaming to the
+// organization's own current name is a harmless no-op, not a spurious
+// conflict against itself.
+func TestHandlePatchOrganization_RenameSameName_NoOp(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{Name: strPtr("acme")})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandlePatchOrganization_RenameConflict_409 proves renaming to an
+// already-taken name is refused with a clear conflict, not a raw
+// UNIQUE-constraint database error.
+func TestHandlePatchOrganization_RenameConflict_409(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "globex"}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{Name: strPtr("globex")})
+	assert.Equal(t, http.StatusConflict, rec.Code)
+
+	unchanged, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", unchanged.Name)
+}
+
+// TestHandlePatchOrganization_RenameReservedName_400 mirrors
+// TestHandleCreateOrganization_RejectsReservedNames — the same reserved
+// names must stay unreachable via rename, not just creation.
+func TestHandlePatchOrganization_RenameReservedName_400(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	for _, name := range []string{testNamespace, "Control Plane", "control-plane"} {
+		t.Run(name, func(t *testing.T) {
+			rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{Name: strPtr(name)})
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+// TestHandlePatchOrganization_RenameEmptyString_400 proves an explicit
+// empty name is rejected outright rather than silently ignored (unlike
+// ReconcilingCluster, where "" is a real, meaningful value).
+func TestHandlePatchOrganization_RenameEmptyString_400(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{Name: strPtr("")})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandlePatchOrganization_RenamePendingDeletion_409 proves the
+// pending-deletion guard applies to a rename too, not just to a
+// reconciling-cluster migration.
+func TestHandlePatchOrganization_RenamePendingDeletion_409(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+	require.NoError(t, store.MarkOrganizationPendingDeletion(t.Context(), org.ID))
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{Name: strPtr("acme-corp")})
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// TestHandlePatchOrganization_RenameAndMigrateInOneRequest proves both
+// halves of this endpoint can be exercised together, in the order the
+// handler documents: rename first, then migrate.
+func TestHandlePatchOrganization_RenameAndMigrateInOneRequest(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme", patchOrganizationRequest{
+		Name:               strPtr("acme-corp"),
+		ReconcilingCluster: strPtr(""), // already on the home cluster — a no-op migration, doesn't need a reachable destination
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var dto organizationDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "acme-corp", dto.Name)
+}
+
 func TestHandlePatchOrganization_UnknownOrganization_404(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
 	rec := doPatchOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "does-not-exist", patchOrganizationRequest{ReconcilingCluster: strPtr("")})

@@ -22,12 +22,18 @@ type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 
-	// Namespace is which tenant to log into (see
-	// HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section) — empty means the
-	// install's own control-plane namespace (s.Namespace), the superadmin
-	// tier's home. The CLI's --org flag resolves to this field client-side
-	// (see cmd/shared.PerformLogin) — this API never needs to know about
-	// "org" as a concept, only "namespace".
+	// Namespace is which tenant to log into — empty means the install's
+	// own control-plane namespace (s.Namespace), the superadmin tier's
+	// home. The CLI's --org flag passes this straight through unresolved
+	// (see cmd/shared.ResolveOrgToNamespace's own doc comment) — despite
+	// the field's name, a non-empty value here is resolved server-side
+	// (see resolveLoginNamespace) as an organization's current Name first,
+	// falling back to treating it as a literal Kubernetes namespace only
+	// when no organization is registered under that name. That fallback is
+	// what keeps this working unchanged for every organization that's
+	// never been renamed (Name and Namespace start out equal at creation
+	// and this is the only path that can make them diverge), and for
+	// installs with no Organization rows registered at all.
 	Namespace string `json:"namespace,omitempty"`
 }
 
@@ -63,7 +69,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ns := req.Namespace
+	resolvedNamespace := req.Namespace
+	if resolvedNamespace != "" {
+		resolvedNamespace = s.resolveLoginNamespace(r.Context(), resolvedNamespace)
+	}
+	ns := resolvedNamespace
 	if ns == "" {
 		ns = s.Namespace
 	}
@@ -88,16 +98,45 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// req.Namespace (possibly empty), not the resolved ns — issueSession
-	// stores/re-derives "empty means control-plane namespace" itself, so
-	// what's persisted stays a faithful record of what was actually
-	// requested rather than baking in today's s.Namespace value.
-	resp, err := s.issueSession(r.Context(), req.Username, req.Namespace)
+	// resolvedNamespace (possibly empty), not raw req.Namespace — the
+	// session/access-token namespace must always be the real, immutable
+	// Kubernetes namespace this binding actually resolved against, never
+	// an organization's current (renamable) display Name, or a later
+	// rename would silently point an already-issued session at the wrong
+	// place. Empty stays empty rather than baking in today's s.Namespace
+	// value — issueSession re-derives "empty means control-plane
+	// namespace" itself on every use, so this stays correct even if
+	// s.Namespace itself is ever reconfigured.
+	resp, err := s.issueSession(r.Context(), req.Username, resolvedNamespace)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveLoginNamespace resolves ns — a non-empty loginRequest.Namespace,
+// historically always a literal Kubernetes namespace and still accepted as
+// one — to the real namespace a login should actually authenticate
+// against. If an Organization is currently registered under that exact
+// Name, its own (immutable) Namespace is used instead; otherwise ns is
+// returned unchanged, treated as a literal namespace directly, exactly
+// this function's predecessor's entire behavior before organization
+// renaming existed. This one lookup is what makes PATCH
+// /organizations/{name}'s own rename (see handlePatchOrganization) take
+// effect for login, not just for display: a caller passing an org's new
+// name resolves through to the correct underlying namespace, and a caller
+// still passing its original name/namespace value (nothing forces every
+// client to learn about a rename immediately) keeps working too, since
+// Name and Namespace are always equal until the first rename ever happens.
+func (s *Server) resolveLoginNamespace(ctx context.Context, ns string) string {
+	if s.OrgStore == nil {
+		return ns
+	}
+	if org, err := s.OrgStore.GetOrganizationByName(ctx, ns); err == nil {
+		return org.Namespace
+	}
+	return ns
 }
 
 // issueSession creates a new Session row for subject (Milestone 10 Part D —

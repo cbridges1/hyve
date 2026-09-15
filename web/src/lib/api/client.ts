@@ -60,7 +60,10 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     const message = (body as { error?: string } | null)?.error ?? res.statusText
     throw new ApiError(res.status, message)
   }
-  if (res.status === 204) return undefined as T
+  // 202 (DELETE /organizations/{name} — teardown accepted, runs
+  // asynchronously, see that handler's own doc comment) carries no body
+  // either, same as 204.
+  if (res.status === 204 || res.status === 202) return undefined as T
   return res.json() as Promise<T>
 }
 

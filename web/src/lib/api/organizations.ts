@@ -4,6 +4,19 @@ import type { Organization, OrganizationEnvironment, OrgReconcilingClusterStatus
 export const organizationsApi = {
   list: () => apiFetch<Organization[]>('/organizations'),
   create: (name: string) => apiFetch<Organization>('/organizations', { method: 'POST', body: JSON.stringify({ name }) }),
+  // Renames the organization's own display name — its Namespace (the real
+  // Kubernetes namespace) never changes. Must stay unique; subject to the
+  // same reserved-name rules as create.
+  rename: (name: string, newName: string) =>
+    apiFetch<Organization>(`/organizations/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: newName }),
+    }),
+  // Marks the organization for deletion and issues the namespace delete —
+  // permanent, and asynchronous (202, no body — see that endpoint's own
+  // doc comment): the row itself disappears once the namespace finishes
+  // terminating, not synchronously with this call.
+  delete: (name: string) => apiDelete(`/organizations/${encodeURIComponent(name)}`),
   listEnvironments: (name: string) =>
     apiFetch<OrganizationEnvironment[]>(`/organizations/${encodeURIComponent(name)}/environments`),
   createEnvironment: (name: string, environment: string) =>
