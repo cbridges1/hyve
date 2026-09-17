@@ -1,6 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
+import { accountsApi } from '../lib/api/accounts'
 import { organizationsApi } from '../lib/api/organizations'
+import { ApiError } from '../lib/api/client'
 import { logout, RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
 import { useActAs } from '../lib/useActAs'
 import { useApi } from '../lib/useApi'
@@ -8,6 +10,7 @@ import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
 import { getOrganizationsVersion, subscribe as subscribeOrganizations } from '../lib/organizationsStore'
 import { Logo } from './Logo'
+import { Modal } from './Modal'
 import { ThemeToggle } from './ThemeToggle'
 import {
   AccountsIcon,
@@ -218,12 +221,101 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
+// Self-service password change — reachable by every role (the underlying
+// endpoint has no RequireRole gate on this branch, only currentPassword
+// verification), so it lives in the user menu rather than the admin-only
+// Accounts page, which every role can't even reach.
+function ChangePasswordForm({ username, onClose }: { username: string; onClose: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [done, setDone] = useState(false)
+
+  async function submit() {
+    setError(null)
+    setSubmitting(true)
+    try {
+      await accountsApi.updatePassword(username, { currentPassword, newPassword })
+      setDone(true)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to change password')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal title="Change password" onClose={onClose}>
+      {done ? (
+        <>
+          <p className="mb-4 text-sm text-neutral-600 dark:text-neutral-400">Your password has been changed.</p>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+            >
+              Done
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mb-3 space-y-3">
+            <label className="block text-sm">
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Current password</span>
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+                className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">New password</span>
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+                className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
+              />
+            </label>
+          </div>
+          {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!currentPassword || !newPassword || submitting}
+              onClick={submit}
+              className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+            >
+              {submitting ? 'Changing…' : 'Change password'}
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}
+
 // Small avatar-triggered popover carrying the identity actions that used to
 // sit pinned to the sidebar's own footer (username/role/sign out) — moved
 // into the header, the same place a Pangolin-style dashboard puts its own
 // account menu, so the sidebar stays pure navigation.
 function UserMenu({ who }: { who: { username: string; role: string; namespace: string } }) {
   const [open, setOpen] = useState(false)
+  const [changingPassword, setChangingPassword] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -275,14 +367,26 @@ function UserMenu({ who }: { who: { username: string; role: string; namespace: s
             </div>
             <button
               type="button"
-              onClick={() => logout()}
+              onClick={() => {
+                setOpen(false)
+                setChangingPassword(true)
+              }}
               className="mt-3 w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-500 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100"
+            >
+              Change password
+            </button>
+            <button
+              type="button"
+              onClick={() => logout()}
+              className="w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-500 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100"
             >
               Sign out
             </button>
           </div>
         </>
       )}
+
+      {changingPassword && <ChangePasswordForm username={who.username} onClose={() => setChangingPassword(false)} />}
     </div>
   )
 }
@@ -308,7 +412,19 @@ function Header({ onOpenMobileMenu }: { onOpenMobileMenu: () => void }) {
         >
           <MenuIcon width={22} height={22} />
         </button>
-        <Logo className="h-5" />
+        {/* Hidden below md — paired with the drawer-open button here it
+            crowded the mobile header (confirmed live: logo + hamburger
+            left almost no breathing room at narrow widths). Shown instead
+            at the top of the mobile drawer itself, where it has room.
+            Wrapping div, not a class merged into Logo's own className —
+            Logo internally toggles two <img>s via dark:hidden/dark:block,
+            and folding "hidden md:block" into that same className fights
+            the dark: variant for the display property (confirmed live: the
+            dark-mode image stayed visible below md because dark:block took
+            precedence over md:block in the cascade). */}
+        <div className="hidden md:block">
+          <Logo />
+        </div>
       </div>
       <div className="flex items-center gap-4">
         {/* Hidden below md — three icon-buttons plus the divider plus the
@@ -350,7 +466,8 @@ export function AppShell() {
             onClick={() => setMobileOpen(false)}
           />
           <div className="absolute inset-y-0 left-0 w-72 max-w-[85vw] border-r border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex justify-end p-2">
+            <div className="flex items-center justify-between p-2 pl-3">
+              <Logo className="h-5" />
               <button
                 type="button"
                 onClick={() => setMobileOpen(false)}

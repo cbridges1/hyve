@@ -345,3 +345,177 @@ func TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace(t *testing
 	_, err = s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "third-super")
 	assert.ErrorIs(t, err, orgdb.ErrNotFound, "must not have been created in the acted-as tenant namespace")
 }
+
+// TestHandleUpdateAccountPassword_SelfChangeSucceeds proves the core
+// self-service path: correct currentPassword, new hash verifiable, old
+// hash no longer works.
+func TestHandleUpdateAccountPassword_SelfChangeSucceeds(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("old-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "cedric", hyvev1alpha1.RoleReadOnly, http.MethodPut, "/accounts/cedric/password",
+		updateAccountPasswordRequest{CurrentPassword: "old-pw", NewPassword: "new-pw"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "cedric")
+	require.NoError(t, err)
+	require.NotNil(t, binding.PasswordHash)
+	assert.True(t, VerifyPassword(*binding.PasswordHash, "new-pw"))
+	assert.False(t, VerifyPassword(*binding.PasswordHash, "old-pw"))
+}
+
+// TestHandleUpdateAccountPassword_SelfChangeWrongCurrentPassword proves a
+// self-change is refused, and leaves the stored hash untouched, when
+// currentPassword doesn't match.
+func TestHandleUpdateAccountPassword_SelfChangeWrongCurrentPassword(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("old-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "cedric", hyvev1alpha1.RoleReadOnly, http.MethodPut, "/accounts/cedric/password",
+		updateAccountPasswordRequest{CurrentPassword: "wrong", NewPassword: "new-pw"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "cedric")
+	require.NoError(t, err)
+	assert.True(t, VerifyPassword(*binding.PasswordHash, "old-pw"), "hash must be untouched on a rejected self-change")
+}
+
+// TestHandleUpdateAccountPassword_SelfChangeRequiresCurrentPassword proves
+// currentPassword is mandatory on the self-service path, not merely
+// verified-when-present.
+func TestHandleUpdateAccountPassword_SelfChangeRequiresCurrentPassword(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("old-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "cedric", hyvev1alpha1.RoleReadOnly, http.MethodPut, "/accounts/cedric/password",
+		updateAccountPasswordRequest{NewPassword: "new-pw"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleUpdateAccountPassword_ReadOnlyCanChangeOwn proves the self-
+// service branch is reachable by every role, not just admin/superadmin —
+// the whole point of not gating it behind RequireRole.
+func TestHandleUpdateAccountPassword_ReadOnlyCanChangeOwn(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("old-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "viewer", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "viewer", hyvev1alpha1.RoleReadOnly, http.MethodPut, "/accounts/viewer/password",
+		updateAccountPasswordRequest{CurrentPassword: "old-pw", NewPassword: "new-pw"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// TestHandleUpdateAccountPassword_AdminResetsAnotherAccount proves the
+// admin-driven reset path: no currentPassword required, admin role
+// sufficient.
+func TestHandleUpdateAccountPassword_AdminResetsAnotherAccount(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("old-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPut, "/accounts/victim/password",
+		updateAccountPasswordRequest{NewPassword: "reset-pw"})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	require.NoError(t, err)
+	assert.True(t, VerifyPassword(*binding.PasswordHash, "reset-pw"))
+}
+
+// TestHandleUpdateAccountPassword_ReadOnlyCannotResetSomeoneElse proves the
+// admin-driven branch still enforces RequireRole — a read-only caller
+// cannot reset a different account's password.
+func TestHandleUpdateAccountPassword_ReadOnlyCannotResetSomeoneElse(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "viewer", hyvev1alpha1.RoleReadOnly, http.MethodPut, "/accounts/someone-else/password",
+		updateAccountPasswordRequest{NewPassword: "pw"})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandleUpdateAccountPassword_AdminCannotResetSuperadmin mirrors the
+// list/delete visibility rule: an ordinary admin gets "not found," not
+// "forbidden," when targeting a superadmin account.
+func TestHandleUpdateAccountPassword_AdminCannotResetSuperadmin(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("super-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "root-super", Role: hyvev1alpha1.RoleSuperadmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPut, "/accounts/root-super/password",
+		updateAccountPasswordRequest{NewPassword: "pw"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandleUpdateAccountPassword_NotFound proves a nonexistent username
+// on the admin-driven path reports not found rather than crashing on a nil
+// PasswordHash or similar.
+func TestHandleUpdateAccountPassword_NotFound(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPut, "/accounts/missing/password",
+		updateAccountPasswordRequest{NewPassword: "pw"})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandleUpdateAccountPassword_SuperadminSelfChange_IgnoresActAsNamespace
+// is the regression test for the one wrinkle this design has to get right:
+// a superadmin's own binding always lives in s.Namespace, so a self-change
+// while "Viewing" some tenant must still resolve against s.Namespace, not
+// wherever act-as currently points — mirroring
+// TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace.
+func TestHandleUpdateAccountPassword_SuperadminSelfChange_IgnoresActAsNamespace(t *testing.T) {
+	s := newTestServer(t)
+	hash, err := HashPassword("old-pw")
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "root-super", Role: hyvev1alpha1.RoleSuperadmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace, PasswordHash: &hash,
+	})
+	require.NoError(t, err)
+
+	data, err := json.Marshal(updateAccountPasswordRequest{CurrentPassword: "old-pw", NewPassword: "new-pw"})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/accounts/root-super/password", bytes.NewReader(data))
+	ctx := contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin)
+	ctx = contextWithUsername(ctx, "root-super")
+	ctx = contextWithNamespace(ctx, "acme")
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	newAccountsTestMux(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "root-super")
+	require.NoError(t, err, "the superadmin's own binding must still resolve against s.Namespace, not the act-as namespace")
+	assert.True(t, VerifyPassword(*binding.PasswordHash, "new-pw"))
+}

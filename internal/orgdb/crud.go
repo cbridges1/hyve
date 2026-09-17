@@ -473,6 +473,17 @@ func (s *Store) ListBindingsForScope(ctx context.Context, namespace string) ([]B
 	return scanBindings(rows)
 }
 
+// SetBindingPassword updates a local binding's stored password hash in
+// place — used for both self-service password changes and admin-driven
+// resets, neither of which should disturb the binding's role/identity/scope.
+func (s *Store) SetBindingPassword(ctx context.Context, id, passwordHash string) error {
+	_, err := s.exec(ctx, `UPDATE bindings SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	if err != nil {
+		return fmt.Errorf("set binding password: %w", err)
+	}
+	return nil
+}
+
 // DeleteBinding removes one binding by id.
 func (s *Store) DeleteBinding(ctx context.Context, id string) error {
 	_, err := s.exec(ctx, `DELETE FROM bindings WHERE id = ?`, id)

@@ -32,6 +32,7 @@ func (s *Server) registerAccountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /accounts", s.handleCreateAccount)
 	mux.HandleFunc("DELETE /accounts/{username}", s.handleDeleteAccount)
+	mux.HandleFunc("PUT /accounts/{username}/password", s.handleUpdateAccountPassword)
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +250,106 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// The password hash lived on the binding row itself (password_hash,
 	// Milestone 10 Part C) — deleting the binding above already removed it
 	// in the same write, unlike the old design's separate paired Secret.
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type updateAccountPasswordRequest struct {
+	// CurrentPassword is required only when the caller is changing their
+	// own password (proves the session hasn't been left open on a shared
+	// machine) — ignored entirely on an admin-driven reset of someone
+	// else's account, which is authorized by role instead.
+	CurrentPassword string `json:"currentPassword,omitempty"`
+	NewPassword     string `json:"newPassword"`
+}
+
+// handleUpdateAccountPassword covers two cases behind one endpoint:
+//
+//   - Self-service: the caller changes their own password. Reachable by
+//     any authenticated+bound role — requireRole (mounted ahead of this on
+//     every /api/* route) only resolves and attaches a role, it doesn't
+//     gate one, so a read-only or custom-role account can reach this same
+//     as admin/superadmin. Requires CurrentPassword, verified against the
+//     existing hash first.
+//   - Admin-driven reset: an admin/superadmin changes someone else's
+//     password, same RequireRole gate and superadmin-visibility rule as
+//     handleDeleteAccount. No CurrentPassword needed.
+func (s *Server) handleUpdateAccountPassword(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	ctx := r.Context()
+
+	caller, ok := UsernameFromContext(ctx)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	callerRole, _ := RoleFromContext(ctx)
+	isSelf := caller == username
+
+	if !isSelf {
+		if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
+			return
+		}
+	}
+
+	var req updateAccountPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.NewPassword == "" {
+		writeError(w, http.StatusBadRequest, "newPassword is required")
+		return
+	}
+	if isSelf && req.CurrentPassword == "" {
+		writeError(w, http.StatusBadRequest, "currentPassword is required")
+		return
+	}
+
+	// A superadmin binding always lives in s.Namespace regardless of "act
+	// as" (see handleCreateAccount) — s.TenantNamespace(r) would otherwise
+	// resolve a superadmin's own self-change to whatever tenant they
+	// happen to be "Viewing", which is the wrong scope for their own
+	// binding.
+	ns := s.TenantNamespace(r)
+	if isSelf && callerRole == hyvev1alpha1.RoleSuperadmin {
+		ns = s.Namespace
+	}
+
+	binding, err := s.findBindingBySubject(ctx, ns, orgdb.SubjectTypeLocal, username)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	// Same visibility rule as list/delete: an ordinary admin resetting
+	// someone else's password can never even see a superadmin account.
+	if !isSelf && binding.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+
+	if isSelf {
+		// 400, not 401: apiFetch (web/src/lib/api/client.ts) treats any 401
+		// from the server as "this session itself is invalid" and force-logs-
+		// out the caller globally — exactly the wrong reaction to a merely
+		// mistyped current password in an otherwise-valid session.
+		if binding.PasswordHash == nil || !VerifyPassword(*binding.PasswordHash, req.CurrentPassword) {
+			writeError(w, http.StatusBadRequest, "current password is incorrect")
+			return
+		}
+	}
+
+	hash, err := HashPassword(req.NewPassword)
+	if err != nil {
+		log.Printf("api: failed to hash new password for %q: %v", username, err)
+		writeError(w, http.StatusInternalServerError, "failed to update password")
+		return
+	}
+	if err := s.OrgStore.SetBindingPassword(ctx, binding.ID, hash); err != nil {
+		log.Printf("api: failed to update password for %q: %v", username, err)
+		writeError(w, http.StatusInternalServerError, "failed to update password")
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

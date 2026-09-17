@@ -113,10 +113,85 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
   )
 }
 
+function ResetPasswordForm({ username, onClose }: { username: string; onClose: () => void }) {
+  const [newPassword, setNewPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [done, setDone] = useState(false)
+
+  async function submit() {
+    setError(null)
+    setSubmitting(true)
+    try {
+      await accountsApi.updatePassword(username, { newPassword })
+      setDone(true)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to reset password')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal title={`Reset password for "${username}"`} onClose={onClose}>
+      {done ? (
+        <>
+          <p className="mb-4 text-sm text-neutral-600 dark:text-neutral-400">
+            Password reset. Share it with <span className="font-medium">{username}</span> through a secure channel —
+            it won't be shown again.
+          </p>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+            >
+              Done
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="mb-3 block text-sm">
+            <span className="mb-1 block text-neutral-600 dark:text-neutral-400">New password</span>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+              autoFocus
+              className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
+            />
+          </label>
+          {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg px-3.5 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!newPassword || submitting}
+              onClick={submit}
+              className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+            >
+              {submitting ? 'Resetting…' : 'Reset password'}
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}
+
 export function AccountsPage() {
   const session = useSession()
   const confirm = useConfirm()
   const { data: accounts, loading, error, reload } = useApi(() => accountsApi.list())
+  const [resetTarget, setResetTarget] = useState<string | null>(null)
 
   async function onDelete(username: string) {
     const ok = await confirm({
@@ -155,19 +230,30 @@ export function AccountsPage() {
                   </span>
                 </div>
                 {!isSelf && (
-                  <button
-                    type="button"
-                    onClick={() => onDelete(a.username)}
-                    className="rounded-lg px-2.5 py-1 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-                  >
-                    Delete
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setResetTarget(a.username)}
+                      className="rounded-lg px-2.5 py-1 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                    >
+                      Reset password
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(a.username)}
+                      className="rounded-lg px-2.5 py-1 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 )}
               </div>
             )
           })}
         </div>
       </div>
+
+      {resetTarget && <ResetPasswordForm username={resetTarget} onClose={() => setResetTarget(null)} />}
     </div>
   )
 }
