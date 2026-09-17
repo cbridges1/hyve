@@ -389,9 +389,8 @@ func (s *Server) invalidateReconcilingClusterClientByName(ctx context.Context, n
 // reconciling cluster, writing the result back via
 // Store.SetReconcilingClusterHealth — the periodic half of Milestone 6's
 // own health-check design (see HYVE-ORGANIZATION-MODEL-PROPOSAL.md).
-// Deliberately API-server-owned, never the controller (which never touches
-// Store at all — see NamespaceReconciler's own doc comment for the same
-// boundary). Meant to be called on a recurring interval by cmd/api/run.go.
+// Deliberately API-server-owned, never the controller, which never touches
+// Store at all. Meant to be called on a recurring interval by cmd/api/run.go.
 // A discovery client's cheap, unauthenticated-safe /version call is the
 // reachability probe — built fresh each tick from the same stored
 // kubeconfig content resourceClient itself reads (orgdb.ReconcilingCluster.Kubeconfig),

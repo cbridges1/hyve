@@ -9,14 +9,13 @@ metadata:
 # Namespace-scoped Role, not a ClusterRole — ClusterDefinition/HyveConfig
 # are both Namespaced CRDs (see internal/apis/hyve/v1alpha1), and Jobs/Pods
 # for KubernetesJobStepRunner live in the same namespace. The controller
-# needs no cluster-wide access for anything else this chart deploys — the
-# one exception, Namespace itself (Milestone 5's organization-deletion
-# design), gets its own dedicated ClusterRole further down, not folded in
-# here: Kubernetes RBAC flatly refuses list/watch on a cluster-scoped
-# resource type through a namespaced Role (confirmed live — "namespaces is
-# forbidden ... at the cluster scope" — unlike `get`, which api-rbac.yaml's
-# own "namespaces" rule already relies on working through a namespaced
-# Role for a different reason).
+# needs no cluster-wide access for anything else this chart deploys: it
+# used to also get a dedicated cluster-wide ClusterRole purely to back
+# NamespaceReconciler's own organization-deletion confirmation sweep, now
+# retired (see hyvev1alpha1.OrganizationNamespaceFinalizer's own doc
+# comment for why) — removing that reconciler dropped this controller's
+# access back down to just this one namespaced Role, a real reduction in
+# what it can touch, not just a code cleanup.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -155,63 +154,4 @@ subjects:
 roleRef:
   kind: Role
   name: hyve-controller
-  apiGroup: rbac.authorization.k8s.io
----
-# Dedicated ClusterRole for the handful of things
-# internal/controller/namespace_reconciler.go needs cluster-wide — see the
-# main hyve-controller Role's own header comment above for why these can't
-# be folded into it. Backs Milestone 5's organization-deletion design (see
-# HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs):
-#   - namespaces: watch/get/update of every Namespace carrying
-#     hyvev1alpha1.OrganizationNamespaceFinalizer. Unavoidably cluster-wide
-#     — Namespace has no namespace of its own to scope watch/list to, and
-#     an organization's Namespace can be any name, so there's no
-#     resourceNames restriction that would work here either (that only
-#     constrains get/update/patch/delete, not list/watch — see the main
-#     Role's own hyve-cli-secrets comment for this same distinction). No
-#     delete: this reconciler only ever removes its own finalizer via
-#     Update, never the Namespace object itself — internal/api's DELETE
-#     /organizations handler is what issues the actual namespace delete.
-#   - clusterdefinitions/workflows/resources/workflowruns: get+list only
-#     (deliberately no watch — this is a point-in-time uncached read via
-#     NamespaceReconciler.APIReader, mgr.GetAPIReader(), never through the
-#     cache), so hyveOwnedObjectsGone can check an *organization's own*
-#     namespace for these — the main Role's own get/list/watch on these
-#     same kinds only ever covers .Values.namespace (the manager's cache is
-#     deliberately restricted to that one namespace via
-#     cmd/controller/run.go's cache.Options.DefaultNamespaces, a Phase 1
-#     choice this milestone doesn't change), so without this an
-#     organization's namespace would look empty regardless of what's
-#     actually in it — silently defeating this reconciler's entire safety
-#     property. Confirmed live: `kubectl auth can-i list
-#     clusterdefinitions.hyve.io -n <org-namespace>
-#     --as=system:serviceaccount:hyve-system:hyve-controller` was `no`
-#     before this rule existed. Deliberately NOT achieved by widening the
-#     shared cache instead — that would also change what
-#     ClusterDefinitionReconciler/WorkflowRunReconciler each watch and
-#     reconcile, real Milestone 6 ("per-organization reconciling cluster")
-#     scope, not this one.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: hyve-controller-cluster-wide
-rules:
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["hyve.io"]
-    resources: ["clusterdefinitions", "workflows", "resources", "workflowruns"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: hyve-controller-cluster-wide
-subjects:
-  - kind: ServiceAccount
-    name: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
-    namespace: {{ .Values.namespace }}
-roleRef:
-  kind: ClusterRole
-  name: hyve-controller-cluster-wide
   apiGroup: rbac.authorization.k8s.io

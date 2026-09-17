@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
-	internalcontroller "github.com/cbridges1/hyve/internal/controller"
 	"github.com/cbridges1/hyve/internal/orgdb"
 
 	"k8s.io/client-go/kubernetes"
@@ -229,18 +228,6 @@ func runController() {
 		if err := setupNamespaceReconcilers(mgr, ns, namePrefix, deps); err != nil {
 			log.Fatalf("❌ Failed to set up reconcilers for namespace %q: %v", ns, err)
 		}
-	}
-
-	// Milestone 5's organization-deletion design (see
-	// HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs) — clears
-	// hyvev1alpha1.OrganizationNamespaceFinalizer once every hyve-owned
-	// object in a Terminating organization Namespace is confirmed gone.
-	namespaceReconciler := &internalcontroller.NamespaceReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-	}
-	if err := namespaceReconciler.SetupWithManager(mgr); err != nil {
-		log.Fatalf("❌ Failed to set up Namespace controller: %v", err)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

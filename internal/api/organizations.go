@@ -623,15 +623,17 @@ func (s *Server) copyClusterDefinitionLabels(ctx context.Context, sourceClient, 
 	return nil
 }
 
-// handleDeleteOrganization implements the proposal's Namespace-finalizer
-// design (HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "Organization deletion"
-// section, Milestone 5): mark the row pending_deletion, then issue the
+// handleDeleteOrganization marks the row pending_deletion, then issues the
 // Kubernetes namespace delete. Kubernetes' own cascade tears down
-// everything inside the namespace, but the Namespace object itself can't
-// fully disappear until internal/controller's NamespaceReconciler confirms
-// that and removes hyvev1alpha1.OrganizationNamespaceFinalizer — this
-// handler never waits for that synchronously (it can take an arbitrary
-// amount of time), it just kicks the process off and returns 202. The row
+// everything inside the namespace and then the Namespace object itself —
+// no hyve-specific finalizer gates that final removal anymore (see
+// hyvev1alpha1.OrganizationNamespaceFinalizer's own doc comment for why
+// the design that used to require an out-of-band controller confirmation
+// was retired), so this behaves like any other Kubernetes deletion in this
+// application. This handler never waits for that synchronously regardless
+// (it can still take a real amount of time — real cloud teardown behind
+// ClusterDefinitionFinalizer on anything still inside the namespace, most
+// notably), it just kicks the process off and returns 202. The row
 // itself isn't deleted here except via the opportunistic fast-path check
 // below — the durable path is SweepPendingOrganizationDeletions, wired up
 // as a periodic background task in cmd/api/run.go, so a process restart
@@ -713,7 +715,16 @@ func (s *Server) handleDeleteOrganization(w http.ResponseWriter, r *http.Request
 // Safe to call speculatively and repeatedly: the common case is the
 // Namespace still exists (Terminating or, for an org never marked for
 // deletion at all, just ordinarily present), in which case this does
-// nothing.
+// nothing beyond the self-heal check below.
+//
+// Self-heal: a Namespace still carrying
+// hyvev1alpha1.OrganizationNamespaceFinalizer — only possible for one
+// created before that finalizer's own retirement — has its finalizer
+// stripped right here, unblocking a namespace that would otherwise stay
+// Terminating forever with nothing left to clear it (see that constant's
+// own doc comment). Every call site of this function only ever reaches it
+// for an organization already marked pending_deletion, so this is never
+// reachable for a Namespace that isn't already on its way out.
 func (s *Server) trySweepOrganizationDeletion(ctx context.Context, org orgdb.Organization) {
 	targetClient, err := s.resourceClient(ctx, org.Namespace)
 	if err != nil {
@@ -723,6 +734,12 @@ func (s *Server) trySweepOrganizationDeletion(ctx context.Context, org orgdb.Org
 	var ns corev1.Namespace
 	err = targetClient.Get(ctx, types.NamespacedName{Name: org.Namespace}, &ns)
 	if err == nil {
+		if controllerutil.ContainsFinalizer(&ns, hyvev1alpha1.OrganizationNamespaceFinalizer) {
+			controllerutil.RemoveFinalizer(&ns, hyvev1alpha1.OrganizationNamespaceFinalizer)
+			if err := targetClient.Update(ctx, &ns); err != nil {
+				log.Printf("api: failed to strip legacy finalizer from namespace %q during organization-deletion sweep: %v", org.Namespace, err)
+			}
+		}
 		return
 	}
 	if !apierrors.IsNotFound(err) {
@@ -1111,34 +1128,25 @@ func validateOrganizationName(name, controlPlaneNamespace string) error {
 	return nil
 }
 
-// ensureNamespace creates name's Namespace if it doesn't already exist,
-// carrying hyvev1alpha1.OrganizationNamespaceFinalizer from the start —
-// see that constant's own doc comment for why: a Namespace created without
-// it would let `kubectl delete namespace` (or the Milestone 5 delete path
-// below) remove it immediately, before internal/controller's
-// NamespaceReconciler ever gets a chance to confirm every hyve-owned
-// object inside it is actually gone. An existing Namespace missing the
-// finalizer (e.g. one created before this milestone) gets it added too,
-// so re-running this idempotent step on an older organization still
-// closes the gap.
+// ensureNamespace creates name's Namespace if it doesn't already exist —
+// plainly, carrying no hyve-specific finalizer of its own. Deletion (see
+// handleDeleteOrganization below) relies solely on Kubernetes' own native
+// namespace-content cascade now, the same as every other deletion in this
+// application; see hyvev1alpha1.OrganizationNamespaceFinalizer's own doc
+// comment for why the finalizer-gated design this used to carry was
+// retired (a hyve-controller instance was never guaranteed to actually be
+// deployed against whatever physical cluster a self-service-registered
+// organization's namespace lives on, so that gate could hang forever).
 func (s *Server) ensureNamespace(ctx context.Context, c client.Client, name string) error {
 	var ns corev1.Namespace
 	err := c.Get(ctx, types.NamespacedName{Name: name}, &ns)
 	if err == nil {
-		if controllerutil.ContainsFinalizer(&ns, hyvev1alpha1.OrganizationNamespaceFinalizer) {
-			return nil
-		}
-		controllerutil.AddFinalizer(&ns, hyvev1alpha1.OrganizationNamespaceFinalizer)
-		if err := c.Update(ctx, &ns); err != nil {
-			return fmt.Errorf("add finalizer to existing namespace: %w", err)
-		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("check existing namespace: %w", err)
 	}
 	ns = corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	controllerutil.AddFinalizer(&ns, hyvev1alpha1.OrganizationNamespaceFinalizer)
 	if err := c.Create(ctx, &ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create namespace: %w", err)
 	}

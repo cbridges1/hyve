@@ -108,11 +108,11 @@ rules:
   # under Phase 1 — Phase 2 has exactly one install, so this endpoint does
   # it instead). Namespace is cluster-scoped by nature; get is needed for
   # this endpoint's own "does it already exist" idempotency check. update
-  # backs ensureNamespace's own "add
-  # hyvev1alpha1.OrganizationNamespaceFinalizer to an existing namespace
-  # that predates Milestone 5" path. delete backs
-  # handleDeleteOrganization's own `kubectl delete namespace` — confirmed
-  # live this was missing (a real 500 from a real DELETE
+  # backs trySweepOrganizationDeletion's own self-heal strip of a leftover
+  # hyvev1alpha1.OrganizationNamespaceFinalizer from a namespace created
+  # before that finalizer's own retirement (see that constant's own doc
+  # comment). delete backs handleDeleteOrganization's own namespace delete —
+  # confirmed live this was missing (a real 500 from a real DELETE
   # /organizations/{name} call, "cannot delete resource namespaces") before
   # this rule existed.
   - apiGroups: [""]

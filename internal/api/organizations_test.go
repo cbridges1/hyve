@@ -15,8 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -307,19 +309,37 @@ func TestHandleDeleteOrganization_RefusesControlPlaneOrg(t *testing.T) {
 	assert.False(t, org.PendingDeletion, "must not have been marked pending deletion")
 }
 
+// addUnrelatedFinalizer attaches a finalizer to name's Namespace that has
+// nothing to do with hyve's own retired OrganizationNamespaceFinalizer —
+// standing in for a real, still-in-progress Kubernetes cascade (most
+// realistically, a ClusterDefinition inside the namespace still running
+// its own ClusterDefinitionFinalizer cleanup) so a Delete call against the
+// fake client sets DeletionTimestamp without immediately removing the
+// object, matching real kube-apiserver semantics for "content-preserving
+// finalizers remaining." Used by tests that need deletion to genuinely
+// still be in flight, now that no hyve-specific finalizer gates the
+// Namespace object's own removal by default (see
+// hyvev1alpha1.OrganizationNamespaceFinalizer's own doc comment for why).
+func addUnrelatedFinalizer(t *testing.T, c client.Client, name string) {
+	t.Helper()
+	var ns corev1.Namespace
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: name}, &ns))
+	controllerutil.AddFinalizer(&ns, "test.hyve.io/still-cleaning-up")
+	require.NoError(t, c.Update(t.Context(), &ns))
+}
+
 // TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSweep
-// proves the crash-safety property HYVE-ORGANIZATION-MODEL-PROPOSAL.md
-// claims for organization deletion (Milestone 5, nexus-config/docs): the
+// proves the crash-safety property organization deletion relies on: the
 // durable state is the organization row's own pending_deletion flag plus
-// the Namespace's own existence/finalizer — both survive a process
-// restart with no recovery logic beyond "check again," which is exactly
-// what Server.SweepPendingOrganizationDeletions does. This test doesn't
-// wire up internal/controller's NamespaceReconciler at all (that's
-// covered separately, against a real kube-apiserver, by
-// internal/controller/namespace_reconciler_envtest_test.go) — it only
-// proves the API-server half: the row is not deleted while the Namespace
-// still exists, and a later, independent sweep call (standing in for "the
-// next process, after a restart") finishes the job once it does.
+// the Namespace's own existence — both survive a process restart with no
+// recovery logic beyond "check again," which is exactly what
+// Server.SweepPendingOrganizationDeletions does. Uses
+// addUnrelatedFinalizer to keep the Namespace genuinely present through
+// the first sweep, the same way a real, still-terminating child object
+// (most notably a ClusterDefinition behind its own
+// ClusterDefinitionFinalizer) would in production — an organization's own
+// Namespace itself carries no finalizer of its own to simulate here since
+// that gate was retired.
 func TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSweep(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
 	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
@@ -327,6 +347,7 @@ func TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSwee
 	ctx := t.Context()
 	org, err := s.OrgStore.GetOrganizationByName(ctx, "acme")
 	require.NoError(t, err)
+	addUnrelatedFinalizer(t, s.Client, "acme")
 
 	rec := doDeleteOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme")
 	require.Equal(t, http.StatusAccepted, rec.Code)
@@ -338,10 +359,8 @@ func TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSwee
 	require.NoError(t, err)
 	assert.True(t, reloaded.PendingDeletion)
 
-	// The Namespace itself must still be present — ensureNamespace always
-	// sets hyvev1alpha1.OrganizationNamespaceFinalizer, so the fake
-	// client's Delete only sets DeletionTimestamp, matching real
-	// kube-apiserver finalizer semantics.
+	// The Namespace itself must still be present — the unrelated finalizer
+	// keeps the fake client's Delete from removing it immediately.
 	var ns corev1.Namespace
 	require.NoError(t, s.Client.Get(ctx, types.NamespacedName{Name: "acme"}, &ns))
 	require.NotNil(t, ns.DeletionTimestamp, "Delete must have been issued against the namespace")
@@ -352,10 +371,9 @@ func TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSwee
 	_, err = s.OrgStore.GetOrganization(ctx, org.ID)
 	require.NoError(t, err, "the organization row must survive a sweep while its Namespace still exists")
 
-	// Simulate internal/controller's NamespaceReconciler having finished
-	// its own job (every hyve-owned object confirmed gone) by clearing the
-	// finalizer directly, the same Update it would issue.
-	controllerutil.RemoveFinalizer(&ns, hyvev1alpha1.OrganizationNamespaceFinalizer)
+	// Simulate the still-in-progress cleanup finishing (the same Update a
+	// real controller managing that finalizer would issue).
+	controllerutil.RemoveFinalizer(&ns, "test.hyve.io/still-cleaning-up")
 	require.NoError(t, s.Client.Update(ctx, &ns))
 
 	var checkGone corev1.Namespace
@@ -374,12 +392,45 @@ func TestHandleDeleteOrganization_PendingDeletionSurvivesRestart_CompletesOnSwee
 	assert.Empty(t, envs, "environments scoped to the deleted organization must be deleted too")
 }
 
-// TestHandleDeleteOrganization_Idempotent proves re-issuing DELETE against
-// an already-pending_deletion organization is safe — matching every other
-// organization-lifecycle handler's re-request-safe design in this file.
+// TestHandleDeleteOrganization_CompletesSynchronouslyWhenNamespaceIsEmpty
+// proves the direct payoff of retiring OrganizationNamespaceFinalizer: an
+// organization with nothing left inside its own namespace (the common
+// case for a namespace with no ClusterDefinition of its own still
+// mid-teardown) now finishes deleting — namespace gone, row gone — within
+// the very same request that issued it, via handleDeleteOrganization's own
+// opportunistic fast-path sweep, rather than waiting on any out-of-band
+// confirmation that was never guaranteed to arrive (see that finalizer's
+// own doc comment for the hang this used to cause).
+func TestHandleDeleteOrganization_CompletesSynchronouslyWhenNamespaceIsEmpty(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	org, err := store.GetOrganizationByName(t.Context(), "acme")
+	require.NoError(t, err)
+
+	rec := doDeleteOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme")
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+
+	_, err = store.GetOrganization(t.Context(), org.ID)
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "an empty organization's row must be fully cleaned up within the same request")
+
+	var ns corev1.Namespace
+	err = s.Client.Get(t.Context(), types.NamespacedName{Name: "acme"}, &ns)
+	assert.True(t, apierrors.IsNotFound(err), "the namespace itself must be fully gone, not stuck Terminating")
+}
+
+// TestHandleDeleteOrganization_Idempotent proves re-issuing DELETE while an
+// organization is still genuinely mid-deletion (its Namespace held open by
+// something else's finalizer, per addUnrelatedFinalizer) is safe —
+// matching every other organization-lifecycle handler's re-request-safe
+// design in this file. Once deletion actually completes (see
+// TestHandleDeleteOrganization_CompletesSynchronouslyWhenNamespaceIsEmpty),
+// a further DELETE naturally 404s instead — there is nothing left to
+// re-request against, the same as any other already-gone resource.
 func TestHandleDeleteOrganization_Idempotent(t *testing.T) {
 	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
 	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	addUnrelatedFinalizer(t, s.Client, "acme")
 
 	rec1 := doDeleteOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, "acme")
 	require.Equal(t, http.StatusAccepted, rec1.Code)
@@ -681,7 +732,6 @@ func TestHandlePatchOrganization_MigratesEverythingAndFlipsReconcilingCluster(t 
 
 	var gotNS corev1.Namespace
 	require.NoError(t, destClient.Get(ctx, types.NamespacedName{Name: "acme"}, &gotNS), "the destination must get its own Namespace, not assumed to already exist")
-	assert.True(t, controllerutil.ContainsFinalizer(&gotNS, hyvev1alpha1.OrganizationNamespaceFinalizer))
 
 	var gotSA corev1.ServiceAccount
 	require.NoError(t, destClient.Get(ctx, types.NamespacedName{Namespace: "acme", Name: "hyve-access-admin"}, &gotSA), "the destination must get its own RBAC scaffolding")
