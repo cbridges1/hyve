@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -174,4 +175,91 @@ func TestResolveResourceEnvironment_NilOrgStore_LegacyBehavior(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Empty(t, env.ID)
+}
+
+// TestEffectiveEnvironmentLabel_BackfillsSoleEnvironment is the regression
+// test for a real, live-reported bug: an object created before its
+// organization had any environment (or before environments existed at
+// all) shows Environment: "" in the DTO, even after that organization
+// later gets exactly one environment ("default", the common case) — the
+// object genuinely can't belong to anything else, but the console showed
+// it as belonging to nothing, and the "default" environment looked
+// permanently empty despite holding every pre-existing object in that
+// namespace.
+func TestEffectiveEnvironmentLabel_BackfillsSoleEnvironment(t *testing.T) {
+	s := &Server{OrgStore: newTestOrgStore(t), Namespace: "control-plane-ns"}
+	newOrgWithEnvironments(t, s.OrgStore, testNamespace, "default")
+
+	got := s.effectiveEnvironmentLabel(t.Context(), testNamespace, "")
+	assert.Equal(t, "default", got)
+}
+
+// TestEffectiveEnvironmentLabel_BackfillsDefaultAmongMultipleEnvironments
+// is the regression test for the live-reported follow-up: a long-running
+// control-plane organization that started with just "default" (the common
+// case TestEffectiveEnvironmentLabel_BackfillsSoleEnvironment covers) later
+// grew a second environment ("dev") alongside it — at that point,
+// len(envs)==1 stops being true, but every pre-existing, still-unlabeled
+// object genuinely belongs to "default" specifically, not to "dev" (which
+// it has no relationship to at all), so the backfill must keep resolving
+// to "default" rather than going silent just because it's no longer the
+// organization's only environment.
+func TestEffectiveEnvironmentLabel_BackfillsDefaultAmongMultipleEnvironments(t *testing.T) {
+	s := &Server{OrgStore: newTestOrgStore(t), Namespace: "control-plane-ns"}
+	newOrgWithEnvironments(t, s.OrgStore, testNamespace, orgdb.DefaultEnvironmentName, "dev")
+
+	got := s.effectiveEnvironmentLabel(t.Context(), testNamespace, "")
+	assert.Equal(t, orgdb.DefaultEnvironmentName, got, "an unlabeled object must still resolve to \"default\" even once a second environment exists")
+}
+
+// TestEffectiveEnvironmentLabel_LeavesAmbiguousCasesAlone proves the
+// backfill only ever applies when there's a real, unambiguous home for an
+// unlabeled object (exactly one environment, or a "default" among several)
+// — every other case must return the label unchanged, including "".
+func TestEffectiveEnvironmentLabel_LeavesAmbiguousCasesAlone(t *testing.T) {
+	s := &Server{OrgStore: newTestOrgStore(t), Namespace: "control-plane-ns"}
+
+	// No Organization for this namespace at all.
+	assert.Equal(t, "", s.effectiveEnvironmentLabel(t.Context(), "no-such-namespace", ""))
+
+	// Multiple environments, none of them named "default" — only reachable
+	// by deleting the "default" environment specifically while another
+	// remains — genuinely ambiguous, must not guess.
+	newOrgWithEnvironments(t, s.OrgStore, "multi-env-org", "dev", "staging")
+	assert.Equal(t, "", s.effectiveEnvironmentLabel(t.Context(), "multi-env-org", ""))
+
+	// Already labeled — must never be overwritten, even if it happens to
+	// differ from the org's own current sole environment (e.g. renamed
+	// away from underneath an older label — not in scope here, just
+	// proving this function never clobbers a real value).
+	newOrgWithEnvironments(t, s.OrgStore, "single-env-org", "default")
+	assert.Equal(t, "prod", s.effectiveEnvironmentLabel(t.Context(), "single-env-org", "prod"))
+}
+
+// TestHandleListClusters_BackfillsEffectiveEnvironment proves the
+// end-to-end wiring: a ClusterDefinition created with no
+// hyve.io/environment label at all (the real shape of every pre-existing
+// object in a namespace that only later got its organization's first
+// environment) shows the organization's sole environment in GET
+// /clusters' own response, not an empty string.
+func TestHandleListClusters_BackfillsEffectiveEnvironment(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	newOrgWithEnvironments(t, s.OrgStore, testNamespace, "default")
+
+	// Created directly against the fake client, bypassing POST /clusters
+	// entirely — this is exactly what a pre-Milestone-3 (or pre-this-org's-
+	// first-environment) object looks like: no label at all.
+	require.NoError(t, s.Client.Create(t.Context(), &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "legacy-web", Namespace: testNamespace},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Driver: hyvev1alpha1.DriverRef{Source: "example.com/driver"}},
+	}))
+
+	rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dtos []clusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dtos))
+	require.Len(t, dtos, 1)
+	assert.Equal(t, "legacy-web", dtos[0].Name)
+	assert.Equal(t, "default", dtos[0].Environment, "a legacy unlabeled object must display as the org's sole environment, not empty")
 }

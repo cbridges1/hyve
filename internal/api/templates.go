@@ -64,7 +64,9 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]templateDTO, 0, len(list.Items))
 	for i := range list.Items {
-		dtos = append(dtos, toTemplateDTO(&list.Items[i]))
+		dto := toTemplateDTO(&list.Items[i])
+		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		dtos = append(dtos, dto)
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
@@ -89,7 +91,9 @@ func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get template")
 		return
 	}
-	writeJSON(w, http.StatusOK, toTemplateDTO(&cr))
+	dto := toTemplateDTO(&cr)
+	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // createTemplateRequest reuses hyvev1alpha1.TemplateSpec directly as the
@@ -183,7 +187,9 @@ func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update template: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, toTemplateDTO(&cr))
+	dto := toTemplateDTO(&cr)
+	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {

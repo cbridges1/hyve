@@ -40,6 +40,7 @@ func (s *Server) registerOrganizationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /organizations/{name}", s.handleDeleteOrganization)
 	mux.HandleFunc("POST /organizations/{name}/environments", s.handleCreateOrgEnvironment)
 	mux.HandleFunc("GET /organizations/{name}/environments", s.handleListOrgEnvironments)
+	mux.HandleFunc("DELETE /organizations/{name}/environments/{env}", s.handleDeleteOrgEnvironment)
 	mux.HandleFunc("GET /organizations/{name}/reconciling-cluster", s.handleGetOrgReconcilingCluster)
 	mux.HandleFunc("PUT /organizations/{name}/reconciling-cluster", s.handlePutOrgReconcilingCluster)
 	mux.HandleFunc("DELETE /organizations/{name}/reconciling-cluster", s.handleDeleteOrgReconcilingCluster)
@@ -110,6 +111,21 @@ func (s *Server) handleListOrganizations(w http.ResponseWriter, r *http.Request)
 	}
 	out := make([]organizationDTO, 0, len(orgs))
 	for _, org := range orgs {
+		// The control plane's own organization row (ensureControlPlaneOrganization,
+		// cmd/api/controlplaneorg.go) is never a tenant to manage or switch
+		// into through this list — it's not creatable here
+		// (validateOrganizationName) and not deletable here (see
+		// handleDeleteOrganization's identical org.Namespace == s.Namespace
+		// check) either. Every caller of this endpoint already has its own
+		// dedicated way to represent the control plane (the web console's
+		// "Viewing" switcher hardcodes its own "Control plane" option at
+		// actAs=""; OrganizationsPage manages tenants specifically) —
+		// without this exclusion, both would show a second, redundant
+		// "hyve-system" row alongside it that resolves to the exact same
+		// namespace, confirmed live as confusing rather than useful.
+		if org.Namespace == s.Namespace {
+			continue
+		}
 		out = append(out, s.toOrganizationDTO(ctx, org))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -880,6 +896,130 @@ func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusCreated, toOrganizationEnvironmentDTO(env))
+}
+
+// handleDeleteOrgEnvironment permanently removes one environment from an
+// organization — refused when it's the organization's last remaining
+// environment (resolveResourceEnvironment's own single-vs-ambiguous
+// resolution stops meaning anything once an organization has zero), when
+// it's specifically the reserved orgdb.DefaultEnvironmentName ("default")
+// regardless of how many other environments remain (see
+// effectiveEnvironmentLabel's own doc comment: "default" is the one
+// designated home every unlabeled/legacy object resolves to — deleting it
+// while a peer like "staging" survives would silently reintroduce the
+// exact ambiguity that backfill exists to avoid, for every still-unlabeled
+// object in the namespace, not just newly created ones), or when any
+// ClusterDefinition/Template/Workflow/Resource in the organization's
+// namespace still carries this environment's own hyve.io/environment
+// label (deleting the row out from under still-live objects would silently
+// orphan them from every environment-scoped list/filter in the console,
+// with no way back short of hand-editing labels — see environmentInUse). A
+// superadmin can target any organization by name; an ordinary admin only
+// their own (see requireOrgAccess).
+//
+// Renaming is deliberately not offered alongside this: an environment's
+// name is baked directly into every object's own metadata.name (see
+// joinEnvironmentName), not just this label, so a rename would mean
+// recreating every object under a new name rather than a simple row
+// update — out of scope here.
+func (s *Server) handleDeleteOrgEnvironment(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	envName := r.PathValue("env")
+
+	if envName == orgdb.DefaultEnvironmentName {
+		writeError(w, http.StatusBadRequest, "the \"default\" environment cannot be deleted — every object created before environments existed, or with no environment specified, belongs to it")
+		return
+	}
+
+	env, err := s.OrgStore.GetEnvironmentByName(ctx, org.ID, envName)
+	if err == orgdb.ErrNotFound {
+		writeError(w, http.StatusNotFound, "environment not found")
+		return
+	} else if err != nil {
+		log.Printf("api: failed to get environment %q/%q: %v", org.Name, envName, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+		return
+	}
+
+	envs, err := s.OrgStore.ListEnvironments(ctx, org.ID)
+	if err != nil {
+		log.Printf("api: failed to list environments for %q: %v", org.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+		return
+	}
+	if len(envs) <= 1 {
+		writeError(w, http.StatusBadRequest, "cannot delete an organization's last remaining environment")
+		return
+	}
+
+	rc, err := s.resourceClient(ctx, org.Namespace)
+	if err != nil {
+		log.Printf("api: failed to resolve reconciling cluster for organization %q: %v", org.Name, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+		return
+	}
+	inUse, err := s.environmentInUse(ctx, rc, org.Namespace, envName)
+	if err != nil {
+		log.Printf("api: failed to check environment %q/%q usage: %v", org.Name, envName, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+		return
+	}
+	if inUse {
+		writeError(w, http.StatusConflict, fmt.Sprintf("environment %q still has clusters, templates, workflows, or resources — delete them first", envName))
+		return
+	}
+
+	if err := s.OrgStore.DeleteEnvironment(ctx, env.ID); err != nil {
+		log.Printf("api: failed to delete environment %q/%q: %v", org.Name, envName, err)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to delete environment: %v", err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// environmentInUse reports whether any ClusterDefinition, Template,
+// Workflow, or Resource in namespace still carries environment's own
+// hyve.io/environment label — checked across all four real-CR types (the
+// only ones this label is ever applied to — see resolveCreateName's own
+// callers), not the git-ref-mirrored *RefStatus kinds, which have no
+// environment concept of their own (see effectiveEnvironmentLabel's doc
+// comment for the same real-CR/ref-status distinction).
+func (s *Server) environmentInUse(ctx context.Context, rc client.Client, namespace, environment string) (bool, error) {
+	opts := []client.ListOption{client.InNamespace(namespace), client.MatchingLabels{hyveEnvironmentLabel: environment}}
+
+	var clusters hyvev1alpha1.ClusterDefinitionList
+	if err := rc.List(ctx, &clusters, opts...); err != nil {
+		return false, fmt.Errorf("list cluster definitions: %w", err)
+	}
+	if len(clusters.Items) > 0 {
+		return true, nil
+	}
+
+	var templates hyvev1alpha1.TemplateList
+	if err := rc.List(ctx, &templates, opts...); err != nil {
+		return false, fmt.Errorf("list templates: %w", err)
+	}
+	if len(templates.Items) > 0 {
+		return true, nil
+	}
+
+	var workflows hyvev1alpha1.WorkflowList
+	if err := rc.List(ctx, &workflows, opts...); err != nil {
+		return false, fmt.Errorf("list workflows: %w", err)
+	}
+	if len(workflows.Items) > 0 {
+		return true, nil
+	}
+
+	var resources hyvev1alpha1.ResourceList
+	if err := rc.List(ctx, &resources, opts...); err != nil {
+		return false, fmt.Errorf("list resources: %w", err)
+	}
+	return len(resources.Items) > 0, nil
 }
 
 // orgReconcilingClusterDTO is GET/PUT /organizations/{name}/reconciling-cluster's

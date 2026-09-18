@@ -170,7 +170,9 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]clusterDTO, 0, len(list.Items))
 	for i := range list.Items {
-		dtos = append(dtos, toClusterDTO(&list.Items[i]))
+		dto := toClusterDTO(&list.Items[i])
+		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		dtos = append(dtos, dto)
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
@@ -195,7 +197,9 @@ func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get cluster")
 		return
 	}
-	writeJSON(w, http.StatusOK, toClusterDTO(&cd))
+	dto := toClusterDTO(&cd)
+	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // clusterResourcesDTO is a separate endpoint (not folded into clusterDTO)
@@ -511,7 +515,9 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update cluster: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, toClusterDTO(&cd))
+	dto := toClusterDTO(&cd)
+	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {

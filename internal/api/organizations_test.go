@@ -468,6 +468,33 @@ func TestHandleListOrganizations_ReturnsCreatedOrgs(t *testing.T) {
 	assert.False(t, out[0].Migrating)
 }
 
+// TestHandleListOrganizations_ExcludesControlPlaneOwnOrganization is the
+// regression test for a real, live-reported bug: ensureControlPlaneOrganization
+// (cmd/api/controlplaneorg.go) seeds a real Organization row for the
+// control plane's own namespace on every install, unconditionally. Left
+// unfiltered, that row showed up as a second, redundant entry (named
+// after the control-plane namespace, e.g. "hyve-system") alongside the
+// web console's own hardcoded "Control plane" option in the "Viewing"
+// switcher — both resolving to the exact same namespace. This must never
+// appear in the list, on a brand new install or an existing one.
+func TestHandleListOrganizations_ExcludesControlPlaneOwnOrganization(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	_, _, err := s.OrgStore.CreateOrganizationWithDefaults(t.Context(), orgdb.Organization{Name: testNamespace, Namespace: testNamespace}, "", "")
+	require.NoError(t, err, "mirrors ensureControlPlaneOrganization's own seeding call exactly")
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	req := httptest.NewRequest(http.MethodGet, "/organizations", nil)
+	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out []organizationDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out, 1, "the control plane's own organization must never appear in this list")
+	assert.Equal(t, "acme", out[0].Name)
+}
+
 // TestOrganizationDTO_ShowsReconcilingClusterNameAndMigratingFlag proves
 // the organizationDTO gap flagged during Milestone 6 is closed: a caller
 // (the web console, most directly) can now see which reconciling cluster
@@ -909,6 +936,127 @@ func TestOrgEnvironments_SuperadminReachesAnyOrganization(t *testing.T) {
 
 	rec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleSuperadmin, testNamespace, "acme")
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func doDeleteEnvironmentRequest(t *testing.T, s *Server, role, callerNamespace, orgName, envName string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/organizations/"+orgName+"/environments/"+envName, nil)
+	req = req.WithContext(contextWithRole(req.Context(), role))
+	req = req.WithContext(contextWithNamespace(req.Context(), callerNamespace))
+	rec := httptest.NewRecorder()
+	newOrganizationsTestMux(s).ServeHTTP(rec, req)
+	return rec
+}
+
+// TestHandleDeleteOrgEnvironment_Success proves the ordinary case: a second,
+// empty environment on an organization that already has more than one can
+// be deleted, and disappears from the list afterward.
+func TestHandleDeleteOrgEnvironment_Success(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", createOrgEnvironmentRequest{Name: "staging"}).Code)
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", "staging")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	listRec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	var envs []organizationEnvironmentDTO
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &envs))
+	require.Len(t, envs, 1)
+	assert.Equal(t, orgdb.DefaultEnvironmentName, envs[0].Name)
+}
+
+// TestHandleDeleteOrgEnvironment_RefusesLastRemaining proves an
+// organization's sole environment can never be deleted — resolveResourceEnvironment's
+// own "which environment" resolution stops meaning anything once an
+// organization has zero, so this is refused with a clear 400 rather than
+// leaving the organization in that state. It happens to also be "default"
+// here (every organization's sole environment always is, at creation), so
+// this equally exercises handleDeleteOrgEnvironment's dedicated "default"
+// guard — see TestHandleDeleteOrgEnvironment_RefusesDefaultEvenWithPeers for
+// that guard's own, sharper case.
+func TestHandleDeleteOrgEnvironment_RefusesLastRemaining(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", orgdb.DefaultEnvironmentName)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	listRec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	var envs []organizationEnvironmentDTO
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &envs))
+	require.Len(t, envs, 1, "the last environment must still be there after a refused delete")
+}
+
+// TestHandleDeleteOrgEnvironment_RefusesDefaultEvenWithPeers is the
+// regression test for the real gap the last-remaining guard alone didn't
+// cover: "default" is the reserved catch-all effectiveEnvironmentLabel
+// backfills every unlabeled/legacy object to (see that function's own doc
+// comment), so deleting it must be refused even while a peer environment
+// like "staging" survives — otherwise every still-unlabeled object in the
+// namespace would go right back to the exact display ambiguity that
+// backfill exists to solve, just because "default" itself happened not to
+// be the org's *last* environment.
+func TestHandleDeleteOrgEnvironment_RefusesDefaultEvenWithPeers(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", createOrgEnvironmentRequest{Name: "staging"}).Code)
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", orgdb.DefaultEnvironmentName)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	listRec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	var envs []organizationEnvironmentDTO
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &envs))
+	assert.Len(t, envs, 2, "\"default\" must still be there after a refused delete, even with a peer environment present")
+}
+
+// TestHandleDeleteOrgEnvironment_RefusesWhenInUse proves an environment
+// still holding real objects (here, a ClusterDefinition carrying its
+// hyve.io/environment label) is refused with 409 — deleting the row out
+// from under still-live objects would silently orphan them from every
+// environment-scoped list/filter in the console.
+func TestHandleDeleteOrgEnvironment_RefusesWhenInUse(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", createOrgEnvironmentRequest{Name: "staging"}).Code)
+
+	require.NoError(t, s.Client.Create(t.Context(), &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "staging-web", Namespace: "acme", Labels: map[string]string{hyveEnvironmentLabel: "staging"}},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{Driver: hyvev1alpha1.DriverRef{Source: "example.com/driver"}},
+	}))
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", "staging")
+	assert.Equal(t, http.StatusConflict, rec.Code)
+
+	listRec := doListEnvironmentsRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme")
+	var envs []organizationEnvironmentDTO
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &envs))
+	assert.Len(t, envs, 2, "a refused delete must leave the environment in place")
+}
+
+// TestHandleDeleteOrgEnvironment_NotFound proves deleting an environment
+// name the organization doesn't have is a clear 404, not a silent no-op.
+func TestHandleDeleteOrgEnvironment_NotFound(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", "nonexistent")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandleDeleteOrgEnvironment_AdminCannotReachAnotherOrganization mirrors
+// TestOrgEnvironments_AdminCannotReachAnotherOrganization for delete: an
+// admin naming a different organization in the URL is rejected, not
+// silently redirected to their own org.
+func TestHandleDeleteOrgEnvironment_AdminCannotReachAnotherOrganization(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "globex"}).Code)
+	require.Equal(t, http.StatusCreated, doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", createOrgEnvironmentRequest{Name: "staging"}).Code)
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "globex", "acme", "staging")
+	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func doGetOrgReconcilingClusterRequest(t *testing.T, s *Server, role, callerNamespace, orgName string) *httptest.ResponseRecorder {

@@ -24,6 +24,12 @@ export const organizationsApi = {
       method: 'POST',
       body: JSON.stringify({ name: environment }),
     }),
+  // Permanently removes one environment. Refused (409) if it still has any
+  // clusters/templates/workflows/resources, or (400) if it's the
+  // organization's last remaining environment — see that endpoint's own
+  // doc comment.
+  deleteEnvironment: (name: string, environment: string) =>
+    apiDelete(`/organizations/${encodeURIComponent(name)}/environments/${encodeURIComponent(environment)}`),
   // GET/PUT/DELETE /organizations/{name}/reconciling-cluster — an
   // organization's own admin-facing self-service placement (register/edit,
   // or permanently remove, its own dedicated cluster), reachable by an

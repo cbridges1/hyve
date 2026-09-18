@@ -65,6 +65,10 @@ export type Condition = {
 export type ClusterSummary = {
   name: string
   driver: string
+  // The hyve.io/environment label's value — empty/undefined for anything
+  // created before environments existed, or in a namespace with no
+  // matching Organization (see internal/api's resolveResourceEnvironment).
+  environment?: string
   conditions?: Condition[]
   observedGeneration: number
   accessMethod?: string
@@ -155,7 +159,7 @@ export type TemplateSpec = {
   lockParams?: boolean
 }
 
-export type Template = { name: string; spec: TemplateSpec }
+export type Template = { name: string; spec: TemplateSpec; environment?: string }
 export type CreateTemplateRequest = { name: string; spec: TemplateSpec }
 export type RenderTemplateRequest = { region?: string; params?: Record<string, string> }
 
@@ -209,13 +213,13 @@ export type RefStatus = {
   error?: string
 }
 
-export type Workflow = { name: string; spec?: WorkflowSpec; refStatus?: RefStatus }
+export type Workflow = { name: string; spec?: WorkflowSpec; refStatus?: RefStatus; environment?: string }
 export type CreateWorkflowRequest = { name: string; spec: WorkflowSpec }
 
 // ── Resources ────────────────────────────────────────────────────────────
 
 export type ResourceSpec = { manifest: string }
-export type ResourceItem = { name: string; spec?: ResourceSpec; refStatus?: RefStatus }
+export type ResourceItem = { name: string; spec?: ResourceSpec; refStatus?: RefStatus; environment?: string }
 export type CreateResourceRequest = { name: string; spec: ResourceSpec }
 
 // ── Modules ──────────────────────────────────────────────────────────────

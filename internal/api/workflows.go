@@ -102,7 +102,9 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]workflowDTO, 0, len(list.Items)+len(refStatusList.Items))
 	for i := range list.Items {
-		dtos = append(dtos, toWorkflowDTO(&list.Items[i]))
+		dto := toWorkflowDTO(&list.Items[i])
+		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		dtos = append(dtos, dto)
 	}
 	for i := range refStatusList.Items {
 		dtos = append(dtos, toWorkflowRefStatusDTO(&refStatusList.Items[i]))
@@ -124,7 +126,9 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	var cr hyvev1alpha1.Workflow
 	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resolvedName}, &cr)
 	if err == nil {
-		writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
+		dto := toWorkflowDTO(&cr)
+		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		writeJSON(w, http.StatusOK, dto)
 		return
 	}
 	if !apierrors.IsNotFound(err) {
@@ -251,7 +255,9 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update workflow: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
+	dto := toWorkflowDTO(&cr)
+	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {

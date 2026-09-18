@@ -316,6 +316,45 @@ func (s *Store) ListEnvironments(ctx context.Context, organizationID string) ([]
 	return out, rows.Err()
 }
 
+// DeleteEnvironment permanently removes one environment row. Any binding
+// that happened to default to this specific environment (bindings.environment_id
+// is optional resolution metadata, never the actual isolation boundary —
+// see 0001_init.sql's own comment on that column) has the reference cleared
+// first, in the same transaction, rather than blocking the delete or
+// leaving a dangling FK: namespace is what actually scopes a binding's
+// access, so clearing this can never widen or narrow what it's authorized
+// for. Returns ErrNotFound if id doesn't exist.
+func (s *Store) DeleteEnvironment(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	clearBindings := rebind(s.driver, `UPDATE bindings SET environment_id = NULL WHERE environment_id = ?`)
+	if _, err := tx.ExecContext(ctx, clearBindings, id); err != nil {
+		return fmt.Errorf("clear bindings referencing environment: %w", err)
+	}
+
+	deleteEnv := rebind(s.driver, `DELETE FROM environments WHERE id = ?`)
+	res, err := tx.ExecContext(ctx, deleteEnv, id)
+	if err != nil {
+		return fmt.Errorf("delete environment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check delete environment result: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
 const bindingColumns = `id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, email, created_at`
 
 // ServiceAccountNameForRole is the role -> ServiceAccount convention

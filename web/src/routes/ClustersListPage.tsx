@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { load as loadYaml } from 'js-yaml'
 import { AdminOnly } from '../components/RoleGate'
 import { ReadyBadge } from '../components/ConditionBadge'
+import { EnvironmentBadge, EnvironmentFilterSelect, EnvironmentPickerField, useEnvironments } from '../components/Environment'
 import { Modal } from '../components/Modal'
 import { ModeTabs } from '../components/ModeTabs'
 import { YamlEditor } from '../components/YamlEditor'
@@ -11,6 +12,7 @@ import { templatesApi } from '../lib/api/templates'
 import { ApiError } from '../lib/api/client'
 import type { ClusterDefinitionSpec } from '../lib/api/types'
 import { useApi } from '../lib/useApi'
+import { useEnvironmentFilter } from '../lib/useEnvironmentFilter'
 
 const YAML_SPEC_PLACEHOLDER = `# Full ClusterDefinitionSpec — same shape the CLI/kubectl would apply.
 # See internal/apis/hyve/v1alpha1/clusterdefinition_types.go for every field.
@@ -25,8 +27,9 @@ params:
 const inputClass =
   'w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800'
 
-function NewClusterForm({ onCreated }: { onCreated: () => void }) {
+function NewClusterForm({ onCreated, defaultEnv }: { onCreated: () => void; defaultEnv: string }) {
   const { data: templates } = useApi(() => templatesApi.list())
+  const { data: environments } = useEnvironments()
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<'template' | 'yaml'>('template')
   const [name, setName] = useState('')
@@ -34,8 +37,14 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
   const [region, setRegion] = useState('')
   const [params, setParams] = useState<{ key: string; value: string }[]>([])
   const [specYaml, setSpecYaml] = useState('')
+  const [env, setEnv] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // Once a second environment exists, resolveResourceEnvironment refuses
+  // to guess which one a create with no ?env= belongs in — see
+  // Environment.tsx's own doc comment on EnvironmentPickerField.
+  const envRequired = (environments?.length ?? 0) > 1
+  const selectedEnv = env || defaultEnv
 
   if (!open) {
     return (
@@ -57,6 +66,7 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
     setParams([])
     setSpecYaml('')
     setMode('template')
+    setEnv('')
   }
 
   function paramsObject(): Record<string, string> | undefined {
@@ -77,12 +87,15 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
           setSubmitting(false)
           return
         }
-        await clustersApi.create({ name, spec })
+        await clustersApi.create({ name, spec }, selectedEnv || undefined)
       } else {
-        await clustersApi.create({
-          name,
-          template: templateName ? { name: templateName, region: region || undefined, params: paramsObject() } : undefined,
-        })
+        await clustersApi.create(
+          {
+            name,
+            template: templateName ? { name: templateName, region: region || undefined, params: paramsObject() } : undefined,
+          },
+          selectedEnv || undefined,
+        )
       }
       reset()
       onCreated()
@@ -93,7 +106,8 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
     }
   }
 
-  const canSubmit = mode === 'yaml' ? !!name && !!specYaml.trim() : !!name && !!templateName
+  const canSubmit =
+    (mode === 'yaml' ? !!name && !!specYaml.trim() : !!name && !!templateName) && (!envRequired || !!selectedEnv)
 
   return (
     <Modal title="New cluster" onClose={reset}>
@@ -106,10 +120,13 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
         ]}
       />
 
-      <label className="mb-3 block text-sm">
-        <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
-      </label>
+      <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="text-sm">
+          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
+        </label>
+        <EnvironmentPickerField value={env} onChange={setEnv} defaultValue={defaultEnv} />
+      </div>
 
       {mode === 'template' ? (
         <>
@@ -207,18 +224,25 @@ function NewClusterForm({ onCreated }: { onCreated: () => void }) {
 export function ClustersListPage() {
   const navigate = useNavigate()
   const { data: clusters, loading, error, reload } = useApi(() => clustersApi.list())
+  const [envFilter, setEnvFilter] = useEnvironmentFilter()
   // accessMethod: 'primary' is the host/local cluster (see ClusterDetailPage's
   // "Host cluster" badge) — pinned first regardless of API order. Array.sort
   // is stable, so everything else keeps whatever order the API returned.
-  const sorted = clusters?.slice().sort((a, b) => Number(b.accessMethod === 'primary') - Number(a.accessMethod === 'primary'))
+  const sorted = clusters
+    ?.filter((c) => !envFilter || c.environment === envFilter)
+    .slice()
+    .sort((a, b) => Number(b.accessMethod === 'primary') - Number(a.accessMethod === 'primary'))
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Clusters</h1>
-        <AdminOnly>
-          <NewClusterForm onCreated={reload} />
-        </AdminOnly>
+        <div className="flex items-center gap-2">
+          <EnvironmentFilterSelect value={envFilter} onChange={setEnvFilter} />
+          <AdminOnly>
+            <NewClusterForm onCreated={reload} defaultEnv={envFilter} />
+          </AdminOnly>
+        </div>
       </div>
 
       {loading && <p className="text-sm text-neutral-500">Loading…</p>}
@@ -238,6 +262,7 @@ export function ClustersListPage() {
                 <div className="truncate text-xs text-neutral-500 dark:text-neutral-500">{c.driver}</div>
               </div>
               <div className="flex shrink-0 items-center gap-3">
+                <EnvironmentBadge environment={c.environment} />
                 {c.accessMethod === 'primary' && (
                   <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
                     Host cluster

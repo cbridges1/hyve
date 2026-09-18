@@ -327,6 +327,52 @@ func TestCRUDRoundTrip_Postgres(t *testing.T) {
 	testCRUDRoundTrip(t, openTestPostgres(t))
 }
 
+// TestDeleteEnvironment_RemovesRowAndClearsReferencingBindings proves both
+// halves of DeleteEnvironment's contract: the row is actually gone
+// afterward (re-creatable under the same name, since UNIQUE(organization_id,
+// name) no longer sees it), and a binding that had defaulted to this
+// specific environment survives with environment_id cleared rather than
+// the delete failing on a dangling FK or silently leaving a stale
+// reference — namespace, not environment_id, is what actually still scopes
+// that binding's access.
+func TestDeleteEnvironment_RemovesRowAndClearsReferencingBindings(t *testing.T) {
+	s := openTestSQLite(t)
+	ctx := context.Background()
+
+	org, err := s.CreateOrganization(ctx, Organization{Name: "acme", Namespace: "acme"})
+	require.NoError(t, err)
+	env, err := s.CreateEnvironment(ctx, Environment{OrganizationID: org.ID, Name: "staging"})
+	require.NoError(t, err)
+
+	binding, err := s.CreateBinding(ctx, Binding{
+		Namespace: "acme", OrganizationID: &org.ID, EnvironmentID: &env.ID, SubjectType: SubjectTypeLocal,
+		Identity: "alice", Role: "admin", ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: "acme",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteEnvironment(ctx, env.ID))
+
+	_, err = s.GetEnvironmentByName(ctx, org.ID, "staging")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// The same name must be creatable again — proves the row is truly gone,
+	// not just hidden.
+	_, err = s.CreateEnvironment(ctx, Environment{OrganizationID: org.ID, Name: "staging"})
+	assert.NoError(t, err)
+
+	reloaded, err := s.getBindingByID(ctx, binding.ID)
+	require.NoError(t, err, "the binding itself must survive its environment's deletion")
+	assert.Nil(t, reloaded.EnvironmentID, "a binding's environment_id must be cleared, not left dangling, once that environment is gone")
+}
+
+// TestDeleteEnvironment_NotFound proves deleting an id that doesn't exist
+// is a clear ErrNotFound, not a silent no-op success.
+func TestDeleteEnvironment_NotFound(t *testing.T) {
+	s := openTestSQLite(t)
+	err := s.DeleteEnvironment(context.Background(), "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestCreateBinding_RequiresEnvironmentID(t *testing.T) {
 	s := openTestSQLite(t)
 	ctx := context.Background()

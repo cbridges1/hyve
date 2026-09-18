@@ -94,7 +94,9 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]resourceDTO, 0, len(list.Items)+len(refStatusList.Items))
 	for i := range list.Items {
-		dtos = append(dtos, toResourceDTO(&list.Items[i]))
+		dto := toResourceDTO(&list.Items[i])
+		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		dtos = append(dtos, dto)
 	}
 	for i := range refStatusList.Items {
 		dtos = append(dtos, toResourceRefStatusDTO(&refStatusList.Items[i]))
@@ -116,7 +118,9 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	var cr hyvev1alpha1.Resource
 	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resolvedName}, &cr)
 	if err == nil {
-		writeJSON(w, http.StatusOK, toResourceDTO(&cr))
+		dto := toResourceDTO(&cr)
+		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		writeJSON(w, http.StatusOK, dto)
 		return
 	}
 	if !apierrors.IsNotFound(err) {
@@ -240,7 +244,9 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update resource: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, toResourceDTO(&cr))
+	dto := toResourceDTO(&cr)
+	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {

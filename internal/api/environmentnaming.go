@@ -115,6 +115,63 @@ func (s *Server) resolveResourceEnvironment(ctx context.Context, namespace, requ
 	}
 }
 
+// effectiveEnvironmentLabel backfills the display value for an object
+// created before environments existed (or before its organization had
+// more than one) — label itself, verbatim, when already set. Otherwise:
+//
+//   - exactly one environment: that one, unambiguously (the same
+//     "no ambiguity, no explicit label needed" reasoning
+//     resolveResourceEnvironment's own len(envs)==1 case already uses at
+//     create time).
+//   - two or more environments, one of them literally named
+//     orgdb.DefaultEnvironmentName ("default"): that one specifically —
+//     "default" is the one reserved, always-auto-created environment
+//     (CreateOrganizationWithDefaults/ensureControlPlaneOrganization both
+//     seed it, and it's the only environment name resolveResourceEnvironment
+//     itself ever assumes), so every object that predates Milestone 3 — or
+//     predates its organization's second environment — genuinely belongs
+//     there, not to an arbitrarily later-created peer like "staging" or
+//     "dev" it has no actual relationship to. Confirmed live on a
+//     long-running control-plane organization that had since grown a second
+//     environment ("dev") alongside "default": the len(envs)==1-only
+//     version of this function left every pre-existing host-cluster
+//     object unlabeled forever once that second environment existed,
+//     which is the wrong call — "default" not being alone doesn't make it
+//     any less the right home for something with no label at all.
+//   - anything else (no Organization for namespace, zero environments, or
+//     2+ environments none of which is named "default" — only reachable by
+//     deleting the "default" environment specifically while another
+//     remains, via DELETE /organizations/{name}/environments/{env}):
+//     genuinely ambiguous, label returned unchanged (including "").
+//
+// Display-only: never writes the label back onto the object itself, so
+// this has to be recomputed on every read, and a caller filtering
+// client-side by environment needs to apply the identical fallback, not
+// just this field, to see the same result a list endpoint already
+// backfilled.
+func (s *Server) effectiveEnvironmentLabel(ctx context.Context, namespace, label string) string {
+	if label != "" || s.OrgStore == nil {
+		return label
+	}
+	org, err := s.OrgStore.GetOrganizationByName(ctx, namespace)
+	if err != nil {
+		return label
+	}
+	envs, err := s.OrgStore.ListEnvironments(ctx, org.ID)
+	if err != nil {
+		return label
+	}
+	if len(envs) == 1 {
+		return envs[0].Name
+	}
+	for _, env := range envs {
+		if env.Name == orgdb.DefaultEnvironmentName {
+			return env.Name
+		}
+	}
+	return label
+}
+
 // resourceEnvironmentResult bundles what every environment-scoped resource
 // handler needs after resolving a short name against its target namespace:
 // the real Kubernetes metadata.name to actually use, and the label value
