@@ -129,6 +129,53 @@ func TestHandleLogin_CreatesRevocableSession(t *testing.T) {
 	assert.NotEmpty(t, sess.TokenHash)
 }
 
+// TestHandleLogin_ByEmail proves the email-as-identifier fallback: logging
+// in with a binding's Email in the username field succeeds, and the
+// resulting session carries the binding's real Identity as its subject —
+// never the email the caller actually typed, which nothing downstream
+// (findBindingBySubject, UsernameFromContext comparisons, ...) can resolve.
+func TestHandleLogin_ByEmail(t *testing.T) {
+	hash, err := HashPassword("correct-password")
+	require.NoError(t, err)
+	store := newTestOrgStore(t)
+	email := "cedric@example.com"
+	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleAdmin), ServiceAccountNamespace: testNamespace,
+		PasswordHash: &hash, Email: &email,
+	})
+	require.NoError(t, err)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace, SigningKey: []byte("test-signing-key")}
+
+	rec := doLogin(s, "cedric@example.com", "correct-password")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp loginResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	subject, _, err := VerifyToken(s.SigningKey, resp.AccessToken)
+	require.NoError(t, err)
+	assert.Equal(t, "cedric", subject, "the session must carry the real username, not the email typed at login")
+}
+
+// TestHandleLogin_ByEmail_WrongPassword proves the email fallback still
+// enforces the password check, not just identity resolution.
+func TestHandleLogin_ByEmail_WrongPassword(t *testing.T) {
+	hash, err := HashPassword("correct-password")
+	require.NoError(t, err)
+	store := newTestOrgStore(t)
+	email := "cedric@example.com"
+	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleAdmin), ServiceAccountNamespace: testNamespace,
+		PasswordHash: &hash, Email: &email,
+	})
+	require.NoError(t, err)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace, SigningKey: []byte("test-signing-key")}
+
+	rec := doLogin(s, "cedric@example.com", "wrong-password")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 func TestHandleLogin_WrongPassword(t *testing.T) {
 	s := newTestServerWithUser(t, "cedric", "correct-password", hyvev1alpha1.RoleAdmin)
 

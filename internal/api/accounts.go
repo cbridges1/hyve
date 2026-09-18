@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
@@ -15,12 +16,13 @@ import (
 // has nothing here to "manage" — no password to reset, no Secret to
 // delete — so it's filtered out rather than shown half-functional.
 type accountDTO struct {
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	Username string  `json:"username"`
+	Role     string  `json:"role"`
+	Email    *string `json:"email,omitempty"`
 }
 
 func toAccountDTO(b orgdb.Binding) accountDTO {
-	return accountDTO{Username: b.Identity, Role: b.Role}
+	return accountDTO{Username: b.Identity, Role: b.Role, Email: b.Email}
 }
 
 // registerAccountRoutes wires /accounts — mounted under /api/ (behind
@@ -31,8 +33,64 @@ func toAccountDTO(b orgdb.Binding) accountDTO {
 func (s *Server) registerAccountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /accounts", s.handleCreateAccount)
+	mux.HandleFunc("GET /accounts/{username}", s.handleGetAccount)
+	mux.HandleFunc("PATCH /accounts/{username}", s.handleUpdateAccount)
 	mux.HandleFunc("DELETE /accounts/{username}", s.handleDeleteAccount)
 	mux.HandleFunc("PUT /accounts/{username}/password", s.handleUpdateAccountPassword)
+}
+
+// handleGetAccount backs the console's per-user detail page — a single-
+// resource fetch alongside the existing list, same shape every other
+// resource type in this API already has (GET /clusters/{name} etc.).
+// Same visibility rule as list/delete/update: a superadmin account is
+// reported as not-found to a non-superadmin caller, not forbidden.
+func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
+		return
+	}
+	username := r.PathValue("username")
+	callerRole, _ := RoleFromContext(r.Context())
+
+	binding, err := s.findBindingBySubject(r.Context(), s.TenantNamespace(r), orgdb.SubjectTypeLocal, username)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if binding.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toAccountDTO(binding))
+}
+
+// validateAndCheckEmail is the shared email-handling logic between account
+// creation and update: light syntactic validation (this isn't the
+// platform's verification step, just enough to catch an obvious typo) plus
+// the per-namespace uniqueness check (see
+// migrations/*/0003_binding_email.sql). email == "" means "no email" and
+// always passes through as nil with no lookup. excludeBindingID skips that
+// one row's own match (an update finding only itself isn't a conflict);
+// pass "" from account creation, which has no existing row to exclude.
+func (s *Server) validateAndCheckEmail(w http.ResponseWriter, r *http.Request, namespace, email, excludeBindingID string) (*string, bool) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, true
+	}
+	if !strings.Contains(email, "@") {
+		writeError(w, http.StatusBadRequest, "invalid email address")
+		return nil, false
+	}
+	existing, err := s.OrgStore.FindBindingByEmail(r.Context(), namespace, email)
+	if err == nil && existing.ID != excludeBindingID {
+		writeError(w, http.StatusConflict, "an account with this email already exists")
+		return nil, false
+	}
+	if err != nil && err != orgdb.ErrNotFound {
+		log.Printf("api: failed to check existing email %q: %v", email, err)
+		writeError(w, http.StatusInternalServerError, "failed to save account")
+		return nil, false
+	}
+	return &email, true
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +127,10 @@ type createAccountRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Role     string `json:"role"`
+
+	// Email is optional at creation, same as it is on PATCH — see
+	// validateAndCheckEmail and orgdb.Binding.Email's own doc comment.
+	Email string `json:"email,omitempty"`
 
 	// Namespace lets a superadmin caller target a tenant namespace other
 	// than their own (they have none — see RoleSuperadmin's doc comment)
@@ -191,6 +253,11 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	email, ok := s.validateAndCheckEmail(w, r, secretNamespace, req.Email, "")
+	if !ok {
+		return
+	}
+
 	binding, err := s.OrgStore.CreateBinding(ctx, orgdb.Binding{
 		Namespace:               secretNamespace,
 		OrganizationID:          organizationID,
@@ -198,6 +265,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		SubjectType:             orgdb.SubjectTypeLocal,
 		Identity:                req.Username,
 		Role:                    req.Role,
+		Email:                   email,
 		ServiceAccountName:      serviceAccount,
 		ServiceAccountNamespace: secretNamespace,
 		PasswordHash:            &hash,
@@ -209,6 +277,173 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, toAccountDTO(binding))
+}
+
+// updateAccountRequest's Role/Email are both nil-means-"leave unchanged" —
+// a plain string can't distinguish that from "clear this field," which
+// Email in particular needs (an admin removing an account's email).
+type updateAccountRequest struct {
+	Role  *string `json:"role,omitempty"`
+	Email *string `json:"email,omitempty"`
+
+	// Namespace is the destination tenant when Role moves a binding OUT of
+	// superadmin, which has no tenant of its own to fall back to — same
+	// "superadmin caller can target a tenant namespace" field
+	// createAccountRequest.Namespace already has, required only in that one
+	// transition. Every other role change stays within the binding's
+	// current namespace, so this is ignored otherwise.
+	Namespace string `json:"namespace,omitempty"`
+
+	// Environment scopes the grant within Namespace's organization when
+	// demoting a superadmin — same resolution rule as
+	// createAccountRequest.Environment.
+	Environment string `json:"environment,omitempty"`
+}
+
+// handleUpdateAccount changes an existing account's role and/or email —
+// promote/demote between read-only ("regular" in the console),
+// admin, and superadmin, plus tracking a contact email (groundwork for the
+// platform's move toward email-driven flows — see orgdb.Binding.Email's
+// own doc comment).
+//
+// A role change that doesn't cross the superadmin boundary (read-only <->
+// admin, the common case) is a same-namespace, same-organization/
+// environment in-place update: only role and its paired ServiceAccount
+// name change. Crossing the boundary in either direction is different in
+// kind, not just degree — superadmin bindings live in the control-plane
+// namespace with no organization/environment at all (see RoleSuperadmin's
+// doc comment) — so it's gated to a superadmin caller and, when demoting
+// OUT of superadmin, requires an explicit destination Namespace (there is
+// no "current tenant" to infer one from).
+func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleSuperadmin) {
+		return
+	}
+	username := r.PathValue("username")
+	ctx := r.Context()
+
+	var req updateAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Role == nil && req.Email == nil {
+		writeError(w, http.StatusBadRequest, "role or email is required")
+		return
+	}
+
+	callerRole, _ := RoleFromContext(ctx)
+
+	// A superadmin binding always lives in s.Namespace (see
+	// handleCreateAccount) — this lookup finds it there regardless of "act
+	// as", the same way handleUpdateAccountPassword's self-change branch
+	// does, except here it applies to every caller: a plain admin's own
+	// TenantNamespace is already fixed to their one namespace regardless of
+	// role, so s.TenantNamespace(r) is the right scope to search in either
+	// case.
+	ns := s.TenantNamespace(r)
+	binding, err := s.findBindingBySubject(ctx, ns, orgdb.SubjectTypeLocal, username)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	// Same visibility rule as list/delete/password-reset: an ordinary
+	// admin can't even see a superadmin account to attempt an edit on it.
+	if binding.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+
+	if req.Role != nil {
+		if caller, ok := UsernameFromContext(ctx); ok && caller == username {
+			writeError(w, http.StatusBadRequest, "cannot change your own role")
+			return
+		}
+		newRole := *req.Role
+		switch newRole {
+		case hyvev1alpha1.RoleAdmin, hyvev1alpha1.RoleReadOnly, hyvev1alpha1.RoleSuperadmin:
+		default:
+			writeError(w, http.StatusBadRequest, `role must be "admin", "read-only", or "superadmin"`)
+			return
+		}
+
+		crossesSuperadmin := newRole == hyvev1alpha1.RoleSuperadmin || binding.Role == hyvev1alpha1.RoleSuperadmin
+		if crossesSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
+			writeError(w, http.StatusForbidden, "only a superadmin can grant or revoke superadmin")
+			return
+		}
+
+		targetNamespace := binding.Namespace
+		var organizationID, environmentID *string
+		switch {
+		case newRole == hyvev1alpha1.RoleSuperadmin:
+			// Unambiguous destination regardless of where the binding came
+			// from — a superadmin's home is always the control plane.
+			targetNamespace = s.Namespace
+		case binding.Role == hyvev1alpha1.RoleSuperadmin:
+			// Demoting out of superadmin: there's no "current tenant" to
+			// fall back to, so the caller must say where this binding
+			// lands.
+			if req.Namespace == "" {
+				writeError(w, http.StatusBadRequest, "namespace is required when changing a superadmin's role")
+				return
+			}
+			targetNamespace = req.Namespace
+			env, ok, envErr := s.resolveResourceEnvironment(ctx, targetNamespace, req.Environment)
+			if envErr != nil {
+				status := http.StatusBadRequest
+				if !ok {
+					status = http.StatusInternalServerError
+				}
+				writeError(w, status, envErr.Error())
+				return
+			}
+			if ok {
+				organizationID = &env.OrganizationID
+				environmentID = &env.ID
+			}
+		default:
+			// Plain read-only <-> admin: same namespace/organization/
+			// environment the binding already has.
+			organizationID = binding.OrganizationID
+			environmentID = binding.EnvironmentID
+		}
+
+		if targetNamespace != binding.Namespace {
+			if _, err := s.findBindingBySubject(ctx, targetNamespace, orgdb.SubjectTypeLocal, username); err == nil {
+				writeError(w, http.StatusConflict, "an account with this username already exists in the destination namespace")
+				return
+			} else if err != orgdb.ErrNotFound {
+				log.Printf("api: failed to check existing account %q in %q: %v", username, targetNamespace, err)
+				writeError(w, http.StatusInternalServerError, "failed to update account")
+				return
+			}
+		}
+
+		binding.Role = newRole
+		binding.ServiceAccountName = orgdb.ServiceAccountNameForRole(newRole)
+		binding.Namespace = targetNamespace
+		binding.ServiceAccountNamespace = targetNamespace
+		binding.OrganizationID = organizationID
+		binding.EnvironmentID = environmentID
+	}
+
+	if req.Email != nil {
+		email, ok := s.validateAndCheckEmail(w, r, binding.Namespace, *req.Email, binding.ID)
+		if !ok {
+			return
+		}
+		binding.Email = email
+	}
+
+	updated, err := s.OrgStore.UpdateBinding(ctx, binding)
+	if err != nil {
+		log.Printf("api: failed to update account %q: %v", username, err)
+		writeError(w, http.StatusInternalServerError, "failed to update account")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toAccountDTO(updated))
 }
 
 // handleDeleteAccount refuses to let a caller delete their own account —

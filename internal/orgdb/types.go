@@ -80,6 +80,13 @@ type Binding struct {
 	// internal/api/credentials.go's LoadPasswordHash.
 	PasswordHash *string
 
+	// Email is an optional contact address, unique within Namespace when
+	// set (see migrations/*/0003_binding_email.sql) — nil for a binding
+	// nobody has ever set one on. Usable as an alternate login identifier
+	// alongside Identity (see Server.handleLogin) — groundwork for the
+	// platform's move toward email-driven flows generally.
+	Email *string
+
 	CreatedAt time.Time
 }
 

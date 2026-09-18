@@ -74,7 +74,7 @@ export function SecretsIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
-export function AccountsIcon(props: SVGProps<SVGSVGElement>) {
+export function UsersIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
       <circle cx="12" cy="8" r="3.5" />

@@ -4,7 +4,6 @@ import { LoginForm } from './components/LoginForm'
 import { AdminOnly, SuperadminOnly } from './components/RoleGate'
 import { ConfirmProvider } from './lib/confirm'
 import { useSession } from './lib/useAuth'
-import { AccountsPage } from './routes/AccountsPage'
 import { ClusterDetailPage } from './routes/ClusterDetailPage'
 import { ClustersListPage } from './routes/ClustersListPage'
 import { EnvironmentsPage } from './routes/EnvironmentsPage'
@@ -18,6 +17,8 @@ import { SecretsPage } from './routes/SecretsPage'
 import { SettingsRoute } from './routes/SettingsRoute'
 import { TemplateDetailPage } from './routes/TemplateDetailPage'
 import { TemplatesPage } from './routes/TemplatesPage'
+import { UserDetailPage } from './routes/UserDetailPage'
+import { UsersPage } from './routes/UsersPage'
 import { WorkflowDetailPage } from './routes/WorkflowDetailPage'
 import { WorkflowsPage } from './routes/WorkflowsPage'
 
@@ -64,7 +65,22 @@ function App() {
             <Route path="/modules" element={<ModulesPage />} />
             <Route path="/modules/:name" element={<ModuleDetailPage />} />
             <Route path="/secrets" element={<SecretsPage />} />
-            <Route path="/accounts" element={<AccountsPage />} />
+            <Route
+              path="/users"
+              element={
+                <AdminOnly>
+                  <UsersPage />
+                </AdminOnly>
+              }
+            />
+            <Route
+              path="/users/:username"
+              element={
+                <AdminOnly>
+                  <UserDetailPage />
+                </AdminOnly>
+              }
+            />
             <Route
               path="/settings"
               element={

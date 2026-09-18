@@ -19,6 +19,11 @@ func constantTimeEqual(a, b string) bool {
 }
 
 type loginRequest struct {
+	// Username accepts either a binding's Identity (its actual username)
+	// or its Email — see handleLogin's own lookup order. The wire field
+	// name stays "username" for backward compatibility with every
+	// existing caller (CLI included); email-or-username is purely an
+	// additive relaxation of what value it accepts, not a new field.
 	Username string `json:"username"`
 	Password string `json:"password"`
 
@@ -78,10 +83,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ns = s.Namespace
 	}
 
+	// Username first (the common case, and unambiguous — see
+	// bindings_namespace_env_identity), falling back to Email (unique
+	// per-namespace — see bindings_namespace_email) only when that fails.
+	// Either way the actual identity (binding.Identity) is what carries
+	// forward into the session below, never the raw value the caller
+	// typed — see issueSession's own call site for why that matters.
 	binding, err := s.findBindingBySubject(r.Context(), ns, orgdb.SubjectTypeLocal, req.Username)
 	if err != nil {
+		binding, err = s.findBindingByEmail(r.Context(), ns, req.Username)
+	}
+	if err != nil {
 		// Deliberately the same error as a wrong password below — a login
-		// endpoint shouldn't reveal which usernames exist.
+		// endpoint shouldn't reveal which usernames/emails exist.
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	if binding.SubjectType != orgdb.SubjectTypeLocal {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -107,7 +125,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// value — issueSession re-derives "empty means control-plane
 	// namespace" itself on every use, so this stays correct even if
 	// s.Namespace itself is ever reconfigured.
-	resp, err := s.issueSession(r.Context(), req.Username, resolvedNamespace)
+	resp, err := s.issueSession(r.Context(), binding.Identity, resolvedNamespace)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return

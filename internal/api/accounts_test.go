@@ -519,3 +519,328 @@ func TestHandleUpdateAccountPassword_SuperadminSelfChange_IgnoresActAsNamespace(
 	require.NoError(t, err, "the superadmin's own binding must still resolve against s.Namespace, not the act-as namespace")
 	assert.True(t, VerifyPassword(*binding.PasswordHash, "new-pw"))
 }
+
+func TestHandleUpdateAccount_ReadOnlyForbidden(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "someone", hyvev1alpha1.RoleReadOnly, http.MethodPatch, "/accounts/x",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleAdmin)})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHandleUpdateAccount_NoFields_400(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/x", updateAccountRequest{})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleUpdateAccount_NotFound(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/missing",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleAdmin)})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleUpdateAccount_InvalidRole_400(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Role: strPtr("custom")})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleUpdateAccount_PromoteReadOnlyToAdmin proves the common,
+// same-namespace role change: read-only ("regular") -> admin in place,
+// including the paired ServiceAccount name flip.
+func TestHandleUpdateAccount_PromoteReadOnlyToAdmin(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleAdmin)})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	require.NoError(t, err)
+	assert.Equal(t, hyvev1alpha1.RoleAdmin, binding.Role)
+	assert.Equal(t, "hyve-access-admin", binding.ServiceAccountName)
+	assert.Equal(t, testNamespace, binding.Namespace, "an in-place admin<->read-only change must not move the binding's namespace")
+}
+
+func TestHandleUpdateAccount_DemoteAdminToReadOnly(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleReadOnly)})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	require.NoError(t, err)
+	assert.Equal(t, hyvev1alpha1.RoleReadOnly, binding.Role)
+	assert.Equal(t, "hyve-access-readonly", binding.ServiceAccountName)
+}
+
+// TestHandleUpdateAccount_CannotChangeOwnRole mirrors
+// TestHandleDeleteAccount_CannotDeleteSelf — the same self-lockout guard,
+// applied to role changes instead of deletion.
+func TestHandleUpdateAccount_CannotChangeOwnRole(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "cedric", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/cedric",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleReadOnly)})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "cedric")
+	require.NoError(t, err)
+	assert.Equal(t, hyvev1alpha1.RoleAdmin, binding.Role, "role must survive a rejected self-change")
+}
+
+// TestHandleUpdateAccount_OrdinaryAdminCannotPromoteToSuperadmin is the
+// escalation-prevention boundary for role changes, mirroring
+// TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin.
+func TestHandleUpdateAccount_OrdinaryAdminCannotPromoteToSuperadmin(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleSuperadmin)})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	require.NoError(t, err)
+	assert.Equal(t, hyvev1alpha1.RoleAdmin, binding.Role, "must not have been promoted")
+}
+
+// TestHandleUpdateAccount_SuperadminPromotesToSuperadmin proves the
+// unambiguous direction: any existing tenant binding can be promoted to
+// superadmin by a superadmin caller, with no destination namespace needed —
+// a superadmin's home is always the control plane.
+func TestHandleUpdateAccount_SuperadminPromotesToSuperadmin(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleAdmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "super-caller", hyvev1alpha1.RoleSuperadmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleSuperadmin)})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	require.NoError(t, err)
+	assert.Equal(t, hyvev1alpha1.RoleSuperadmin, binding.Role)
+	assert.Nil(t, binding.OrganizationID, "a superadmin binding must have no organization/environment")
+	assert.Nil(t, binding.EnvironmentID)
+}
+
+// TestHandleUpdateAccount_DemoteSuperadmin_RequiresNamespace proves the
+// reverse direction needs an explicit destination — there's no "current
+// tenant" to infer one from for a binding that currently has none.
+func TestHandleUpdateAccount_DemoteSuperadmin_RequiresNamespace(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "root-super", Role: hyvev1alpha1.RoleSuperadmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "super-caller", hyvev1alpha1.RoleSuperadmin, http.MethodPatch, "/accounts/root-super",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleAdmin)})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleUpdateAccount_DemoteSuperadmin_WithNamespace(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "root-super", Role: hyvev1alpha1.RoleSuperadmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "super-caller", hyvev1alpha1.RoleSuperadmin, http.MethodPatch, "/accounts/root-super",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleReadOnly), Namespace: "acme"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "root-super")
+	require.NoError(t, err, "the binding must now live in the requested destination namespace")
+	assert.Equal(t, hyvev1alpha1.RoleReadOnly, binding.Role)
+	assert.Equal(t, "hyve-access-readonly", binding.ServiceAccountName)
+
+	_, err = s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "root-super")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "must no longer be found at the old control-plane namespace")
+}
+
+// TestHandleUpdateAccount_OrdinaryAdminCannotDemoteSuperadmin proves the
+// boundary check applies symmetrically — an ordinary admin can't reach a
+// superadmin binding at all (visibility rule fires first), let alone
+// change its role.
+func TestHandleUpdateAccount_OrdinaryAdminCannotDemoteSuperadmin(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "root-super", Role: hyvev1alpha1.RoleSuperadmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/root-super",
+		updateAccountRequest{Role: strPtr(hyvev1alpha1.RoleReadOnly), Namespace: testNamespace})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleUpdateAccount_UpdatesEmail(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Email: strPtr("victim@example.com")})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto accountDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	require.NotNil(t, dto.Email)
+	assert.Equal(t, "victim@example.com", *dto.Email)
+}
+
+func TestHandleUpdateAccount_InvalidEmail_400(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Email: strPtr("not-an-email")})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleUpdateAccount_DuplicateEmail_Conflict(t *testing.T) {
+	s := newTestServer(t)
+	existingEmail := "taken@example.com"
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "existing", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &existingEmail,
+	})
+	require.NoError(t, err)
+	_, err = s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Email: strPtr("taken@example.com")})
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestHandleUpdateAccount_ClearEmail(t *testing.T) {
+	s := newTestServer(t)
+	email := "victim@example.com"
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &email,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPatch, "/accounts/victim",
+		updateAccountRequest{Email: strPtr("")})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "victim")
+	require.NoError(t, err)
+	assert.Nil(t, binding.Email)
+}
+
+func TestHandleCreateAccount_WithEmail(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "new-user@example.com"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var dto accountDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	require.NotNil(t, dto.Email)
+	assert.Equal(t, "new-user@example.com", *dto.Email)
+}
+
+func TestHandleCreateAccount_DuplicateEmail_Conflict(t *testing.T) {
+	s := newTestServer(t)
+	existingEmail := "taken@example.com"
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "existing", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &existingEmail,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "taken@example.com"})
+	assert.Equal(t, http.StatusConflict, rec.Code)
+
+	_, err = s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "new-user")
+	assert.ErrorIs(t, err, orgdb.ErrNotFound, "must not have been created at all")
+}
+
+func TestHandleGetAccount_ReturnsAccount(t *testing.T) {
+	s := newTestServer(t)
+	email := "victim@example.com"
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "victim", Role: hyvev1alpha1.RoleReadOnly,
+		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &email,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts/victim", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dto accountDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "victim", dto.Username)
+	assert.Equal(t, hyvev1alpha1.RoleReadOnly, dto.Role)
+	require.NotNil(t, dto.Email)
+	assert.Equal(t, email, *dto.Email)
+}
+
+func TestHandleGetAccount_NotFound(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts/missing", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleGetAccount_OrdinaryAdminCannotSeeSuperadmin(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "root-super", Role: hyvev1alpha1.RoleSuperadmin,
+		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts/root-super", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}

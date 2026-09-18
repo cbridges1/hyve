@@ -13,7 +13,6 @@ import { Logo } from './Logo'
 import { Modal } from './Modal'
 import { ThemeToggle } from './ThemeToggle'
 import {
-  AccountsIcon,
   ChevronDownIcon,
   ClustersIcon,
   CloseIcon,
@@ -26,12 +25,13 @@ import {
   SecretsIcon,
   SettingsIcon,
   TemplatesIcon,
+  UsersIcon,
   WorkflowsIcon,
 } from './icons'
 
 // Grouped the way the sidebar renders them — each group gets its own small
 // uppercase section header, mirroring a typical nested-sidebar dashboard
-// layout. Accounts/Organizations aren't here: their visibility depends on
+// layout. Users/Organizations aren't here: their visibility depends on
 // role/actAs state, so they're rendered as their own conditionally-shown
 // "Organization" group below instead of being filtered into this list.
 const navGroups: { label: string; items: { to: string; label: string; Icon: typeof ClustersIcon }[] }[] = [
@@ -157,21 +157,21 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             </div>
           </div>
         ))}
-        {/* Accounts and Environments always follow whichever organization
+        {/* Users and Environments always follow whichever organization
             "Viewing" is currently set to (see Server.TenantNamespace) — a
-            superadmin managing hyve-system's own accounts/environments is
+            superadmin managing hyve-system's own users/environments is
             just "Viewing: Control plane" + these links, the same pages a
             tenant admin already uses, not a separate mechanism.
             Environments is genuinely within-one-organization's-own-scope
             (see internal/api's requireOrgAccess), so it's reachable by an
-            ordinary admin the same way Accounts already is — unlike
+            ordinary admin the same way Users already is — unlike
             Organizations (creating/listing every tenant), which stays
             genuinely control-plane-only and superadmin-only, since it
             isn't scoped to any one tenant. Reconciling cluster, by
             contrast, is entirely self-service within one organization's
             own scope now (GET/PUT/DELETE /organizations/{name}/reconciling-cluster)
             — reachable by that organization's own admin, or a superadmin
-            currently "Viewing" it, the same way Accounts/Environments
+            currently "Viewing" it, the same way Users/Environments
             already are, with no separate control-plane-wide registry page
             at all: "Viewing: Control plane" resolves to the control
             plane's own organization (hyve-system) server-side, so this
@@ -189,9 +189,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <div>
             <div className={groupHeaderClass}>Organization</div>
             <div className="space-y-0.5">
-              <NavLink to="/accounts" className={linkClass} onClick={onNavigate}>
-                <AccountsIcon />
-                Accounts
+              <NavLink to="/users" className={linkClass} onClick={onNavigate}>
+                <UsersIcon />
+                Users
               </NavLink>
               <NavLink to="/environments" className={linkClass} onClick={onNavigate}>
                 <EnvironmentsIcon />
@@ -224,7 +224,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 // Self-service password change — reachable by every role (the underlying
 // endpoint has no RequireRole gate on this branch, only currentPassword
 // verification), so it lives in the user menu rather than the admin-only
-// Accounts page, which every role can't even reach.
+// Users page, which every role can't even reach.
 function ChangePasswordForm({ username, onClose }: { username: string; onClose: () => void }) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')

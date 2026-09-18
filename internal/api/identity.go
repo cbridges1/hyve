@@ -25,3 +25,13 @@ func (s *Server) findBindingBySubject(ctx context.Context, namespace, subjectTyp
 	}
 	return s.OrgStore.FindBindingBySubject(ctx, namespace, subjectType, identity)
 }
+
+// findBindingByEmail is findBindingBySubject's email-lookup counterpart —
+// same nil-OrgStore fail-closed behavior, used by handleLogin's
+// email-as-identifier fallback.
+func (s *Server) findBindingByEmail(ctx context.Context, namespace, email string) (orgdb.Binding, error) {
+	if s.OrgStore == nil {
+		return orgdb.Binding{}, orgdb.ErrNotFound
+	}
+	return s.OrgStore.FindBindingByEmail(ctx, namespace, email)
+}

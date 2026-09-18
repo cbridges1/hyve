@@ -316,7 +316,7 @@ func (s *Store) ListEnvironments(ctx context.Context, organizationID string) ([]
 	return out, rows.Err()
 }
 
-const bindingColumns = `id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, created_at`
+const bindingColumns = `id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, email, created_at`
 
 // ServiceAccountNameForRole is the role -> ServiceAccount convention
 // preserved from the retired HyveAccessBindingSpec.ServiceAccountRef (see
@@ -379,9 +379,9 @@ func (s *Store) CreateBinding(ctx context.Context, b Binding) (Binding, error) {
 		b.SubjectType = SubjectTypeLocal
 	}
 	_, err := s.exec(ctx, `
-		INSERT INTO bindings (id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, b.ID, b.Namespace, b.OrganizationID, b.EnvironmentID, b.SubjectType, b.Identity, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace, b.PasswordHash)
+		INSERT INTO bindings (id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, email)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, b.ID, b.Namespace, b.OrganizationID, b.EnvironmentID, b.SubjectType, b.Identity, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace, b.PasswordHash, b.Email)
 	if err != nil {
 		return Binding{}, fmt.Errorf("insert binding: %w", err)
 	}
@@ -390,7 +390,7 @@ func (s *Store) CreateBinding(ctx context.Context, b Binding) (Binding, error) {
 
 func scanBinding(row *sql.Row) (Binding, error) {
 	var b Binding
-	err := row.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.CreatedAt)
+	err := row.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.Email, &b.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Binding{}, ErrNotFound
 	}
@@ -451,12 +451,24 @@ func scanBindings(rows *sql.Rows) ([]Binding, error) {
 	var out []Binding
 	for rows.Next() {
 		var b Binding
-		if err := rows.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.Email, &b.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan binding: %w", err)
 		}
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// FindBindingByEmail looks up a local binding by its unique-within-
+// namespace email address — used both to support login-by-email
+// (Server.handleLogin, tried as a fallback after a username lookup fails)
+// and to enforce the same per-namespace uniqueness at the application
+// level that bindings_namespace_email's partial index also enforces at the
+// database level (belt-and-suspenders: the app-level check gives a clean
+// 409 instead of surfacing a raw constraint-violation error).
+func (s *Store) FindBindingByEmail(ctx context.Context, namespace, email string) (Binding, error) {
+	row := s.queryRow(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE namespace = ? AND email = ?`, namespace, email)
+	return scanBinding(row)
 }
 
 // ListBindingsForScope returns every binding within namespace — used by
@@ -482,6 +494,33 @@ func (s *Store) SetBindingPassword(ctx context.Context, id, passwordHash string)
 		return fmt.Errorf("set binding password: %w", err)
 	}
 	return nil
+}
+
+// UpdateBinding overwrites b's mutable fields (namespace, organization_id,
+// environment_id, role, service_account_name, service_account_namespace,
+// email) on the existing row named by b.ID — everything a role
+// promotion/demotion or an email edit might touch (see
+// internal/api.handleUpdateAccount), in one statement so a caller building
+// the full target state doesn't need several partial updates. Deliberately
+// leaves subject_type/identity/password_hash/created_at untouched: a
+// binding's underlying identity and credentials are never what this call
+// is for (identity is immutable everywhere else in this API too; password
+// changes go through SetBindingPassword instead, which callers should
+// still invoke separately since a role change and a password reset are
+// unrelated operations that happen to share a row).
+func (s *Store) UpdateBinding(ctx context.Context, b Binding) (Binding, error) {
+	if (b.OrganizationID == nil) != (b.EnvironmentID == nil) {
+		return Binding{}, fmt.Errorf("update binding: organization_id and environment_id must both be set or both be nil, got organization_id=%v environment_id=%v", b.OrganizationID, b.EnvironmentID)
+	}
+	_, err := s.exec(ctx, `
+		UPDATE bindings
+		SET namespace = ?, organization_id = ?, environment_id = ?, role = ?, service_account_name = ?, service_account_namespace = ?, email = ?
+		WHERE id = ?
+	`, b.Namespace, b.OrganizationID, b.EnvironmentID, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace, b.Email, b.ID)
+	if err != nil {
+		return Binding{}, fmt.Errorf("update binding: %w", err)
+	}
+	return s.getBindingByID(ctx, b.ID)
 }
 
 // DeleteBinding removes one binding by id.

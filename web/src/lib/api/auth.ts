@@ -80,3 +80,12 @@ export const RoleReadOnly = 'read-only'
 // the one tier that spans namespaces (see HYVE-MULTI-TENANCY-PLAN.md's
 // "Phase 2" section). A superadmin has no "own" tenant namespace.
 export const RoleSuperadmin = 'superadmin'
+
+// roleLabel is display-only — the wire value stays "read-only" (backend
+// role constant, API bodies, RequireRole checks) everywhere outside this
+// one presentation layer. "Regular" reads better to an end user than
+// "read-only" for what's really just "standard, non-admin access."
+export function roleLabel(role: string): string {
+  if (role === RoleReadOnly) return 'regular'
+  return role
+}
