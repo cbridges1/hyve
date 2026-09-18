@@ -91,8 +91,8 @@ const swaggerUIPage = `<!DOCTYPE html>
 <body>
   <div id="hyve-theme-toggle" role="group" aria-label="Theme">
     <button type="button" data-theme-choice="light">Light</button>
-    <button type="button" data-theme-choice="system">System</button>
     <button type="button" data-theme-choice="dark">Dark</button>
+	<button type="button" data-theme-choice="system">System</button>
   </div>
   <div id="swagger-ui"></div>
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
