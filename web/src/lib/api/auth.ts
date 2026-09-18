@@ -61,6 +61,43 @@ export async function logout(): Promise<void> {
   setSession(null)
 }
 
+// requestPasswordReset always resolves — the backend deliberately
+// responds 200 {"sent": true} whether or not identifier actually matched
+// an account (see internal/api.handleRequestPasswordReset's own doc
+// comment on why: a login endpoint's neighbor shouldn't reveal which
+// usernames/emails exist). A network-level failure (server unreachable)
+// still throws, so the caller can distinguish "couldn't even ask" from
+// "asked, response is deliberately uninformative."
+export async function requestPasswordReset(identifier: string, org: string = ''): Promise<void> {
+  const namespace = resolveOrgToNamespace(org)
+  const res = await fetch('/auth/request-password-reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier, ...(namespace ? { namespace } : {}) }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new ApiError(res.status, (body as { error?: string } | null)?.error ?? 'failed to request password reset')
+  }
+}
+
+// resetPassword consumes a reset link's email/token/namespace query
+// parameters (see internal/api.buildPasswordResetLink) — namespace is the
+// exact value that link carried, round-tripped as-is, never re-resolved
+// from org/email here (see resetPasswordRequest.Namespace's own doc
+// comment for why).
+export async function resetPassword(email: string, token: string, newPassword: string, namespace?: string): Promise<void> {
+  const res = await fetch('/auth/reset-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, token, newPassword, ...(namespace ? { namespace } : {}) }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new ApiError(res.status, (body as { error?: string } | null)?.error ?? 'failed to reset password')
+  }
+}
+
 export type Whoami = {
   username: string
   role: string

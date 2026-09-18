@@ -1,0 +1,5 @@
+{{define "subject"}}Test email from hyve{{end}}
+{{define "body"}}
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0 0 16px 0;">This is a test email from your hyve installation{{if .RequestedBy}}, requested by <strong>{{.RequestedBy}}</strong>{{end}}.</p>
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0;">If you received this, your SMTP settings are configured correctly.</p>
+{{end}}

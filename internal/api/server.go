@@ -152,6 +152,18 @@ type Server struct {
 	// inconsistent state" stance as the SQLite/Postgres deployment gate.
 	RequireReconcilingCluster bool
 
+	// PublicBaseURL is this API's own public address (e.g.
+	// https://hyve-api.example.com) — the same value already threaded
+	// into AgentProvider/HostProvider for their own kubeconfig server:
+	// fields, also needed here to build the link a password-reset email
+	// sends (handleRequestPasswordReset): the web console is served from
+	// this same origin (see Routes' own doc comment), so
+	// PublicBaseURL + "/#/reset-password?..." is a real, clickable URL.
+	// Empty is a valid, if degraded, configuration — the emailed link is
+	// then relative-looking and won't work from an arbitrary device, but
+	// the emailed code still does (see PasswordResetCodeData.Code).
+	PublicBaseURL string
+
 	// reconcilingClusterClients lazily caches a *reconcilingClusterHandle
 	// per Milestone 6 reconciling cluster (internal/orgdb.ReconcilingCluster),
 	// keyed by its id — see resourceClient/reconcilingClusterClientHandle
@@ -196,6 +208,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /auth/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /auth/request-password-reset", s.handleRequestPasswordReset)
+	mux.HandleFunc("POST /auth/reset-password", s.handleResetPassword)
 	s.registerAgentBootstrapRoutes(mux)
 	s.registerDocsRoutes(mux)
 
@@ -216,6 +230,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerConfigRoutes(apiMux)
 	s.registerOrgConfigRoutes(apiMux)
 	s.registerAgentProxyRoutes(apiMux)
+	s.registerEmailSettingsRoutes(apiMux)
 
 	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))

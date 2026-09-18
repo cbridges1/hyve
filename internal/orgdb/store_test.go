@@ -41,7 +41,7 @@ func openTestPostgres(t *testing.T) *Store {
 	// runs — truncate before each test so leftover rows from a prior run
 	// (or a prior test in this same run) can't collide with this one's
 	// fixed fixture names/unique constraints.
-	_, err = s.db.Exec(`TRUNCATE bindings, environments, organizations, reconciling_clusters, signing_keys, sessions CASCADE`)
+	_, err = s.db.Exec(`TRUNCATE bindings, environments, organizations, reconciling_clusters, signing_keys, sessions, email_settings, password_reset_tokens CASCADE`)
 	require.NoError(t, err)
 
 	return s
@@ -225,6 +225,96 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	require.NoError(t, s.DeleteSession(ctx, sess.ID), "deleting an already-gone session must not error — best-effort, matching handleLogout's own stance")
+
+	// Bulk revocation — HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 1.
+	sessA, err := s.CreateSession(ctx, Session{Subject: "bob", TenantNamespace: "acme", TokenHash: "aaa", ExpiresAt: time.Now().Add(time.Hour)})
+	require.NoError(t, err)
+	sessB, err := s.CreateSession(ctx, Session{Subject: "bob", TenantNamespace: "acme", TokenHash: "bbb", ExpiresAt: time.Now().Add(time.Hour)})
+	require.NoError(t, err)
+	otherNsSess, err := s.CreateSession(ctx, Session{Subject: "bob", TenantNamespace: "other-tenant", TokenHash: "ccc", ExpiresAt: time.Now().Add(time.Hour)})
+	require.NoError(t, err)
+	otherSubjSess, err := s.CreateSession(ctx, Session{Subject: "carol", TenantNamespace: "acme", TokenHash: "ddd", ExpiresAt: time.Now().Add(time.Hour)})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteSessionsBySubject(ctx, "bob", "acme"))
+	_, err = s.GetSession(ctx, sessA.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetSession(ctx, sessB.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetSession(ctx, otherNsSess.ID)
+	assert.NoError(t, err, "a session for the same subject in a different namespace must survive")
+	_, err = s.GetSession(ctx, otherSubjSess.ID)
+	assert.NoError(t, err, "a different subject's session in the same namespace must survive")
+
+	// Milestone 10 Part C-successor: install-wide email settings singleton.
+	unconfigured, err := s.GetEmailSettings(ctx)
+	require.NoError(t, err, "no row yet must not be an error")
+	assert.False(t, unconfigured.Configured(), "a zero-value row (never saved) must report unconfigured")
+
+	saved, err := s.UpsertEmailSettings(ctx, EmailSettings{
+		SMTPHost: "smtp.example.com", SMTPPort: 587, SMTPUsername: ptr("relay"), SMTPPassword: ptr("s3cret"),
+		UseTLS: false, SkipVerify: false, FromAddress: "no-reply@example.com", FromName: ptr("hyve"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, EmailSettingsID, saved.ID)
+	assert.True(t, saved.Configured())
+	require.NotNil(t, saved.SMTPPassword)
+	assert.Equal(t, "s3cret", *saved.SMTPPassword)
+
+	reFetched, err := s.GetEmailSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "smtp.example.com", reFetched.SMTPHost)
+	assert.Equal(t, 587, reFetched.SMTPPort)
+
+	// A second Upsert must replace the singleton row in place, not create
+	// a second one (proves ON CONFLICT actually fires on both backends).
+	replaced, err := s.UpsertEmailSettings(ctx, EmailSettings{
+		SMTPHost: "smtp2.example.com", SMTPPort: 465, UseTLS: true, SkipVerify: true, FromAddress: "hi@example.com",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "smtp2.example.com", replaced.SMTPHost)
+	assert.Nil(t, replaced.SMTPUsername, "omitting a field on the replacing call must actually clear it, not leave the old value behind")
+
+	// Milestone 1: password reset tokens — one live token per binding.
+	resetBinding, err := s.CreateBinding(ctx, Binding{
+		Namespace: "acme", OrganizationID: &org.ID, EnvironmentID: &env.ID, SubjectType: SubjectTypeLocal,
+		Identity: "reset-target", Role: "admin", ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: "acme",
+	})
+	require.NoError(t, err)
+
+	_, err = s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	assert.ErrorIs(t, err, ErrNotFound, "no token exists yet")
+
+	firstToken, err := s.CreatePasswordResetToken(ctx, PasswordResetToken{
+		BindingID: resetBinding.ID, TokenHash: "hash-one", ExpiresAt: time.Now().Add(2 * time.Hour),
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, firstToken.ID)
+
+	secondToken, err := s.CreatePasswordResetToken(ctx, PasswordResetToken{
+		BindingID: resetBinding.ID, TokenHash: "hash-two", ExpiresAt: time.Now().Add(2 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	current, err := s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	require.NoError(t, err)
+	assert.Equal(t, secondToken.ID, current.ID, "requesting a new token must replace, not accumulate alongside, the old one")
+	assert.Equal(t, "hash-two", current.TokenHash)
+
+	require.NoError(t, s.DeletePasswordResetTokensForBinding(ctx, resetBinding.ID))
+	_, err = s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+	require.NoError(t, s.DeletePasswordResetTokensForBinding(ctx, resetBinding.ID), "deleting an already-gone token must not error")
+
+	// DeleteBinding must also clean up any live token — no ON DELETE
+	// CASCADE backs this (see migrations/*/0005_password_reset_tokens.sql).
+	_, err = s.CreatePasswordResetToken(ctx, PasswordResetToken{
+		BindingID: resetBinding.ID, TokenHash: "hash-three", ExpiresAt: time.Now().Add(2 * time.Hour),
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteBinding(ctx, resetBinding.ID))
+	_, err = s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	assert.ErrorIs(t, err, ErrNotFound, "deleting the binding must delete its outstanding reset token too")
 }
 
 func ptr(s string) *string { return &s }

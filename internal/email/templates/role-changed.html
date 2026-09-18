@@ -1,0 +1,6 @@
+{{define "subject"}}Your account role was changed{{end}}
+{{define "body"}}
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0 0 16px 0;">Hi{{if .Username}} {{.Username}}{{end}},</p>
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0 0 16px 0;">Your account's role was changed from <strong>{{.OldRole}}</strong> to <strong>{{.NewRole}}</strong>.</p>
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0;">If you didn't expect this change, contact an administrator of your hyve installation.</p>
+{{end}}

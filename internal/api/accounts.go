@@ -2,13 +2,29 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/email"
 	"github.com/cbridges1/hyve/internal/orgdb"
 )
+
+// sendAccountNotification is the shared fire-and-forget wrapper every
+// account-lifecycle notification in this file goes through: the
+// underlying account action has already succeeded by the time this is
+// called, so a delivery failure is logged, never turned into a failed API
+// response — see HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 5 for why
+// every one of these call sites takes this same stance. ErrNotConfigured
+// (no SMTP set up) isn't even worth logging — it's the expected, common
+// state for a fresh self-hosted install, not a failure.
+func sendAccountNotification(s *Server, r *http.Request, to string, tmpl email.Template, data any) {
+	if err := email.Send(r.Context(), s.OrgStore, to, tmpl, data); err != nil && !errors.Is(err, email.ErrNotConfigured) {
+		log.Printf("api: failed to send %q notification to %q: %v", tmpl, to, err)
+	}
+}
 
 // accountDTO is the response shape for GET /api/accounts — deliberately
 // carries no password hash (this never even reads the paired credentials
@@ -253,7 +269,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, ok := s.validateAndCheckEmail(w, r, secretNamespace, req.Email, "")
+	accountEmail, ok := s.validateAndCheckEmail(w, r, secretNamespace, req.Email, "")
 	if !ok {
 		return
 	}
@@ -265,7 +281,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		SubjectType:             orgdb.SubjectTypeLocal,
 		Identity:                req.Username,
 		Role:                    req.Role,
-		Email:                   email,
+		Email:                   accountEmail,
 		ServiceAccountName:      serviceAccount,
 		ServiceAccountNamespace: secretNamespace,
 		PasswordHash:            &hash,
@@ -274,6 +290,13 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		log.Printf("api: failed to create access binding for %q: %v", req.Username, err)
 		writeError(w, http.StatusInternalServerError, "failed to create account")
 		return
+	}
+
+	if binding.Email != nil {
+		sendAccountNotification(s, r, *binding.Email, email.TemplateAccountCreated, email.AccountCreatedData{
+			Username: binding.Identity,
+			Role:     binding.Role,
+		})
 	}
 
 	writeJSON(w, http.StatusCreated, toAccountDTO(binding))
@@ -353,6 +376,9 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
+
+	oldRole := binding.Role
+	oldEmail := binding.Email
 
 	if req.Role != nil {
 		if caller, ok := UsernameFromContext(ctx); ok && caller == username {
@@ -443,7 +469,42 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notify the affected account's own holder, not the caller — they're
+	// who needs to know their access or contact address just changed
+	// (see sendAccountNotification's own doc comment for the fire-and-
+	// forget stance every one of these takes).
+	if updated.Role != oldRole && updated.Email != nil {
+		sendAccountNotification(s, r, *updated.Email, email.TemplateRoleChanged, email.RoleChangedData{
+			Username: updated.Identity,
+			OldRole:  oldRole,
+			NewRole:  updated.Role,
+		})
+	}
+	// Sent to the OLD address, not the new one — a classic account-
+	// takeover guard: whoever owned the old address still hears about the
+	// change, at an address that can no longer silently redirect future
+	// resets. Nothing to send if there was no old address (first time
+	// setting one — nothing to protect yet).
+	if oldEmail != nil && (updated.Email == nil || *updated.Email != *oldEmail) {
+		sendAccountNotification(s, r, *oldEmail, email.TemplateEmailChanged, email.EmailChangedData{
+			Username: updated.Identity,
+			NewEmail: derefOrEmpty(updated.Email),
+		})
+	}
+
 	writeJSON(w, http.StatusOK, toAccountDTO(updated))
+}
+
+// derefOrEmpty is EmailChangedData.NewEmail's own "cleared, not replaced"
+// case — an account's email can be removed entirely via PATCH
+// {"email": ""} (see validateAndCheckEmail), and the old-address holder
+// still deserves the same security notice when that happens, just with
+// nothing to name as the new value.
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return "(removed)"
+	}
+	return *s
 }
 
 // handleDeleteAccount refuses to let a caller delete their own account —
@@ -584,6 +645,14 @@ func (s *Server) handleUpdateAccountPassword(w http.ResponseWriter, r *http.Requ
 		log.Printf("api: failed to update password for %q: %v", username, err)
 		writeError(w, http.StatusInternalServerError, "failed to update password")
 		return
+	}
+
+	// Fires for both branches this handler covers — self-service and
+	// admin-driven — unlike Pangolin's own NotifyResetPassword, which
+	// only has the one (forgot-password) reset path to notify from (see
+	// HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 2 template table).
+	if binding.Email != nil {
+		sendAccountNotification(s, r, *binding.Email, email.TemplatePasswordChanged, email.PasswordChangedData{Username: binding.Identity})
 	}
 
 	w.WriteHeader(http.StatusNoContent)

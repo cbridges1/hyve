@@ -2,12 +2,18 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"log"
+	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/cbridges1/hyve/internal/email"
 	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
@@ -285,4 +291,272 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+// passwordResetTokenTTL matches Pangolin's own 2-hour window exactly (see
+// HYVE-EMAIL-IMPLEMENTATION-PLAN.md's "Baseline" section) — long enough
+// to actually check an inbox, short enough that a forgotten, unused
+// reset link/code stops being a live credential well before it's likely
+// to be found by anyone else.
+const passwordResetTokenTTL = 2 * time.Hour
+
+// passwordResetTokenAlphabet/Length mirror Pangolin's own
+// generateRandomString(8, alphabet("0-9","A-Z","a-z")) call exactly — 8
+// characters from a 62-symbol alphabet is ~47.6 bits of entropy, hashed
+// before storage (see generatePasswordResetToken's own call site) the
+// same way a real password is, not just base64'd.
+const passwordResetTokenAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const passwordResetTokenLength = 8
+
+// generatePasswordResetToken returns a fresh random token — crypto/rand,
+// never math/rand, for the same reason GenerateSessionSecret already
+// uses it: this is a bearer credential good for a live password reset,
+// not cosmetic randomness.
+func generatePasswordResetToken() (string, error) {
+	b := make([]byte, passwordResetTokenLength)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(passwordResetTokenAlphabet))))
+		if err != nil {
+			return "", err
+		}
+		b[i] = passwordResetTokenAlphabet[n.Int64()]
+	}
+	return string(b), nil
+}
+
+// randomEnumerationDelay sleeps a random 0-2000ms — Pangolin's own
+// mitigation, copied as-is (see requestPasswordReset.ts's own
+// randomDelay), for the timing side-channel a fixed-time "no such
+// account" response would otherwise open up: a real send involves an
+// actual SMTP round trip and is naturally slower, so without this, an
+// attacker could distinguish "no such account" from "email actually
+// sent" purely by response latency, even though both return the
+// identical 200 body.
+func randomEnumerationDelay(ctx context.Context) {
+	n, err := rand.Int(rand.Reader, big.NewInt(2000))
+	if err != nil {
+		return
+	}
+	select {
+	case <-time.After(time.Duration(n.Int64()) * time.Millisecond):
+	case <-ctx.Done():
+	}
+}
+
+type requestPasswordResetRequest struct {
+	// Identifier accepts either a binding's Identity (username) or its
+	// Email, same dual lookup handleLogin already established.
+	Identifier string `json:"identifier"`
+	// Namespace selects which tenant to look the identifier up in — same
+	// field, same resolution (resolveLoginNamespace), same "despite the
+	// name" caveat as loginRequest.Namespace. Empty means the
+	// control-plane namespace.
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type requestPasswordResetResponse struct {
+	Sent bool `json:"sent"`
+}
+
+// handleRequestPasswordReset is the self-service "forgot my password"
+// entry point — unauthenticated by design, mounted alongside
+// POST /auth/login (see Routes). Always responds 200 {"sent": true}
+// regardless of whether Identifier actually matched an account, whether
+// that account has an email on file, or whether SMTP is even configured
+// at all — a login endpoint's neighbor shouldn't reveal which
+// usernames/emails exist any more than login itself does (see
+// handleLogin's own identical stance). See
+// HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 4 for the full design
+// this mirrors from Pangolin's requestPasswordReset.ts.
+func (s *Server) handleRequestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req requestPasswordResetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Identifier == "" {
+		writeError(w, http.StatusBadRequest, "identifier is required")
+		return
+	}
+
+	ctx := r.Context()
+	resolvedNamespace := req.Namespace
+	if resolvedNamespace != "" {
+		resolvedNamespace = s.resolveLoginNamespace(ctx, resolvedNamespace)
+	}
+	ns := resolvedNamespace
+	if ns == "" {
+		ns = s.Namespace
+	}
+
+	binding, err := s.findBindingBySubject(ctx, ns, orgdb.SubjectTypeLocal, req.Identifier)
+	if err != nil {
+		binding, err = s.findBindingByEmail(ctx, ns, req.Identifier)
+	}
+	// No match, wrong subject type, or no email on file to send to —
+	// every one of these gets the identical generic response. A binding
+	// with no email isn't an error state (every account created before
+	// this feature shipped has none), just nothing this endpoint can act
+	// on.
+	if err != nil || binding.SubjectType != orgdb.SubjectTypeLocal || binding.Email == nil {
+		randomEnumerationDelay(ctx)
+		writeJSON(w, http.StatusOK, requestPasswordResetResponse{Sent: true})
+		return
+	}
+
+	token, err := generatePasswordResetToken()
+	if err != nil {
+		log.Printf("api: failed to generate password reset token: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to process password reset request")
+		return
+	}
+	tokenHash, err := HashPassword(token)
+	if err != nil {
+		log.Printf("api: failed to hash password reset token: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to process password reset request")
+		return
+	}
+	if _, err := s.OrgStore.CreatePasswordResetToken(ctx, orgdb.PasswordResetToken{
+		BindingID: binding.ID,
+		TokenHash: tokenHash,
+		ExpiresAt: time.Now().Add(passwordResetTokenTTL),
+	}); err != nil {
+		log.Printf("api: failed to store password reset token for %q: %v", binding.Identity, err)
+		writeError(w, http.StatusInternalServerError, "failed to process password reset request")
+		return
+	}
+
+	link := s.buildPasswordResetLink(*binding.Email, token, resolvedNamespace)
+	sendErr := email.Send(ctx, s.OrgStore, *binding.Email, email.TemplatePasswordResetCode, email.PasswordResetCodeData{
+		Username: binding.Identity,
+		Code:     token,
+		Link:     link,
+	})
+	if errors.Is(sendErr, email.ErrNotConfigured) {
+		// The exact bootstrap safety net Pangolin's own fallback
+		// provides (see requestPasswordReset.ts: "if
+		// (!config.getRawConfig().email) logger.info(...)") — a fresh
+		// self-hosted install with no SMTP set up yet still lets its
+		// first admin recover a forgotten password: read the logs. This
+		// case is expected to be common for hyve specifically (a
+		// single-superadmin self-hosted install is the normal starting
+		// point, not the exception), not a degraded/error state.
+		log.Printf("ℹ️  password reset requested for %q (namespace %q) — no SMTP configured, token: %s", binding.Identity, ns, token)
+	} else if sendErr != nil {
+		log.Printf("api: failed to send password reset email to %q: %v", *binding.Email, sendErr)
+	}
+
+	writeJSON(w, http.StatusOK, requestPasswordResetResponse{Sent: true})
+}
+
+// buildPasswordResetLink builds the URL a password-reset email's button
+// points at — the web console is served from the same origin as this API
+// (see Routes' own doc comment), so PublicBaseURL + the console's own
+// hash-router path is a real, clickable link. namespace is carried
+// through as a query parameter and round-tripped back by
+// handleResetPassword — bindings.email is only unique *within* a
+// namespace (see migrations/*/0003_binding_email.sql), so the same email
+// address could in principle belong to a different account in a
+// different tenant; carrying the exact namespace this token was actually
+// minted for avoids re-deriving (and potentially mismatching) it from
+// email alone at consume time. email/token/namespace are query
+// parameters, not path segments, so url.QueryEscape (not raw
+// concatenation) is what keeps a "+"-containing email address or similar
+// from corrupting the URL.
+func (s *Server) buildPasswordResetLink(email, token, namespace string) string {
+	base := strings.TrimRight(s.PublicBaseURL, "/")
+	return base + "/#/reset-password?email=" + url.QueryEscape(email) + "&token=" + url.QueryEscape(token) + "&namespace=" + url.QueryEscape(namespace)
+}
+
+type resetPasswordRequest struct {
+	Email       string `json:"email"`
+	Token       string `json:"token"`
+	NewPassword string `json:"newPassword"`
+	// Namespace is the exact (already-resolved) namespace
+	// handleRequestPasswordReset minted this token against — round-
+	// tripped from buildPasswordResetLink's own query parameter, not
+	// re-resolved from Email (see that function's own doc comment for
+	// why). Empty means the control-plane namespace, same convention as
+	// loginRequest.Namespace/requestPasswordResetRequest.Namespace.
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type resetPasswordResponse struct {
+	Reset bool `json:"reset"`
+}
+
+// handleResetPassword consumes a password-reset token minted by
+// handleRequestPasswordReset — unauthenticated by design, same as that
+// handler. Unlike the request side, this one DOES report specific
+// failures (invalid/expired token, unknown email) rather than a generic
+// response: by the time a caller has a real token value in hand, there's
+// nothing left to protect by staying vague — the token itself (not the
+// email address) is what proves the caller was the one who received the
+// reset email in the first place.
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req resetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Email == "" || req.Token == "" || req.NewPassword == "" {
+		writeError(w, http.StatusBadRequest, "email, token, and newPassword are required")
+		return
+	}
+
+	ctx := r.Context()
+	ns := req.Namespace
+	if ns == "" {
+		ns = s.Namespace
+	}
+	binding, err := s.findBindingByEmail(ctx, ns, req.Email)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid or expired reset token")
+		return
+	}
+
+	token, err := s.OrgStore.GetPasswordResetTokenByBindingID(ctx, binding.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid or expired reset token")
+		return
+	}
+	if time.Now().After(token.ExpiresAt) {
+		writeError(w, http.StatusBadRequest, "invalid or expired reset token")
+		return
+	}
+	if !VerifyPassword(token.TokenHash, req.Token) {
+		writeError(w, http.StatusBadRequest, "invalid or expired reset token")
+		return
+	}
+
+	hash, err := HashPassword(req.NewPassword)
+	if err != nil {
+		log.Printf("api: failed to hash new password for %q: %v", binding.Identity, err)
+		writeError(w, http.StatusInternalServerError, "failed to reset password")
+		return
+	}
+	if err := s.OrgStore.SetBindingPassword(ctx, binding.ID, hash); err != nil {
+		log.Printf("api: failed to set new password for %q: %v", binding.Identity, err)
+		writeError(w, http.StatusInternalServerError, "failed to reset password")
+		return
+	}
+	// Single-use: the token is consumed the moment it's successfully
+	// applied, whether or not everything below it (session revocation,
+	// the notification email) also succeeds.
+	if err := s.OrgStore.DeletePasswordResetTokensForBinding(ctx, binding.ID); err != nil {
+		log.Printf("api: failed to delete used password reset token for %q: %v", binding.Identity, err)
+	}
+	// Kill every other still-active session — same security posture as
+	// Pangolin's own resetPassword.ts (invalidateAllSessions). Logged,
+	// not fatal to the request: the password itself already changed
+	// successfully, which is what the caller actually asked for.
+	if err := s.OrgStore.DeleteSessionsBySubject(ctx, binding.Identity, binding.Namespace); err != nil {
+		log.Printf("api: failed to revoke sessions for %q after password reset: %v", binding.Identity, err)
+	}
+
+	if sendErr := email.Send(ctx, s.OrgStore, req.Email, email.TemplatePasswordChanged, email.PasswordChangedData{Username: binding.Identity}); sendErr != nil && !errors.Is(sendErr, email.ErrNotConfigured) {
+		log.Printf("api: failed to send password-changed notification to %q: %v", req.Email, sendErr)
+	}
+
+	writeJSON(w, http.StatusOK, resetPasswordResponse{Reset: true})
 }

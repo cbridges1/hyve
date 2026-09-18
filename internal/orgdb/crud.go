@@ -523,8 +523,15 @@ func (s *Store) UpdateBinding(ctx context.Context, b Binding) (Binding, error) {
 	return s.getBindingByID(ctx, b.ID)
 }
 
-// DeleteBinding removes one binding by id.
+// DeleteBinding removes one binding by id, along with any password reset
+// token still outstanding for it — no ON DELETE CASCADE backs this (see
+// migrations/*/0005_password_reset_tokens.sql's own comment), so an
+// orphaned token row is this call's responsibility to prevent, not the
+// database's.
 func (s *Store) DeleteBinding(ctx context.Context, id string) error {
+	if _, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, id); err != nil {
+		return fmt.Errorf("delete password reset tokens for binding: %w", err)
+	}
 	_, err := s.exec(ctx, `DELETE FROM bindings WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete binding: %w", err)
@@ -869,6 +876,23 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteSessionsBySubject removes every session for (subject, namespace) —
+// bulk revocation, unlike DeleteSession's single-id form. Added for the
+// password-reset flow (HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 4):
+// a successful reset should kill every *other* still-active session for
+// that binding, not just the one (if any) the reset itself was performed
+// through. Same caveat as handleLogout's own doc comment already states:
+// this revokes session tokens (the refresh capability), not any
+// already-issued, still-valid short-TTL access token — those keep working
+// until AccessTokenTTL lapses regardless.
+func (s *Store) DeleteSessionsBySubject(ctx context.Context, subject, namespace string) error {
+	_, err := s.exec(ctx, `DELETE FROM sessions WHERE subject = ? AND tenant_namespace = ?`, subject, namespace)
+	if err != nil {
+		return fmt.Errorf("delete sessions for subject: %w", err)
+	}
+	return nil
+}
+
 // ListAllBindings returns every binding across every namespace — unlike
 // ListBindingsForScope (one namespace's own accounts listing), this exists
 // purely for Migrate (Milestone 7's sqlite->postgres dump/restore tool),
@@ -923,4 +947,118 @@ func (s *Store) ListSessions(ctx context.Context) ([]Session, error) {
 		out = append(out, sess)
 	}
 	return out, rows.Err()
+}
+
+const emailSettingsColumns = `id, smtp_host, smtp_port, smtp_username, smtp_password, use_tls, skip_verify, from_address, from_name, updated_at`
+
+// GetEmailSettings returns the singleton email_settings row, or a
+// zero-value EmailSettings (Configured() == false) if none has ever been
+// saved — never orgdb.ErrNotFound. Every caller already has to handle
+// "not configured yet" as a normal, expected state (see EmailSettings.
+// Configured's own doc comment), so there's no separate "row is missing"
+// case to special-case on top of that.
+func (s *Store) GetEmailSettings(ctx context.Context) (EmailSettings, error) {
+	row := s.queryRow(ctx, `SELECT `+emailSettingsColumns+` FROM email_settings WHERE id = ?`, EmailSettingsID)
+	var e EmailSettings
+	err := row.Scan(&e.ID, &e.SMTPHost, &e.SMTPPort, &e.SMTPUsername, &e.SMTPPassword, &e.UseTLS, &e.SkipVerify, &e.FromAddress, &e.FromName, &e.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// SMTPPort: 587 — the same sane default the migration's own
+		// column default carries for a row that DOES exist; a caller
+		// merging a partial PATCH onto this "never saved" zero-value
+		// (see internal/api.handleUpdateEmailSettings) should start from
+		// that same default, not Go's int zero-value 0, or a PATCH that
+		// only sets, say, SkipVerify would silently leave the port unset.
+		return EmailSettings{SMTPPort: 587}, nil
+	}
+	if err != nil {
+		return EmailSettings{}, fmt.Errorf("scan email settings: %w", err)
+	}
+	return e, nil
+}
+
+// UpsertEmailSettings creates or replaces the singleton email_settings
+// row — a caller building the full desired state (see
+// internal/api.handleUpdateEmailSettings, which merges an existing
+// GetEmailSettings result with a partial PATCH request before calling
+// this) rather than a set of independent column updates, the same shape
+// UpdateBinding already uses for the same reason.
+func (s *Store) UpsertEmailSettings(ctx context.Context, e EmailSettings) (EmailSettings, error) {
+	e.ID = EmailSettingsID
+	_, err := s.exec(ctx, `
+		INSERT INTO email_settings (id, smtp_host, smtp_port, smtp_username, smtp_password, use_tls, skip_verify, from_address, from_name, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (id) DO UPDATE SET
+			smtp_host = excluded.smtp_host,
+			smtp_port = excluded.smtp_port,
+			smtp_username = excluded.smtp_username,
+			smtp_password = excluded.smtp_password,
+			use_tls = excluded.use_tls,
+			skip_verify = excluded.skip_verify,
+			from_address = excluded.from_address,
+			from_name = excluded.from_name,
+			updated_at = CURRENT_TIMESTAMP
+	`, e.ID, e.SMTPHost, e.SMTPPort, e.SMTPUsername, e.SMTPPassword, e.UseTLS, e.SkipVerify, e.FromAddress, e.FromName)
+	if err != nil {
+		return EmailSettings{}, fmt.Errorf("upsert email settings: %w", err)
+	}
+	return s.GetEmailSettings(ctx)
+}
+
+const passwordResetTokenColumns = `id, binding_id, token_hash, expires_at, created_at`
+
+func scanPasswordResetToken(row *sql.Row) (PasswordResetToken, error) {
+	var t PasswordResetToken
+	err := row.Scan(&t.ID, &t.BindingID, &t.TokenHash, &t.ExpiresAt, &t.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PasswordResetToken{}, ErrNotFound
+	}
+	if err != nil {
+		return PasswordResetToken{}, fmt.Errorf("scan password reset token: %w", err)
+	}
+	return t, nil
+}
+
+// CreatePasswordResetToken deletes any existing token for b.BindingID and
+// inserts b — at most one live token per binding, the same "delete then
+// recreate" shape CreateUser's own "safe to re-run" CLI convention
+// already uses, done here inside one call (not a separate transaction
+// type this Store doesn't otherwise expose) since both statements are
+// simple unconditional deletes/inserts with nothing to roll back for.
+func (s *Store) CreatePasswordResetToken(ctx context.Context, t PasswordResetToken) (PasswordResetToken, error) {
+	if t.ID == "" {
+		t.ID = newID()
+	}
+	if _, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, t.BindingID); err != nil {
+		return PasswordResetToken{}, fmt.Errorf("clear existing password reset token: %w", err)
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO password_reset_tokens (id, binding_id, token_hash, expires_at)
+		VALUES (?, ?, ?, ?)
+	`, t.ID, t.BindingID, t.TokenHash, t.ExpiresAt)
+	if err != nil {
+		return PasswordResetToken{}, fmt.Errorf("insert password reset token: %w", err)
+	}
+	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM password_reset_tokens WHERE id = ?`, t.ID)
+	return scanPasswordResetToken(row)
+}
+
+// GetPasswordResetTokenByBindingID looks up bindingID's live token, if
+// any — orgdb.ErrNotFound if none exists (already expired-and-deleted
+// tokens aren't distinguished from never-requested ones; the caller
+// checks ExpiresAt itself for a row that does exist, see
+// handleResetPassword).
+func (s *Store) GetPasswordResetTokenByBindingID(ctx context.Context, bindingID string) (PasswordResetToken, error) {
+	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM password_reset_tokens WHERE binding_id = ?`, bindingID)
+	return scanPasswordResetToken(row)
+}
+
+// DeletePasswordResetTokensForBinding removes bindingID's token, if any —
+// called once a reset succeeds (single-use) or is otherwise no longer
+// wanted. A missing row is not an error, same stance as DeleteSession.
+func (s *Store) DeletePasswordResetTokensForBinding(ctx context.Context, bindingID string) error {
+	_, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, bindingID)
+	if err != nil {
+		return fmt.Errorf("delete password reset tokens: %w", err)
+	}
+	return nil
 }

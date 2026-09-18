@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { login } from '../lib/api/auth'
 import { ApiError } from '../lib/api/client'
 import { Logo } from './Logo'
@@ -53,7 +54,7 @@ export function LoginForm() {
           />
         </label>
 
-        <label className="mb-3.5 block text-sm">
+        <label className="mb-1.5 block text-sm">
           <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">Password</span>
           <input
             type="password"
@@ -64,6 +65,13 @@ export function LoginForm() {
             className={inputClass}
           />
         </label>
+
+        <Link
+          to="/forgot-password"
+          className="mb-3.5 block text-right text-xs font-medium text-neutral-500 hover:text-neutral-900 dark:text-neutral-500 dark:hover:text-neutral-100"
+        >
+          Forgot your password?
+        </Link>
 
         <label className="mb-5 block text-sm">
           <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">

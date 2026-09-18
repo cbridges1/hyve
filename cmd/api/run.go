@@ -62,6 +62,11 @@ var (
 	apiDBDSN                     string
 	apiHomeCluster               string
 	apiRequireReconcilingCluster bool
+	apiSMTPHost                  string
+	apiSMTPPort                  int
+	apiSMTPUsername              string
+	apiSMTPPasswordFile          string
+	apiSMTPFromAddress           string
 )
 
 // Cmd is the api command.
@@ -101,6 +106,11 @@ func init() {
 	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
 	runCmd.Flags().StringVar(&apiHomeCluster, "home-cluster", "required", "Whether this process needs a Kubernetes cluster of its own — 'required' (default: in-cluster config or --kubeconfig must resolve, Fatal if not) or 'none' (skip Kubernetes client construction entirely; every organization's resources must be reachable through a registered reconciling cluster instead). Features that are inherently home-cluster-only (GET/PATCH /api/config, the host-cluster kubeconfig path, /proxy) become unavailable under 'none', same soft-fail stance those already have for other missing prerequisites.")
 	runCmd.Flags().BoolVar(&apiRequireReconcilingCluster, "require-reconciling-cluster", false, "Refuse to let any organization other than this install's own control-plane one land on, or migrate back to, the home cluster — every organization must be assigned an explicit registered reconciling cluster (see 'hyve reconciling-cluster create') instead. Off by default, preserving every existing install's behavior. For a self-hosted install that wants a hard guarantee tenants can never touch the cluster hyve-controller/hyve-api themselves run on, or a hosted/managed offering where end users must never reach the operator's own shared infrastructure at all. Startup refuses to proceed if any existing organization is already on the home cluster when this is set.")
+	runCmd.Flags().StringVar(&apiSMTPHost, "smtp-host", "", "Bootstrap-only SMTP server address for password-reset/notification email (see internal/orgdb.EmailSettings) — seeds email_settings on first startup ONLY if nothing has been configured through the console yet (PATCH /api/system/email always wins after that; this flag is never re-applied over a saved value on a later restart). Leave unset to configure SMTP entirely through the console instead.")
+	runCmd.Flags().IntVar(&apiSMTPPort, "smtp-port", 587, "Bootstrap-only SMTP server port — see --smtp-host")
+	runCmd.Flags().StringVar(&apiSMTPUsername, "smtp-username", "", "Bootstrap-only SMTP auth username — see --smtp-host. Omit along with --smtp-password-file for an anonymous relay.")
+	runCmd.Flags().StringVar(&apiSMTPPasswordFile, "smtp-password-file", "", "Path to a file containing the bootstrap-only SMTP auth password — see --smtp-host. A file, not a bare --smtp-password flag value, so the password isn't visible in `ps`/process args or a committed Helm values file.")
+	runCmd.Flags().StringVar(&apiSMTPFromAddress, "smtp-from-address", "", "Bootstrap-only From: address for outbound email — see --smtp-host")
 
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(createUserCmd)
@@ -130,6 +140,25 @@ func runAPI() {
 	signingKey, skErr := hyveapi.EnsureSigningKey(context.Background(), orgStore, apiNamespace)
 	if skErr != nil {
 		log.Fatalf("❌ Failed to load/generate session-signing key: %v", skErr)
+	}
+
+	// Bootstrap-only — soft-fail, unlike the signing key above: an
+	// operator who never set --smtp-host (the common case) shouldn't see
+	// a startup log line about it at all, and one who mistyped
+	// --smtp-password-file shouldn't lose the whole API over a feature
+	// that degrades gracefully everywhere else it's used (see
+	// email.ErrNotConfigured's own callers).
+	smtpPassword := ""
+	if apiSMTPPasswordFile != "" {
+		data, err := os.ReadFile(apiSMTPPasswordFile)
+		if err != nil {
+			log.Printf("⚠️  Failed to read --smtp-password-file %q: %v — continuing without a bootstrap SMTP password", apiSMTPPasswordFile, err)
+		} else {
+			smtpPassword = strings.TrimSpace(string(data))
+		}
+	}
+	if seedErr := hyveapi.SeedEmailSettings(context.Background(), orgStore, apiSMTPHost, apiSMTPPort, apiSMTPUsername, smtpPassword, apiSMTPFromAddress); seedErr != nil {
+		log.Printf("⚠️  Failed to seed email settings from --smtp-* flags: %v — configure SMTP through the console instead", seedErr)
 	}
 
 	// This process's own Kubernetes client/clientset — genuinely optional
@@ -254,6 +283,7 @@ func runAPI() {
 		ConfigName:                apiConfigName,
 		OrgStore:                  orgStore,
 		RequireReconcilingCluster: apiRequireReconcilingCluster,
+		PublicBaseURL:             apiPublicBaseURL,
 	}
 
 	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)

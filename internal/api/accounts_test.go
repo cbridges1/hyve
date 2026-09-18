@@ -844,3 +844,22 @@ func TestHandleGetAccount_OrdinaryAdminCannotSeeSuperadmin(t *testing.T) {
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodGet, "/accounts/root-super", nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
+
+// TestHandleCreateAccount_NotificationFailureDoesNotFailRequest proves
+// the fire-and-forget stance sendAccountNotification's own doc comment
+// describes: even a real (not just "not configured") send failure must
+// never turn a successful account action into a failed API response —
+// SMTP is configured here, but pointed at a port nothing listens on, so
+// the send genuinely fails rather than short-circuiting on
+// ErrNotConfigured.
+func TestHandleCreateAccount_NotificationFailureDoesNotFailRequest(t *testing.T) {
+	s := newTestServer(t)
+	_, err := s.OrgStore.UpsertEmailSettings(t.Context(), orgdb.EmailSettings{
+		SMTPHost: "127.0.0.1", SMTPPort: 1, FromAddress: "no-reply@example.com",
+	})
+	require.NoError(t, err)
+
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "new-user@example.com"})
+	assert.Equal(t, http.StatusCreated, rec.Code, "a real notification-send failure must not fail the underlying account creation")
+}
