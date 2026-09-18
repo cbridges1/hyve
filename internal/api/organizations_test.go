@@ -1035,6 +1035,33 @@ func TestHandleDeleteOrgEnvironment_RefusesWhenInUse(t *testing.T) {
 	assert.Len(t, envs, 2, "a refused delete must leave the environment in place")
 }
 
+// TestHandleDeleteOrgEnvironment_IgnoresTemplateWorkflowResourceLabels is
+// the regression test for the environments-scope-to-clusters-only
+// follow-up: a Template/Workflow/Resource that happens to still carry a
+// stale hyve.io/environment label (only reachable from data created before
+// this change) must never block deleting that environment — only a
+// ClusterDefinition can, since it's the only one of the four types
+// environmentInUse still checks (see that function's own doc comment).
+func TestHandleDeleteOrgEnvironment_IgnoresTemplateWorkflowResourceLabels(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), OrgStore: newTestOrgStore(t), Namespace: testNamespace}
+	require.Equal(t, http.StatusCreated, doOrganizationRequest(t, s, hyvev1alpha1.RoleSuperadmin, createOrganizationRequest{Name: "acme"}).Code)
+	require.Equal(t, http.StatusCreated, doCreateEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", createOrgEnvironmentRequest{Name: "staging"}).Code)
+
+	require.NoError(t, s.Client.Create(t.Context(), &hyvev1alpha1.Template{
+		ObjectMeta: metav1.ObjectMeta{Name: "staging-tpl", Namespace: "acme", Labels: map[string]string{hyveEnvironmentLabel: "staging"}},
+	}))
+	require.NoError(t, s.Client.Create(t.Context(), &hyvev1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "staging-wf", Namespace: "acme", Labels: map[string]string{hyveEnvironmentLabel: "staging"}},
+	}))
+	require.NoError(t, s.Client.Create(t.Context(), &hyvev1alpha1.Resource{
+		ObjectMeta: metav1.ObjectMeta{Name: "staging-res", Namespace: "acme", Labels: map[string]string{hyveEnvironmentLabel: "staging"}},
+		Spec:       hyvev1alpha1.ResourceSpec{Manifest: "apiVersion: v1\nkind: ConfigMap"},
+	}))
+
+	rec := doDeleteEnvironmentRequest(t, s, hyvev1alpha1.RoleAdmin, "acme", "acme", "staging")
+	assert.Equal(t, http.StatusNoContent, rec.Code, "a stale label on a Template/Workflow/Resource must never block deleting an environment")
+}
+
 // TestHandleDeleteOrgEnvironment_NotFound proves deleting an environment
 // name the organization doesn't have is a clear 404, not a silent no-op.
 func TestHandleDeleteOrgEnvironment_NotFound(t *testing.T) {

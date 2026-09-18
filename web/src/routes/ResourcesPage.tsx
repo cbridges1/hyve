@@ -2,25 +2,19 @@ import { useState, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AdminOnly } from '../components/RoleGate'
 import { RefStatusBadge } from '../components/ConditionBadge'
-import { EnvironmentBadge, EnvironmentFilterSelect, EnvironmentPickerField, useEnvironments } from '../components/Environment'
 import { Modal } from '../components/Modal'
 import { YamlEditor } from '../components/YamlEditor'
 import { ApiError } from '../lib/api/client'
 import { resourcesApi } from '../lib/api/resources'
 import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
-import { useEnvironmentFilter } from '../lib/useEnvironmentFilter'
 
-function NewResourceForm({ onCreated, defaultEnv }: { onCreated: () => void; defaultEnv: string }) {
-  const { data: environments } = useEnvironments()
+function NewResourceForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [manifest, setManifest] = useState('apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: example\n')
-  const [env, setEnv] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const envRequired = (environments?.length ?? 0) > 1
-  const selectedEnv = env || defaultEnv
 
   if (!open) {
     return (
@@ -32,14 +26,13 @@ function NewResourceForm({ onCreated, defaultEnv }: { onCreated: () => void; def
 
   function reset() {
     setOpen(false)
-    setEnv('')
   }
 
   async function submit() {
     setError(null)
     setSubmitting(true)
     try {
-      await resourcesApi.create({ name, spec: { manifest } }, selectedEnv || undefined)
+      await resourcesApi.create({ name, spec: { manifest } })
       reset()
       onCreated()
     } catch (err) {
@@ -49,16 +42,15 @@ function NewResourceForm({ onCreated, defaultEnv }: { onCreated: () => void; def
     }
   }
 
-  const canSubmit = !!name && (!envRequired || !!selectedEnv)
+  const canSubmit = !!name
 
   return (
     <Modal title="New resource" onClose={reset}>
-      <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="mb-3">
         <label className="text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Name</span>
           <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800" />
         </label>
-        <EnvironmentPickerField value={env} onChange={setEnv} defaultValue={defaultEnv} />
       </div>
       <div className="mb-3">
         <YamlEditor value={manifest} onChange={setManifest} rows={6} label="Manifest (YAML)" />
@@ -80,8 +72,6 @@ export function ResourcesPage() {
   const navigate = useNavigate()
   const confirm = useConfirm()
   const { data: resources, loading, error, reload } = useApi(() => resourcesApi.list())
-  const [envFilter, setEnvFilter] = useEnvironmentFilter()
-  const filtered = resources?.filter((r) => !envFilter || r.environment === envFilter)
 
   async function onDelete(e: MouseEvent, name: string) {
     e.stopPropagation()
@@ -101,9 +91,8 @@ export function ResourcesPage() {
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Resources</h1>
         <div className="flex items-center gap-2">
-          <EnvironmentFilterSelect value={envFilter} onChange={setEnvFilter} />
           <AdminOnly>
-            <NewResourceForm onCreated={reload} defaultEnv={envFilter} />
+            <NewResourceForm onCreated={reload} />
           </AdminOnly>
         </div>
       </div>
@@ -112,9 +101,9 @@ export function ResourcesPage() {
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
       <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        {filtered?.length === 0 && <p className="p-6 text-center text-sm text-neutral-500">No resources yet.</p>}
+        {resources?.length === 0 && <p className="p-6 text-center text-sm text-neutral-500">No resources yet.</p>}
         <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-          {filtered?.map((r) => (
+          {resources?.map((r) => (
             <div
               key={r.name}
               onClick={() => navigate(`/resources/${encodeURIComponent(r.name)}`)}
@@ -122,7 +111,6 @@ export function ResourcesPage() {
             >
               <div className="flex min-w-0 items-center gap-2">
                 <span className="font-medium text-neutral-900 dark:text-neutral-100">{r.name}</span>
-                <EnvironmentBadge environment={r.environment} />
                 {r.refStatus && (
                   <>
                     <RefStatusBadge resolved={r.refStatus.resolved} error={r.refStatus.error} />

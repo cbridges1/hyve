@@ -88,7 +88,7 @@ function EnvironmentPill({
     const ok = await confirm({
       title: `Delete environment "${env.name}"?`,
       message:
-        'Permanently removes this environment. Refused if it still has any clusters, templates, workflows, or resources — delete those first.',
+        'Permanently removes this environment. Refused if it still has any clusters — delete those first. Templates, workflows, and resources are shared across all environments, so they never block this.',
       confirmLabel: 'Delete environment',
       danger: true,
     })

@@ -905,17 +905,17 @@ func (s *Server) handleCreateOrgEnvironment(w http.ResponseWriter, r *http.Reque
 // it's specifically the reserved orgdb.DefaultEnvironmentName ("default")
 // regardless of how many other environments remain (see
 // effectiveEnvironmentLabel's own doc comment: "default" is the one
-// designated home every unlabeled/legacy object resolves to — deleting it
-// while a peer like "staging" survives would silently reintroduce the
-// exact ambiguity that backfill exists to avoid, for every still-unlabeled
-// object in the namespace, not just newly created ones), or when any
-// ClusterDefinition/Template/Workflow/Resource in the organization's
-// namespace still carries this environment's own hyve.io/environment
-// label (deleting the row out from under still-live objects would silently
-// orphan them from every environment-scoped list/filter in the console,
-// with no way back short of hand-editing labels — see environmentInUse). A
-// superadmin can target any organization by name; an ordinary admin only
-// their own (see requireOrgAccess).
+// designated home every unlabeled/legacy ClusterDefinition resolves to —
+// deleting it while a peer like "staging" survives would silently
+// reintroduce the exact ambiguity that backfill exists to avoid, for every
+// still-unlabeled cluster in the namespace, not just newly created ones),
+// or when any ClusterDefinition in the organization's namespace still
+// carries this environment's own hyve.io/environment label (deleting the
+// row out from under still-live clusters would silently orphan them from
+// every environment-scoped list/filter in the console, with no way back
+// short of hand-editing labels — see environmentInUse). A superadmin can
+// target any organization by name; an ordinary admin only their own (see
+// requireOrgAccess).
 //
 // Renaming is deliberately not offered alongside this: an environment's
 // name is baked directly into every object's own metadata.name (see
@@ -969,7 +969,7 @@ func (s *Server) handleDeleteOrgEnvironment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if inUse {
-		writeError(w, http.StatusConflict, fmt.Sprintf("environment %q still has clusters, templates, workflows, or resources — delete them first", envName))
+		writeError(w, http.StatusConflict, fmt.Sprintf("environment %q still has clusters — delete them first", envName))
 		return
 	}
 
@@ -981,45 +981,19 @@ func (s *Server) handleDeleteOrgEnvironment(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// environmentInUse reports whether any ClusterDefinition, Template,
-// Workflow, or Resource in namespace still carries environment's own
-// hyve.io/environment label — checked across all four real-CR types (the
-// only ones this label is ever applied to — see resolveCreateName's own
-// callers), not the git-ref-mirrored *RefStatus kinds, which have no
-// environment concept of their own (see effectiveEnvironmentLabel's doc
-// comment for the same real-CR/ref-status distinction).
+// environmentInUse reports whether any ClusterDefinition in namespace still
+// carries environment's own hyve.io/environment label. ClusterDefinition is
+// the only one of the four resource types still environment-scoped at all
+// (Template/Workflow/Resource are organization-wide reusable blueprints
+// with no live per-environment state of their own — see templateDTO's own
+// doc comment) — so it's the only one that can meaningfully be "in use" by
+// a given environment.
 func (s *Server) environmentInUse(ctx context.Context, rc client.Client, namespace, environment string) (bool, error) {
-	opts := []client.ListOption{client.InNamespace(namespace), client.MatchingLabels{hyveEnvironmentLabel: environment}}
-
 	var clusters hyvev1alpha1.ClusterDefinitionList
-	if err := rc.List(ctx, &clusters, opts...); err != nil {
+	if err := rc.List(ctx, &clusters, client.InNamespace(namespace), client.MatchingLabels{hyveEnvironmentLabel: environment}); err != nil {
 		return false, fmt.Errorf("list cluster definitions: %w", err)
 	}
-	if len(clusters.Items) > 0 {
-		return true, nil
-	}
-
-	var templates hyvev1alpha1.TemplateList
-	if err := rc.List(ctx, &templates, opts...); err != nil {
-		return false, fmt.Errorf("list templates: %w", err)
-	}
-	if len(templates.Items) > 0 {
-		return true, nil
-	}
-
-	var workflows hyvev1alpha1.WorkflowList
-	if err := rc.List(ctx, &workflows, opts...); err != nil {
-		return false, fmt.Errorf("list workflows: %w", err)
-	}
-	if len(workflows.Items) > 0 {
-		return true, nil
-	}
-
-	var resources hyvev1alpha1.ResourceList
-	if err := rc.List(ctx, &resources, opts...); err != nil {
-		return false, fmt.Errorf("list resources: %w", err)
-	}
-	return len(resources.Items) > 0, nil
+	return len(clusters.Items) > 0, nil
 }
 
 // orgReconcilingClusterDTO is GET/PUT /organizations/{name}/reconciling-cluster's

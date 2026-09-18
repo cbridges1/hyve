@@ -20,15 +20,19 @@ import (
 // that was never a Workflow CR at all — mirrored onto a WorkflowRefStatus CR
 // by the controller purely for this listing (see that kind's own doc
 // comment). The two are mutually exclusive on any one row.
+//
+// Deliberately not environment-scoped — see templateDTO's own doc comment
+// for why: a Workflow is a reusable automation step definition, referenced
+// by name from any Template/ClusterDefinition regardless of which
+// environment it lands in, not a live per-environment object.
 type workflowDTO struct {
 	// Name is the short, user-facing name — see clusterDTO's own doc
 	// comment on Name for the exact same convention. Never joined/split
 	// for a RefStatus row (see toWorkflowRefStatusDTO's own doc comment on
 	// why git-referenced workflows are outside this naming scheme).
-	Name        string                     `json:"name"`
-	Environment string                     `json:"environment,omitempty"`
-	Spec        *hyvev1alpha1.WorkflowSpec `json:"spec,omitempty"`
-	RefStatus   *workflowRefStatusDTO      `json:"refStatus,omitempty"`
+	Name      string                     `json:"name"`
+	Spec      *hyvev1alpha1.WorkflowSpec `json:"spec,omitempty"`
+	RefStatus *workflowRefStatusDTO      `json:"refStatus,omitempty"`
 }
 
 // workflowRefStatusDTO mirrors WorkflowRefStatusStatus — nothing sensitive,
@@ -44,11 +48,7 @@ type workflowRefStatusDTO struct {
 
 func toWorkflowDTO(cr *hyvev1alpha1.Workflow) workflowDTO {
 	spec := cr.Spec
-	name, environment := cr.Name, cr.Labels[hyveEnvironmentLabel]
-	if environment != "" {
-		name = splitEnvironmentPrefix(cr.Name, environment)
-	}
-	return workflowDTO{Name: name, Environment: environment, Spec: &spec}
+	return workflowDTO{Name: cr.Name, Spec: &spec}
 }
 
 // toWorkflowRefStatusDTO builds a workflowDTO row from a mirrored
@@ -102,9 +102,7 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]workflowDTO, 0, len(list.Items)+len(refStatusList.Items))
 	for i := range list.Items {
-		dto := toWorkflowDTO(&list.Items[i])
-		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-		dtos = append(dtos, dto)
+		dtos = append(dtos, toWorkflowDTO(&list.Items[i]))
 	}
 	for i := range refStatusList.Items {
 		dtos = append(dtos, toWorkflowRefStatusDTO(&refStatusList.Items[i]))
@@ -116,7 +114,6 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
 	name := r.PathValue("name")
-	resolvedName := s.resolveAddressedName(r, namespace, name)
 	rc, rcErr := s.resourceClient(ctx, namespace)
 	if rcErr != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, rcErr)
@@ -124,11 +121,9 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cr hyvev1alpha1.Workflow
-	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resolvedName}, &cr)
+	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr)
 	if err == nil {
-		dto := toWorkflowDTO(&cr)
-		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-		writeJSON(w, http.StatusOK, dto)
+		writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
 		return
 	}
 	if !apierrors.IsNotFound(err) {
@@ -186,16 +181,8 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create workflow")
 		return
 	}
-	envResult, ok := s.resolveCreateName(w, r, namespace, req.Name)
-	if !ok {
-		return
-	}
-	meta := metav1.ObjectMeta{Name: envResult.RealName, Namespace: namespace}
-	if envResult.HasEnvironment {
-		meta.Labels = map[string]string{hyveEnvironmentLabel: envResult.Label}
-	}
 	cr := &hyvev1alpha1.Workflow{
-		ObjectMeta: meta,
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: namespace},
 		Spec:       req.Spec,
 	}
 	if err := rc.Create(r.Context(), cr); err != nil {
@@ -227,7 +214,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	var req updateWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -255,9 +242,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update workflow: %v", err))
 		return
 	}
-	dto := toWorkflowDTO(&cr)
-	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusOK, toWorkflowDTO(&cr))
 }
 
 func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +251,7 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	rc, err := s.resourceClient(ctx, namespace)
 	if err != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)

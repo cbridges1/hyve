@@ -4,12 +4,7 @@ import type { ClusterDefinitionSpec, CreateTemplateRequest, RenderTemplateReques
 export const templatesApi = {
   list: () => apiFetch<Template[]>('/templates'),
   get: (name: string) => apiFetch<Template>(`/templates/${encodeURIComponent(name)}`),
-  // env — see clustersApi.create's own comment.
-  create: (body: CreateTemplateRequest, env?: string) =>
-    apiFetch<Template>(`/templates${env ? `?env=${encodeURIComponent(env)}` : ''}`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+  create: (body: CreateTemplateRequest) => apiFetch<Template>('/templates', { method: 'POST', body: JSON.stringify(body) }),
   update: (name: string, spec: TemplateSpec) =>
     apiFetch<Template>(`/templates/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify({ spec }) }),
   delete: (name: string) => apiDelete(`/templates/${encodeURIComponent(name)}`),

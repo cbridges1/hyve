@@ -3,15 +3,13 @@ import { organizationsApi } from '../lib/api/organizations'
 import { useApi } from '../lib/useApi'
 import { useWhoami } from '../lib/useWhoami'
 
-// Shared by every environment-scoped resource-list page (Clusters,
-// Templates, Workflows, Resources) — internal/api/environmentnaming.go's
-// own ?env= query param is the only way any of those four resource types'
-// create/list/get/patch/delete calls ever distinguish one environment
-// from another; before this, the web console had no UI for it at all
-// (confirmed live: once a second environment exists, every create request
-// from this console 400s with an "ambiguous, specify ?env=" error, since
-// nothing here ever sent one — see resolveResourceEnvironment's own
-// `default:` case).
+// Shared by ClustersListPage — the only remaining environment-scoped
+// resource-list page. Templates/Workflows/Resources used to be scoped the
+// same way, but were descoped to organization-wide blueprints (see
+// internal/api/templates.go's own templateDTO doc comment for why); only
+// ClusterDefinition still has internal/api/environmentnaming.go's ?env=
+// query param as the way create/list/get/patch/delete calls distinguish
+// one environment from another.
 //
 // useEnvironments resolves orgName the same way EnvironmentsPage already
 // does (who.namespace doubles as the organization name — see that page's

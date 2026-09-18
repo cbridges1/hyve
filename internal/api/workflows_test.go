@@ -82,6 +82,31 @@ func TestHandleCreateWorkflow_AdminAllowed(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code)
 }
 
+// TestHandleCreateWorkflow_MultipleEnvironments_NoEnvNeeded mirrors
+// TestHandleCreateTemplate_MultipleEnvironments_NoEnvNeeded for Workflow —
+// see that test's own doc comment.
+func TestHandleCreateWorkflow_MultipleEnvironments_NoEnvNeeded(t *testing.T) {
+	store := newTestOrgStore(t)
+	newOrgWithEnvironments(t, store, testNamespace, "dev", "staging")
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+
+	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/workflows", createWorkflowRequest{
+		Name: "w1",
+		Spec: hyvev1alpha1.WorkflowSpec{
+			Jobs: []hyvev1alpha1.WorkflowJob{{Name: "main", Steps: []hyvev1alpha1.WorkflowStep{{Name: "s1", Command: "echo hi"}}}},
+		},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "a Workflow create must never need ?env=, regardless of how many environments the organization has")
+
+	var dto workflowDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "w1", dto.Name)
+
+	var cr hyvev1alpha1.Workflow
+	require.NoError(t, s.Client.Get(t.Context(), clusterKey(testNamespace, "w1"), &cr))
+	assert.Empty(t, cr.Labels[hyveEnvironmentLabel], "a Workflow must never carry the environment label")
+}
+
 func TestHandleDeleteWorkflow_AdminAllowed(t *testing.T) {
 	s := &Server{Client: newFakeClient(t, newWorkflowDef("w1")), Namespace: testNamespace}
 	rec := doWorkflowRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/workflows/w1", nil)

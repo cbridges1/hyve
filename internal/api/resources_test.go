@@ -49,6 +49,29 @@ func newResourceDef(name string) *hyvev1alpha1.Resource {
 	}
 }
 
+// TestHandleCreateResource_MultipleEnvironments_NoEnvNeeded mirrors
+// TestHandleCreateTemplate_MultipleEnvironments_NoEnvNeeded for Resource —
+// see that test's own doc comment.
+func TestHandleCreateResource_MultipleEnvironments_NoEnvNeeded(t *testing.T) {
+	store := newTestOrgStore(t)
+	newOrgWithEnvironments(t, store, testNamespace, "dev", "staging")
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+
+	rec := doResourceRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/resources", createResourceRequest{
+		Name: "r1",
+		Spec: hyvev1alpha1.ResourceSpec{Manifest: "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: example\n"},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "a Resource create must never need ?env=, regardless of how many environments the organization has")
+
+	var dto resourceDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "r1", dto.Name)
+
+	var cr hyvev1alpha1.Resource
+	require.NoError(t, s.Client.Get(t.Context(), clusterKey(testNamespace, "r1"), &cr))
+	assert.Empty(t, cr.Labels[hyveEnvironmentLabel], "a Resource must never carry the environment label")
+}
+
 func TestHandleUpdateResource_AdminAllowed(t *testing.T) {
 	s := &Server{Client: newFakeClient(t, newResourceDef("r1")), Namespace: testNamespace}
 

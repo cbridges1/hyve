@@ -9,12 +9,22 @@ import (
 	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
-// hyveEnvironmentLabel is applied to every environment-scoped object
-// (ClusterDefinition/Template/Workflow/Resource) created while its target
-// namespace resolves to a real Organization — see resolveResourceEnvironment
-// below. Never present on an object created before Milestone 3, or in a
-// namespace with no matching Organization (notably the control-plane
-// namespace itself, which is never an organization).
+// hyveEnvironmentLabel is applied to a ClusterDefinition created while its
+// target namespace resolves to a real Organization — see
+// resolveResourceEnvironment below. Never present on an object created
+// before Milestone 3, in a namespace with no matching Organization (notably
+// the control-plane namespace itself, which is never an organization), or —
+// as of the environments-scope-to-clusters-only follow-up — on a
+// Template/Workflow/Resource at all: those three are reusable, organization-
+// wide blueprints with no live state of their own (unlike a ClusterDefinition,
+// which represents an actual, currently-differing-per-environment cluster),
+// referenced by name from any environment's ClusterDefinition. See
+// templateDTO's own doc comment (internal/api/templates.go) for the full
+// reasoning. Scoping them per environment only forced duplicating the same
+// blueprint under every environment for no benefit, and made moving one
+// between environments an unsolved (and, given joinEnvironmentName's
+// metadata.name-baking, genuinely hard) problem for objects that never
+// needed to belong to one environment in the first place.
 const hyveEnvironmentLabel = "hyve.io/environment"
 
 // joinEnvironmentName computes the real Kubernetes metadata.name for a
@@ -48,9 +58,10 @@ func splitEnvironmentPrefix(realName, environment string) string {
 const envQueryParam = "env"
 
 // resolveResourceEnvironment resolves which Environment (if any) a request
-// touching one of the four environment-scoped resource types should be
-// scoped to, given the resolved target namespace and the request's own
-// ?env= query parameter.
+// touching the one environment-scoped resource type — ClusterDefinition,
+// see hyveEnvironmentLabel's own doc comment for why Template/Workflow/
+// Resource no longer call this at all — should be scoped to, given the
+// resolved target namespace and the request's own ?env= query parameter.
 //
 // ok is false when namespace has no matching Organization in s.OrgStore at
 // all — every namespace that predates Milestone 3, and the control-plane
@@ -115,9 +126,10 @@ func (s *Server) resolveResourceEnvironment(ctx context.Context, namespace, requ
 	}
 }
 
-// effectiveEnvironmentLabel backfills the display value for an object
-// created before environments existed (or before its organization had
-// more than one) — label itself, verbatim, when already set. Otherwise:
+// effectiveEnvironmentLabel backfills the display value for a
+// ClusterDefinition created before environments existed (or before its
+// organization had more than one) — label itself, verbatim, when already
+// set. Otherwise:
 //
 //   - exactly one environment: that one, unambiguously (the same
 //     "no ambiguity, no explicit label needed" reasoning
@@ -183,10 +195,12 @@ type resourceEnvironmentResult struct {
 }
 
 // resolveCreateName is resolveResourceEnvironment plus the create-time
-// naming join, in one call — the shape every handleCreate<Type> needs. On
-// error, the caller should write it as a 400 Bad Request (an unresolvable
-// ?env= or an ambiguous default is a client error, not a server one) and
-// return without creating anything.
+// naming join, in one call — the shape handleCreateCluster needs (the only
+// remaining caller — see hyveEnvironmentLabel's own doc comment for why
+// Template/Workflow/Resource creation no longer calls this). On error, the
+// caller should write it as a 400 Bad Request (an unresolvable ?env= or an
+// ambiguous default is a client error, not a server one) and return without
+// creating anything.
 func (s *Server) resolveCreateName(w http.ResponseWriter, r *http.Request, namespace, shortName string) (resourceEnvironmentResult, bool) {
 	env, ok, err := s.resolveResourceEnvironment(r.Context(), namespace, r.URL.Query().Get(envQueryParam))
 	if err != nil {
@@ -205,8 +219,10 @@ func (s *Server) resolveCreateName(w http.ResponseWriter, r *http.Request, names
 
 // resolveAddressedName resolves a GET/PATCH/DELETE's {name} path value plus
 // its ?env= query parameter into the real Kubernetes metadata.name to
-// address — the read-side counterpart to resolveCreateName. Unlike create,
-// a missing/ambiguous ?env= here degrades gracefully to treating {name} as
+// address — the read-side counterpart to resolveCreateName, and (as of the
+// environments-scope-to-clusters-only follow-up) used only by
+// clusters.go's own handlers, for the same reason. Unlike create, a
+// missing/ambiguous ?env= here degrades gracefully to treating {name} as
 // the literal metadata.name (legacy behavior) rather than erroring, since a
 // GET by exact name has always been valid regardless of environment and
 // should stay that way for any pre-Milestone-3 caller.

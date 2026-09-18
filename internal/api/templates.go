@@ -20,20 +20,25 @@ import (
 // GET /api/templates/<name> — unlike clusterDTO, nothing here is
 // sensitive (no driverOutputs/kubeconfig-equivalent), so this exposes the
 // CRD's own Spec directly rather than a narrower hand-picked view.
+//
+// Deliberately not environment-scoped: unlike ClusterDefinition (a real,
+// live, per-environment-differing object — see
+// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's own follow-up on this),
+// a Template is a reusable blueprint with no live state of its own,
+// referenced by name from any ClusterDefinition regardless of which
+// environment it lands in. Scoping it per environment would only force
+// duplicating the same "civo"-style template under every environment for
+// no benefit — see environmentnaming.go's own package doc comment for the
+// same reasoning applied to Workflow/Resource.
 type templateDTO struct {
 	// Name is the short, user-facing name — see clusterDTO's own doc
 	// comment on Name for the exact same convention.
-	Name        string                    `json:"name"`
-	Environment string                    `json:"environment,omitempty"`
-	Spec        hyvev1alpha1.TemplateSpec `json:"spec"`
+	Name string                    `json:"name"`
+	Spec hyvev1alpha1.TemplateSpec `json:"spec"`
 }
 
 func toTemplateDTO(cr *hyvev1alpha1.Template) templateDTO {
-	name, environment := cr.Name, cr.Labels[hyveEnvironmentLabel]
-	if environment != "" {
-		name = splitEnvironmentPrefix(cr.Name, environment)
-	}
-	return templateDTO{Name: name, Environment: environment, Spec: cr.Spec}
+	return templateDTO{Name: cr.Name, Spec: cr.Spec}
 }
 
 // registerTemplateRoutes wires the /templates endpoints onto mux — mounted
@@ -64,9 +69,7 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]templateDTO, 0, len(list.Items))
 	for i := range list.Items {
-		dto := toTemplateDTO(&list.Items[i])
-		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-		dtos = append(dtos, dto)
+		dtos = append(dtos, toTemplateDTO(&list.Items[i]))
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
@@ -74,7 +77,7 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	rc, err := s.resourceClient(ctx, namespace)
 	if err != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
@@ -91,9 +94,7 @@ func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get template")
 		return
 	}
-	dto := toTemplateDTO(&cr)
-	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusOK, toTemplateDTO(&cr))
 }
 
 // createTemplateRequest reuses hyvev1alpha1.TemplateSpec directly as the
@@ -124,16 +125,8 @@ func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create template")
 		return
 	}
-	envResult, ok := s.resolveCreateName(w, r, namespace, req.Name)
-	if !ok {
-		return
-	}
-	meta := metav1.ObjectMeta{Name: envResult.RealName, Namespace: namespace}
-	if envResult.HasEnvironment {
-		meta.Labels = map[string]string{hyveEnvironmentLabel: envResult.Label}
-	}
 	cr := &hyvev1alpha1.Template{
-		ObjectMeta: meta,
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: namespace},
 		Spec:       req.Spec,
 	}
 	if err := rc.Create(r.Context(), cr); err != nil {
@@ -159,7 +152,7 @@ func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	var req updateTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -187,9 +180,7 @@ func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update template: %v", err))
 		return
 	}
-	dto := toTemplateDTO(&cr)
-	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusOK, toTemplateDTO(&cr))
 }
 
 func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +189,7 @@ func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	rc, err := s.resourceClient(ctx, namespace)
 	if err != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)
@@ -238,7 +229,7 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	rc, err := s.resourceClient(ctx, namespace)
 	if err != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)

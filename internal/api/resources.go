@@ -17,14 +17,18 @@ import (
 // resourceDTO is the response shape for GET /api/resources and
 // GET /api/resources/<name> — mirrors workflowDTO exactly, including the
 // Spec-vs-RefStatus split (see that type's doc comment).
+//
+// Deliberately not environment-scoped — see templateDTO's own doc comment
+// for why: a Resource is a reusable manifest blueprint, referenced by name
+// from any Template/ClusterDefinition regardless of which environment it
+// lands in, not a live per-environment object.
 type resourceDTO struct {
 	// Name is the short, user-facing name — see clusterDTO's own doc
 	// comment on Name for the exact same convention. Never joined/split
 	// for a RefStatus row, same reasoning as workflowDTO's own Name field.
-	Name        string                     `json:"name"`
-	Environment string                     `json:"environment,omitempty"`
-	Spec        *hyvev1alpha1.ResourceSpec `json:"spec,omitempty"`
-	RefStatus   *resourceRefStatusDTO      `json:"refStatus,omitempty"`
+	Name      string                     `json:"name"`
+	Spec      *hyvev1alpha1.ResourceSpec `json:"spec,omitempty"`
+	RefStatus *resourceRefStatusDTO      `json:"refStatus,omitempty"`
 }
 
 // resourceRefStatusDTO mirrors workflowRefStatusDTO, minus
@@ -39,11 +43,7 @@ type resourceRefStatusDTO struct {
 
 func toResourceDTO(cr *hyvev1alpha1.Resource) resourceDTO {
 	spec := cr.Spec
-	name, environment := cr.Name, cr.Labels[hyveEnvironmentLabel]
-	if environment != "" {
-		name = splitEnvironmentPrefix(cr.Name, environment)
-	}
-	return resourceDTO{Name: name, Environment: environment, Spec: &spec}
+	return resourceDTO{Name: cr.Name, Spec: &spec}
 }
 
 // toResourceRefStatusDTO mirrors toWorkflowRefStatusDTO — see its doc
@@ -94,9 +94,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]resourceDTO, 0, len(list.Items)+len(refStatusList.Items))
 	for i := range list.Items {
-		dto := toResourceDTO(&list.Items[i])
-		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-		dtos = append(dtos, dto)
+		dtos = append(dtos, toResourceDTO(&list.Items[i]))
 	}
 	for i := range refStatusList.Items {
 		dtos = append(dtos, toResourceRefStatusDTO(&refStatusList.Items[i]))
@@ -108,7 +106,6 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
 	name := r.PathValue("name")
-	resolvedName := s.resolveAddressedName(r, namespace, name)
 	rc, rcErr := s.resourceClient(ctx, namespace)
 	if rcErr != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, rcErr)
@@ -116,11 +113,9 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cr hyvev1alpha1.Resource
-	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resolvedName}, &cr)
+	err := rc.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cr)
 	if err == nil {
-		dto := toResourceDTO(&cr)
-		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-		writeJSON(w, http.StatusOK, dto)
+		writeJSON(w, http.StatusOK, toResourceDTO(&cr))
 		return
 	}
 	if !apierrors.IsNotFound(err) {
@@ -177,16 +172,8 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create resource")
 		return
 	}
-	envResult, ok := s.resolveCreateName(w, r, namespace, req.Name)
-	if !ok {
-		return
-	}
-	meta := metav1.ObjectMeta{Name: envResult.RealName, Namespace: namespace}
-	if envResult.HasEnvironment {
-		meta.Labels = map[string]string{hyveEnvironmentLabel: envResult.Label}
-	}
 	cr := &hyvev1alpha1.Resource{
-		ObjectMeta: meta,
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: namespace},
 		Spec:       req.Spec,
 	}
 	if err := rc.Create(r.Context(), cr); err != nil {
@@ -216,7 +203,7 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	var req updateResourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -244,9 +231,7 @@ func (s *Server) handleUpdateResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to update resource: %v", err))
 		return
 	}
-	dto := toResourceDTO(&cr)
-	dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusOK, toResourceDTO(&cr))
 }
 
 func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +240,7 @@ func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	namespace := s.TenantNamespace(r)
-	name := s.resolveAddressedName(r, namespace, r.PathValue("name"))
+	name := r.PathValue("name")
 	rc, err := s.resourceClient(ctx, namespace)
 	if err != nil {
 		log.Printf("api: failed to resolve reconciling cluster for %q: %v", namespace, err)

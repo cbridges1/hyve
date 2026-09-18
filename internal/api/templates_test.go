@@ -80,6 +80,36 @@ func TestHandleCreateTemplate_AdminAllowed(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code)
 }
 
+// TestHandleCreateTemplate_MultipleEnvironments_NoEnvNeeded is the
+// regression test for the environments-scope-to-clusters-only follow-up: a
+// Template is a reusable, organization-wide blueprint (see templateDTO's
+// own doc comment), so creating one must never require ?env= or trip
+// resolveResourceEnvironment's "organization has multiple environments —
+// specify ?env=" 400, even in an organization with several real
+// environments. Before this change, this exact request 400'd — confirmed
+// via the cluster-scoped equivalent, TestHandleCreateCluster_MultipleEnvironments_RequiresParam,
+// which still (correctly) requires ?env= for ClusterDefinition, the one
+// type still environment-scoped.
+func TestHandleCreateTemplate_MultipleEnvironments_NoEnvNeeded(t *testing.T) {
+	store := newTestOrgStore(t)
+	newOrgWithEnvironments(t, store, testNamespace, "dev", "staging")
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+
+	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/templates", createTemplateRequest{
+		Name: "t1",
+		Spec: hyvev1alpha1.TemplateSpec{Driver: hyvev1alpha1.DriverRef{Source: "github.com/example/civo", Version: "v1.0.0"}},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "a Template create must never need ?env=, regardless of how many environments the organization has")
+
+	var dto templateDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+	assert.Equal(t, "t1", dto.Name, "the real object name must stay the raw short name — no environment prefix ever applied")
+
+	var cr hyvev1alpha1.Template
+	require.NoError(t, s.Client.Get(t.Context(), clusterKey(testNamespace, "t1"), &cr))
+	assert.Empty(t, cr.Labels[hyveEnvironmentLabel], "a Template must never carry the environment label")
+}
+
 func TestHandleDeleteTemplate_AdminAllowed(t *testing.T) {
 	s := &Server{Client: newFakeClient(t, newTemplateDef("t1")), Namespace: testNamespace}
 	rec := doTemplateRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodDelete, "/templates/t1", nil)

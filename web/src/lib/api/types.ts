@@ -159,7 +159,7 @@ export type TemplateSpec = {
   lockParams?: boolean
 }
 
-export type Template = { name: string; spec: TemplateSpec; environment?: string }
+export type Template = { name: string; spec: TemplateSpec }
 export type CreateTemplateRequest = { name: string; spec: TemplateSpec }
 export type RenderTemplateRequest = { region?: string; params?: Record<string, string> }
 
@@ -213,13 +213,13 @@ export type RefStatus = {
   error?: string
 }
 
-export type Workflow = { name: string; spec?: WorkflowSpec; refStatus?: RefStatus; environment?: string }
+export type Workflow = { name: string; spec?: WorkflowSpec; refStatus?: RefStatus }
 export type CreateWorkflowRequest = { name: string; spec: WorkflowSpec }
 
 // ── Resources ────────────────────────────────────────────────────────────
 
 export type ResourceSpec = { manifest: string }
-export type ResourceItem = { name: string; spec?: ResourceSpec; refStatus?: RefStatus; environment?: string }
+export type ResourceItem = { name: string; spec?: ResourceSpec; refStatus?: RefStatus }
 export type CreateResourceRequest = { name: string; spec: ResourceSpec }
 
 // ── Modules ──────────────────────────────────────────────────────────────
