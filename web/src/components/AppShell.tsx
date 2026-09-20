@@ -182,9 +182,18 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             home-cluster HyveConfig (/settings, superadmin-and-control-
             plane-only) — an organization actually on its own reconciling
             cluster instead gets its own self-service Settings
-            (GET/PATCH /organizations/{name}/config). Grouped under its
-            own header only when at least one item is actually visible, so
-            this role-gated group never renders as an empty heading. */}
+            (GET/PATCH /organizations/{name}/config). The link itself is
+            NOT further gated on Boolean(who?.reconcilingCluster) — a tenant
+            still on the shared home cluster gets the link too, landing on
+            OrgSettingsPage's own already-built "this organization has no
+            settings of its own yet — register a dedicated reconciling
+            cluster first" explanation, rather than the link silently
+            vanishing with no way to discover why. Confirmed live as
+            confusing: a tenant admin has no other way to learn that
+            registering a reconciling cluster is what unlocks this page.
+            Grouped under its own header only when at least one item is
+            actually visible, so this role-gated group never renders as an
+            empty heading. */}
         {(who?.role === RoleAdmin || who?.role === RoleSuperadmin) && (
           <div>
             <div className={groupHeaderClass}>Organization</div>
@@ -207,12 +216,10 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                 <ReconcilingClustersIcon />
                 Reconciling cluster
               </NavLink>
-              {((who?.role === RoleSuperadmin && actAs === null) || Boolean(who?.reconcilingCluster)) && (
-                <NavLink to="/settings" className={linkClass} onClick={onNavigate}>
-                  <SettingsIcon />
-                  Settings
-                </NavLink>
-              )}
+              <NavLink to="/settings" className={linkClass} onClick={onNavigate}>
+                <SettingsIcon />
+                Settings
+              </NavLink>
             </div>
           </div>
         )}
