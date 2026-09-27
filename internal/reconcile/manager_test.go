@@ -264,7 +264,7 @@ func TestValidateResourceRefsLocked(t *testing.T) {
 		assert.NoError(t, validateResourceRefsLocked(c, lf))
 	})
 
-	t.Run("directory-kind ref is rejected", func(t *testing.T) {
+	t.Run("directory-kind ref needs no lock entry", func(t *testing.T) {
 		lf := &module.LockFile{Version: 1}
 		c := types.ClusterDefinition{
 			Metadata: types.ClusterMetadata{Name: "test"},
@@ -272,9 +272,7 @@ func TestValidateResourceRefsLocked(t *testing.T) {
 				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//manifests/"}},
 			},
 		}
-		err := validateResourceRefsLocked(c, lf)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must name a single file")
+		assert.NoError(t, validateResourceRefsLocked(c, lf), "directory sources are resolved fresh each reconcile, never locked")
 	})
 }
 

@@ -100,14 +100,13 @@ func TestInstall_IgnoresLocalRefs(t *testing.T) {
 
 // TestInstall_PopulatesRefResultOnError confirms a failed resolve still
 // produces a RefResult (Err set) rather than being silently dropped — a
-// directory-kind source is rejected by ParseSource+ClassifyPath before any
-// network call (see resolve_test.go's TestResolveRemote_RejectsDirectoryKind),
-// so this is safe to run without network access.
+// malformed source (no repo segment) is rejected by ParseSource before any
+// network call, so this is safe to run without network access.
 func TestInstall_PopulatesRefResultOnError(t *testing.T) {
 	repoPath := t.TempDir()
 
 	_, _, resolveErrors, results, changed, err := Install(repoPath, []types.ResourceRef{
-		{Name: "bad", Source: "github.com/org/repo//manifests/"},
+		{Name: "bad", Source: "github.com/org//manifests/file.yaml"},
 	}, "")
 
 	require.NoError(t, err)
@@ -116,4 +115,20 @@ func TestInstall_PopulatesRefResultOnError(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, "bad", results[0].Name)
 	assert.Error(t, results[0].Err)
+}
+
+// Directory sources aren't locked — they're resolved fresh on every
+// reconcile — so Install skips them entirely rather than erroring.
+func TestInstall_SkipsDirectorySources(t *testing.T) {
+	repoPath := t.TempDir()
+
+	locked, _, resolveErrors, results, changed, err := Install(repoPath, []types.ResourceRef{
+		{Name: "dir", Source: "github.com/org/repo//manifests/"},
+	}, "")
+
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Empty(t, locked)
+	assert.Empty(t, resolveErrors)
+	assert.Empty(t, results)
 }

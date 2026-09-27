@@ -56,7 +56,10 @@ func Install(repoPath string, refs []types.ResourceRef, token string) (locked []
 
 	nameOwner := map[string]string{} // name -> first canonical source seen this run
 	for _, ref := range refs {
-		if !ref.IsRemote() {
+		// Directory sources aren't locked: there's no single lock key for
+		// "whatever this directory holds", so they're resolved fresh on
+		// every reconcile — the same as workflow directory references.
+		if !ref.IsRemote() || IsDirSource(ref.Source) {
 			continue
 		}
 		resolved, resolveErr := Resolve(ref.Source, repoPath, lf, token)

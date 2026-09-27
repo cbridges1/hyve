@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/workflowref"
@@ -38,7 +37,10 @@ type ResolvedResource struct {
 // access token for a private source; empty falls back to the process's own
 // GITHUB_TOKEN env var (see module.resolveGitHubToken).
 func Resolve(source, repoRoot string, lf *module.LockFile, token string) (*ResolvedResource, error) {
-	if strings.HasPrefix(source, "./") || strings.HasPrefix(source, "/") {
+	if IsDirSource(source) {
+		return nil, fmt.Errorf("resource source %q is a directory — expand it with ResolveDir", source)
+	}
+	if IsLocalSource(source) {
 		return resolveLocal(source, repoRoot)
 	}
 	return resolveRemote(source, lf, token)
@@ -48,6 +50,9 @@ func resolveLocal(source, repoRoot string) (*ResolvedResource, error) {
 	full := source
 	if !filepath.IsAbs(source) {
 		full = filepath.Join(repoRoot, source)
+	}
+	if info, statErr := os.Stat(full); statErr == nil && info.IsDir() {
+		return nil, fmt.Errorf("resource source %q is a directory — end it with \"/\" to apply every *.yaml file in it", source)
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
@@ -71,8 +76,7 @@ func resolveRemote(source string, lf *module.LockFile, token string) (*ResolvedR
 		return nil, err
 	}
 	if kind == workflowref.PathKindDir {
-		return nil, fmt.Errorf(
-			"resource source %q resolves to a directory — a resource source must name a single file (no directory-expansion form)", source)
+		return nil, fmt.Errorf("resource source %q is a directory — expand it with ResolveDir", source)
 	}
 
 	canonicalSource := ps.CanonicalSource()

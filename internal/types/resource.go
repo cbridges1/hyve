@@ -55,7 +55,7 @@ type ResourceRef struct {
 // always remote when set), ResourceRef.Source is dual-purpose today, so
 // this can't be a bare non-empty check.
 func (r ResourceRef) IsRemote() bool {
-	return r.Source != "" && !strings.HasPrefix(r.Source, "./") && !strings.HasPrefix(r.Source, "/")
+	return r.Source != "" && !strings.HasPrefix(r.Source, "./") && !strings.HasPrefix(r.Source, "../") && !strings.HasPrefix(r.Source, "/")
 }
 
 // HelmSpec declares a Helm chart release to install/upgrade and drift-check.

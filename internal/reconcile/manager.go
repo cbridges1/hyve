@@ -860,8 +860,9 @@ func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) 
 }
 
 // validateResourceRefsLocked mirrors validateWorkflowRefsLocked exactly, one
-// tier below it: a remote ResourceRef.Source is install-required, just like
-// a remote WorkflowRef.Source — no live/uninstalled fallback. A local-path
+// tier below it: a remote single-file ResourceRef.Source is install-required,
+// just like a remote WorkflowRef.Source — no live/uninstalled fallback. A
+// directory source is exempt: it has no lock entry by design. A local-path
 // or Name-only ResourceRef needs no lock entry at all (IsRemote() is false
 // for both), so this only ever validates c.Spec.Resources entries whose
 // Source is a remote git ref.
@@ -879,7 +880,9 @@ func validateResourceRefsLocked(c types.ClusterDefinition, lf *module.LockFile) 
 			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
 		}
 		if kind == workflowref.PathKindDir {
-			return fmt.Errorf("cluster %s: resource ref %q resolves to a directory — a resource source must name a single file", c.Metadata.Name, ref.Source)
+			// Directory sources aren't locked — they're expanded and
+			// resolved fresh on every reconcile (see resourceref.ResolveDir).
+			continue
 		}
 		if lf.GetLockedResource(ps.CanonicalSource(), ps.Version) == nil {
 			return fmt.Errorf("cluster %s: resource %s not in hyve.lock — run `hyve resource install` (local mode), or check the controller logs for a resolution failure (cluster mode resolves this automatically per-reconcile — see resolveResourceIfNeeded)", c.Metadata.Name, ref.Source)

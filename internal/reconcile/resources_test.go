@@ -35,7 +35,7 @@ func TestFindOrphanedResources_NoOrphans(t *testing.T) {
 	applied := map[string]*types.AppliedResource{
 		"a": {}, "b": {},
 	}
-	assert.Empty(t, findOrphanedResources(resources, applied))
+	assert.Empty(t, findOrphanedResources(specResourceNames(resources, nil), nil, applied))
 }
 
 func TestFindOrphanedResources_SomeOrphaned(t *testing.T) {
@@ -43,17 +43,17 @@ func TestFindOrphanedResources_SomeOrphaned(t *testing.T) {
 	applied := map[string]*types.AppliedResource{
 		"a": {}, "b": {}, "c": {},
 	}
-	assert.Equal(t, []string{"b", "c"}, findOrphanedResources(resources, applied))
+	assert.Equal(t, []string{"b", "c"}, findOrphanedResources(specResourceNames(resources, nil), nil, applied))
 }
 
 func TestFindOrphanedResources_EmptyApplied(t *testing.T) {
 	resources := []types.ResourceRef{{Name: "a"}}
-	assert.Empty(t, findOrphanedResources(resources, map[string]*types.AppliedResource{}))
+	assert.Empty(t, findOrphanedResources(specResourceNames(resources, nil), nil, map[string]*types.AppliedResource{}))
 }
 
 func TestFindOrphanedResources_EmptyResources(t *testing.T) {
 	applied := map[string]*types.AppliedResource{"a": {}, "b": {}}
-	assert.Equal(t, []string{"a", "b"}, findOrphanedResources(nil, applied))
+	assert.Equal(t, []string{"a", "b"}, findOrphanedResources(specResourceNames(nil, nil), nil, applied))
 }
 
 func TestValidateResourceRef_SourceOnly(t *testing.T) {

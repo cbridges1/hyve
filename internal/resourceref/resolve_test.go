@@ -73,7 +73,7 @@ func TestResolveRemote_RejectsDirectoryKind(t *testing.T) {
 	// never reached), so this is safe to run without network access.
 	_, err := resolveRemote("github.com/org/repo//manifests/", nil, "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must name a single file")
+	assert.Contains(t, err.Error(), "is a directory")
 }
 
 func TestResolveRemote_RejectsRepoRootSource(t *testing.T) {
@@ -81,7 +81,7 @@ func TestResolveRemote_RejectsRepoRootSource(t *testing.T) {
 	// listing) — also rejected before any network call.
 	_, err := resolveRemote("github.com/org/repo", nil, "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must name a single file")
+	assert.Contains(t, err.Error(), "is a directory")
 }
 
 func TestRawFileURL(t *testing.T) {
