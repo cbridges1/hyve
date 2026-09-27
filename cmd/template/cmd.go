@@ -134,7 +134,7 @@ against in cluster mode.`,
 
 func init() {
 	templateCreateCmd.Flags().StringP("description", "d", "", "Template description")
-	templateCreateCmd.Flags().String("driver", "", "Module source (e.g. github.com/hyve-modules/aws-eks)")
+	templateCreateCmd.Flags().String("driver", "", "Module source (e.g. github.com/your-org/hyve-aws-eks-module)")
 	templateCreateCmd.Flags().String("driver-version", "latest", "Module version (semver constraint, tag, or commit)")
 	templateCreateCmd.Flags().StringP("region", "r", "", "Default region for clusters created from this template")
 	templateCreateCmd.Flags().StringArray("set", nil, "Default driver params (repeatable): KEY=VALUE")

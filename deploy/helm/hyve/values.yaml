@@ -2,7 +2,9 @@
 # hyve-api (see Chart.yaml for why they're one release).
 
 image:
-  repository: ""
+  # Published with every hyve release. tag defaults to the chart's
+  # appVersion, which the release sets to the same version as the image.
+  repository: ghcr.io/cbridges1/hyve
   tag: ""
   pullPolicy: IfNotPresent
 

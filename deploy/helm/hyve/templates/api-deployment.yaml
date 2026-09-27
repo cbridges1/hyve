@@ -37,7 +37,7 @@ spec:
       serviceAccountName: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
       containers:
         - name: api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # The image's own ENTRYPOINT is just ["hyve"] (unlike
           # deploy/Dockerfile.controller's fixed "cluster-config controller

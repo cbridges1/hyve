@@ -5,6 +5,13 @@ project_name: hyve
 before:
   hooks:
     - go mod tidy
+    # The web console (web/) is embedded into the hyve binary from
+    # internal/webui/dist/ (go:embed). Only a placeholder is committed
+    # there, so build the real console first — without this, every
+    # released binary and image serves the placeholder page instead.
+    - npm --prefix web ci
+    - npm --prefix web run build
+    - sh -c "rm -rf internal/webui/dist && cp -R web/dist internal/webui/dist"
 
 builds:
   - id: hyve
@@ -27,9 +34,29 @@ builds:
       - -X github.com/cbridges1/hyve/cmd.version={{ .Version }}
       - -X github.com/cbridges1/hyve/cmd.commit={{ .Commit }}
       - -X github.com/cbridges1/hyve/cmd.date={{ .Date }}
+      # The hyve-agent image the controller installs on managed clusters —
+      # pinned to the one published with this same release (see the
+      # hyve-agent build/image below).
+      - -X github.com/cbridges1/hyve/internal/reconcile.defaultAgentImage=ghcr.io/cbridges1/hyve-agent:{{ .Version }}
+
+  # hyve-agent runs inside managed clusters (Linux only) and ships only as
+  # an image, never as a downloadable archive or Homebrew formula.
+  - id: hyve-agent
+    main: ./cmd/agent
+    binary: hyve-agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
 
 archives:
   - id: hyve
+    ids: [hyve]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -58,10 +85,31 @@ changelog:
 # Dockerfile.release just packages the pre-built binary into a multi-arch
 # image rather than re-running `go build` inside Docker.
 dockers_v2:
-  - ids: [hyve]
+  - id: hyve
+    ids: [hyve]
     dockerfile: Dockerfile.release
     images:
       - ghcr.io/cbridges1/hyve
+    labels:
+      org.opencontainers.image.source: https://github.com/cbridges1/hyve
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+
+  - id: hyve-agent
+    ids: [hyve-agent]
+    dockerfile: Dockerfile.agent.release
+    images:
+      - ghcr.io/cbridges1/hyve-agent
+    labels:
+      org.opencontainers.image.source: https://github.com/cbridges1/hyve
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
     tags:
       - "{{ .Version }}"
       - "latest"

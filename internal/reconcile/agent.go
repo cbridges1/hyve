@@ -55,16 +55,16 @@ const (
 // defaultAgentImage is hyve-agent's image when HyveConfig.spec.
 // defaultAgentImage is unset — see that field's own doc comment
 // (internal/apis/hyve/v1alpha1/hyveconfig_types.go) for why a built-in
-// default exists at all. Placeholder: this repo has no release pipeline
-// publishing a real, versioned hyve-agent image yet — replace this the
-// moment one exists, rather than leaving it silently wrong only in a
-// comment nobody would find.
-const defaultAgentImage = "ghcr.io/cbridges1/hyve-agent:dev"
+// default exists at all. A var, not a const, so release builds can pin it
+// to the agent image published alongside them (.goreleaser.yaml's
+// ldflags set it to ghcr.io/cbridges1/hyve-agent:<version>); a local or
+// dev build keeps the :dev tag.
+var defaultAgentImage = "ghcr.io/cbridges1/hyve-agent:dev"
 
 // resolveAgentImage applies the same two-tier resolution order
 // moduleImage/DefaultModuleImage already use elsewhere on this Reconciler:
 // r.DefaultAgentImage (from HyveConfig.spec.defaultAgentImage) if set,
-// else the built-in placeholder above.
+// else the built-in default above.
 func (r *Reconciler) resolveAgentImage() string {
 	if r.DefaultAgentImage != "" {
 		return r.DefaultAgentImage

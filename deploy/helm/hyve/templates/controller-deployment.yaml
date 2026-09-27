@@ -24,7 +24,7 @@ spec:
       # deploy/Dockerfile.dev, which bakes in none by design).
       initContainers:
         - name: seed-modules
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["sh", "-c"]
           args:
@@ -44,7 +44,7 @@ spec:
               mountPath: /data
       containers:
         - name: controller
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # command+args are set explicitly (rather than relying on
           # deploy/Dockerfile.controller's own fixed
