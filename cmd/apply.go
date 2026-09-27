@@ -24,7 +24,7 @@ accepts once the cluster's CRDs are installed. Equivalent to picking the
 matching 'hyve cluster/template/workflow create --file' by hand, without
 needing to know which one matches a given file.
 
-Requires an active context with cluster-mode credentials (see 'hyve
+Requires an active context with cluster-mode credentials (see 'hyve context
 login'). Create-only: fails if a resource with the same name already
 exists — see 'hyve migrate' for a bulk, safer-by-default (dry-run by
 default, skip-existing) alternative.`,

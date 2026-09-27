@@ -34,7 +34,7 @@ migrated cluster's lifecycle-hook refs resolve against the just-created
 Workflow CRs instead of a stale fallback) — and creates each as a CR via
 the API.
 
-Requires an active context with cluster-mode credentials (see 'hyve
+Requires an active context with cluster-mode credentials (see 'hyve context
 login'). The destination is always whichever cluster that context is
 logged into — independent of the source path, which is never implicitly
 tied to any context's registered directory.

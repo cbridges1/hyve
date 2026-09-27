@@ -199,7 +199,7 @@ hyve environment list
 hyve environment create staging
 hyve environment use staging          # remembered on the active context
 hyve cluster list                     # staging's clusters only
-hyve cluster get web --env default    # one-off override for a single command
+hyve cluster show web --env default    # one-off override for a single command
 hyve environment unset                # back to letting the server pick
 ```
 

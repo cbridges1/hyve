@@ -209,6 +209,33 @@ api:
   # stance the db.driver=sqlite deployment gate already takes.
   requireReconcilingCluster: false
 
+  # smtp seeds hyve-api's outbound email settings (password resets,
+  # notifications) on first start — only while nothing has been saved
+  # through the console yet; a value saved there always wins afterwards.
+  # Leave host empty to configure SMTP entirely through the console.
+  # passwordSecret names an existing Secret in .namespace, mounted as a
+  # file so the password never appears in pod args or these values.
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    fromAddress: ""
+    passwordSecret:
+      name: ""
+      key: password
+
+  # bootstrapAdmin creates the install's first superadmin on startup, only
+  # while no superadmin exists yet — replaces the manual
+  # `hyve cluster-config api create-user --role superadmin` step on a
+  # fresh install. Never re-applied afterwards (no password resets or
+  # renames on restart). Not an API endpoint: hyve-api does this in-process
+  # at startup. passwordSecret names an existing Secret in .namespace.
+  bootstrapAdmin:
+    username: ""
+    passwordSecret:
+      name: ""
+      key: password
+
   # modulesDir must match whatever the controller's own image bakes its
   # state/modules under — ModuleAuthProvider (internal/api/access.go)
   # resolves driver modules the same way internal/reconcile does.

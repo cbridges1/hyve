@@ -78,6 +78,25 @@ spec:
             {{- if .Values.api.requireReconcilingCluster }}
             - --require-reconciling-cluster
             {{- end }}
+            {{- with .Values.api.smtp }}
+            {{- if .host }}
+            - --smtp-host={{ .host }}
+            - --smtp-port={{ .port }}
+            {{- if .username }}
+            - --smtp-username={{ .username }}
+            {{- end }}
+            {{- if .passwordSecret.name }}
+            - --smtp-password-file=/etc/hyve/smtp/{{ .passwordSecret.key }}
+            {{- end }}
+            {{- if .fromAddress }}
+            - --smtp-from-address={{ .fromAddress }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.api.bootstrapAdmin.username }}
+            - --bootstrap-admin-username={{ .Values.api.bootstrapAdmin.username }}
+            - --bootstrap-admin-password-file=/etc/hyve/bootstrap-admin/{{ .Values.api.bootstrapAdmin.passwordSecret.key }}
+            {{- end }}
           {{- if eq .Values.api.db.driver "postgres" }}
           env:
             - name: HYVE_DB_DSN
@@ -91,7 +110,7 @@ spec:
               containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
             - name: agent
               containerPort: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
-          {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") }}
+          {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) .Values.api.bootstrapAdmin.username }}
           volumeMounts:
             {{- if .Values.api.publicCABundle.configMapName }}
             - name: public-ca
@@ -101,6 +120,16 @@ spec:
             {{- if eq .Values.api.db.driver "sqlite" }}
             - name: orgdb
               mountPath: /data
+            {{- end }}
+            {{- if and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name }}
+            - name: smtp-password
+              mountPath: /etc/hyve/smtp
+              readOnly: true
+            {{- end }}
+            {{- if .Values.api.bootstrapAdmin.username }}
+            - name: bootstrap-admin
+              mountPath: /etc/hyve/bootstrap-admin
+              readOnly: true
             {{- end }}
           {{- end }}
           livenessProbe:
@@ -139,7 +168,7 @@ spec:
             - name: orgdb
               mountPath: /data
         {{- end }}
-      {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") }}
+      {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) .Values.api.bootstrapAdmin.username }}
       volumes:
         {{- if .Values.api.publicCABundle.configMapName }}
         - name: public-ca
@@ -150,5 +179,18 @@ spec:
         - name: orgdb
           persistentVolumeClaim:
             claimName: hyve-api-orgdb
+        {{- end }}
+        {{- if and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name }}
+        - name: smtp-password
+          secret:
+            secretName: {{ .Values.api.smtp.passwordSecret.name }}
+        {{- end }}
+        {{- if .Values.api.bootstrapAdmin.username }}
+        - name: bootstrap-admin
+          secret:
+            secretName: {{ required "api.bootstrapAdmin.passwordSecret.name is required when api.bootstrapAdmin.username is set" .Values.api.bootstrapAdmin.passwordSecret.name }}
+            # Optional: once a superadmin exists the password is never read
+            # again, so deleting the Secret later must not block the pod.
+            optional: true
         {{- end }}
       {{- end }}

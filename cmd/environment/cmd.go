@@ -39,7 +39,7 @@ target it until you change it:
 
   hyve environment use staging
   hyve cluster list                  # staging's clusters only
-  hyve cluster get web --env default # one-off override
+  hyve cluster show web --env default # one-off override
 
 With nothing selected, the server picks when the organization has exactly
 one environment, and asks you to choose when it has several.
