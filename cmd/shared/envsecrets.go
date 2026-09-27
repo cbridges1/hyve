@@ -80,18 +80,38 @@ func loadLocalEnvironmentSecrets() {
 }
 
 // LoadLegacyRepoEnvFile loads a repo-relative dotenv file (hyve.yaml's
-// env.file, defaulting to ".env") into the process environment — the
-// original bootstrap mechanism (previously inline in main.go, before
-// --home/the DB-backed environment registry could be resolved), now
-// deliberately run after LoadEnvironmentSecrets so the newer, centrally-
-// managed stores take precedence when both set the same key. Additive only
-// (godotenv.Load, not .Overload) — see internal/state.EnvConfig's own doc
-// comment.
+// env.file, defaulting to hyve.env) into the process environment — run
+// after LoadEnvironmentSecrets so the DB-backed stores take precedence
+// when both set the same key. Checked in two places, in order: the
+// current working directory, then the active context's own directory (so
+// `hyve cluster auth x` works from anywhere, not only from inside the
+// context's checkout). Additive only (godotenv.Load, not .Overload): a
+// variable already set always wins, so the working directory's file beats
+// the context's on a same-key collision — see internal/state.EnvConfig's
+// own doc comment.
 func LoadLegacyRepoEnvFile() {
-	repoRoot, err := os.Getwd()
-	if err != nil {
+	loaded := map[string]bool{}
+	load := func(dir string) {
+		path := state.ResolveEnvFile(dir)
+		if loaded[path] {
+			return
+		}
+		loaded[path] = true
+		_ = godotenv.Load(path)
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		load(cwd)
+	} else {
 		_ = godotenv.Load()
+	}
+
+	repoMgr, err := repository.NewManager()
+	if err != nil {
 		return
 	}
-	_ = godotenv.Load(state.ResolveEnvFile(repoRoot))
+	defer repoMgr.Close()
+	if current, err := repoMgr.GetCurrentRepository(); err == nil && current.LocalPath != "" {
+		load(current.LocalPath)
+	}
 }
