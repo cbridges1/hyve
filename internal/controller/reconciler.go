@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// cliSecretsName is the single shared Secret `hyve env secrets` (cluster
+// cliSecretsName is the single shared Secret `hyve context secrets` (cluster
 // mode) manages — see that command's own design. The controller only ever
 // reads it (RBAC: get, resourceNames: [cliSecretsName] — see
 // deploy/helm/hyve/templates/controller-rbac.yaml), never writes it.

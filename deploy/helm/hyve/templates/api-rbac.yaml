@@ -149,7 +149,7 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list"]
-  # hyve-cli-secrets backs `hyve env secrets` in cluster mode (see
+  # hyve-cli-secrets backs `hyve context secrets` in cluster mode (see
   # internal/api/secrets.go). Kubernetes RBAC can't scope "create" by
   # resourceNames at all — a rule with resourceNames simply never matches a
   # create request (confirmed live: combining create with resourceNames

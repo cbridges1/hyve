@@ -19,7 +19,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -44,6 +43,9 @@ func (s *Server) registerOrganizationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /organizations/{name}/reconciling-cluster", s.handleGetOrgReconcilingCluster)
 	mux.HandleFunc("PUT /organizations/{name}/reconciling-cluster", s.handlePutOrgReconcilingCluster)
 	mux.HandleFunc("DELETE /organizations/{name}/reconciling-cluster", s.handleDeleteOrgReconcilingCluster)
+	mux.HandleFunc("GET /organizations/{name}/reconciling-clusters", s.handleListOrgReconcilingClusters)
+	mux.HandleFunc("POST /organizations/{name}/reconciling-clusters", s.handleAddOrgReconcilingCluster)
+	mux.HandleFunc("DELETE /organizations/{name}/reconciling-clusters/{cluster}", s.handleRemoveOrgReconcilingCluster)
 }
 
 type organizationDTO struct {
@@ -209,7 +211,7 @@ func (s *Server) handleCreateOrganization(w http.ResponseWriter, r *http.Request
 
 	var reconcilingClusterID *string
 	if req.ReconcilingCluster != "" {
-		rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, req.ReconcilingCluster)
+		rc, err := s.OrgStore.GetPoolReconcilingClusterByName(ctx, req.ReconcilingCluster)
 		if err == orgdb.ErrNotFound {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("reconciling cluster %q not found", req.ReconcilingCluster))
 			return
@@ -406,7 +408,7 @@ func (s *Server) handlePatchOrganization(w http.ResponseWriter, r *http.Request)
 
 	var targetClusterID *string
 	if *req.ReconcilingCluster != "" {
-		rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, *req.ReconcilingCluster)
+		rc, err := s.OrgStore.GetPoolReconcilingClusterByName(ctx, *req.ReconcilingCluster)
 		if err == orgdb.ErrNotFound {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("reconciling cluster %q not found", *req.ReconcilingCluster))
 			return
@@ -994,214 +996,6 @@ func (s *Server) environmentInUse(ctx context.Context, rc client.Client, namespa
 		return false, fmt.Errorf("list cluster definitions: %w", err)
 	}
 	return len(clusters.Items) > 0, nil
-}
-
-// orgReconcilingClusterDTO is GET/PUT /organizations/{name}/reconciling-cluster's
-// own response shape — deliberately not reconcilingClusterDTO itself: an
-// org admin reaching this endpoint has no visibility into (and no business
-// knowing about) the superadmin-managed shared registry GET
-// /reconciling-clusters exposes, only their own organization's current
-// placement, so OnHomeCluster stands in for "no reconciling cluster
-// override" instead of an empty/omitted name being ambiguous with a lookup
-// failure.
-type orgReconcilingClusterDTO struct {
-	OnHomeCluster     bool    `json:"onHomeCluster"`
-	Name              string  `json:"name,omitempty"`
-	Server            string  `json:"server,omitempty"`
-	Reachable         *bool   `json:"reachable,omitempty"`
-	LastCheckedAt     *string `json:"lastCheckedAt,omitempty"`
-	LastError         *string `json:"lastError,omitempty"`
-	KubernetesVersion *string `json:"kubernetesVersion,omitempty"`
-	RegisteredAt      string  `json:"registeredAt,omitempty"`
-	Migrating         bool    `json:"migrating,omitempty"`
-}
-
-// handleGetOrgReconcilingCluster reports the named organization's current
-// reconciling-cluster placement — a superadmin can target any organization
-// by name; an ordinary admin only their own (see requireOrgAccess).
-func (s *Server) handleGetOrgReconcilingCluster(w http.ResponseWriter, r *http.Request) {
-	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
-	if !ok {
-		return
-	}
-	dto := orgReconcilingClusterDTO{Migrating: org.ReconcilingClusterMigrationStatus != nil}
-	if org.ReconcilingClusterID == nil {
-		dto.OnHomeCluster = true
-		writeJSON(w, http.StatusOK, dto)
-		return
-	}
-	rc, err := s.OrgStore.GetReconcilingCluster(r.Context(), *org.ReconcilingClusterID)
-	if err != nil {
-		log.Printf("api: failed to resolve reconciling cluster for organization %q: %v", org.Name, err)
-		writeError(w, http.StatusInternalServerError, "failed to resolve organization's reconciling cluster")
-		return
-	}
-	rcDTO := toReconcilingClusterDTO(rc)
-	dto.Name = rcDTO.Name
-	dto.Server = rcDTO.Server
-	dto.Reachable = rcDTO.Reachable
-	dto.LastCheckedAt = rcDTO.LastCheckedAt
-	dto.LastError = rcDTO.LastError
-	dto.KubernetesVersion = rcDTO.KubernetesVersion
-	dto.RegisteredAt = rcDTO.RegisteredAt
-	writeJSON(w, http.StatusOK, dto)
-}
-
-type putOrgReconcilingClusterRequest struct {
-	// Kubeconfig is this organization's own dedicated reconciling cluster's
-	// kubeconfig — set (or rotate) it here, scoped to exactly this
-	// organization, never the shared superadmin-managed registry (POST
-	// /reconciling-clusters) PATCH /organizations/{name} draws from. Empty
-	// moves the organization back onto the control plane's own home
-	// cluster (refused when --require-reconciling-cluster is set, except
-	// for the control plane's own organization — see
-	// migrateOrganizationToTarget).
-	Kubeconfig string `json:"kubeconfig"`
-}
-
-// handlePutOrgReconcilingCluster is the organization-admin-facing
-// counterpart to PATCH /organizations/{name}: rather than picking from the
-// superadmin-managed shared registry (POST/GET /reconciling-clusters, still
-// superadmin-only), an organization's own admin sets or rotates a
-// reconciling cluster dedicated to exactly their organization here, by
-// kubeconfig directly. The underlying orgdb.ReconcilingCluster row is named
-// identically to the organization's own Namespace — a deliberate 1:1
-// relationship: it keeps this cluster out of the shared-pool list an org
-// admin has no visibility into, and avoids any naming collision with a
-// same-named cluster a superadmin might separately register there. A
-// superadmin can target any organization by name; an ordinary admin only
-// their own (see requireOrgAccess).
-func (s *Server) handlePutOrgReconcilingCluster(w http.ResponseWriter, r *http.Request) {
-	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
-	if !ok {
-		return
-	}
-	var req putOrgReconcilingClusterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if req.Kubeconfig == "" {
-		dto, ok := s.migrateOrganizationToTarget(w, r, org, nil)
-		if !ok {
-			return
-		}
-		writeJSON(w, http.StatusOK, dto)
-		return
-	}
-
-	if _, err := clientcmd.RESTConfigFromKubeConfig([]byte(req.Kubeconfig)); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid kubeconfig: %v", err))
-		return
-	}
-
-	ctx := r.Context()
-
-	rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, org.Namespace)
-	switch {
-	case err == nil:
-		if err := s.OrgStore.SetReconcilingClusterKubeconfig(ctx, rc.ID, req.Kubeconfig); err != nil {
-			log.Printf("api: failed to rotate kubeconfig for organization %q's reconciling cluster: %v", org.Name, err)
-			writeError(w, http.StatusInternalServerError, "failed to update reconciling cluster")
-			return
-		}
-		// A rotated kubeconfig invalidates any cached client for this
-		// cluster — see handleCreateReconcilingCluster's own identical
-		// precedent for why.
-		s.invalidateReconcilingClusterClientByName(ctx, org.Namespace)
-	case err == orgdb.ErrNotFound:
-		rc, err = s.OrgStore.CreateReconcilingCluster(ctx, orgdb.ReconcilingCluster{Name: org.Namespace, Kubeconfig: req.Kubeconfig})
-		if err != nil {
-			log.Printf("api: failed to register reconciling cluster for organization %q: %v", org.Name, err)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to register reconciling cluster: %v", err))
-			return
-		}
-	default:
-		log.Printf("api: failed to check existing reconciling cluster for organization %q: %v", org.Name, err)
-		writeError(w, http.StatusInternalServerError, "failed to update reconciling cluster")
-		return
-	}
-
-	dto, ok := s.migrateOrganizationToTarget(w, r, org, &rc.ID)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, dto)
-}
-
-// handleDeleteOrgReconcilingCluster permanently removes the named
-// organization's own dedicated reconciling cluster — the orgdb.ReconcilingCluster
-// row named identically to its own namespace (see handlePutOrgReconcilingCluster's
-// own doc comment for why that 1:1 naming convention exists), the "remove"
-// half of the self-service register/rotate/remove trio an organization's
-// own admin (or a superadmin "Viewing" it) has over their own reconciling
-// cluster — see requireOrgAccess. If currently assigned, this migrates the
-// organization back to the control plane's own home cluster first (reusing
-// migrateOrganizationToTarget's own lock/pending-deletion/
-// RequireReconcilingCluster guarantees) — never leaves the organization
-// pointing at a row that's about to disappear. Refuses with 409 if some
-// other organization is somehow also currently assigned to this same
-// cluster (only reachable via a superadmin using the CLI directly against
-// the shared registry — self-service registration here always follows the
-// 1:1 naming convention, so this is a rare, defensive check, not the
-// common case) — deleting it out from under that other organization would
-// break it.
-func (s *Server) handleDeleteOrgReconcilingCluster(w http.ResponseWriter, r *http.Request) {
-	org, ok := s.requireOrgAccess(w, r, r.PathValue("name"))
-	if !ok {
-		return
-	}
-	ctx := r.Context()
-
-	rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, org.Namespace)
-	if err == orgdb.ErrNotFound {
-		// A clearer message than a bare 404 when the organization IS
-		// currently on some cluster, just not one this endpoint's own
-		// naming convention recognizes as "its own" — e.g. a superadmin
-		// assigned it a shared cluster directly via the CLI
-		// (PATCH /organizations/{name}), which this endpoint deliberately
-		// never touches (see this handler's own doc comment).
-		if org.ReconcilingClusterID != nil {
-			current, currentErr := s.OrgStore.GetReconcilingCluster(ctx, *org.ReconcilingClusterID)
-			if currentErr == nil {
-				writeError(w, http.StatusNotFound, fmt.Sprintf("this organization's current cluster (%q) isn't its own dedicated one — nothing to remove", current.Name))
-				return
-			}
-		}
-		writeError(w, http.StatusNotFound, "this organization has no reconciling cluster of its own registered")
-		return
-	} else if err != nil {
-		log.Printf("api: failed to look up reconciling cluster for organization %q: %v", org.Name, err)
-		writeError(w, http.StatusInternalServerError, "failed to remove reconciling cluster")
-		return
-	}
-
-	if org.ReconcilingClusterID != nil && *org.ReconcilingClusterID == rc.ID {
-		if _, ok := s.migrateOrganizationToTarget(w, r, org, nil); !ok {
-			return
-		}
-	}
-
-	others, err := s.OrgStore.ListOrganizationsByReconcilingCluster(ctx, &rc.ID)
-	if err != nil {
-		log.Printf("api: failed to check for other organizations on reconciling cluster %q: %v", rc.Name, err)
-		writeError(w, http.StatusInternalServerError, "failed to remove reconciling cluster")
-		return
-	}
-	if len(others) > 0 {
-		writeError(w, http.StatusConflict, fmt.Sprintf("reconciling cluster %q is still in use by another organization — cannot remove it", rc.Name))
-		return
-	}
-
-	if err := s.OrgStore.DeleteReconcilingCluster(ctx, rc.ID); err != nil {
-		log.Printf("api: failed to delete reconciling cluster %q: %v", rc.Name, err)
-		writeError(w, http.StatusInternalServerError, "failed to remove reconciling cluster")
-		return
-	}
-	s.invalidateReconcilingClusterClientByName(ctx, org.Namespace)
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // validateOrganizationName rejects the two names that would collide with,

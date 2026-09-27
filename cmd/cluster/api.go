@@ -22,15 +22,22 @@ func listClustersAPI(client *shared.APIClient) {
 		log.Fatalf("Failed to list clusters: %v", err)
 	}
 
+	inEnv := ""
+	if client.Env != "" {
+		inEnv = " in environment " + client.Env
+	}
 	if len(clusters) == 0 {
-		log.Println("❌ No clusters found")
+		log.Printf("❌ No clusters found%s", inEnv)
 		log.Println("\n💡 Run 'hyve cluster create <cluster> --file <path>' to create a cluster")
 		return
 	}
 
-	log.Printf("📦 Clusters (%d):\n", len(clusters))
+	log.Printf("📦 Clusters%s (%d):\n", inEnv, len(clusters))
 	for _, c := range clusters {
 		log.Printf("  %s", c.Name)
+		if c.Environment != "" && client.Env == "" {
+			log.Printf("    Environment: %s", c.Environment)
+		}
 		log.Printf("    Driver: %s", c.Driver)
 		if c.AccessMethod != "" {
 			log.Printf("    Access: %s", c.AccessMethod)

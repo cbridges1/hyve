@@ -21,7 +21,7 @@ import (
 // server, or a session that can't be refreshed is silently a no-op rather
 // than aborting the CLI invocation — this runs unconditionally from
 // rootCmd's PersistentPreRunE, before every single command, including ones
-// with nothing to do with cluster mode at all (`hyve env whoami`, `hyve env
+// with nothing to do with cluster mode at all (`hyve context whoami`, `hyve context
 // list`...). Deliberately calls EnsureValidSession (which attempts a
 // silent refresh) rather than UseClusterMode: that function intentionally
 // hard-fails when a session can't be made to work (see its own doc
@@ -54,7 +54,7 @@ func loadClusterSecrets(sess *session.Session) {
 }
 
 // loadLocalEnvironmentSecrets loads the currently-active environment's
-// DB-backed secrets (see 'hyve env secrets' local mode).
+// DB-backed secrets (see 'hyve context secrets' local mode).
 func loadLocalEnvironmentSecrets() {
 	repoMgr, err := repository.NewManager()
 	if err != nil {

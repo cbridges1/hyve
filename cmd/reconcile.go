@@ -12,7 +12,7 @@ var reconcileCmd = &cobra.Command{
 	Use:   "reconcile",
 	Short: "Reconcile clusters based on YAML files in the active state directory",
 	Long: `Reconcile clusters by reading cluster definitions from YAML files in the active
-environment's directory (see 'hyve env') and ensuring the actual
+context's directory (see 'hyve context') and ensuring the actual
 infrastructure matches the desired state. No git repository is required —
 a plain local directory works the same as a git checkout.
 
@@ -20,7 +20,7 @@ When --path is provided, the given local directory is used directly and all
 reconciliation runs locally, bypassing the cicd mode check in hyve.yaml. This is
 intended for use inside CI/CD pipelines that have already checked out the repository.
 
-Cluster mode (a valid 'hyve env login' session exists) and no --path given: this
+Cluster mode (a valid 'hyve context login' session exists) and no --path given: this
 command is a no-op. There's no local checkout to reconcile against, and
 nothing to trigger — the deployed controller already watches every
 ClusterDefinition and reconciles it continuously via Kubernetes' own

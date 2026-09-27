@@ -42,6 +42,7 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ns := s.TenantNamespace(r)
+	name = s.resolveAddressedName(r, ns, name)
 	c, err := s.resourceClient(r.Context(), ns)
 	if err != nil {
 		log.Printf("api: failed to resolve resource client for cluster %q: %v", name, err)

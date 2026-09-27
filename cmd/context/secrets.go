@@ -1,4 +1,4 @@
-package env
+package contextcmd
 
 import (
 	"fmt"
@@ -12,22 +12,22 @@ import (
 	"github.com/cbridges1/hyve/internal/repository"
 )
 
-var secretsEnvFlag string
+var secretsContextFlag string
 
 var secretsCmd = &cobra.Command{
 	Use:   "secrets",
-	Short: "Manage secrets attached to an environment",
+	Short: "Manage secrets attached to a context",
 	Long: `Commands to read and update KEY=VALUE secrets.
 
-Local mode: stored in hyve.db attached to an environment — not tied to any
-repository/folder, and removed automatically when the environment itself is
-(see 'hyve env remove').
+Local mode: stored in hyve.db attached to a context — not tied to any
+repository/folder, and removed automatically when the context itself is
+(see 'hyve context remove').
 
-Cluster mode (a valid 'hyve env login' session exists): stored as a single
+Cluster mode (a valid 'hyve context login' session exists): stored as a single
 Kubernetes Secret in the hyve-api server's own namespace, shared by every
-caller logged into that server — --env/the environment name argument have
+caller logged into that server — --context/the context name argument have
 no effect here, since cluster-mode secrets aren't scoped per local
-environment. Listing key names works for any role; reading/setting/
+context. Listing key names works for any role; reading/setting/
 unsetting values requires the admin role.
 
 Loaded into the process environment before every command (see 'hyve
@@ -38,8 +38,8 @@ hyve.yaml env.file, if one is also configured.`,
 
 var secretsListCmd = &cobra.Command{
 	Use:   "list [name]",
-	Short: "Print every KEY=VALUE secret attached to an environment",
-	Long:  "Defaults to the currently-active environment when name is omitted. Ignored in cluster mode.",
+	Short: "Print every KEY=VALUE secret attached to a context",
+	Long:  "Defaults to the currently-active context when name is omitted. Ignored in cluster mode.",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := ""
@@ -83,9 +83,9 @@ var secretsUnsetCmd = &cobra.Command{
 }
 
 func init() {
-	secretsGetCmd.Flags().StringVar(&secretsEnvFlag, "env", "", "Target environment (default: the active one; ignored in cluster mode)")
-	secretsSetCmd.Flags().StringVar(&secretsEnvFlag, "env", "", "Target environment (default: the active one; ignored in cluster mode)")
-	secretsUnsetCmd.Flags().StringVar(&secretsEnvFlag, "env", "", "Target environment (default: the active one; ignored in cluster mode)")
+	secretsGetCmd.Flags().StringVar(&secretsContextFlag, "context", "", "Target context (default: the active one; ignored in cluster mode)")
+	secretsSetCmd.Flags().StringVar(&secretsContextFlag, "context", "", "Target context (default: the active one; ignored in cluster mode)")
+	secretsUnsetCmd.Flags().StringVar(&secretsContextFlag, "context", "", "Target context (default: the active one; ignored in cluster mode)")
 
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsGetCmd)
@@ -94,32 +94,32 @@ func init() {
 	Cmd.AddCommand(secretsCmd)
 }
 
-// warnEnvIgnoredInClusterMode notes that a --env/positional-name value has
+// warnContextIgnoredInClusterMode notes that a --context/positional-name value has
 // no effect once cluster mode is in play — cluster secrets are shared per
-// hyve-api server, not scoped per local environment.
-func warnEnvIgnoredInClusterMode(name string) {
+// hyve-api server, not scoped per local context.
+func warnContextIgnoredInClusterMode(name string) {
 	if name != "" {
-		log.Println("Note: the target environment has no effect in cluster mode — secrets are shared per hyve-api server, not per local environment")
+		log.Println("Note: the target context has no effect in cluster mode — secrets are shared per hyve-api server, not per local context")
 	}
 }
 
-// resolveEnvironment returns the named environment, or the current one if
+// resolveContext returns the named context, or the current one if
 // name is empty — the common resolution every local-mode secrets subcommand
 // needs.
-func resolveEnvironment(repoMgr *repository.Manager, name string) (*repository.Repository, error) {
+func resolveContext(repoMgr *repository.Manager, name string) (*repository.Repository, error) {
 	if name != "" {
 		return repoMgr.GetRepositoryByName(name)
 	}
 	env, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		return nil, fmt.Errorf("no active environment — use --env <name>, or 'hyve env use <name>' to activate one")
+		return nil, fmt.Errorf("no active context — use --context <name>, or 'hyve context use <name>' to activate one")
 	}
 	return env, nil
 }
 
 func listSecrets(name string) {
 	if sess, ok := shared.UseClusterMode(); ok {
-		warnEnvIgnoredInClusterMode(name)
+		warnContextIgnoredInClusterMode(name)
 		listSecretsAPI(shared.NewAPIClient(sess))
 		return
 	}
@@ -130,7 +130,7 @@ func listSecrets(name string) {
 	}
 	defer repoMgr.Close()
 
-	target, err := resolveEnvironment(repoMgr, name)
+	target, err := resolveContext(repoMgr, name)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -194,7 +194,7 @@ func listSecretsAPI(client *shared.APIClient) {
 
 func getSecret(key string) {
 	if sess, ok := shared.UseClusterMode(); ok {
-		warnEnvIgnoredInClusterMode(secretsEnvFlag)
+		warnContextIgnoredInClusterMode(secretsContextFlag)
 		value, err := shared.NewAPIClient(sess).GetSecret(key)
 		if err != nil {
 			log.Fatalf("Failed to get secret: %v", err)
@@ -209,7 +209,7 @@ func getSecret(key string) {
 	}
 	defer repoMgr.Close()
 
-	target, err := resolveEnvironment(repoMgr, secretsEnvFlag)
+	target, err := resolveContext(repoMgr, secretsContextFlag)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -219,14 +219,14 @@ func getSecret(key string) {
 		log.Fatalf("Failed to get secret: %v", err)
 	}
 	if !ok {
-		log.Fatalf("%q is not set on environment '%s'", key, target.Name)
+		log.Fatalf("%q is not set on context '%s'", key, target.Name)
 	}
 	fmt.Println(value)
 }
 
 func setSecret(key, value string) {
 	if sess, ok := shared.UseClusterMode(); ok {
-		warnEnvIgnoredInClusterMode(secretsEnvFlag)
+		warnContextIgnoredInClusterMode(secretsContextFlag)
 		if value == "" {
 			var err error
 			value, err = shared.PromptSecret(fmt.Sprintf("%s: ", key))
@@ -247,7 +247,7 @@ func setSecret(key, value string) {
 	}
 	defer repoMgr.Close()
 
-	target, err := resolveEnvironment(repoMgr, secretsEnvFlag)
+	target, err := resolveContext(repoMgr, secretsContextFlag)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -262,12 +262,12 @@ func setSecret(key, value string) {
 	if err := repoMgr.SetSecret(target.ID, key, value); err != nil {
 		log.Fatalf("Failed to set secret: %v", err)
 	}
-	fmt.Printf("Set %s on environment '%s'\n", key, target.Name)
+	fmt.Printf("Set %s on context '%s'\n", key, target.Name)
 }
 
 func unsetSecret(key string) {
 	if sess, ok := shared.UseClusterMode(); ok {
-		warnEnvIgnoredInClusterMode(secretsEnvFlag)
+		warnContextIgnoredInClusterMode(secretsContextFlag)
 		if err := shared.NewAPIClient(sess).UnsetSecret(key); err != nil {
 			log.Fatalf("Failed to unset secret: %v", err)
 		}
@@ -281,7 +281,7 @@ func unsetSecret(key string) {
 	}
 	defer repoMgr.Close()
 
-	target, err := resolveEnvironment(repoMgr, secretsEnvFlag)
+	target, err := resolveContext(repoMgr, secretsContextFlag)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -289,5 +289,5 @@ func unsetSecret(key string) {
 	if err := repoMgr.UnsetSecret(target.ID, key); err != nil {
 		log.Fatalf("Failed to unset secret: %v", err)
 	}
-	fmt.Printf("Unset %s on environment '%s'\n", key, target.Name)
+	fmt.Printf("Unset %s on context '%s'\n", key, target.Name)
 }

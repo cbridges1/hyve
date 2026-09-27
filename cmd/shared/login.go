@@ -21,7 +21,7 @@ import (
 // token (used on every /api/* request) and the longer-lived session token
 // (used to silently refresh it — see internal/api's Session/
 // AccessTokenTTL/SessionTTL doc comments). Username is carried onto the
-// returned Session purely for display (e.g. `hyve env whoami`'s local-only
+// returned Session purely for display (e.g. `hyve context whoami`'s local-only
 // summary before its own server round trip). namespace is the already-
 // resolved tenant to log into (empty for the control-plane/superadmin
 // namespace) — see ResolveOrgToNamespace for how --org gets here; this
@@ -32,9 +32,9 @@ import (
 // caCertPEM, if non-empty, is trusted in addition to the system trust
 // store for this one call — passed explicitly rather than resolved via
 // httpClientForAPIURL(apiURL) because no environment may be registered
-// against apiURL yet at login time (that's cmd/env/login.go's own
+// against apiURL yet at login time (that's cmd/context/login.go's own
 // ensureClusterEnvironmentRegistered, which runs after this succeeds); see
-// cmd/env/login.go's own --ca-cert flag for where a caller gets this.
+// cmd/context/login.go's own --ca-cert flag for where a caller gets this.
 func PerformLogin(apiURL, username, password, namespace, caCertPEM string) (*session.Session, error) {
 	body, err := json.Marshal(map[string]string{"username": username, "password": password, "namespace": namespace})
 	if err != nil {
@@ -126,7 +126,7 @@ func PromptSecret(label string) (string, error) {
 }
 
 // ResolveOrgToNamespace maps a `--org` value to the `namespace` field
-// `hyve env login` actually sends. A trivial identity mapping deliberately
+// `hyve context login` actually sends. A trivial identity mapping deliberately
 // kept as its own isolated function rather than inlined at the call site:
 // resolving an org's current name to its real (renamable-independently)
 // namespace now happens server-side instead (see internal/api's
@@ -139,10 +139,10 @@ func ResolveOrgToNamespace(org string) string {
 	return org
 }
 
-// UniqueEnvironmentName returns base, or base-2, base-3, ... — whichever is
-// the first name not already registered. Shared by `hyve env login`'s
-// auto-provisioning path and `hyve env create`'s name-omitted default.
-func UniqueEnvironmentName(repoMgr *repository.Manager, base string) string {
+// UniqueContextName returns base, or base-2, base-3, ... — whichever is
+// the first name not already registered. Shared by `hyve context login`'s
+// auto-provisioning path and `hyve context create`'s name-omitted default.
+func UniqueContextName(repoMgr *repository.Manager, base string) string {
 	name := base
 	for i := 2; ; i++ {
 		if _, err := repoMgr.GetRepositoryByName(name); err != nil {

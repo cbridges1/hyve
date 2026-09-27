@@ -26,7 +26,7 @@ var (
 
 var migrateCmd = &cobra.Command{
 	Use:   "migrate [path]",
-	Short: "Push local templates/workflows/clusters into the active environment's cluster",
+	Short: "Push local templates/workflows/clusters into the active context's cluster",
 	Long: `Reads CR-shaped YAML — a single file (--file, or a file given as [path]) or a
 directory tree (--dir, or a directory given as [path], walking its
 templates/, workflows/, then clusters/ subdirectories in that order so a
@@ -34,10 +34,10 @@ migrated cluster's lifecycle-hook refs resolve against the just-created
 Workflow CRs instead of a stale fallback) — and creates each as a CR via
 the API.
 
-Requires an active environment with cluster-mode credentials (see 'hyve
-login'). The destination is always whichever cluster that environment is
+Requires an active context with cluster-mode credentials (see 'hyve
+login'). The destination is always whichever cluster that context is
 logged into — independent of the source path, which is never implicitly
-tied to any environment's registered directory.
+tied to any context's registered directory.
 
 Defaults to the current working directory (directory mode) when no path,
 --dir, or --file is given.
@@ -67,7 +67,7 @@ func init() {
 func runMigrate(posPath string) {
 	sess, ok := shared.UseClusterMode()
 	if !ok {
-		log.Fatal("`hyve migrate` requires an active environment with cluster-mode credentials — run `hyve env login` first")
+		log.Fatal("`hyve migrate` requires an active context with cluster-mode credentials — run `hyve context login` first")
 	}
 	client := shared.NewAPIClient(sess)
 

@@ -224,7 +224,7 @@ echo "     see internal/orgdb — so this must run inside the pod, not as a loca
 echo "     kubectl exec -n $NAMESPACE deployment/hyve-api -- hyve cluster-config api create-user <username> --role superadmin --namespace $NAMESPACE --password <password>"
 echo ""
 echo "  2. Log in (no --org — a superadmin has no tenant namespace):"
-echo "     hyve env login --api-url $PUBLIC_BASE_URL"
+echo "     hyve context login --api-url $PUBLIC_BASE_URL"
 echo ""
 echo "  3. Self-register this cluster as the host, then try the host-cluster kubeconfig path"
 echo "     (see docs/HYVE-AGENT-MIGRATION-GUIDE.md's \"Host cluster access\" section — no"

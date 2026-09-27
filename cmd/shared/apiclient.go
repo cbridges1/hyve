@@ -38,13 +38,58 @@ var ErrClientSideAuthUnavailable = errors.New("cluster does not use client-side 
 type APIClient struct {
 	BaseURL string
 	Token   string
+	// Env is the hyve-api environment cluster-scoped calls send as ?env=
+	// (see envPath) — empty lets the server resolve its own default.
+	Env string
 }
+
+// ServerEnvFlagValue is bound to the root command's --env persistent flag
+// (see cmd/root.go) — a one-command override of the active context's
+// selected environment ('hyve environment use').
+var ServerEnvFlagValue string
 
 // NewAPIClient builds a client from the current session — callers should
 // already have gone through UseClusterMode/EnsureValidSession, which
 // guarantee AccessToken is current.
 func NewAPIClient(sess *session.Session) *APIClient {
-	return &APIClient{BaseURL: strings.TrimRight(sess.APIURL, "/"), Token: sess.AccessToken}
+	baseURL := strings.TrimRight(sess.APIURL, "/")
+	return &APIClient{BaseURL: baseURL, Token: sess.AccessToken, Env: SelectedServerEnvironment(baseURL)}
+}
+
+// SelectedServerEnvironment returns the hyve-api environment commands
+// against apiURL should target: --env if given, else the active context's
+// own selection — but only when the active context is the one registered
+// for apiURL, so an environment picked for one server is never sent to
+// another. Empty means none selected.
+func SelectedServerEnvironment(apiURL string) string {
+	if ServerEnvFlagValue != "" {
+		return ServerEnvFlagValue
+	}
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		return ""
+	}
+	defer repoMgr.Close()
+	current, err := repoMgr.GetCurrentRepository()
+	if err != nil || strings.TrimRight(current.APIURL, "/") != apiURL {
+		return ""
+	}
+	return current.ServerEnvironment
+}
+
+// envPath adds ?env= to a cluster-scoped path when an environment is
+// selected. Only ClusterDefinitions are environment-scoped server-side
+// (see internal/api's hyveEnvironmentLabel), so only the calls addressing
+// one use this.
+func (c *APIClient) envPath(path string) string {
+	if c.Env == "" {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "env=" + url.QueryEscape(c.Env)
 }
 
 // httpClientForAPIURL returns http.DefaultClient for the common case — a
@@ -107,16 +152,16 @@ func httpClientTrustingCA(caCertPEM string) (*http.Client, error) {
 // UseClusterMode reports whether the current command should talk to the API
 // instead of local files. The ACTIVE ENVIRONMENT decides this, not session
 // presence alone — changed after live confirmation that the original
-// "session presence always wins" rule was surprising in practice: `hyve env
+// "session presence always wins" rule was surprising in practice: `hyve context
 // use <local-only-environment>` had no effect on cluster-mode-aware
 // commands as long as an unrelated session was still active from earlier,
-// requiring an explicit `hyve env logout` to actually get local behavior
+// requiring an explicit `hyve context logout` to actually get local behavior
 // back, which defeated much of the point of `env use` existing at all.
 //
 //   - Active environment has no --api-url (a pure local directory): always
 //     local mode, full stop, regardless of whether some other session
-//     happens to still be active elsewhere. `hyve env use` alone is now
-//     enough to switch back to local — no `hyve env logout` required.
+//     happens to still be active elsewhere. `hyve context use` alone is now
+//     enough to switch back to local — no `hyve context logout` required.
 //   - Active environment has an --api-url: cluster mode, provided the
 //     current session (see EnsureValidSession) is both valid and for that
 //     same --api-url. Switching back to a cluster environment whose
@@ -137,7 +182,7 @@ func httpClientTrustingCA(caCertPEM string) (*http.Client, error) {
 // `hyve cluster delete` operate on stale local files and run
 // reconciliation directly against a cloud provider from this machine,
 // bypassing the controller entirely, with no indication anything unusual
-// happened. (`hyve env whoami`/`hyve env list`/`hyve env current` do not
+// happened. (`hyve context whoami`/`hyve context list`/`hyve context current` do not
 // call this — they read the session/environment directly and report
 // mismatches as information, not a fatal error, since they're the tools
 // meant for diagnosing exactly this situation.)
@@ -155,13 +200,13 @@ func UseClusterMode() (*session.Session, bool) {
 
 	sess, sessErr := EnsureValidSession()
 	if sess == nil {
-		log.Fatalf("❌ Environment '%s' is a cluster environment (API: %s), but you're not logged in.\n\nRun 'hyve env login' to authenticate against it.", current.Name, current.APIURL)
+		log.Fatalf("❌ Context '%s' points at a hyve-api server (API: %s), but you're not logged in.\n\nRun 'hyve context login' to authenticate against it.", current.Name, current.APIURL)
 	}
 	if sess.APIURL != current.APIURL {
-		log.Fatalf("❌ Environment '%s' expects API %s, but your active session is for %s.\n\nRun 'hyve env login' to authenticate against '%s' (or 'hyve env use' whichever environment your active session actually belongs to).", current.Name, current.APIURL, sess.APIURL, current.Name)
+		log.Fatalf("❌ Context '%s' expects API %s, but your active session is for %s.\n\nRun 'hyve context login' to authenticate against '%s' (or 'hyve context use' whichever context your active session actually belongs to).", current.Name, current.APIURL, sess.APIURL, current.Name)
 	}
 	if sessErr != nil {
-		log.Fatalf("❌ %v — this is a cluster-mode environment (API: %s), not a local one. Refusing to silently fall back to local file operations, which could target stale or missing state instead of the live cluster.\n\nRun 'hyve env login --api-url %s' to re-authenticate.", sessErr, sess.APIURL, sess.APIURL)
+		log.Fatalf("❌ %v — this is a cluster-mode context (API: %s), not a local one. Refusing to silently fall back to local file operations, which could target stale or missing state instead of the live cluster.\n\nRun 'hyve context login --api-url %s' to re-authenticate.", sessErr, sess.APIURL, sess.APIURL)
 	}
 	return sess, true
 }
@@ -169,6 +214,7 @@ func UseClusterMode() (*session.Session, bool) {
 // ClusterDTO mirrors internal/api's clusterDTO response shape.
 type ClusterDTO struct {
 	Name               string         `json:"name"`
+	Environment        string         `json:"environment,omitempty"`
 	Driver             string         `json:"driver"`
 	Conditions         []ConditionDTO `json:"conditions,omitempty"`
 	ObservedGeneration int64          `json:"observedGeneration"`
@@ -195,7 +241,7 @@ type ConditionDTO struct {
 
 func (c *APIClient) ListClusters() ([]ClusterDTO, error) {
 	var out []ClusterDTO
-	if err := c.do(http.MethodGet, "/api/clusters", nil, &out); err != nil {
+	if err := c.do(http.MethodGet, c.envPath("/api/clusters"), nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -203,7 +249,7 @@ func (c *APIClient) ListClusters() ([]ClusterDTO, error) {
 
 func (c *APIClient) GetCluster(name string) (*ClusterDTO, error) {
 	var out ClusterDTO
-	if err := c.do(http.MethodGet, "/api/clusters/"+name, nil, &out); err != nil {
+	if err := c.do(http.MethodGet, c.envPath("/api/clusters/"+url.PathEscape(name)), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -223,14 +269,14 @@ func (c *APIClient) CreateCluster(name string, spec json.RawMessage) (*ClusterDT
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	var out ClusterDTO
-	if err := c.do(http.MethodPost, "/api/clusters", body, &out); err != nil {
+	if err := c.do(http.MethodPost, c.envPath("/api/clusters"), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 func (c *APIClient) DeleteCluster(name string) error {
-	return c.do(http.MethodDelete, "/api/clusters/"+name, nil, nil)
+	return c.do(http.MethodDelete, c.envPath("/api/clusters/"+url.PathEscape(name)), nil, nil)
 }
 
 // ClusterResourcesDTO mirrors internal/api's clusterResourcesDTO — a
@@ -247,7 +293,7 @@ type ClusterResourcesDTO struct {
 
 func (c *APIClient) GetClusterResources(name string) (*ClusterResourcesDTO, error) {
 	var out ClusterResourcesDTO
-	if err := c.do(http.MethodGet, "/api/clusters/"+name+"/resources", nil, &out); err != nil {
+	if err := c.do(http.MethodGet, c.envPath("/api/clusters/"+url.PathEscape(name)+"/resources"), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -275,7 +321,7 @@ type ClusterActivityDTO struct {
 
 func (c *APIClient) GetClusterEvents(name string) (*ClusterActivityDTO, error) {
 	var out ClusterActivityDTO
-	if err := c.do(http.MethodGet, "/api/clusters/"+name+"/events", nil, &out); err != nil {
+	if err := c.do(http.MethodGet, c.envPath("/api/clusters/"+url.PathEscape(name)+"/events"), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -305,7 +351,7 @@ func (c *APIClient) CreateClusterFromTemplate(name, templateName, region string,
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	var out ClusterDTO
-	if err := c.do(http.MethodPost, "/api/clusters", body, &out); err != nil {
+	if err := c.do(http.MethodPost, c.envPath("/api/clusters"), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -583,7 +629,7 @@ type AuthToolRequirementDTO struct {
 // ErrClientSideAuthUnavailable rather than a generic error, so callers can
 // distinguish "fall back to GetKubeconfig" from a real failure.
 func (c *APIClient) GetAuthContext(clusterName string) (*AuthContextDTO, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/api/clusters/"+url.PathEscape(clusterName)+"/auth-context", nil)
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+c.envPath("/api/clusters/"+url.PathEscape(clusterName)+"/auth-context"), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -624,7 +670,7 @@ func (c *APIClient) GetAuthContext(clusterName string) (*AuthContextDTO, error) 
 // application/yaml directly), so this bypasses do()'s JSON decoding rather
 // than trying to force it through the same path.
 func (c *APIClient) GetKubeconfig(clusterName string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/api/kubeconfig?cluster="+url.QueryEscape(clusterName), nil)
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+c.envPath("/api/kubeconfig?cluster="+url.QueryEscape(clusterName)), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -674,7 +720,7 @@ func (c *APIClient) CreateWorkflowRun(workflowName, source, path, cluster string
 	}
 
 	var out CreateWorkflowRunResponse
-	if err := c.do(http.MethodPost, "/api/workflow-runs", body, &out); err != nil {
+	if err := c.do(http.MethodPost, c.envPath("/api/workflow-runs"), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -721,10 +767,134 @@ type OrganizationEnvironmentDTO struct {
 // deliberately excludes the kubeconfig itself, which this API never
 // echoes back under any circumstance.
 type ReconcilingClusterDTO struct {
-	Name          string  `json:"name"`
-	Reachable     *bool   `json:"reachable,omitempty"`
-	LastCheckedAt *string `json:"lastCheckedAt,omitempty"`
-	LastError     *string `json:"lastError,omitempty"`
+	Name              string  `json:"name"`
+	Server            string  `json:"server,omitempty"`
+	Organization      string  `json:"organization,omitempty"`
+	Reachable         *bool   `json:"reachable,omitempty"`
+	LastCheckedAt     *string `json:"lastCheckedAt,omitempty"`
+	LastError         *string `json:"lastError,omitempty"`
+	KubernetesVersion *string `json:"kubernetesVersion,omitempty"`
+}
+
+// OrgReconcilingClusterDTO mirrors internal/api's orgReconcilingClusterEntryDTO
+// — one cluster an organization can switch to. Ownership is "organization"
+// (its own) or "pool" (a superadmin assigned it directly; listed only while
+// active).
+type OrgReconcilingClusterDTO struct {
+	Name              string  `json:"name"`
+	Ownership         string  `json:"ownership"`
+	Active            bool    `json:"active"`
+	Server            string  `json:"server,omitempty"`
+	Reachable         *bool   `json:"reachable,omitempty"`
+	LastCheckedAt     *string `json:"lastCheckedAt,omitempty"`
+	LastError         *string `json:"lastError,omitempty"`
+	KubernetesVersion *string `json:"kubernetesVersion,omitempty"`
+}
+
+// OrgPlacementDTO mirrors internal/api's orgReconcilingClusterDTO — where an
+// organization's resources currently live.
+type OrgPlacementDTO struct {
+	OnHomeCluster bool   `json:"onHomeCluster"`
+	Name          string `json:"name,omitempty"`
+	Ownership     string `json:"ownership,omitempty"`
+	Migrating     bool   `json:"migrating,omitempty"`
+}
+
+// WhoamiDTO mirrors internal/api's whoamiResponse.
+type WhoamiDTO struct {
+	Username           string `json:"username"`
+	Role               string `json:"role"`
+	Namespace          string `json:"namespace"`
+	Organization       string `json:"organization,omitempty"`
+	ReconcilingCluster string `json:"reconcilingCluster,omitempty"`
+	Migrating          bool   `json:"migrating,omitempty"`
+}
+
+func (c *APIClient) Whoami() (*WhoamiDTO, error) {
+	var out WhoamiDTO
+	if err := c.do(http.MethodGet, "/api/whoami", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CurrentOrganization returns the organization name /organizations/{name}
+// routes should use: explicit if given (a superadmin addressing some other
+// organization), else the caller's own from whoami.
+func (c *APIClient) CurrentOrganization(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	who, err := c.Whoami()
+	if err != nil {
+		return "", err
+	}
+	if who.Organization == "" {
+		return "", fmt.Errorf("your session (namespace %q) doesn't belong to an organization — pass --org to name one", who.Namespace)
+	}
+	return who.Organization, nil
+}
+
+func orgPath(orgName, rest string) string {
+	return "/api/organizations/" + url.PathEscape(orgName) + rest
+}
+
+func (c *APIClient) DeleteOrganizationEnvironment(orgName, envName string) error {
+	return c.do(http.MethodDelete, orgPath(orgName, "/environments/"+url.PathEscape(envName)), nil, nil)
+}
+
+func (c *APIClient) ListOrgReconcilingClusters(orgName string) ([]OrgReconcilingClusterDTO, error) {
+	var out []OrgReconcilingClusterDTO
+	if err := c.do(http.MethodGet, orgPath(orgName, "/reconciling-clusters"), nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AddOrgReconcilingCluster stores (or rotates) one of orgName's own
+// reconciling clusters without switching to it.
+func (c *APIClient) AddOrgReconcilingCluster(orgName, name, kubeconfig string) (*OrgReconcilingClusterDTO, error) {
+	body, err := json.Marshal(struct {
+		Name       string `json:"name"`
+		Kubeconfig string `json:"kubeconfig"`
+	}{Name: name, Kubeconfig: kubeconfig})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out OrgReconcilingClusterDTO
+	if err := c.do(http.MethodPost, orgPath(orgName, "/reconciling-clusters"), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *APIClient) RemoveOrgReconcilingCluster(orgName, name string) error {
+	return c.do(http.MethodDelete, orgPath(orgName, "/reconciling-clusters/"+url.PathEscape(name)), nil, nil)
+}
+
+func (c *APIClient) GetOrgPlacement(orgName string) (*OrgPlacementDTO, error) {
+	var out OrgPlacementDTO
+	if err := c.do(http.MethodGet, orgPath(orgName, "/reconciling-cluster"), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UseOrgReconcilingCluster switches orgName onto one of its own named
+// clusters, or back to the home cluster when name is "".
+// Switching migrates every resource, so this blocks until that's done.
+func (c *APIClient) UseOrgReconcilingCluster(orgName, name string) (*OrgPlacementDTO, error) {
+	body, err := json.Marshal(struct {
+		Name string `json:"name,omitempty"`
+	}{Name: name})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var out OrgPlacementDTO
+	if err := c.do(http.MethodPut, orgPath(orgName, "/reconciling-cluster"), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ListOrganizations requires the superadmin role server-side (a

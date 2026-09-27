@@ -136,7 +136,7 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	require.NotNil(t, rc.KubernetesVersion)
 	assert.Equal(t, "v1.31.5+k3s1", *rc.KubernetesVersion, "must survive a failed check")
 
-	byName, err := s.GetReconcilingClusterByName(ctx, "cell-a")
+	byName, err := s.GetPoolReconcilingClusterByName(ctx, "cell-a")
 	require.NoError(t, err)
 	assert.Equal(t, rc.ID, byName.ID)
 	assert.Equal(t, "apiVersion: v1\nkind: Config\n", byName.Kubeconfig, "Milestone 10 Part C: kubeconfig content itself must round-trip through Store")

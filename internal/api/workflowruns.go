@@ -96,7 +96,7 @@ func (s *Server) handleCreateWorkflowRun(w http.ResponseWriter, r *http.Request)
 		ObjectMeta: metav1.ObjectMeta{Name: base + "-" + name, Namespace: namespace},
 		Spec: hyvev1alpha1.WorkflowRunSpec{
 			WorkflowRef: hyvev1alpha1.WorkflowRef{Name: req.Workflow, Source: req.Source, Path: req.Path},
-			ClusterRef:  req.Cluster,
+			ClusterRef:  s.resolveAddressedName(r, namespace, req.Cluster),
 			Params:      req.Params,
 		},
 	}

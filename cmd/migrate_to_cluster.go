@@ -31,11 +31,11 @@ var (
 // target's kubeconfig).
 var migrateToClusterCmd = &cobra.Command{
 	Use:   "to-cluster",
-	Short: "Copy the active local/git environment's clusters + config directly onto a target cluster's CRDs",
+	Short: "Copy the active local/git context's clusters + config directly onto a target cluster's CRDs",
 	Long: `Copies every ClusterDefinition (spec AND status — driverOutputs/appliedResources,
 so the destination's controller can act on an already-provisioned cluster
 without mistaking it for brand new) plus hyve.yaml's RepoConfig (as a
-HyveConfig CR) from the active local/git environment directly onto a
+HyveConfig CR) from the active local/git context directly onto a
 target cluster, via that cluster's kubeconfig — no hyve API or login
 required on the target, since this talks straight to its Kubernetes API
 server, same as 'kubectl apply' would.
@@ -61,7 +61,7 @@ acting on the same downstream clusters. Stop doing that once migrated.`,
 func init() {
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterKubeconfig, "to", "", "Path to the target cluster's kubeconfig (fallback for ad hoc cases with no convenient ClusterDefinition — prefer --to-cluster)")
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterName, "to-cluster", "", "Name of a ClusterDefinition hyve already knows about — resolved to a kubeconfig the same way `hyve cluster auth` would, local-mode or cluster-mode. Exactly one of --to/--to-cluster is required.")
-	migrateToClusterCmd.Flags().StringVar(&migrateToClusterDir, "dir", "", "Local directory to migrate from (defaults to the active environment's registered directory)")
+	migrateToClusterCmd.Flags().StringVar(&migrateToClusterDir, "dir", "", "Local directory to migrate from (defaults to the active context's registered directory)")
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterNamespace, "namespace", "hyve-system", "Namespace on the target cluster to create ClusterDefinition/HyveConfig objects in")
 	migrateToClusterCmd.Flags().StringVar(&migrateToClusterConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object to create on the target")
 	migrateToClusterCmd.Flags().BoolVar(&migrateToClusterWrite, "write", false, "Actually create resources on the target (default is a dry run)")

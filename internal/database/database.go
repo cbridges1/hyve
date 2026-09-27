@@ -112,9 +112,9 @@ func (d *DB) initialize() error {
 	defer tx.Rollback()
 
 	// Repositories table — each row is a "environment": a local directory
-	// (see internal/repository, cmd/env) plus, optionally, cluster-mode
+	// (see internal/repository, cmd/context) plus, optionally, cluster-mode
 	// login credentials (api_url/session_token/session_expires_at) attached
-	// by `hyve env login`. One is_current flag switches both halves together.
+	// by `hyve context login`. One is_current flag switches both halves together.
 	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS repositories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +124,7 @@ func (d *DB) initialize() error {
 			is_current BOOLEAN DEFAULT FALSE,
 			api_url TEXT,
 			api_ca_cert TEXT,
+			server_environment TEXT,
 			session_token TEXT,
 			session_expires_at TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -174,10 +175,10 @@ func (d *DB) initialize() error {
 	}
 
 	// Session table — see internal/session. A single row (id is always 1),
-	// deliberately independent of the repositories table: `hyve env login` is
+	// deliberately independent of the repositories table: `hyve context login` is
 	// one global, machine-wide credential, not an attribute of whichever
 	// local directory happens to be the current environment (see
-	// cmd/env/cmd.go's own doc comment on why local directories and
+	// cmd/context/cmd.go's own doc comment on why local directories and
 	// cluster-mode sessions are two unrelated concepts, not one). Holds
 	// both halves of the credential a login issues: the long-lived session
 	// (id/secret/expiry, presented to POST /auth/refresh) and the current
@@ -215,8 +216,11 @@ func (d *DB) initialize() error {
 // signed by a CA that isn't publicly trusted (a self-signed CA for a bare
 // IP/nip.io address with no real domain — same situation
 // internal/reconcile.Reconciler.AgentCACertPEM exists for on the
-// hyve-agent side; this is the CLI's own equivalent, set via 'hyve env
-// create --ca-cert'/'hyve env login --ca-cert').
+// hyve-agent side; this is the CLI's own equivalent, set via 'hyve context
+// create --ca-cert'/'hyve context login --ca-cert'). server_environment is the
+// hyve-api environment (an organization's own named sub-scope, see
+// internal/orgdb.Environment) this context's cluster-mode commands target —
+// set by 'hyve environment use', NULL for "let the server pick".
 func (d *DB) ensureRepositoryCredentialColumns() error {
 	rows, err := d.db.Query(`PRAGMA table_info(repositories)`)
 	if err != nil {
@@ -236,7 +240,7 @@ func (d *DB) ensureRepositoryCredentialColumns() error {
 	}
 	rows.Close()
 
-	for _, col := range []string{"api_url", "api_ca_cert", "session_token", "session_expires_at"} {
+	for _, col := range []string{"api_url", "api_ca_cert", "server_environment", "session_token", "session_expires_at"} {
 		if existing[col] {
 			continue
 		}

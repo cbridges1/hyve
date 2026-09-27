@@ -150,7 +150,7 @@ echo "  1. Create a superadmin user (writes directly to the container's own orgd
 echo "     docker exec $CONTAINER_NAME hyve cluster-config api create-user <username> --role superadmin --namespace hyve-system --password <password>"
 echo ""
 echo "  2. Log in:"
-echo "     hyve env login --api-url $PUBLIC_BASE_URL"
+echo "     hyve context login --api-url $PUBLIC_BASE_URL"
 echo ""
 echo "  3. Register '$K3D_CLUSTER' as the reconciling cluster every organization's resources will actually live on:"
 echo "     hyve reconciling-cluster create $K3D_CLUSTER --kubeconfig-file $RECONCILING_KUBECONFIG"

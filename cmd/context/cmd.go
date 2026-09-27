@@ -1,25 +1,30 @@
-// Package env implements `hyve env` — the sole mechanism for registering
-// and switching between environments. An environment is a named entry in
+// Package contextcmd implements `hyve context` — the sole mechanism for
+// registering and switching between contexts. (Named contextcmd, not
+// context, so it doesn't shadow the standard library package.) Formerly
+// `hyve env`; renamed so it can't be confused with `hyve environment`, an
+// organization's server-side sub-scope on a hyve-api server (see
+// cmd/environment) — a context is this machine's own record of where the
+// CLI's state lives. A context is a named entry in
 // internal/repository's registry, and comes in two independent kinds that
 // may be set on the same entry or separately: a local directory (--path)
 // hyve reads/writes cluster definitions from (see
 // internal/reconcile.StateProvider), and/or a cluster API URL (--api-url)
-// pre-registered for `hyve env login` to target later. Registering a cluster
-// environment's URL is not the same as authenticating against it — no
+// pre-registered for `hyve context login` to target later. Registering a cluster
+// context's URL is not the same as authenticating against it — no
 // credential is stored here at all; see internal/session for `hyve
 // login`'s own, separate, machine-wide session storage, which is what
 // actually authenticates. That separation is deliberate: a local directory
 // (or cluster URL) and a cluster-mode *session* used to be the same
 // database row, and that conflation is why logging out or letting a
 // session expire used to make cluster-mode commands silently fall back to
-// whatever local files happened to be sitting in the current environment's
+// whatever local files happened to be sitting in the current context's
 // own directory — see internal/session's own doc comment. Git sync is not
 // a native hyve capability either: these commands only ever manage entries
 // in internal/repository's registry, they never clone, pull, commit, or
 // push anything. If a directory happens to be a git checkout, that's
 // between the user and their own `git` binary — hyve doesn't care either
 // way.
-package env
+package contextcmd
 
 import (
 	"fmt"
@@ -41,8 +46,8 @@ var (
 
 var createCmd = &cobra.Command{
 	Use:   "create [name]",
-	Short: "Register a new environment and make it active",
-	Long: `Registers a new environment and makes it active immediately. An environment
+	Short: "Register a new context and make it active",
+	Long: `Registers a new context and makes it active immediately. A context
 is a local directory (--path), a cluster API URL (--api-url), or both —
 independent kinds of entry in the same registry.
 
@@ -53,20 +58,20 @@ registered/created at all. name defaults to --path's directory basename
 explicitly to pick your own, which --api-url-only registration requires
 (there's no directory to derive a default from).
 
---api-url only remembers where to point 'hyve env login' at later — it stores
+--api-url only remembers where to point 'hyve context login' at later — it stores
 no credential and does not authenticate anything by itself. Cluster-mode
-access still requires running 'hyve env login' separately (with no --api-url of
-its own, it defaults to the current environment's --api-url); login is a
-single, global credential independent of which environment is active (see
-'hyve env login's own --help).
+access still requires running 'hyve context login' separately (with no --api-url of
+its own, it defaults to the current context's --api-url); login is a
+single, global credential independent of which context is active (see
+'hyve context login's own --help).
 
 --ca-cert (only meaningful alongside --api-url) names a PEM-encoded CA
 certificate to trust in addition to the system trust store when talking
 to --api-url — for an install whose TLS certificate isn't publicly
 trusted (a self-signed CA for a bare IP/nip.io address with no real
 domain). Not a credential either, same as --api-url itself; can also be
-set later via 'hyve env login --ca-cert', which persists it onto whichever
-environment matches the URL you log into.
+set later via 'hyve context login --ca-cert', which persists it onto whichever
+context matches the URL you log into.
 
 Registration only — this never clones, pulls, commits, or pushes anything.
 If you want the directory kept in sync with a git remote, that's entirely
@@ -83,14 +88,21 @@ your own 'git' CLI: 'git clone' it yourself before registering it, then
 }
 
 var Cmd = &cobra.Command{
-	Use:   "env",
-	Short: "Show or manage registered local directories",
-	Long:  "See subcommands to create, list, switch, show, or remove registered environments. Cluster-mode login ('hyve env login') is separate — see its own --help.",
+	Use:   "context",
+	Short: "Choose where the CLI's state lives: a local directory or a hyve-api server",
+	Long: `A context is this machine's record of where hyve reads and writes state: a
+local directory of cluster definitions, a hyve-api server to log into, or
+both. See subcommands to create, list, switch, show, or remove contexts.
+Cluster-mode login ('hyve context login') is separate — see its own --help.
+
+Not the same as 'hyve environment', which selects one of your
+organization's named scopes on a hyve-api server. Each context that points
+at a server remembers its own selected environment.`,
 }
 
 var currentCmd = &cobra.Command{
 	Use:   "current",
-	Short: "Show the currently-active environment",
+	Short: "Show the currently-active context",
 	Run: func(cmd *cobra.Command, args []string) {
 		showCurrent()
 	},
@@ -98,44 +110,44 @@ var currentCmd = &cobra.Command{
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all registered environments",
-	Long:  "Display every environment registered via 'hyve env create' and which one is currently active.",
+	Short: "List all registered contexts",
+	Long:  "Display every context registered via 'hyve context create' and which one is currently active.",
 	Run: func(cmd *cobra.Command, args []string) {
-		listEnvironments()
+		listContexts()
 	},
 }
 
 var useCmd = &cobra.Command{
 	Use:   "use <name>",
-	Short: "Switch the active environment",
-	Long:  "Set the named environment as current.",
+	Short: "Switch the active context",
+	Long:  "Set the named context as current.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		switchEnvironment(args[0])
+		switchContext(args[0])
 	},
 }
 
 var removeCmd = &cobra.Command{
 	Use:   "remove <name>",
-	Short: "Remove a registered environment",
-	Long: `Remove the named environment from hyve's registry. The directory itself and
+	Short: "Remove a registered context",
+	Long: `Remove the named context from hyve's registry. The directory itself and
 everything in it is left untouched on disk, since hyve never owned it in
 the first place.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		removeEnvironment(args[0])
+		removeContext(args[0])
 	},
 }
 
 var pathCmd = &cobra.Command{
 	Use:   "path [name]",
-	Short: "Print a registered environment's local filesystem path",
-	Long: `Print the absolute local path for the current environment (or a named one,
+	Short: "Print a registered context's local filesystem path",
+	Long: `Print the absolute local path for the current context (or a named one,
 given as an argument). Nothing else is written to stdout, so it composes
 with shell substitution:
 
-  cd "$(hyve env path)"
-  cd "$(hyve env path my-other-env)"`,
+  cd "$(hyve context path)"
+  cd "$(hyve context path my-other-context)"`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := ""
@@ -148,7 +160,7 @@ with shell substitution:
 
 func init() {
 	createCmd.Flags().StringVar(&createPath, "path", "", "Local directory to register (default: current working directory, unless --api-url is given alone)")
-	createCmd.Flags().StringVar(&createAPIURL, "api-url", "", "Cluster API URL to pre-register for 'hyve env login' to target later (stores no credential)")
+	createCmd.Flags().StringVar(&createAPIURL, "api-url", "", "Cluster API URL to pre-register for 'hyve context login' to target later (stores no credential)")
 	createCmd.Flags().StringVar(&createCACertPath, "ca-cert", "", "Path to a PEM-encoded CA certificate to trust in addition to the system trust store for --api-url (not a credential)")
 
 	Cmd.AddCommand(createCmd)
@@ -160,7 +172,7 @@ func init() {
 }
 
 func runCreate(name string) {
-	// --api-url alone registers a cluster environment with no local
+	// --api-url alone registers a cluster context with no local
 	// directory at all — the whole point is that this shouldn't require
 	// (or silently create) a directory just to remember a URL.
 	apiURLOnly := createAPIURL != "" && createPath == ""
@@ -193,9 +205,9 @@ func runCreate(name string) {
 
 	if name == "" {
 		if apiURLOnly {
-			log.Fatal("name is required when registering an environment with --api-url and no --path")
+			log.Fatal("name is required when registering a context with --api-url and no --path")
 		}
-		name = shared.UniqueEnvironmentName(repoMgr, filepath.Base(abs))
+		name = shared.UniqueContextName(repoMgr, filepath.Base(abs))
 	}
 
 	if _, err := repoMgr.AddRepository(name, "", abs, createAPIURL); err != nil {
@@ -216,14 +228,14 @@ func runCreate(name string) {
 
 	switch {
 	case apiURLOnly:
-		log.Printf("✅ '%s' (%s) is now the active environment", name, createAPIURL)
-		log.Println("💡 Run 'hyve env login' to authenticate against it")
+		log.Printf("✅ '%s' (%s) is now the active context", name, createAPIURL)
+		log.Println("💡 Run 'hyve context login' to authenticate against it")
 	case createAPIURL != "":
-		log.Printf("✅ '%s' (%s, api: %s) is now the active environment", name, abs, createAPIURL)
+		log.Printf("✅ '%s' (%s, api: %s) is now the active context", name, abs, createAPIURL)
 	default:
-		log.Printf("✅ '%s' (%s) is now the active environment", name, abs)
+		log.Printf("✅ '%s' (%s) is now the active context", name, abs)
 	}
-	log.Println("💡 Run 'hyve env' any time to see what's active")
+	log.Println("💡 Run 'hyve context' any time to see what's active")
 }
 
 func showCurrent() {
@@ -235,7 +247,7 @@ func showCurrent() {
 
 	current, err := repoMgr.GetCurrentRepository()
 	if err != nil {
-		log.Fatal("No active environment. Use 'hyve env create' to register one.")
+		log.Fatal("No active context. Use 'hyve context create' to register one.")
 	}
 
 	fmt.Printf("%s\n", current.Name)
@@ -247,10 +259,13 @@ func showCurrent() {
 	}
 	if current.APIURL != "" {
 		fmt.Printf("  API: %s\n", current.APIURL)
+		if current.ServerEnvironment != "" {
+			fmt.Printf("  Environment: %s\n", current.ServerEnvironment)
+		}
 	}
 }
 
-func listEnvironments() {
+func listContexts() {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -259,16 +274,16 @@ func listEnvironments() {
 
 	envs, err := repoMgr.ListRepositories()
 	if err != nil {
-		log.Fatalf("Failed to list environments: %v", err)
+		log.Fatalf("Failed to list contexts: %v", err)
 	}
 
 	if len(envs) == 0 {
-		log.Println("❌ No environments registered")
-		log.Println("\nRegister one with: hyve env create [name]")
+		log.Println("❌ No contexts registered")
+		log.Println("\nRegister one with: hyve context create [name]")
 		return
 	}
 
-	log.Printf("📁 Registered environments (%d):\n", len(envs))
+	log.Printf("📁 Registered contexts (%d):\n", len(envs))
 
 	for _, e := range envs {
 		status := ""
@@ -285,13 +300,16 @@ func listEnvironments() {
 		}
 		if e.APIURL != "" {
 			log.Printf("    API: %s", e.APIURL)
+			if e.ServerEnvironment != "" {
+				log.Printf("    Environment: %s", e.ServerEnvironment)
+			}
 		}
 		log.Printf("    Registered: %s", e.CreatedAt.Format("2006-01-02 15:04"))
 		log.Println()
 	}
 }
 
-func switchEnvironment(name string) {
+func switchContext(name string) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -299,14 +317,14 @@ func switchEnvironment(name string) {
 	defer repoMgr.Close()
 
 	if err := repoMgr.SetCurrentRepository(name); err != nil {
-		log.Fatalf("Failed to switch environment: %v", err)
+		log.Fatalf("Failed to switch context: %v", err)
 	}
 
 	log.Printf("✅ Switched to '%s'", name)
 
 	env, err := repoMgr.GetRepositoryByName(name)
 	if err != nil {
-		log.Fatalf("Failed to get environment details: %v", err)
+		log.Fatalf("Failed to get context details: %v", err)
 	}
 
 	if env.LocalPath != "" {
@@ -317,7 +335,7 @@ func switchEnvironment(name string) {
 	}
 }
 
-func removeEnvironment(name string) {
+func removeContext(name string) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -337,10 +355,10 @@ func removeEnvironment(name string) {
 	envs, err := repoMgr.ListRepositories()
 	if err == nil && len(envs) > 0 {
 		if current, err := repoMgr.GetCurrentRepository(); err == nil {
-			log.Printf("Current environment is now: %s", current.Name)
+			log.Printf("Current context is now: %s", current.Name)
 		}
 	} else {
-		log.Println("No environments remaining. Register one with: hyve env create")
+		log.Println("No contexts remaining. Register one with: hyve context create")
 	}
 }
 
@@ -361,7 +379,7 @@ func printPath(name string) {
 		log.Fatalf("%v", err)
 	}
 	if env.LocalPath == "" {
-		log.Fatalf("'%s' has no local directory (it's a cluster environment, api: %s)", env.Name, env.APIURL)
+		log.Fatalf("'%s' has no local directory (it's a cluster context, api: %s)", env.Name, env.APIURL)
 	}
 
 	fmt.Println(env.LocalPath)

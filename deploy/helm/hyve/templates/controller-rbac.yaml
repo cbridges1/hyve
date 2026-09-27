@@ -87,7 +87,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # hyve-cli-secrets (see `hyve env secrets`, cluster mode) is fetched live
+  # hyve-cli-secrets (see `hyve context secrets`, cluster mode) is fetched live
   # once per reconcile — internal/controller/reconciler.go's
   # fetchCLISecrets — via mgr.GetAPIReader(), an uncached direct read, not
   # the cached Client used for hyve.io's own kinds above. Kubernetes RBAC

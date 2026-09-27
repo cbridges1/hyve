@@ -168,10 +168,17 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list clusters")
 		return
 	}
+	// ?env= narrows the list to one environment, matched on the same
+	// effective label every DTO reports (so a pre-environments cluster
+	// backfilled into "default" is included under ?env=default).
+	onlyEnv := r.URL.Query().Get(envQueryParam)
 	dtos := make([]clusterDTO, 0, len(list.Items))
 	for i := range list.Items {
 		dto := toClusterDTO(&list.Items[i])
 		dto.Environment = s.effectiveEnvironmentLabel(ctx, namespace, dto.Environment)
+		if onlyEnv != "" && dto.Environment != onlyEnv {
+			continue
+		}
 		dtos = append(dtos, dto)
 	}
 	writeJSON(w, http.StatusOK, dtos)

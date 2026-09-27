@@ -87,9 +87,9 @@ func resolveClusterKubeconfigPath(name string) (path string, cleanup func(), err
 // resolveCurrentHostKubeconfigPath resolves "the current host" for `hyve
 // migrate cluster`, which no longer takes an explicit --from — see
 // HYVE-MULTI-TENANCY-PLAN.md's "--from dropped entirely" decision.
-// "Current host" means whatever `hyve env current` would resolve to:
+// "Current host" means whatever `hyve context current` would resolve to:
 //
-//   - Cluster mode (a `hyve env login` session is active): the ClusterDefinition
+//   - Cluster mode (a `hyve context login` session is active): the ClusterDefinition
 //     with access.method: primary on the cluster that session is logged
 //     into — there's exactly one per install by convention (see
 //     AccessMethodPrimary's own doc comment). That marker no longer routes

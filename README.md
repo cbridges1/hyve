@@ -101,7 +101,7 @@ hyve module add github.com/hyve-modules/civo@v1.0.0
 # 2. Point Hyve at a directory for state (a plain local directory works too —
 #    git is entirely optional and, if used, is just your own 'git' CLI)
 git clone https://github.com/company/hyve-state.git && cd hyve-state
-hyve env create --path .
+hyve context create --path .
 
 # 3. Create a template
 hyve template create my-civo-template \
@@ -152,43 +152,58 @@ This is real `ClusterDefinition` custom resource YAML — the same shape a Kuber
 
 Cloud credentials are read directly from your environment — the same way the underlying CLI tools (`civo`, `aws`, `gcloud`, `az`) read them. Hyve never stores credentials.
 
-## Environments: Local State vs. a Live Cluster
+## Contexts: Local State vs. a Live Cluster
 
 Hyve works two ways, sharing the exact same YAML:
 
-- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from the active **environment**'s directory and drives everything from your machine or CI. An environment (`hyve env`) is purely a named local directory, registered and switched with `hyve env create`/`hyve env use <name>`/`hyve env list` — nothing more.
-- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster and run `hyve env login --api-url https://hyve-api.example.com`. Every `hyve cluster`/`template`/`workflow` command then talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
+- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from the active **context**'s directory and drives everything from your machine or CI. A context (`hyve context`) is a named local directory, registered and switched with `hyve context create`/`hyve context use <name>`/`hyve context list` — nothing more.
+- **Cluster mode** — deploy hyve's controller + API (`deploy/helm/hyve`, one Helm chart for both) onto a Kubernetes cluster and run `hyve context login --api-url https://hyve-api.example.com`. Every `hyve cluster`/`template`/`workflow` command then talks to the API instead, which stores each resource as a real CR. The cluster's own controller reconciles `ClusterDefinition`s directly — no separate agent.
 
-**Environments and login are two completely independent concepts.** `hyve env` only ever picks which local directory `reconcile` reads from (and/or which cluster API URL is "active" — see below); `hyve env login` is a single, global, machine-wide credential — like `gh auth login` or `docker login` — that isn't scoped to whichever environment happens to be active. Switching environments never touches your login, and logging in/out never touches which environment is active:
-
-```bash
-hyve env create prod --path ~/repos/prod-config
-hyve env create staging --path ~/repos/staging-config
-hyve env use prod              # only switches which directory 'hyve reconcile' reads
-
-hyve env login --api-url https://hyve-api.example.com   # one login for the whole machine
-hyve env whoami                    # confirm who you're authenticated as, and where
-hyve env logout                    # revoke it
-```
-
-An environment can also just be a cluster API URL, with no local directory at all — `hyve env create` registers where to log in later, without authenticating on the spot or requiring you already be logged in:
+**Contexts and login are two completely independent concepts.** `hyve context` only ever picks which local directory `reconcile` reads from (and/or which cluster API URL is "active" — see below); `hyve context login` is a single, global, machine-wide credential — like `gh auth login` or `docker login` — that isn't scoped to whichever context happens to be active. Switching contexts never touches your login, and logging in/out never touches which context is active:
 
 ```bash
-hyve env create prod-cluster --api-url https://hyve-api.example.com
-hyve env create staging-cluster --api-url https://hyve-api-staging.example.com
-hyve env list                  # both show up as separate, first-class entries
+hyve context create prod --path ~/repos/prod-config
+hyve context create staging --path ~/repos/staging-config
+hyve context use prod              # only switches which directory 'hyve reconcile' reads
 
-hyve env use prod-cluster
-hyve env login                     # --api-url defaults to the active environment's, no need to repeat it
+hyve context login --api-url https://hyve-api.example.com   # one login for the whole machine
+hyve context whoami                    # confirm who you're authenticated as, and where
+hyve context logout                    # revoke it
 ```
 
-`--api-url` here only remembers the URL — it stores no credential and doesn't authenticate anything by itself. The actual login is still the one global session described above; registering a cluster environment and logging into it are two independently-timed steps.
+A context can also just be a cluster API URL, with no local directory at all — `hyve context create` registers where to log in later, without authenticating on the spot or requiring you already be logged in:
 
-`hyve env login --api-url ...` also registers the environment for you automatically if that URL isn't already known — so a single `hyve env login --api-url https://hyve-api.example.com` is enough on its own; a separate `hyve env create --api-url` step is only needed if you want to pre-register a cluster before authenticating against it. The auto-registered name is derived from the URL's host (deduplicated on collision), and it's only made the active environment if you had none registered yet — otherwise whatever local directory you're already working in stays active.
+```bash
+hyve context create prod-cluster --api-url https://hyve-api.example.com
+hyve context create staging-cluster --api-url https://hyve-api-staging.example.com
+hyve context list                  # both show up as separate, first-class entries
 
-`hyve env login` returns two credentials: a short-lived **access token** (30 minutes, used on every API call) and a long-lived **session token** (30 days, kept only to silently mint fresh access tokens via `POST /auth/refresh` — no password re-entry, which is what makes unattended use, e.g. a cron job, practical). The session itself is a real, revocable row in hyve-api's own datastore (`internal/orgdb`, Postgres or SQLite — not a Kubernetes object, as of `HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`'s Milestone 10) — `hyve env logout` revokes it immediately, and any cached access token from it keeps working for at most its own short remaining TTL after that.
+hyve context use prod-cluster
+hyve context login                     # --api-url defaults to the active context's, no need to repeat it
+```
 
-`hyve migrate` bulk-imports a directory into whichever cluster the active environment is logged into (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). Its source is always explicit — a positional path, or `--dir`/`--file` — defaulting to the current working directory, never implicitly the active environment's own directory (you might migrate a one-off directory into whatever cluster you're logged into). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success.
+`--api-url` here only remembers the URL — it stores no credential and doesn't authenticate anything by itself. The actual login is still the one global session described above; registering a cluster context and logging into it are two independently-timed steps.
+
+`hyve context login --api-url ...` also registers the context for you automatically if that URL isn't already known — so a single `hyve context login --api-url https://hyve-api.example.com` is enough on its own; a separate `hyve context create --api-url` step is only needed if you want to pre-register a cluster before authenticating against it. The auto-registered name is derived from the URL's host (deduplicated on collision), and it's only made the active context if you had none registered yet — otherwise whatever local directory you're already working in stays active.
+
+`hyve context login` returns two credentials: a short-lived **access token** (30 minutes, used on every API call) and a long-lived **session token** (30 days, kept only to silently mint fresh access tokens via `POST /auth/refresh` — no password re-entry, which is what makes unattended use, e.g. a cron job, practical). The session itself is a real, revocable row in hyve-api's own datastore (`internal/orgdb`, Postgres or SQLite — not a Kubernetes object, as of `HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`'s Milestone 10) — `hyve context logout` revokes it immediately, and any cached access token from it keeps working for at most its own short remaining TTL after that.
+
+`hyve migrate` bulk-imports a directory into whichever cluster the active context is logged into (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). Its source is always explicit — a positional path, or `--dir`/`--file` — defaulting to the current working directory, never implicitly the active context's own directory (you might migrate a one-off directory into whatever cluster you're logged into). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success.
+
+### Environments (cluster mode)
+
+A context is this machine's own pointer at where state lives. An **environment** is something else: a named scope within your organization on a hyve-api server (`default`, `staging`, `production`, ...), shared by everyone in it. Clusters are created in one, and two environments can each have a cluster with the same name. Every organization starts with `default`.
+
+```bash
+hyve environment list
+hyve environment create staging
+hyve environment use staging          # remembered on the active context
+hyve cluster list                     # staging's clusters only
+hyve cluster get web --env default    # one-off override for a single command
+hyve environment unset                # back to letting the server pick
+```
+
+Each context that points at a server keeps its own selection, so `hyve context use` switches environments with it. With nothing selected, the server picks when the organization has exactly one environment and asks you to choose when it has several.
 
 `hyve apply -f <file>` creates a single resource, auto-detecting `kind` (ClusterDefinition/Template/Workflow) from the file — the single-file equivalent of `hyve cluster create --file`, `hyve template create --file`, or `hyve workflow create --file`, without needing to know which one matches a given file. Either way — `apply`, `migrate`, or the per-resource `--file` flags — the same file works: `kubectl apply -f` it directly, or hand it to the CLI.
 
@@ -208,7 +223,7 @@ Namespace, same as before), it's just provisioned and tracked through the
 API/CLI now instead of a second `helm install`:
 
 ```bash
-hyve env login --api-url https://hyve-api.example.com   # as a superadmin
+hyve context login --api-url https://hyve-api.example.com   # as a superadmin
 
 hyve organization create <tenant-name>
 hyve cluster-config api create-user <username> --role admin --namespace <tenant-name>
@@ -219,15 +234,28 @@ a separate, registered Kubernetes cluster hyve-controller reconciles that
 tenant's `ClusterDefinition`/`Template`/`Workflow`/`Resource` objects
 against, distinct from wherever hyve-controller/hyve-api's own pods run
 (useful for real workload isolation between tenants sharing one control
-plane):
+plane). An organization's admin can keep several stored and switch
+between them by name, without re-entering a kubeconfig each time:
 
 ```bash
-hyve reconciling-cluster create <name> --kubeconfig-file <path>
+hyve reconciling-cluster add k3s --kubeconfig-file ~/k3s.yaml
+hyve reconciling-cluster add civo --kubeconfig-file ~/civo.yaml
+hyve reconciling-cluster list
+hyve reconciling-cluster use civo      # copies every resource over, then switches
+hyve reconciling-cluster use --home    # back to the install's own home cluster
+```
+
+A superadmin can also register clusters in an install-wide pool and
+assign one to an organization directly:
+
+```bash
+hyve reconciling-cluster pool add <name> --kubeconfig-file <path>
+hyve reconciling-cluster pool list
 hyve organization migrate <tenant-name> --reconciling-cluster <name>
 ```
 
 See `hyve organization --help`/`hyve reconciling-cluster --help` for the
-full command surface (list/delete/environments), and the "Session and
+full command surface, and the "Session and
 auth model"/"Multi-tenant installs" sections of `docs/ARCHITECTURE.md` for
 how isolation is actually enforced at the API layer.
 
@@ -308,7 +336,7 @@ hyve module list
 hyve module init my-provider
 ```
 
-**Local mode** runs every module operation as an inline child process on your machine, using whatever cloud CLI tools (`civo`, `aws`, `gcloud`, `az`, ...) and credentials are already on your `PATH`/in your environment. **Cluster mode** instead dispatches each operation to a fresh, single-use Kubernetes `Job` — the image comes from the cluster's own `spec.runner.image` (inherited from its Template) or `HyveConfig.spec.defaultModuleImage` as a fallback — so the controller pod itself never needs those cloud CLIs installed. Either way, secrets set via `hyve env secrets set` (cluster mode) are fetched live on every reconcile and injected as env vars — no controller restart needed to pick up a changed or newly-set credential.
+**Local mode** runs every module operation as an inline child process on your machine, using whatever cloud CLI tools (`civo`, `aws`, `gcloud`, `az`, ...) and credentials are already on your `PATH`/in your environment. **Cluster mode** instead dispatches each operation to a fresh, single-use Kubernetes `Job` — the image comes from the cluster's own `spec.runner.image` (inherited from its Template) or `HyveConfig.spec.defaultModuleImage` as a fallback — so the controller pod itself never needs those cloud CLIs installed. Either way, secrets set via `hyve context secrets set` (cluster mode) are fetched live on every reconcile and injected as env vars — no controller restart needed to pick up a changed or newly-set credential.
 
 ## Development
 

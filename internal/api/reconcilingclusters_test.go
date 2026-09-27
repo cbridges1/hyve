@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -121,4 +123,44 @@ func TestResourceClient_ControlPlaneNamespaceRoutesLikeAnyOrganization(t *testin
 	rc2, err := s.resourceClient(ctx, "hyve-system")
 	require.NoError(t, err)
 	assert.Same(t, destClient, rc2, "the control plane's own namespace must route to its assigned reconciling cluster, exactly like any tenant")
+}
+
+func doPoolRequest(t *testing.T, s *Server, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(method, path, bytes.NewReader(data))
+	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin))
+	rec := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	s.registerReconcilingClusterRoutes(mux)
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// The install-wide list shows the pool and every organization's own
+// clusters, each organization-owned one labeled with its owner.
+func TestPoolReconcilingCluster_OwnerLabels(t *testing.T) {
+	store := newTestOrgStore(t)
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+	org, err := store.CreateOrganization(t.Context(), orgdb.Organization{Name: "acme", Namespace: "acme"})
+	require.NoError(t, err)
+	_, err = store.CreateReconcilingCluster(t.Context(), orgdb.ReconcilingCluster{Name: "k3s", OrganizationID: &org.ID, Kubeconfig: validTestKubeconfig})
+	require.NoError(t, err)
+
+	rec := doPoolRequest(t, s, http.MethodPost, "/reconciling-clusters", createReconcilingClusterRequest{Name: "cell-b", Kubeconfig: validTestKubeconfig})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	// Re-registering rotates in place.
+	rec = doPoolRequest(t, s, http.MethodPost, "/reconciling-clusters", createReconcilingClusterRequest{Name: "cell-b", Kubeconfig: validTestKubeconfig})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doPoolRequest(t, s, http.MethodGet, "/reconciling-clusters", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var list []reconcilingClusterDTO
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	owners := map[string]string{}
+	for _, rc := range list {
+		owners[rc.Name] = rc.Organization
+	}
+	assert.Equal(t, map[string]string{"cell-b": "", "k3s": "acme"}, owners)
 }

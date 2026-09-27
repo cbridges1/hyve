@@ -5,7 +5,7 @@ import (
 )
 
 func main() {
-	// Env-file/secret loading (both the DB-backed 'hyve env secrets' store
+	// Env-file/secret loading (both the DB-backed 'hyve context secrets' store
 	// and the legacy repo-relative hyve.yaml env.file) happens inside
 	// cmd/root.go's PersistentPreRunE, not here — it needs --home resolved
 	// first (to know which environment's secrets to load), which isn't

@@ -12,14 +12,14 @@ import (
 // Repository represents one registered environment. An environment is
 // either a local directory (LocalPath set) hyve reads/writes cluster
 // definitions from, or a cluster-mode API URL (APIURL set) pre-registered
-// for `hyve env login` to target later — the two are independent kinds of
+// for `hyve context login` to target later — the two are independent kinds of
 // entry in the same registry, not the same row wearing two hats. A local
 // directory and a cluster-mode *session* (the actual credential, as
 // opposed to just the URL) used to be the same row here — that conflation
 // is what made an expired/logged-out session silently fall back to
 // whatever local files happened to be sitting in the current directory.
-// APIURL only ever remembers where to point `hyve env login` at; it carries no
-// credential of its own — see internal/session for `hyve env login`'s
+// APIURL only ever remembers where to point `hyve context login` at; it carries no
+// credential of its own — see internal/session for `hyve context login`'s
 // separate, machine-wide session storage, which is what actually
 // authenticates. The repositories table's own legacy
 // session_token/session_expires_at columns still physically exist
@@ -35,16 +35,22 @@ type Repository struct {
 	// the system trust store when talking to APIURL — see
 	// database.ensureRepositoryCredentialColumns' own doc comment. Empty
 	// means "use the system trust store as-is," correct for the common
-	// case of a publicly-trusted certificate. Set via 'hyve env create
-	// --ca-cert'/'hyve env login --ca-cert', read by cmd/shared's HTTP
+	// case of a publicly-trusted certificate. Set via 'hyve context create
+	// --ca-cert'/'hyve context login --ca-cert', read by cmd/shared's HTTP
 	// client construction.
-	APICACert string    `json:"api_ca_cert,omitempty"`
-	IsCurrent bool      `json:"is_current"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	APICACert string `json:"api_ca_cert,omitempty"`
+	// ServerEnvironment is the hyve-api environment (see
+	// internal/orgdb.Environment) cluster-mode commands send as ?env= while
+	// this context is active — set by 'hyve environment use'. Empty lets
+	// the server resolve its own default (an organization with exactly one
+	// environment).
+	ServerEnvironment string    `json:"server_environment,omitempty"`
+	IsCurrent         bool      `json:"is_current"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, api_ca_cert, created_at, updated_at`
+const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, api_ca_cert, server_environment, created_at, updated_at`
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -55,14 +61,15 @@ type scanner interface {
 func scanRepository(s scanner) (*Repository, error) {
 	repo := &Repository{}
 	var createdAt, updatedAt string
-	var apiURL, apiCACert sql.NullString
+	var apiURL, apiCACert, serverEnv sql.NullString
 
 	if err := s.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath, &repo.IsCurrent,
-		&apiURL, &apiCACert, &createdAt, &updatedAt); err != nil {
+		&apiURL, &apiCACert, &serverEnv, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	repo.APIURL = apiURL.String
 	repo.APICACert = apiCACert.String
+	repo.ServerEnvironment = serverEnv.String
 
 	var err error
 	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
@@ -281,9 +288,27 @@ func (m *Manager) SetAPICACert(name, caCertPEM string) error {
 	return nil
 }
 
+// SetServerEnvironment records env ("" to clear) as the named context's
+// selected hyve-api environment — see Repository.ServerEnvironment.
+func (m *Manager) SetServerEnvironment(name, env string) error {
+	result, err := m.db.Conn().Exec(`UPDATE repositories SET server_environment = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?`,
+		nullableString(env), name)
+	if err != nil {
+		return fmt.Errorf("failed to set server_environment: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("context '%s' not found", name)
+	}
+	return nil
+}
+
 // GetRepositoryByAPIURL returns the repository registered against apiURL
 // (exact match — callers should already have trimmed a trailing slash the
-// same way AddRepository/'hyve env login' do), or an error if none is
+// same way AddRepository/'hyve context login' do), or an error if none is
 // registered yet. Used to resolve a per-environment trusted CA (see
 // Repository.APICACert) from just a URL, when no environment name is
 // available at the call site (cmd/shared's session-refresh/logout
@@ -298,7 +323,7 @@ func (m *Manager) GetRepositoryByAPIURL(apiURL string) (*Repository, error) {
 	repo, err := scanRepository(m.db.Conn().QueryRow(selectSQL, apiURL))
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("no environment registered for api_url %q", apiURL)
+			return nil, fmt.Errorf("no context registered for api_url %q", apiURL)
 		}
 		return nil, fmt.Errorf("failed to get repository: %w", err)
 	}

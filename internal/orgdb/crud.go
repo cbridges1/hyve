@@ -184,6 +184,18 @@ func (s *Store) DeleteOrganization(ctx context.Context, id string) error {
 		return fmt.Errorf("delete environments for organization: %w", err)
 	}
 
+	// The organization's own reconciling clusters go with it — their
+	// credentials belong to it. Detach first: organizations.reconciling_cluster_id
+	// may point at one of them, and the two tables reference each other.
+	detach := rebind(s.driver, `UPDATE organizations SET reconciling_cluster_id = NULL WHERE id = ?`)
+	if _, err := tx.ExecContext(ctx, detach, org.ID); err != nil {
+		return fmt.Errorf("detach organization's reconciling cluster: %w", err)
+	}
+	deleteClusters := rebind(s.driver, `DELETE FROM reconciling_clusters WHERE organization_id = ?`)
+	if _, err := tx.ExecContext(ctx, deleteClusters, org.ID); err != nil {
+		return fmt.Errorf("delete reconciling clusters for organization: %w", err)
+	}
+
 	deleteOrg := rebind(s.driver, `DELETE FROM organizations WHERE id = ?`)
 	if _, err := tx.ExecContext(ctx, deleteOrg, org.ID); err != nil {
 		return fmt.Errorf("delete organization: %w", err)
@@ -587,9 +599,9 @@ func (s *Store) CreateReconcilingCluster(ctx context.Context, rc ReconcilingClus
 		rc.ID = newID()
 	}
 	_, err := s.exec(ctx, `
-		INSERT INTO reconciling_clusters (id, name, kubeconfig)
-		VALUES (?, ?, ?)
-	`, rc.ID, rc.Name, rc.Kubeconfig)
+		INSERT INTO reconciling_clusters (id, name, organization_id, kubeconfig)
+		VALUES (?, ?, ?, ?)
+	`, rc.ID, rc.Name, rc.OrganizationID, rc.Kubeconfig)
 	if err != nil {
 		return ReconcilingCluster{}, fmt.Errorf("insert reconciling cluster: %w", err)
 	}
@@ -629,23 +641,11 @@ func (s *Store) DeleteReconcilingCluster(ctx context.Context, id string) error {
 
 // GetReconcilingCluster looks up a reconciling cluster by id.
 func (s *Store) GetReconcilingCluster(ctx context.Context, id string) (ReconcilingCluster, error) {
-	row := s.queryRow(ctx, `
-		SELECT id, name, kubeconfig,
+	return s.scanReconcilingCluster(s.queryRow(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
 		       reachable, last_checked_at, last_error, kubernetes_version, created_at
 		FROM reconciling_clusters WHERE id = ?
-	`, id)
-	var rc ReconcilingCluster
-	err := row.Scan(
-		&rc.ID, &rc.Name, &rc.Kubeconfig,
-		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ReconcilingCluster{}, ErrNotFound
-	}
-	if err != nil {
-		return ReconcilingCluster{}, fmt.Errorf("scan reconciling cluster: %w", err)
-	}
-	return rc, nil
+	`, id))
 }
 
 // SetReconcilingClusterHealth records the result of a reachability check —
@@ -680,19 +680,33 @@ func (s *Store) SetReconcilingClusterHealth(ctx context.Context, id string, reac
 	return nil
 }
 
-// GetReconcilingClusterByName looks up a reconciling cluster by its unique
-// name — used by POST /organizations' and PATCH /organizations/{name}'s
-// own `reconcilingCluster` request field, which names a cluster the same
-// way every other cross-reference in this API does, never by raw id.
-func (s *Store) GetReconcilingClusterByName(ctx context.Context, name string) (ReconcilingCluster, error) {
-	row := s.queryRow(ctx, `
-		SELECT id, name, kubeconfig,
+// GetPoolReconcilingClusterByName looks up a superadmin-pool reconciling
+// cluster (organization_id NULL) by name — used by POST /organizations' and
+// PATCH /organizations/{name}'s own `reconcilingCluster` request field, and
+// by an organization selecting a shared cluster. Never matches an
+// organization-owned row, whose name is only unique within its owner.
+func (s *Store) GetPoolReconcilingClusterByName(ctx context.Context, name string) (ReconcilingCluster, error) {
+	return s.scanReconcilingCluster(s.queryRow(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
 		       reachable, last_checked_at, last_error, kubernetes_version, created_at
-		FROM reconciling_clusters WHERE name = ?
-	`, name)
+		FROM reconciling_clusters WHERE organization_id IS NULL AND name = ?
+	`, name))
+}
+
+// GetOrgReconcilingClusterByName looks up one of organizationID's own
+// reconciling clusters by name.
+func (s *Store) GetOrgReconcilingClusterByName(ctx context.Context, organizationID, name string) (ReconcilingCluster, error) {
+	return s.scanReconcilingCluster(s.queryRow(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
+		FROM reconciling_clusters WHERE organization_id = ? AND name = ?
+	`, organizationID, name))
+}
+
+func (s *Store) scanReconcilingCluster(row *sql.Row) (ReconcilingCluster, error) {
 	var rc ReconcilingCluster
 	err := row.Scan(
-		&rc.ID, &rc.Name, &rc.Kubeconfig,
+		&rc.ID, &rc.Name, &rc.OrganizationID, &rc.Kubeconfig,
 		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -704,15 +718,37 @@ func (s *Store) GetReconcilingClusterByName(ctx context.Context, name string) (R
 	return rc, nil
 }
 
+// SetReconcilingClusterOwner sets organization_id after the fact — only for
+// Migrate, which has to insert reconciling clusters before organizations
+// (organizations.reconciling_cluster_id references them) and so can't set
+// the reverse reference at insert time.
+func (s *Store) SetReconcilingClusterOwner(ctx context.Context, id string, organizationID *string) error {
+	_, err := s.exec(ctx, `UPDATE reconciling_clusters SET organization_id = ? WHERE id = ?`, organizationID, id)
+	if err != nil {
+		return fmt.Errorf("set reconciling cluster owner: %w", err)
+	}
+	return nil
+}
+
+// ListOrgReconcilingClusters returns organizationID's own reconciling
+// clusters, by name.
+func (s *Store) ListOrgReconcilingClusters(ctx context.Context, organizationID string) ([]ReconcilingCluster, error) {
+	return s.listReconcilingClusters(ctx, `WHERE organization_id = ?`, organizationID)
+}
+
 // ListReconcilingClusters returns every registered reconciling cluster —
 // GET /reconciling-clusters' own listing, and the set the API server's
 // periodic health-check loop walks each tick.
 func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingCluster, error) {
+	return s.listReconcilingClusters(ctx, ``)
+}
+
+func (s *Store) listReconcilingClusters(ctx context.Context, where string, args ...any) ([]ReconcilingCluster, error) {
 	rows, err := s.query(ctx, `
-		SELECT id, name, kubeconfig,
+		SELECT id, name, organization_id, kubeconfig,
 		       reachable, last_checked_at, last_error, kubernetes_version, created_at
-		FROM reconciling_clusters ORDER BY name
-	`)
+		FROM reconciling_clusters `+where+` ORDER BY name
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list reconciling clusters: %w", err)
 	}
@@ -722,7 +758,7 @@ func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingClust
 	for rows.Next() {
 		var rc ReconcilingCluster
 		if err := rows.Scan(
-			&rc.ID, &rc.Name, &rc.Kubeconfig,
+			&rc.ID, &rc.Name, &rc.OrganizationID, &rc.Kubeconfig,
 			&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan reconciling cluster: %w", err)

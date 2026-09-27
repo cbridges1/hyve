@@ -263,3 +263,31 @@ func TestHandleListClusters_BackfillsEffectiveEnvironment(t *testing.T) {
 	assert.Equal(t, "legacy-web", dtos[0].Name)
 	assert.Equal(t, "default", dtos[0].Environment, "a legacy unlabeled object must display as the org's sole environment, not empty")
 }
+
+// TestHandleListClusters_FiltersByEnvironment proves ?env= narrows the list
+// — what a CLI with a selected environment sends on every list — while no
+// ?env= still returns every environment's clusters.
+func TestHandleListClusters_FiltersByEnvironment(t *testing.T) {
+	store := newTestOrgStore(t)
+	newOrgWithEnvironments(t, store, testNamespace, "dev", "staging")
+	s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+
+	for _, env := range []string{"dev", "staging"} {
+		rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, fmt.Sprintf("/clusters?env=%s", env), createClusterRequest{Name: "web"})
+		require.Equal(t, http.StatusCreated, rec.Code)
+	}
+
+	list := func(path string) []clusterDTO {
+		rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, path, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var dtos []clusterDTO
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dtos))
+		return dtos
+	}
+
+	assert.Len(t, list("/clusters"), 2)
+	dev := list("/clusters?env=dev")
+	require.Len(t, dev, 1)
+	assert.Equal(t, "dev", dev[0].Environment)
+	assert.Empty(t, list("/clusters?env=nope"))
+}

@@ -47,7 +47,7 @@ export function EnvironmentsPage() {
                   </span>
                 )}
               </p>
-              <p className="mt-0.5 text-xs text-neutral-500">Only a superadmin can move an organization to a different cluster.</p>
+              <p className="mt-0.5 text-xs text-neutral-500">Switch clusters from the Reconciling cluster page.</p>
             </div>
           )}
           <EnvironmentsSection orgName={who.namespace} />

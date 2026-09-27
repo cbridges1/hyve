@@ -63,6 +63,10 @@ func Migrate(ctx context.Context, source, dest *Store) (MigrationSummary, error)
 	if err != nil {
 		return summary, fmt.Errorf("list source reconciling clusters: %w", err)
 	}
+	// Owners are set after organizations are copied (see the loop below
+	// them): organizations.reconciling_cluster_id and
+	// reconciling_clusters.organization_id reference each other, so one side
+	// has to be filled in afterwards.
 	for _, rc := range reconcilingClusters {
 		if _, err := dest.CreateReconcilingCluster(ctx, ReconcilingCluster{ID: rc.ID, Name: rc.Name, Kubeconfig: rc.Kubeconfig}); err != nil {
 			return summary, fmt.Errorf("copy reconciling cluster %q: %w", rc.Name, err)
@@ -92,6 +96,15 @@ func Migrate(ctx context.Context, source, dest *Store) (MigrationSummary, error)
 				return summary, fmt.Errorf("copy environment %q/%q: %w", org.Name, env.Name, err)
 			}
 			summary.Environments++
+		}
+	}
+
+	for _, rc := range reconcilingClusters {
+		if rc.OrganizationID == nil {
+			continue
+		}
+		if err := dest.SetReconcilingClusterOwner(ctx, rc.ID, rc.OrganizationID); err != nil {
+			return summary, fmt.Errorf("set owner of reconciling cluster %q: %w", rc.Name, err)
 		}
 	}
 

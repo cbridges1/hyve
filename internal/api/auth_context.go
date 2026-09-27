@@ -60,7 +60,7 @@ type authToolRequirement struct {
 
 // githubToken does a live, uncached read of hyve-cli-secrets' GITHUB_TOKEN
 // (see internal/api/secrets.go's cliSecretsName — the same Secret
-// `hyve env secrets set GITHUB_TOKEN ...` writes) so a private Git-sourced
+// `hyve context secrets set GITHUB_TOKEN ...` writes) so a private Git-sourced
 // driver module can actually be cloned here, mirroring
 // internal/controller/reconciler.go's own fetchCLISecrets/
 // resolveModuleIfNeeded, which already does this for the controller's own
@@ -115,8 +115,8 @@ func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
 // access (no authorization check baked in, unlike the override path's
 // module-side check — see moduleEnvForClusterDefinition).
 func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	ns := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, ns, r.PathValue("name"))
 
 	c, err := s.resourceClient(r.Context(), ns)
 	if err != nil {

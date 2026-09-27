@@ -102,6 +102,10 @@ export type Whoami = {
   username: string
   role: string
   namespace: string
+  // organization is the name of the organization owning namespace —
+  // usually identical, but an organization can be renamed while its
+  // namespace can't. Omitted when namespace has no organization.
+  organization?: string
   // reconcilingCluster/migrating mirror Organization's own fields for this
   // caller's own namespace — omitted for a namespace with no registered
   // organization (see internal/api's whoamiResponse).

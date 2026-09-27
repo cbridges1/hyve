@@ -6,7 +6,7 @@
 // concept, with no local-directory equivalent the way a cluster/template/
 // workflow has (see internal/session's own doc comment on cluster mode
 // and local directories being otherwise completely independent) — every
-// command here requires a valid session (`hyve env login`) and fails
+// command here requires a valid session (`hyve context login`) and fails
 // clearly, not silently, without one.
 package organization
 
@@ -25,7 +25,10 @@ var Cmd = &cobra.Command{
 	Long: `Create, list, delete, and manage organizations — hyve-api's own
 multi-tenant isolation unit, one Kubernetes namespace plus a set of
 environments/RBAC bindings/reconciling-cluster assignment. Requires
-cluster mode: run 'hyve env login' against a hyve-api server first.
+cluster mode: run 'hyve context login' against a hyve-api server first.
+
+An organization's environments are managed with 'hyve environment', and
+its reconciling clusters with 'hyve reconciling-cluster'.
 
 Creating an organization only provisions the namespace/environment — it
 grants no one access. Use 'hyve cluster-config api create-user' (or POST
@@ -77,8 +80,8 @@ primitives. Every request against this organization's resources returns
 organization stays on its original cluster.
 
 Exactly one of --reconciling-cluster or --home is required: --reconciling-cluster
-names an already-registered cluster (see 'hyve reconciling-cluster
-create'/'list'); --home moves it back to the control plane's own home
+names a pool cluster (see 'hyve reconciling-cluster pool add'/'pool
+list'); --home moves it back to the control plane's own home
 cluster (only possible for an install that has one — see --home-cluster
 on 'hyve cluster-config api run').`,
 	Args: cobra.ExactArgs(1),
@@ -93,17 +96,21 @@ on 'hyve cluster-config api run').`,
 }
 
 var environmentsCmd = &cobra.Command{
-	Use:   "environments <name>",
-	Short: "List an organization's environments",
-	Args:  cobra.ExactArgs(1),
+	Use:        "environments <name>",
+	Short:      "List an organization's environments",
+	Args:       cobra.ExactArgs(1),
+	Hidden:     true,
+	Deprecated: "use 'hyve environment list --org <name>' instead",
 	Run: func(cmd *cobra.Command, args []string) {
 		listOrganizationEnvironments(args[0])
 	},
 }
 
 var createEnvironmentCmd = &cobra.Command{
-	Use:   "create-environment <name> <environment>",
-	Short: "Add a new environment to an existing organization",
+	Use:        "create-environment <name> <environment>",
+	Short:      "Add a new environment to an existing organization",
+	Hidden:     true,
+	Deprecated: "use 'hyve environment create <environment> --org <name>' instead",
 	Long: `Every organization gets a 'default' environment automatically at
 creation time — this is for every environment after that first one (e.g.
 'staging', 'production').`,
@@ -116,7 +123,7 @@ creation time — this is for every environment after that first one (e.g.
 func init() {
 	createCmd.Flags().String("admin-identity", "", "Identity (username or OIDC subject) to grant an initial admin binding to, in the same transaction as the organization itself")
 	createCmd.Flags().String("admin-role", "", "Role for --admin-identity (admin or read-only) — required if --admin-identity is set, must stay unset otherwise")
-	createCmd.Flags().String("reconciling-cluster", "", "Name of an already-registered reconciling cluster (see 'hyve reconciling-cluster create') this organization's resources should live on instead of the control plane's own home cluster — omit to use the home cluster")
+	createCmd.Flags().String("reconciling-cluster", "", "Name of an already-registered reconciling cluster (see 'hyve reconciling-cluster pool add') this organization's resources should live on instead of the control plane's own home cluster — omit to use the home cluster")
 
 	migrateCmd.Flags().String("reconciling-cluster", "", "Name of an already-registered reconciling cluster to move this organization onto")
 	migrateCmd.Flags().Bool("home", false, "Move this organization back to the control plane's own home cluster")
@@ -135,7 +142,7 @@ func init() {
 func requireClusterMode() *shared.APIClient {
 	sess, ok := shared.UseClusterMode()
 	if !ok {
-		log.Fatal("This command requires cluster mode — run 'hyve env login' against a hyve-api server first.")
+		log.Fatal("This command requires cluster mode — run 'hyve context login' against a hyve-api server first.")
 	}
 	return shared.NewAPIClient(sess)
 }

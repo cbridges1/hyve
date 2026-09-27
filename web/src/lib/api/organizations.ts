@@ -1,5 +1,7 @@
 import { apiDelete, apiFetch } from './client'
-import type { Organization, OrganizationEnvironment, OrgReconcilingClusterStatus } from './types'
+import type { Organization, OrganizationEnvironment, OrgReconcilingCluster, OrgReconcilingClusterStatus } from './types'
+
+const orgPath = (name: string, rest = '') => `/organizations/${encodeURIComponent(name)}${rest}`
 
 export const organizationsApi = {
   list: () => apiFetch<Organization[]>('/organizations'),
@@ -30,18 +32,28 @@ export const organizationsApi = {
   // doc comment.
   deleteEnvironment: (name: string, environment: string) =>
     apiDelete(`/organizations/${encodeURIComponent(name)}/environments/${encodeURIComponent(environment)}`),
-  // GET/PUT/DELETE /organizations/{name}/reconciling-cluster — an
-  // organization's own admin-facing self-service placement (register/edit,
-  // or permanently remove, its own dedicated cluster), reachable by an
-  // ordinary admin for their own organization, not just a superadmin.
-  getOwnReconcilingCluster: (name: string) =>
-    apiFetch<OrgReconcilingClusterStatus>(`/organizations/${encodeURIComponent(name)}/reconciling-cluster`),
-  // kubeconfig: "" moves the organization back onto the control plane's
-  // own home cluster.
-  setOwnReconcilingCluster: (name: string, kubeconfig: string) =>
-    apiFetch<Organization>(`/organizations/${encodeURIComponent(name)}/reconciling-cluster`, {
-      method: 'PUT',
-      body: JSON.stringify({ kubeconfig }),
+  // An organization's own reconciling clusters — reachable by an ordinary
+  // admin for their own organization, not just a superadmin. It can keep
+  // several stored (add/remove) and switch between them by name (use)
+  // without re-entering a kubeconfig.
+  getOwnReconcilingCluster: (name: string) => apiFetch<OrgReconcilingClusterStatus>(orgPath(name, '/reconciling-cluster')),
+  listReconcilingClusters: (name: string) => apiFetch<OrgReconcilingCluster[]>(orgPath(name, '/reconciling-clusters')),
+  // Stores (or, for an existing name, rotates the kubeconfig of) one of
+  // the organization's own clusters without switching to it.
+  addReconcilingCluster: (name: string, cluster: string, kubeconfig: string) =>
+    apiFetch<OrgReconcilingCluster>(orgPath(name, '/reconciling-clusters'), {
+      method: 'POST',
+      body: JSON.stringify({ name: cluster, kubeconfig }),
     }),
-  deleteOwnReconcilingCluster: (name: string) => apiDelete(`/organizations/${encodeURIComponent(name)}/reconciling-cluster`),
+  // Refused (409) for the active cluster — switch elsewhere first.
+  removeReconcilingCluster: (name: string, cluster: string) =>
+    apiDelete(orgPath(name, `/reconciling-clusters/${encodeURIComponent(cluster)}`)),
+  // Switches onto one of the organization's own named clusters, or back to
+  // the home cluster for null. Copies every
+  // resource first, so this resolves only once that's done.
+  useReconcilingCluster: (name: string, cluster: string | null) =>
+    apiFetch<OrgReconcilingClusterStatus>(orgPath(name, '/reconciling-cluster'), {
+      method: 'PUT',
+      body: JSON.stringify(cluster ? { name: cluster } : {}),
+    }),
 }

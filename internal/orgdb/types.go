@@ -103,9 +103,13 @@ type Binding struct {
 // reconciling_clusters comment for the accepted plaintext-at-rest tradeoff
 // this reversal carries.
 type ReconcilingCluster struct {
-	ID         string
-	Name       string
-	Kubeconfig string
+	ID   string
+	Name string
+	// OrganizationID is the owning organization, nil for the superadmin-
+	// managed pool. Names are unique per owner, not globally — see
+	// migrations/*/0006_reconciling_cluster_ownership.sql.
+	OrganizationID *string
+	Kubeconfig     string
 
 	// Reachable is nil until the first health check has run — a real,
 	// distinct third state from "reachable" and "unreachable", not
@@ -134,7 +138,7 @@ type SigningKey struct {
 	CreatedAt   time.Time
 }
 
-// Session is one `hyve env login` session (Milestone 10 Part D) — mirrors
+// Session is one `hyve context login` session (Milestone 10 Part D) — mirrors
 // the retired HyveSession CRD's HyveSessionSpec field-for-field, see that
 // type's own doc comment for the full design. TokenHash is
 // hex(SHA-256(the raw session secret)), never the secret itself.

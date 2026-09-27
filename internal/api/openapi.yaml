@@ -152,7 +152,13 @@ paths:
                 properties:
                   username: { type: string }
                   role: { type: string }
-                required: [username, role]
+                  namespace: { type: string }
+                  organization:
+                    type: string
+                    description: Name of the organization owning namespace (usually identical; an organization can be renamed, its namespace can't). Omitted when namespace has no organization.
+                  reconcilingCluster: { type: string }
+                  migrating: { type: boolean }
+                required: [username, role, namespace]
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -160,6 +166,12 @@ paths:
     get:
       tags: [clusters]
       summary: List ClusterDefinitions
+      parameters:
+        - name: env
+          in: query
+          required: false
+          description: Only list clusters in this environment of the caller's organization (what `hyve environment use` / `--env` send). Omitted, every environment's clusters are listed.
+          schema: { type: string }
       responses:
         "200":
           description: OK
@@ -544,7 +556,7 @@ paths:
       tags: [secrets]
       summary: List secret key names, or (with ?values=true) every key/value
       description: |
-        Every secret set via `hyve env secrets` (cluster mode) lives in one
+        Every secret set via `hyve context secrets` (cluster mode) lives in one
         shared Kubernetes Secret for this hyve-api deployment — not scoped
         per caller/environment. Key names alone are readable by any
         authenticated role; `?values=true` additionally requires the

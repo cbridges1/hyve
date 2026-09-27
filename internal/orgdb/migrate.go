@@ -1,6 +1,7 @@
 package orgdb
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -23,8 +24,32 @@ var postgresMigrations embed.FS
 // support multiple ;-separated statements in one call against every
 // driver (notably pgx's default extended-protocol mode), so this sidesteps
 // that rather than depending on it.
+//
+// Everything runs on one dedicated connection. For SQLite, that connection
+// has foreign-key enforcement switched off for the duration, the one
+// documented way to rebuild a table other tables reference (SQLite can't
+// drop a column's inline UNIQUE constraint in place, see
+// 0006_reconciling_cluster_ownership.sql) — foreign_keys can't be toggled
+// inside a transaction, and it's per-connection, hence the dedicated
+// connection rather than the pool. PRAGMA foreign_key_check runs before
+// each migration's commit instead, so a migration that would leave a
+// dangling reference still fails rather than committing silently.
 func migrate(db *sql.DB, driver string) error {
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	if driver == "sqlite" {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+			return fmt.Errorf("disable sqlite foreign_keys for migration: %w", err)
+		}
+		defer conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`) //nolint:errcheck // best-effort restore before the connection returns to the pool
+	}
+
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    TEXT PRIMARY KEY,
 		applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`); err != nil {
@@ -53,7 +78,7 @@ func migrate(db *sql.DB, driver string) error {
 
 		var already int
 		checkQuery := rebind(driver, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`)
-		if err := db.QueryRow(checkQuery, version).Scan(&already); err != nil {
+		if err := conn.QueryRowContext(ctx, checkQuery, version).Scan(&already); err != nil {
 			return fmt.Errorf("check migration %s applied: %w", version, err)
 		}
 		if already > 0 {
@@ -65,12 +90,18 @@ func migrate(db *sql.DB, driver string) error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
-		tx, err := db.Begin()
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", version, err)
 		}
 		for _, stmt := range splitStatements(string(content)) {
 			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("apply migration %s: %w", version, err)
+			}
+		}
+		if driver == "sqlite" {
+			if err := checkSQLiteForeignKeys(tx); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("apply migration %s: %w", version, err)
 			}
@@ -86,6 +117,28 @@ func migrate(db *sql.DB, driver string) error {
 	}
 
 	return nil
+}
+
+// checkSQLiteForeignKeys stands in for the enforcement migrate switches off:
+// PRAGMA foreign_key_check returns one row per violating reference, so any
+// row at all means the migration left the schema inconsistent.
+func checkSQLiteForeignKeys(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table string
+		var rowid sql.NullInt64
+		var parent string
+		var fkid int
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return fmt.Errorf("foreign_key_check: %w", err)
+		}
+		return fmt.Errorf("foreign key violation: %s row %d references a missing %s row", table, rowid.Int64, parent)
+	}
+	return rows.Err()
 }
 
 // splitStatements splits a migration file's content into individual SQL

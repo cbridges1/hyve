@@ -24,7 +24,7 @@ accepts once the cluster's CRDs are installed. Equivalent to picking the
 matching 'hyve cluster/template/workflow create --file' by hand, without
 needing to know which one matches a given file.
 
-Requires an active environment with cluster-mode credentials (see 'hyve
+Requires an active context with cluster-mode credentials (see 'hyve
 login'). Create-only: fails if a resource with the same name already
 exists — see 'hyve migrate' for a bulk, safer-by-default (dry-run by
 default, skip-existing) alternative.`,
@@ -42,7 +42,7 @@ func init() {
 func runApply() {
 	sess, ok := shared.UseClusterMode()
 	if !ok {
-		log.Fatal("`hyve apply` requires an active environment with cluster-mode credentials — run `hyve env login` first")
+		log.Fatal("`hyve apply` requires an active context with cluster-mode credentials — run `hyve context login` first")
 	}
 	client := shared.NewAPIClient(sess)
 

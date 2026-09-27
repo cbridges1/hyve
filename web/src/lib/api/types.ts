@@ -304,6 +304,7 @@ export type OrganizationEnvironment = { name: string }
 export type OrgReconcilingClusterStatus = {
   onHomeCluster: boolean
   name?: string
+  ownership?: ReconcilingClusterOwnership
   server?: string
   reachable?: boolean
   lastCheckedAt?: string
@@ -311,6 +312,27 @@ export type OrgReconcilingClusterStatus = {
   kubernetesVersion?: string
   registeredAt?: string
   migrating?: boolean
+}
+
+// Where a reconciling cluster comes from, as an organization sees it:
+// 'organization' is one of its own (registered with its own kubeconfig),
+// 'pool' is a superadmin pool cluster assigned to it directly — listed only
+// while active.
+export type ReconcilingClusterOwnership = 'organization' | 'pool'
+
+// One row of GET /organizations/{name}/reconciling-clusters (internal/api's
+// orgReconcilingClusterEntryDTO) — every cluster the organization can
+// switch to, with active marking the current one.
+export type OrgReconcilingCluster = {
+  name: string
+  ownership: ReconcilingClusterOwnership
+  active: boolean
+  server?: string
+  reachable?: boolean
+  lastCheckedAt?: string
+  lastError?: string
+  kubernetesVersion?: string
+  registeredAt: string
 }
 
 // ── HyveConfig (internal/api/config.go) — superadmin-only, one singleton

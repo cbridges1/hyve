@@ -67,8 +67,11 @@ func (s *Server) registerReconcilingClusterRoutes(mux *http.ServeMux) {
 // whatever was most recently registered/rotated), which identifies *where*
 // this cluster physically is without exposing any credential material.
 type reconcilingClusterDTO struct {
-	Name              string  `json:"name"`
-	Server            string  `json:"server,omitempty"`
+	Name   string `json:"name"`
+	Server string `json:"server,omitempty"`
+	// Organization is the owning organization's name, empty for a pool
+	// cluster.
+	Organization      string  `json:"organization,omitempty"`
 	Reachable         *bool   `json:"reachable,omitempty"`
 	LastCheckedAt     *string `json:"lastCheckedAt,omitempty"`
 	LastError         *string `json:"lastError,omitempty"`
@@ -144,7 +147,7 @@ func (s *Server) handleCreateReconcilingCluster(w http.ResponseWriter, r *http.R
 
 	ctx := r.Context()
 
-	rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, req.Name)
+	rc, err := s.OrgStore.GetPoolReconcilingClusterByName(ctx, req.Name)
 	switch {
 	case err == nil:
 		if err := s.OrgStore.SetReconcilingClusterKubeconfig(ctx, rc.ID, req.Kubeconfig); err != nil {
@@ -156,8 +159,8 @@ func (s *Server) handleCreateReconcilingCluster(w http.ResponseWriter, r *http.R
 		// cluster — the next resourceClient/health-check call must rebuild
 		// it, not keep talking through stale (possibly now-revoked)
 		// credentials.
-		s.invalidateReconcilingClusterClientByName(ctx, req.Name)
-		rc, err = s.OrgStore.GetReconcilingClusterByName(ctx, req.Name)
+		s.invalidateReconcilingClusterClient(rc.ID)
+		rc, err = s.OrgStore.GetReconcilingCluster(ctx, rc.ID)
 		if err != nil {
 			log.Printf("api: failed to re-fetch rotated reconciling cluster %q: %v", req.Name, err)
 			writeError(w, http.StatusInternalServerError, "failed to rotate kubeconfig")
@@ -182,19 +185,36 @@ func (s *Server) handleCreateReconcilingCluster(w http.ResponseWriter, r *http.R
 	}
 }
 
+// handleListReconcilingClusters lists every registered cluster install-wide
+// — the pool plus every organization's own, each labeled with its owner —
+// since a superadmin is the one role that can see across organizations.
 func (s *Server) handleListReconcilingClusters(w http.ResponseWriter, r *http.Request) {
 	if !RequireRole(w, r, hyvev1alpha1.RoleSuperadmin) {
 		return
 	}
-	list, err := s.OrgStore.ListReconcilingClusters(r.Context())
+	ctx := r.Context()
+	list, err := s.OrgStore.ListReconcilingClusters(ctx)
 	if err != nil {
 		log.Printf("api: failed to list reconciling clusters: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list reconciling clusters")
 		return
 	}
+	orgNames := map[string]string{}
+	if orgs, err := s.OrgStore.ListOrganizations(ctx); err == nil {
+		for _, org := range orgs {
+			orgNames[org.ID] = org.Name
+		}
+	} else {
+		// Cosmetic, same stance as toReconcilingClusterDTO's server lookup.
+		log.Printf("api: failed to list organizations to label reconciling cluster owners: %v", err)
+	}
 	out := make([]reconcilingClusterDTO, 0, len(list))
 	for _, rc := range list {
-		out = append(out, toReconcilingClusterDTO(rc))
+		dto := toReconcilingClusterDTO(rc)
+		if rc.OrganizationID != nil {
+			dto.Organization = orgNames[*rc.OrganizationID]
+		}
+		out = append(out, dto)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -368,20 +388,14 @@ func (s *Server) buildReconcilingClusterHandle(ctx context.Context, rc orgdb.Rec
 	return &reconcilingClusterHandle{Client: c, Clientset: cs}, nil
 }
 
-// invalidateReconcilingClusterClientByName drops any cached client for the
-// reconciling cluster named name — called after a kubeconfig rotation
-// (handleCreateReconcilingCluster's own re-POST path) so a stale cached
-// client (built from the now-superseded kubeconfig) isn't kept serving
-// requests against credentials that may have just been revoked. A lookup
-// miss (nothing cached yet, or the cluster is unknown) is a silent no-op —
-// nothing to invalidate.
-func (s *Server) invalidateReconcilingClusterClientByName(ctx context.Context, name string) {
-	rc, err := s.OrgStore.GetReconcilingClusterByName(ctx, name)
-	if err != nil {
-		return
-	}
+// invalidateReconcilingClusterClient drops any cached client for the
+// reconciling cluster id — called after a kubeconfig rotation or removal so
+// a stale cached client (built from the now-superseded kubeconfig) isn't
+// kept serving requests against credentials that may have just been
+// revoked. Nothing cached is a silent no-op.
+func (s *Server) invalidateReconcilingClusterClient(id string) {
 	s.reconcilingClientsMu.Lock()
-	delete(s.reconcilingClusterClients, rc.ID)
+	delete(s.reconcilingClusterClients, id)
 	s.reconcilingClientsMu.Unlock()
 }
 

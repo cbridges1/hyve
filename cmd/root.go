@@ -7,7 +7,8 @@ import (
 
 	"github.com/cbridges1/hyve/cmd/cluster"
 	"github.com/cbridges1/hyve/cmd/clusterconfig"
-	"github.com/cbridges1/hyve/cmd/env"
+	contextcmd "github.com/cbridges1/hyve/cmd/context"
+	"github.com/cbridges1/hyve/cmd/environment"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
 	"github.com/cbridges1/hyve/cmd/organization"
 	"github.com/cbridges1/hyve/cmd/reconcilingcluster"
@@ -33,7 +34,7 @@ reconcile engine.`,
 		if home != "" {
 			database.SetConfigDir(home)
 		}
-		shared.LoadEnvironmentSecrets() // higher precedence — see 'hyve env secrets'
+		shared.LoadEnvironmentSecrets() // higher precedence — see 'hyve context secrets'
 		shared.LoadLegacyRepoEnvFile()  // lower precedence, relocated from main.go
 		return nil
 	},
@@ -54,18 +55,21 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&shared.HomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
+	rootCmd.PersistentFlags().StringVar(&shared.ServerEnvFlagValue, "env", "", "hyve-api environment to target for this command, overriding 'hyve environment use' (cluster mode only)")
 
 	// Verbs that do something, first (apply/migrate self-register via
-	// their own file's init()). login/logout/whoami moved under 'hyve
-	// env' (cmd/env/login.go, cmd/env/whoami.go) — identity is still a
-	// separate, global session independent of which environment is
-	// current (see cmd/env/login.go's own doc comment), just reachable
-	// from the same command group as environment selection now.
+	// their own file's init()). login/logout/whoami live under 'hyve
+	// context' (cmd/context/login.go, cmd/context/whoami.go) — identity is
+	// still a separate, global session independent of which context is
+	// current (see cmd/context/login.go's own doc comment), just reachable
+	// from the same command group as context selection.
 	rootCmd.AddCommand(reconcileCmd)
 
-	// Identity/environment selection — almost everything below depends on
-	// which environment is active.
-	rootCmd.AddCommand(env.Cmd)
+	// Where the CLI's state lives (context), then which server-side
+	// environment cluster commands target — almost everything below
+	// depends on both.
+	rootCmd.AddCommand(contextcmd.Cmd)
+	rootCmd.AddCommand(environment.Cmd)
 
 	// Resource-type command groups, in dependency order: a cluster is the
 	// thing you ultimately want, templates/workflows support it, modules

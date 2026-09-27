@@ -19,6 +19,12 @@ type whoamiResponse struct {
 	// (or the control plane) their session was actually scoped to.
 	Namespace string `json:"namespace"`
 
+	// Organization is the name of the organization owning Namespace —
+	// usually identical, but an organization can be renamed while its
+	// namespace can't, and /organizations/{name}/... routes take the name.
+	// Empty under the same conditions as ReconcilingCluster below.
+	Organization string `json:"organization,omitempty"`
+
 	// ReconcilingCluster/Migrating mirror organizationDTO's own fields for
 	// this caller's own namespace — an ordinary admin has no route to
 	// GET /organizations (superadmin-only, genuinely cross-tenant by
@@ -50,6 +56,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	if s.OrgStore != nil {
 		if org, err := s.OrgStore.GetOrganizationByName(r.Context(), namespace); err == nil {
 			dto := s.toOrganizationDTO(r.Context(), org)
+			resp.Organization = org.Name
 			resp.ReconcilingCluster = dto.ReconcilingCluster
 			resp.Migrating = dto.Migrating
 		} else if err != orgdb.ErrNotFound {
