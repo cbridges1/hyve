@@ -232,3 +232,47 @@ func TestSecrets_ScopedPerTenantNamespace(t *testing.T) {
 	err := s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: cliSecretsName}, &controlPlaneSecret)
 	assert.Error(t, err, "must not have created hyve-cli-secrets in the control-plane namespace")
 }
+
+func TestHandleSetSecrets_MergesAndKeepsOtherKeys(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newCliSecretsDef(map[string]string{"KEEP": "1", "FOO": "old"})), Namespace: testNamespace}
+
+	rec := doSecretsRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/secrets", setSecretsRequest{Values: map[string]string{"FOO": "new", "MULTI": "line1\nline2"}})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	var got corev1.Secret
+	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: cliSecretsName}, &got))
+	assert.Equal(t, "1", string(got.Data["KEEP"]))
+	assert.Equal(t, "new", string(got.Data["FOO"]))
+	assert.Equal(t, "line1\nline2", string(got.Data["MULTI"]))
+}
+
+func TestHandleSetSecrets_CreatesOnFirstWrite(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doSecretsRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/secrets", setSecretsRequest{Values: map[string]string{"A": "1", "B": "2"}})
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	var got corev1.Secret
+	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: cliSecretsName}, &got))
+	assert.Len(t, got.Data, 2)
+}
+
+func TestHandleSetSecrets_InvalidKeyWritesNothing(t *testing.T) {
+	s := &Server{Client: newFakeClient(t, newCliSecretsDef(map[string]string{"FOO": "old"})), Namespace: testNamespace}
+
+	rec := doSecretsRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/secrets", setSecretsRequest{Values: map[string]string{"FOO": "new", "bad-key": "x"}})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var got corev1.Secret
+	require.NoError(t, s.Client.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: cliSecretsName}, &got))
+	assert.Equal(t, "old", string(got.Data["FOO"]), "a bad key must reject the whole import")
+}
+
+func TestHandleSetSecrets_ReadOnlyForbiddenAndEmptyRejected(t *testing.T) {
+	s := &Server{Client: newFakeClient(t), Namespace: testNamespace}
+
+	rec := doSecretsRequest(t, s, hyvev1alpha1.RoleReadOnly, http.MethodPatch, "/secrets", setSecretsRequest{Values: map[string]string{"A": "1"}})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	rec = doSecretsRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPatch, "/secrets", setSecretsRequest{})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

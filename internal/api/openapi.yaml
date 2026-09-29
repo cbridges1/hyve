@@ -584,6 +584,35 @@ paths:
                     description: Full key->value map (?values=true)
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+    patch:
+      tags: [secrets]
+      summary: Add or update several secrets at once
+      description: |
+        Requires the `admin` role. Sets every key in `values` in one write
+        (keys not named are left as they are), so a bulk import lands whole
+        or not at all. Every key is validated before anything is written.
+        Creates the shared secrets Secret on first use.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                values:
+                  type: object
+                  additionalProperties: { type: string }
+              required: [values]
+      responses:
+        "204": { description: Set }
+        "400":
+          description: No keys given, or a key isn't a valid environment variable name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/secrets/{key}:
     get:

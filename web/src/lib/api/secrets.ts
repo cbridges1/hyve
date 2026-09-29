@@ -8,5 +8,8 @@ export const secretsApi = {
   get: (key: string) => apiFetch<{ key: string; value: string }>(`/secrets/${encodeURIComponent(key)}`),
   set: (key: string, value: string) =>
     apiFetch<void>(`/secrets/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  /** Sets every key in one write (PATCH /secrets) — keys not named are left alone. */
+  setMany: (values: Record<string, string>) =>
+    apiFetch<void>('/secrets', { method: 'PATCH', body: JSON.stringify({ values }) }),
   unset: (key: string) => apiDelete(`/secrets/${encodeURIComponent(key)}`),
 }

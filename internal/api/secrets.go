@@ -34,6 +34,7 @@ var secretKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 func (s *Server) registerSecretsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /secrets", s.requireOrganizationNotMigrating(s.handleListSecrets))
 	mux.HandleFunc("GET /secrets/{key}", s.requireOrganizationNotMigrating(s.handleGetSecret))
+	mux.HandleFunc("PATCH /secrets", s.requireOrganizationNotMigrating(s.handleSetSecrets))
 	mux.HandleFunc("PUT /secrets/{key}", s.requireOrganizationNotMigrating(s.handleSetSecret))
 	mux.HandleFunc("DELETE /secrets/{key}", s.requireOrganizationNotMigrating(s.handleUnsetSecret))
 }
@@ -139,46 +140,81 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if err := s.mergeCliSecrets(r, map[string]string{key: req.Value}); err != nil {
+		log.Printf("api: failed to set cli secret: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to set secret")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
+type setSecretsRequest struct {
+	Values map[string]string `json:"values"`
+}
+
+// handleSetSecrets sets several keys in one write — what the web console's
+// .env import uses, so an import either lands whole or not at all, instead
+// of N separate PUTs racing each other's read-modify-write of the same
+// Secret. Keys not named are left as they are. Every key is validated
+// before anything is written.
+func (s *Server) handleSetSecrets(w http.ResponseWriter, r *http.Request) {
+	if !RequireRole(w, r, hyvev1alpha1.RoleAdmin) {
+		return
+	}
+	var req setSecretsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Values) == 0 {
+		writeError(w, http.StatusBadRequest, "values must name at least one key")
+		return
+	}
+	for key := range req.Values {
+		if !secretKeyPattern.MatchString(key) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid key %q: must match %s", key, secretKeyPattern.String()))
+			return
+		}
+	}
+	if err := s.mergeCliSecrets(r, req.Values); err != nil {
+		log.Printf("api: failed to set cli secrets: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to set secrets")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// mergeCliSecrets writes values into the tenant's hyve-cli-secrets Secret
+// in a single create or update, leaving other keys untouched.
+func (s *Server) mergeCliSecrets(r *http.Request, values map[string]string) error {
 	ctx := r.Context()
 	tenantNS := s.TenantNamespace(r)
 	c, err := s.resourceClient(ctx, tenantNS)
 	if err != nil {
-		log.Printf("api: failed to resolve resource client for cli secrets: %v", err)
-		writeError(w, http.StatusInternalServerError, "failed to set secret")
-		return
+		return fmt.Errorf("resolve resource client: %w", err)
 	}
 	var secret corev1.Secret
 	err = c.Get(ctx, types.NamespacedName{Namespace: tenantNS, Name: cliSecretsName}, &secret)
 	if apierrors.IsNotFound(err) {
 		secret = corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: cliSecretsName, Namespace: tenantNS},
-			Data:       map[string][]byte{key: []byte(req.Value)},
+			Data:       make(map[string][]byte, len(values)),
 		}
-		if err := c.Create(ctx, &secret); err != nil {
-			log.Printf("api: failed to create cli secrets: %v", err)
-			writeError(w, http.StatusInternalServerError, "failed to set secret")
-			return
+		for k, v := range values {
+			secret.Data[k] = []byte(v)
 		}
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.Create(ctx, &secret)
 	}
 	if err != nil {
-		log.Printf("api: failed to get cli secrets: %v", err)
-		writeError(w, http.StatusInternalServerError, "failed to set secret")
-		return
+		return fmt.Errorf("get %s: %w", cliSecretsName, err)
 	}
-
 	if secret.Data == nil {
-		secret.Data = map[string][]byte{}
+		secret.Data = make(map[string][]byte, len(values))
 	}
-	secret.Data[key] = []byte(req.Value)
-	if err := c.Update(ctx, &secret); err != nil {
-		log.Printf("api: failed to update cli secrets: %v", err)
-		writeError(w, http.StatusInternalServerError, "failed to set secret")
-		return
+	for k, v := range values {
+		secret.Data[k] = []byte(v)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.Update(ctx, &secret)
 }
 
 func (s *Server) handleUnsetSecret(w http.ResponseWriter, r *http.Request) {
