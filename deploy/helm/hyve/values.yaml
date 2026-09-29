@@ -232,8 +232,11 @@ api:
   # fresh install. Never re-applied afterwards (no password resets or
   # renames on restart). Not an API endpoint: hyve-api does this in-process
   # at startup. passwordSecret names an existing Secret in .namespace.
+  # Set either username, or usernameKey — a key in that same Secret holding
+  # the username, so neither lands in values (username wins if both are set).
   bootstrapAdmin:
     username: ""
+    usernameKey: ""
     passwordSecret:
       name: ""
       key: password

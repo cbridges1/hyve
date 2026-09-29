@@ -93,8 +93,12 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+            {{- if or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey }}
             {{- if .Values.api.bootstrapAdmin.username }}
             - --bootstrap-admin-username={{ .Values.api.bootstrapAdmin.username }}
+            {{- else }}
+            - --bootstrap-admin-username-file=/etc/hyve/bootstrap-admin/{{ .Values.api.bootstrapAdmin.usernameKey }}
+            {{- end }}
             - --bootstrap-admin-password-file=/etc/hyve/bootstrap-admin/{{ .Values.api.bootstrapAdmin.passwordSecret.key }}
             {{- end }}
           {{- if eq .Values.api.db.driver "postgres" }}
@@ -110,7 +114,7 @@ spec:
               containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
             - name: agent
               containerPort: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
-          {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) .Values.api.bootstrapAdmin.username }}
+          {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) (or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey) }}
           volumeMounts:
             {{- if .Values.api.publicCABundle.configMapName }}
             - name: public-ca
@@ -126,7 +130,7 @@ spec:
               mountPath: /etc/hyve/smtp
               readOnly: true
             {{- end }}
-            {{- if .Values.api.bootstrapAdmin.username }}
+            {{- if or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey }}
             - name: bootstrap-admin
               mountPath: /etc/hyve/bootstrap-admin
               readOnly: true
@@ -168,7 +172,7 @@ spec:
             - name: orgdb
               mountPath: /data
         {{- end }}
-      {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) .Values.api.bootstrapAdmin.username }}
+      {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) (or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey) }}
       volumes:
         {{- if .Values.api.publicCABundle.configMapName }}
         - name: public-ca
@@ -185,11 +189,11 @@ spec:
           secret:
             secretName: {{ .Values.api.smtp.passwordSecret.name }}
         {{- end }}
-        {{- if .Values.api.bootstrapAdmin.username }}
+        {{- if or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey }}
         - name: bootstrap-admin
           secret:
-            secretName: {{ required "api.bootstrapAdmin.passwordSecret.name is required when api.bootstrapAdmin.username is set" .Values.api.bootstrapAdmin.passwordSecret.name }}
-            # Optional: once a superadmin exists the password is never read
+            secretName: {{ required "api.bootstrapAdmin.passwordSecret.name is required when api.bootstrapAdmin.username or usernameKey is set" .Values.api.bootstrapAdmin.passwordSecret.name }}
+            # Optional: once a superadmin exists neither key is read
             # again, so deleting the Secret later must not block the pod.
             optional: true
         {{- end }}

@@ -78,3 +78,6 @@ jobs:
             --set api.db.driver=postgres --set api.db.postgresDSNSecret.name=db \
             --set api.bootstrapAdmin.username=admin --set api.bootstrapAdmin.passwordSecret.name=admin \
             --set api.smtp.host=smtp.example.com --set api.smtp.passwordSecret.name=smtp > /dev/null
+          helm template hyve deploy/helm/hyve \
+            --set api.bootstrapAdmin.usernameKey=username --set api.bootstrapAdmin.passwordSecret.name=admin \
+            | grep -q -- '--bootstrap-admin-username-file=/etc/hyve/bootstrap-admin/username'

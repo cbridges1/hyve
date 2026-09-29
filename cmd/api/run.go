@@ -69,6 +69,7 @@ var (
 	apiSMTPFromAddress           string
 	apiBootstrapAdminUsername    string
 	apiBootstrapAdminPassFile    string
+	apiBootstrapAdminUserFile    string
 )
 
 // Cmd is the api command.
@@ -112,7 +113,8 @@ func init() {
 	runCmd.Flags().StringVar(&apiSMTPUsername, "smtp-username", "", "Bootstrap-only SMTP auth username — see --smtp-host. Omit along with --smtp-password-file for an anonymous relay.")
 	runCmd.Flags().StringVar(&apiSMTPPasswordFile, "smtp-password-file", "", "Path to a file containing the bootstrap-only SMTP auth password — see --smtp-host. A file, not a bare --smtp-password flag value, so the password isn't visible in `ps`/process args or a committed Helm values file.")
 	runCmd.Flags().StringVar(&apiSMTPFromAddress, "smtp-from-address", "", "Bootstrap-only From: address for outbound email — see --smtp-host")
-	runCmd.Flags().StringVar(&apiBootstrapAdminUsername, "bootstrap-admin-username", "", "Create this superadmin on startup if --namespace has no superadmin yet — a fresh install's first login, with no `create-user` step. Never re-applied once any superadmin exists (no password resets, no renames). Requires --bootstrap-admin-password-file.")
+	runCmd.Flags().StringVar(&apiBootstrapAdminUsername, "bootstrap-admin-username", "", "Create this superadmin on startup if --namespace has no superadmin yet — a fresh install's first login, with no `create-user` step. Never re-applied once any superadmin exists (no password resets, no renames). Requires --bootstrap-admin-password-file. See also --bootstrap-admin-username-file.")
+	runCmd.Flags().StringVar(&apiBootstrapAdminUserFile, "bootstrap-admin-username-file", "", "Path to a file containing the bootstrap superadmin's username — an alternative to --bootstrap-admin-username for a username kept in a Secret alongside the password (--bootstrap-admin-username wins if both are set)")
 	runCmd.Flags().StringVar(&apiBootstrapAdminPassFile, "bootstrap-admin-password-file", "", "Path to a file containing --bootstrap-admin-username's password — a file (typically a mounted Secret), not a flag value, so it never appears in process args or a Helm values file")
 
 	Cmd.AddCommand(runCmd)
@@ -168,21 +170,18 @@ func runAPI() {
 	// created is fatal: on a fresh install it's the only way in. Reading the
 	// file is soft — once a superadmin exists, SeedBootstrapAdmin never needs
 	// the password, so a Secret removed after the first start is harmless.
-	if apiBootstrapAdminUsername != "" {
-		adminPassword := ""
-		if apiBootstrapAdminPassFile != "" {
-			if data, err := os.ReadFile(apiBootstrapAdminPassFile); err == nil {
-				adminPassword = strings.TrimSpace(string(data))
-			} else {
-				log.Printf("⚠️  Failed to read --bootstrap-admin-password-file %q: %v", apiBootstrapAdminPassFile, err)
-			}
+	if apiBootstrapAdminUsername != "" || apiBootstrapAdminUserFile != "" {
+		adminUsername := apiBootstrapAdminUsername
+		if adminUsername == "" {
+			adminUsername = readBootstrapFile("--bootstrap-admin-username-file", apiBootstrapAdminUserFile)
 		}
-		created, err := hyveapi.SeedBootstrapAdmin(context.Background(), orgStore, apiNamespace, apiBootstrapAdminUsername, adminPassword)
+		adminPassword := readBootstrapFile("--bootstrap-admin-password-file", apiBootstrapAdminPassFile)
+		created, err := hyveapi.SeedBootstrapAdmin(context.Background(), orgStore, apiNamespace, adminUsername, adminPassword)
 		if err != nil {
-			log.Fatalf("❌ Failed to create bootstrap superadmin %q: %v", apiBootstrapAdminUsername, err)
+			log.Fatalf("❌ Failed to create bootstrap superadmin %q: %v", adminUsername, err)
 		}
 		if created {
-			log.Printf("✅ Created bootstrap superadmin %q", apiBootstrapAdminUsername)
+			log.Printf("✅ Created bootstrap superadmin %q", adminUsername)
 		}
 	}
 
@@ -392,4 +391,20 @@ func runAPI() {
 	if err := http.ListenAndServe(apiBindAddress, server.Routes()); err != nil {
 		log.Fatalf("❌ Server exited with error: %v", err)
 	}
+}
+
+// readBootstrapFile reads one of the --bootstrap-admin-*-file values,
+// trimmed. Soft: a missing file (a Secret removed after the first start)
+// yields "", which SeedBootstrapAdmin only rejects when an admin still
+// needs creating.
+func readBootstrapFile(flag, path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("⚠️  Failed to read %s %q: %v", flag, path, err)
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

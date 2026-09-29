@@ -17,12 +17,11 @@ import (
 // never recreates, renames, or resets a password. There is deliberately no
 // HTTP surface for this — it runs inside the server process at startup,
 // the same write `hyve cluster-config api create-user --role superadmin`
-// makes. username == "" is a no-op. created reports whether a binding was
-// written.
+// makes. Callers only call it when bootstrapping is configured; an empty
+// username or password is an error only when an admin actually needs
+// creating (both typically come from a mounted Secret that may be removed
+// after the first start). created reports whether a binding was written.
 func SeedBootstrapAdmin(ctx context.Context, store *orgdb.Store, namespace, username, password string) (created bool, err error) {
-	if username == "" {
-		return false, nil
-	}
 	bindings, err := store.ListBindingsForScope(ctx, namespace)
 	if err != nil {
 		return false, fmt.Errorf("check existing superadmins: %w", err)
@@ -32,8 +31,11 @@ func SeedBootstrapAdmin(ctx context.Context, store *orgdb.Store, namespace, user
 			return false, nil
 		}
 	}
-	// Checked only once an admin actually needs creating, so a password
-	// Secret removed after the first start never breaks a later one.
+	// Checked only once an admin actually needs creating, so a Secret
+	// removed after the first start never breaks a later one.
+	if username == "" {
+		return false, fmt.Errorf("no superadmin exists yet and the bootstrap admin username is empty")
+	}
 	if password == "" {
 		return false, fmt.Errorf("no superadmin exists yet and the bootstrap admin password is empty")
 	}

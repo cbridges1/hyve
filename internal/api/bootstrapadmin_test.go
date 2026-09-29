@@ -14,14 +14,13 @@ func TestSeedBootstrapAdmin(t *testing.T) {
 	store := newTestOrgStore(t)
 	ctx := t.Context()
 
-	created, err := SeedBootstrapAdmin(ctx, store, testNamespace, "", "ignored")
-	require.NoError(t, err)
-	assert.False(t, created, "no username is a no-op")
+	_, err := SeedBootstrapAdmin(ctx, store, testNamespace, "", "pw")
+	assert.Error(t, err, "no superadmin yet and no username is a misconfiguration, not a silent skip")
 
 	_, err = SeedBootstrapAdmin(ctx, store, testNamespace, "admin", "")
 	assert.Error(t, err, "no superadmin yet and no password is a misconfiguration, not a silent skip")
 
-	created, err = SeedBootstrapAdmin(ctx, store, testNamespace, "admin", "first-pw")
+	created, err := SeedBootstrapAdmin(ctx, store, testNamespace, "admin", "first-pw")
 	require.NoError(t, err)
 	assert.True(t, created)
 
@@ -41,8 +40,12 @@ func TestSeedBootstrapAdmin(t *testing.T) {
 	_, err = store.FindBindingBySubject(ctx, testNamespace, orgdb.SubjectTypeLocal, "someone-else")
 	assert.ErrorIs(t, err, orgdb.ErrNotFound)
 
-	// Once one exists, a missing password (e.g. the Secret was removed) is fine.
+	// Once one exists, a missing username or password (e.g. the Secret was
+	// removed) is fine.
 	created, err = SeedBootstrapAdmin(ctx, store, testNamespace, "admin", "")
+	require.NoError(t, err)
+	assert.False(t, created)
+	created, err = SeedBootstrapAdmin(ctx, store, testNamespace, "", "")
 	require.NoError(t, err)
 	assert.False(t, created)
 }

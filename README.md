@@ -204,7 +204,7 @@ helm install hyve oci://ghcr.io/cbridges1/charts/hyve --version <version> \
 ```
 
 - The chart creates a `ClusterIP` Service (`hyve-api`, port 80) and no Ingress — expose it however your cluster already does, with TLS in front, and set `api.publicBaseURL` to that address.
-- `api.bootstrapAdmin` creates the first superadmin on startup, only while none exists. Without it, create one with `kubectl -n hyve-system exec deploy/hyve-api -- hyve cluster-config api create-user admin --role superadmin`.
+- `api.bootstrapAdmin` creates the first superadmin on startup, only while none exists. To keep the username out of values too, set `api.bootstrapAdmin.usernameKey` (a key in the same Secret) instead of `username`. Without it, create one with `kubectl -n hyve-system exec deploy/hyve-api -- hyve cluster-config api create-user admin --role superadmin`.
 - `api.db.*` selects SQLite (default) or Postgres, `api.smtp.*` seeds outbound email, and `api.multiTenant.enabled` serves several organizations from one install — see `deploy/helm/hyve/values.yaml`.
 - Managed clusters that enable hyve-agent pull `ghcr.io/cbridges1/hyve-agent` at the same version.
 
