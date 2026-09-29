@@ -119,7 +119,7 @@ func runCreateUser(username string) {
 func writeBindingToStore(username, role, namespace, serviceAccountName, passwordHash string) {
 	store, err := orgdb.Open(createUserDBDriver, createUserDBDSN)
 	if err != nil {
-		log.Fatalf("Failed to open --db=%s organization datastore at %q: %v", createUserDBDriver, createUserDBDSN, err)
+		log.Fatalf("Failed to open --db=%s organization datastore at %q: %v", createUserDBDriver, orgdb.RedactDSN(createUserDBDSN), err)
 	}
 	defer store.Close()
 
@@ -180,7 +180,7 @@ func writeBindingToStore(username, role, namespace, serviceAccountName, password
 	if _, err := store.CreateBinding(ctx, b); err != nil {
 		log.Fatalf("Failed to write binding for %q: %v", username, err)
 	}
-	fmt.Printf("✅ Binding for %q (role=%s) written to %s database at %s\n", username, role, createUserDBDriver, createUserDBDSN)
+	fmt.Printf("✅ Binding for %q (role=%s) written to %s database at %s\n", username, role, createUserDBDriver, orgdb.RedactDSN(createUserDBDSN))
 }
 
 // resolveEnvironment mirrors internal/api.resolveResourceEnvironment's

@@ -137,7 +137,7 @@ func runAPI() {
 	// agentpki's soft-fail stance further below.
 	orgStore, dbErr := orgdb.Open(apiDBDriver, apiDBDSN)
 	if dbErr != nil {
-		log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", apiDBDriver, apiDBDSN, dbErr)
+		log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", apiDBDriver, orgdb.RedactDSN(apiDBDSN), dbErr)
 	}
 
 	signingKey, skErr := hyveapi.EnsureSigningKey(context.Background(), orgStore, apiNamespace)

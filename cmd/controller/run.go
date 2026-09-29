@@ -117,7 +117,7 @@ func runController() {
 		var dbErr error
 		orgStore, dbErr = orgdb.Open(controllerDBDriver, controllerDBDSN)
 		if dbErr != nil {
-			log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", controllerDBDriver, controllerDBDSN, dbErr)
+			log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", controllerDBDriver, orgdb.RedactDSN(controllerDBDSN), dbErr)
 		}
 		defer orgStore.Close()
 	}

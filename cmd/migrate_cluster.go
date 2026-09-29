@@ -164,7 +164,7 @@ func runMigrateCluster() {
 		// required (see this file's own doc comment).
 		orgStore, err := orgdb.Open(migrateClusterDBDriver, migrateClusterDBDSN)
 		if err != nil {
-			log.Fatalf("Failed to open source host's organization datastore (--db=%s --db-dsn=%s): %v", migrateClusterDBDriver, migrateClusterDBDSN, err)
+			log.Fatalf("Failed to open source host's organization datastore (--db=%s --db-dsn=%s): %v", migrateClusterDBDriver, orgdb.RedactDSN(migrateClusterDBDSN), err)
 		}
 		orgs, err := orgStore.ListOrganizations(ctx)
 		orgStore.Close()
