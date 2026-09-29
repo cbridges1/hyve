@@ -47,6 +47,10 @@ type authContextDTO struct {
 	AuthFileName    string                `json:"authFileName"`
 	AuthFileContent string                `json:"authFileContent"`
 	Tools           []authToolRequirement `json:"tools,omitempty"`
+	// MgmtCluster is the module's requirements.mgmtCluster, so the CLI can
+	// set HYVE_MGMT_KUBECONFIG itself (it only receives the auth file, not
+	// module.yaml).
+	MgmtCluster string `json:"mgmtCluster,omitempty"`
 }
 
 // authToolRequirement mirrors module.ToolRequirement's Name/Description —
@@ -181,10 +185,12 @@ func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tools []authToolRequirement
+	var mgmtCluster string
 	if manifest, _ := module.LoadManifestForSource(cd.Spec.Driver.Source, cd.Spec.Driver.Version, s.ModulesDir, lf); manifest != nil {
 		for _, t := range manifest.Spec.Requirements.Tools {
 			tools = append(tools, authToolRequirement{Name: t.Name, Description: t.Description})
 		}
+		mgmtCluster = manifest.Spec.Requirements.MgmtCluster
 	}
 
 	writeJSON(w, http.StatusOK, authContextDTO{
@@ -196,5 +202,6 @@ func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 		AuthFileName:    filepath.Base(authPath),
 		AuthFileContent: string(authContent),
 		Tools:           tools,
+		MgmtCluster:     mgmtCluster,
 	})
 }

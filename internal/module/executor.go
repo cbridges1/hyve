@@ -66,6 +66,10 @@ type Executor struct {
 	// Image is the container image Runner should use. Only consulted when
 	// Runner != nil.
 	Image string
+	// MgmtKubeconfigLocator finds the management cluster's kubeconfig for a
+	// module with requirements.mgmtCluster (see MgmtKubeconfigEnv). nil
+	// means DefaultMgmtKubeconfigLocator.
+	MgmtKubeconfigLocator MgmtKubeconfigLocator
 }
 
 // Execute runs a named operation and returns captured outputs.
@@ -75,6 +79,15 @@ func (e *Executor) Execute(ctx context.Context, op OperationType) (*OperationRes
 		// Operation not implemented — return empty result (e.g. scale.yaml missing is OK)
 		return &OperationResult{Outputs: map[string]string{}, ExitCode: 0}, nil
 	}
+	env, err := e.envWithMgmtKubeconfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Scoped to this one operation: callers append to and reassign e.Env
+	// between operations (e.g. KUBECONFIG after auth).
+	origEnv := e.Env
+	e.Env = env
+	defer func() { e.Env = origEnv }()
 	if strings.HasSuffix(path, ".yaml") {
 		return e.executeYAML(ctx, path)
 	}

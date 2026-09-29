@@ -616,6 +616,7 @@ type AuthContextDTO struct {
 	AuthFileName    string                   `json:"authFileName"`
 	AuthFileContent string                   `json:"authFileContent"`
 	Tools           []AuthToolRequirementDTO `json:"tools,omitempty"`
+	MgmtCluster     string                   `json:"mgmtCluster,omitempty"`
 }
 
 // AuthToolRequirementDTO mirrors internal/api's authToolRequirement.

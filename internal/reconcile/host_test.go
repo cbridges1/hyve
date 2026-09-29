@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -132,4 +133,41 @@ func TestReconcileHostCluster_NoResources_MintsAndSucceeds(t *testing.T) {
 	err := r.reconcileHostCluster(context.Background(), cluster, &module.LockFile{Version: 1}, false, nil, &ReconcileHooks{})
 	require.NoError(t, err)
 	assert.True(t, issuer.called)
+}
+
+func TestMgmtKubeconfigLocator_HostClusterMintsKubeconfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	issuer := &fakeHostKubeconfigIssuer{kc: []byte("minted")}
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: []types.ClusterDefinition{{
+		Metadata: types.ClusterMetadata{Name: "unraid-k3s"},
+		Spec:     types.ClusterSpec{AccessMethod: types.AccessMethodPrimary},
+	}}})
+	r.HostKubeconfigIssuer = issuer
+
+	path, err := r.mgmtKubeconfigLocator(context.Background(), "unraid-k3s")
+	require.NoError(t, err)
+	assert.True(t, issuer.called)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "minted", string(data))
+	authPath, _ := module.KubeconfigPathForCluster("unraid-k3s")
+	assert.NotEqual(t, authPath, path, "must not overwrite the cluster's own auth kubeconfig")
+}
+
+func TestMgmtKubeconfigLocator_NonHostUsesAuthKubeconfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	issuer := &fakeHostKubeconfigIssuer{kc: []byte("minted")}
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: []types.ClusterDefinition{{
+		Metadata: types.ClusterMetadata{Name: "capi-mgmt"},
+	}}})
+	r.HostKubeconfigIssuer = issuer
+
+	authPath, err := module.KubeconfigPathForCluster("capi-mgmt")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(authPath, []byte("auth"), 0o600))
+
+	path, err := r.mgmtKubeconfigLocator(context.Background(), "capi-mgmt")
+	require.NoError(t, err)
+	assert.Equal(t, authPath, path)
+	assert.False(t, issuer.called)
 }

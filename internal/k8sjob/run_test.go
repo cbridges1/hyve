@@ -3,7 +3,11 @@ package k8sjob
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,4 +367,30 @@ func TestSanitizeJobName(t *testing.T) {
 	}
 	name := sanitizeJobName(long)
 	assert.LessOrEqual(t, len(name), 63)
+}
+
+func TestInlineLocalKubeconfig_RelaysKubeconfigAndMgmtKubeconfig(t *testing.T) {
+	dir := t.TempDir()
+	kc := filepath.Join(dir, "kc")
+	mgmt := filepath.Join(dir, "mgmt")
+	require.NoError(t, os.WriteFile(kc, []byte("workload"), 0o600))
+	require.NoError(t, os.WriteFile(mgmt, []byte("management"), 0o600))
+
+	env, script := inlineLocalKubeconfig([]string{"A=1", "KUBECONFIG=" + kc, "HYVE_MGMT_KUBECONFIG=" + mgmt}, "echo hi")
+
+	assert.Contains(t, env, "A=1")
+	assert.Contains(t, env, "HYVE_KUBECONFIG_B64="+base64.StdEncoding.EncodeToString([]byte("workload")))
+	assert.Contains(t, env, "HYVE_MGMT_KUBECONFIG_B64="+base64.StdEncoding.EncodeToString([]byte("management")))
+	for _, kv := range env {
+		assert.NotContains(t, kv, dir, "controller-local paths must not reach the Job")
+	}
+	assert.Contains(t, script, `export KUBECONFIG="/tmp/hyve-kubeconfig/config"`)
+	assert.Contains(t, script, `export HYVE_MGMT_KUBECONFIG="/tmp/hyve-kubeconfig/mgmt"`)
+	assert.True(t, strings.HasSuffix(script, "echo hi"))
+}
+
+func TestInlineLocalKubeconfig_UnreadablePathPassesThrough(t *testing.T) {
+	env, script := inlineLocalKubeconfig([]string{"HYVE_MGMT_KUBECONFIG=/does/not/exist"}, "echo hi")
+	assert.Equal(t, []string{"HYVE_MGMT_KUBECONFIG=/does/not/exist"}, env)
+	assert.Equal(t, "echo hi", script)
 }

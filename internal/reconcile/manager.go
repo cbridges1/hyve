@@ -403,12 +403,13 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	}
 
 	exec := &module.Executor{
-		ModuleDir:   resolved.Dir,
-		Env:         env,
-		WorkDir:     r.stateMgr.LocalPath(),
-		ClusterName: name,
-		Runner:      r.ModuleRunner,
-		Image:       r.moduleImage(cluster),
+		ModuleDir:             resolved.Dir,
+		Env:                   env,
+		WorkDir:               r.stateMgr.LocalPath(),
+		ClusterName:           name,
+		Runner:                r.ModuleRunner,
+		Image:                 r.moduleImage(cluster),
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocator,
 	}
 
 	// module.Executor.Execute guarantees a non-zero-exit status script
@@ -912,12 +913,13 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 
 	env := buildModuleEnv(depCluster, secretsEnv)
 	exec := &module.Executor{
-		ModuleDir:   resolved.Dir,
-		Env:         env,
-		WorkDir:     r.stateMgr.LocalPath(),
-		ClusterName: depCluster.Metadata.Name,
-		Runner:      r.ModuleRunner,
-		Image:       r.moduleImage(depCluster),
+		ModuleDir:             resolved.Dir,
+		Env:                   env,
+		WorkDir:               r.stateMgr.LocalPath(),
+		ClusterName:           depCluster.Metadata.Name,
+		Runner:                r.ModuleRunner,
+		Image:                 r.moduleImage(depCluster),
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocator,
 	}
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {

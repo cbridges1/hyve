@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -271,14 +272,28 @@ func Run(ctx context.Context, client kubernetes.Interface, req RunRequest, outpu
 	return logs, code, runErr
 }
 
-// inlineKubeconfigJobPath is where the preamble inlineLocalKubeconfig
-// injects writes the materialized kubeconfig inside the dispatched Job's
-// own container — arbitrary, just needs to be a writable path no step
-// script is likely to collide with.
-const inlineKubeconfigJobPath = "/tmp/hyve-kubeconfig/config"
+// inlinedKubeconfig is one env var inlineLocalKubeconfig relays into a
+// dispatched Job: a kubeconfig path on the controller's disk, rewritten to
+// the same file materialized at jobPath inside the Job's own container.
+type inlinedKubeconfig struct {
+	envVar  string // the variable holding a local path, e.g. KUBECONFIG
+	b64Var  string // carries the file's base64 content into the Job
+	jobPath string // where the preamble writes it back out, inside the Job
+}
 
-// inlineLocalKubeconfig rewrites a KUBECONFIG=<path> entry in env into
-// something the Job it's about to be attached to can actually use.
+// inlinedKubeconfigs lists every kubeconfig-path variable relayed into
+// Jobs: KUBECONFIG itself, and HYVE_MGMT_KUBECONFIG — the management
+// cluster's kubeconfig a module with requirements.mgmtCluster receives
+// (see module.MgmtKubeconfigEnv). The paths are arbitrary, just writable
+// and unlikely to collide with anything a step script uses.
+var inlinedKubeconfigs = []inlinedKubeconfig{
+	{envVar: "KUBECONFIG", b64Var: "HYVE_KUBECONFIG_B64", jobPath: "/tmp/hyve-kubeconfig/config"},
+	{envVar: "HYVE_MGMT_KUBECONFIG", b64Var: "HYVE_MGMT_KUBECONFIG_B64", jobPath: "/tmp/hyve-kubeconfig/mgmt"},
+}
+
+// inlineLocalKubeconfig rewrites KUBECONFIG=<path> and HYVE_MGMT_KUBECONFIG=<path>
+// entries in env (see inlinedKubeconfigs) into something the Job it's
+// about to be attached to can actually use.
 //
 // Run always executes in the controller's own pod, but the Job it creates
 // gets a brand new pod with its own, entirely separate filesystem — no
@@ -299,13 +314,24 @@ const inlineKubeconfigJobPath = "/tmp/hyve-kubeconfig/config"
 // dispatched-auth wrapper already uses for the reverse direction (getting a
 // kubeconfig's bytes *out* of a Job).
 //
-// If the KUBECONFIG value isn't a readable local file, it's left
+// If a variable's value isn't a readable local file, it's left
 // untouched — most callers (module status/create/delete, or a workflow
 // step with no secretsFrom/auth dependency at all) never set KUBECONFIG in
 // the first place, and a future caller that already deliberately points it
 // at a path baked into its own image shouldn't be broken by this.
 func inlineLocalKubeconfig(env []string, script string) ([]string, string) {
-	const prefix = "KUBECONFIG="
+	var preamble strings.Builder
+	for _, ik := range inlinedKubeconfigs {
+		env = inlineOneKubeconfig(env, ik, &preamble)
+	}
+	return env, preamble.String() + script
+}
+
+// inlineOneKubeconfig relays ik.envVar's file (if set and readable) as
+// ik.b64Var, appending the matching materialize-and-export line to
+// preamble. An unreadable path is passed through unchanged.
+func inlineOneKubeconfig(env []string, ik inlinedKubeconfig, preamble *strings.Builder) []string {
+	prefix := ik.envVar + "="
 	out := make([]string, 0, len(env))
 	var kcPath string
 	for _, kv := range env {
@@ -316,22 +342,22 @@ func inlineLocalKubeconfig(env []string, script string) ([]string, string) {
 		out = append(out, kv)
 	}
 	if kcPath == "" {
-		return env, script
+		return env
 	}
 	content, err := os.ReadFile(kcPath)
 	if err != nil {
 		// Not inlinable (already a container-local path, or simply gone) —
 		// pass the original entry through unchanged rather than dropping it
-		// silently; whatever previously happened when KUBECONFIG couldn't
-		// be resolved still happens, no worse off than before this fix.
-		return env, script
+		// silently; whatever previously happened when it couldn't be
+		// resolved still happens, no worse off than before this fix.
+		return env
 	}
-	out = append(out, "HYVE_KUBECONFIG_B64="+base64.StdEncoding.EncodeToString(content))
-	preamble := fmt.Sprintf(
-		"mkdir -p %q && echo \"$HYVE_KUBECONFIG_B64\" | base64 -d > %q && export KUBECONFIG=%q || { echo \"hyve: failed to materialize kubeconfig for job dispatch\" >&2; exit 1; }\n",
-		strings.TrimSuffix(inlineKubeconfigJobPath, "/config"), inlineKubeconfigJobPath, inlineKubeconfigJobPath,
+	out = append(out, ik.b64Var+"="+base64.StdEncoding.EncodeToString(content))
+	fmt.Fprintf(preamble,
+		"mkdir -p %q && echo \"$%s\" | base64 -d > %q && export %s=%q || { echo \"hyve: failed to materialize %s for job dispatch\" >&2; exit 1; }\n",
+		filepath.Dir(ik.jobPath), ik.b64Var, ik.jobPath, ik.envVar, ik.jobPath, ik.envVar,
 	)
-	return out, preamble + script
+	return out
 }
 
 type jobOutcome struct {

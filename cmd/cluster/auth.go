@@ -126,7 +126,7 @@ func authClusterAPI(client *shared.APIClient, name string, method string) {
 
 	authCtx, err := client.GetAuthContext(name)
 	if err == nil {
-		runModuleAuthLocally(name, authCtx, method)
+		runModuleAuthLocally(client, name, authCtx, method)
 		return
 	}
 	if !errors.Is(err, shared.ErrClientSideAuthUnavailable) {
@@ -167,7 +167,7 @@ func authClusterAPI(client *shared.APIClient, name string, method string) {
 // directories are otherwise completely independent (see internal/session's
 // own doc comment); requiring `hyve module install` here would have been
 // exactly the kind of silent re-coupling that split was meant to prevent.
-func runModuleAuthLocally(name string, authCtx *shared.AuthContextDTO, method string) {
+func runModuleAuthLocally(client *shared.APIClient, name string, authCtx *shared.AuthContextDTO, method string) {
 	ctx := context.Background()
 
 	if len(authCtx.Tools) > 0 {
@@ -191,6 +191,13 @@ func runModuleAuthLocally(name string, authCtx *shared.AuthContextDTO, method st
 	}
 
 	env := authContextEnv(name, authCtx)
+	if authCtx.MgmtCluster != "" {
+		mgmtPath, mgmtErr := mgmtKubeconfigViaAPI(client, authCtx.MgmtCluster, tmpDir)
+		if mgmtErr != nil {
+			log.Fatalf("Module requires mgmtCluster %q: %v", authCtx.MgmtCluster, mgmtErr)
+		}
+		env = append(env, mod.MgmtKubeconfigEnv+"="+mgmtPath)
+	}
 	executor := &mod.Executor{ModuleDir: tmpDir, Env: env, WorkDir: tmpDir, ClusterName: name, AuthMethod: method}
 
 	result, err := executor.Execute(ctx, mod.OperationAuth)
@@ -201,6 +208,22 @@ func runModuleAuthLocally(name string, authCtx *shared.AuthContextDTO, method st
 	mergeAuthResultIntoDefaultKubeconfig(name, result.Outputs["KUBECONFIG"])
 
 	fmt.Printf("kubectl context for '%s' configured (module run locally)\n", name)
+}
+
+// mgmtKubeconfigViaAPI gets the management cluster's kubeconfig for a
+// module with requirements.mgmtCluster: from the API first (a server-side
+// kubeconfig — what the host cluster, the usual CAPI management cluster,
+// always has), falling back to the one `hyve cluster auth <mgmt>` last
+// wrote locally. The API copy goes in dir, cleaned up with the auth run.
+func mgmtKubeconfigViaAPI(client *shared.APIClient, mgmt, dir string) (string, error) {
+	if kc, err := client.GetKubeconfig(mgmt); err == nil {
+		path := filepath.Join(dir, "mgmt-kubeconfig")
+		if err := os.WriteFile(path, kc, 0600); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	return mod.DefaultMgmtKubeconfigLocator(context.Background(), mgmt)
 }
 
 // mergeAuthResultIntoDefaultKubeconfig reads the per-cluster kubeconfig
