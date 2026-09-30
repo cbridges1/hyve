@@ -171,3 +171,12 @@ func TestMgmtKubeconfigLocator_NonHostUsesAuthKubeconfig(t *testing.T) {
 	assert.Equal(t, authPath, path)
 	assert.False(t, issuer.called)
 }
+
+func TestCheckDependencyStatus_DriverlessHostIsActive(t *testing.T) {
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir()})
+	host := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "unraid-k3s"},
+		Spec:     types.ClusterSpec{AccessMethod: types.AccessMethodPrimary},
+	}
+	assert.Equal(t, "ACTIVE", r.checkDependencyStatus(context.Background(), host, &module.LockFile{Version: 1}, nil))
+}

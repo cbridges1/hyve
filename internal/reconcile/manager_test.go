@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -548,4 +549,61 @@ func TestParamsHash_MatchesDriftDetection(t *testing.T) {
 		},
 	}
 	assert.False(t, r.paramsChanged(cluster))
+}
+
+// savingStateProvider records every SaveClusterDefinition call.
+type savingStateProvider struct {
+	fakeStateProvider
+	saved []types.ClusterDefinition
+}
+
+func (s *savingStateProvider) SaveClusterDefinition(def *types.ClusterDefinition) error {
+	s.saved = append(s.saved, *def)
+	return nil
+}
+
+// TestReconcileCluster_ScaleRecordsParamsHash is the regression test for
+// scale re-running on every reconcile: only create saved
+// HYVE_LAST_PARAMS_HASH, so after a successful scale the drift never
+// cleared. A failed scale must keep the old hash so it's retried.
+func TestReconcileCluster_ScaleRecordsParamsHash(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		scaleExit int
+		wantSaved bool
+	}{
+		{"successful scale saves the new hash", 0, true},
+		{"failed scale keeps the old hash", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			moduleDir := filepath.Join(repoRoot, "modules", "d")
+			require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.sh"), []byte("#!/bin/sh\necho HYVE_CLUSTER_STATUS=ACTIVE\n"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "scale.sh"), []byte(fmt.Sprintf("#!/bin/sh\nexit %d\n", tc.scaleExit)), 0o755))
+
+			oldParams := map[string]string{"worker_count": "1"}
+			cluster := types.ClusterDefinition{
+				Metadata: types.ClusterMetadata{Name: "c"},
+				Spec: types.ClusterSpec{
+					Driver:        types.DriverRef{Source: "./modules/d", Version: "local"},
+					Params:        map[string]string{"worker_count": "2"},
+					DriverOutputs: map[string]string{"HYVE_LAST_PARAMS_HASH": ParamsHash(oldParams)},
+				},
+			}
+			sp := &savingStateProvider{fakeStateProvider: fakeStateProvider{localPath: repoRoot}}
+			r := NewReconciler(sp)
+			require.NoError(t, r.reconcileCluster(context.Background(), cluster, &module.LockFile{Version: 1}, false, nil, &ReconcileHooks{}))
+
+			var savedHash string
+			for _, d := range sp.saved {
+				savedHash = d.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"]
+			}
+			if tc.wantSaved {
+				assert.Equal(t, ParamsHash(cluster.Spec.Params), savedHash)
+			} else {
+				assert.NotEqual(t, ParamsHash(cluster.Spec.Params), savedHash)
+			}
+		})
+	}
 }

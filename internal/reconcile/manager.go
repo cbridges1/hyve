@@ -482,6 +482,17 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 				r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
 				if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
 					r.logf("[%s] Warning: scale failed: %v", name, scaleErr)
+				} else {
+					// Record the applied params, as create does — otherwise
+					// the drift never clears and scale re-runs every cycle.
+					// A failed scale leaves the old hash, so it's retried.
+					if cluster.Spec.DriverOutputs == nil {
+						cluster.Spec.DriverOutputs = make(map[string]string)
+					}
+					cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = ParamsHash(cluster.Spec.Params)
+					if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
+						r.logf("[%s] Warning: failed to save params hash after scale: %v", name, err)
+					}
 				}
 			}
 		} else {
@@ -903,6 +914,12 @@ func validateResourceRefsLocked(c types.ClusterDefinition, lf *module.LockFile) 
 // hard," so a dependency that's erroring out should read the same as one
 // that's simply not ready yet.
 func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types.ClusterDefinition, lf *module.LockFile, secretsEnv map[string]string) string {
+	// A driver-less host cluster has no status op to run — it's the cluster
+	// hyve itself runs on, so it's ACTIVE by definition (the usual CAPI
+	// management cluster a workload cluster depends on).
+	if isHostClusterWithoutDriver(depCluster) {
+		return "ACTIVE"
+	}
 	locked := lf.GetLocked(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version)
 	resolved, err := module.Resolve(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
 	if err != nil {
