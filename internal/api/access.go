@@ -102,9 +102,12 @@ func (p *AgentProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cluster
 type HostProvider struct {
 	Clientset kubernetes.Interface
 
-	// CA is this API pod's own in-cluster CA — normally read once at
-	// startup from /var/run/secrets/kubernetes.io/serviceaccount/ca.crt.
-	CA []byte
+	// PublicCA is embedded as the kubeconfig's certificate-authority-data,
+	// exactly like AgentProvider.PublicCA: the CA behind PublicBaseURL's TLS,
+	// nil for a publicly-trusted certificate. Not the in-cluster CA — that
+	// signs the apiserver /proxy forwards to, never the public endpoint the
+	// caller's kubectl actually connects to.
+	PublicCA []byte
 
 	// PublicBaseURL is this API's own public address, e.g.
 	// "https://hyve-api.example.com" — clusters[].cluster.server in the
@@ -142,7 +145,7 @@ func (p *HostProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterD
 		ttl = time.Hour
 	}
 	server := strings.TrimRight(p.PublicBaseURL, "/") + "/proxy"
-	return hostauth.MintKubeconfig(ctx, p.Clientset, p.HostServiceAccountRef.Namespace, p.HostServiceAccountRef.Name, server, p.CA, ttl)
+	return hostauth.MintKubeconfig(ctx, p.Clientset, p.HostServiceAccountRef.Namespace, p.HostServiceAccountRef.Name, server, p.PublicCA, ttl)
 }
 
 // ModuleAuthProvider backs the explicit AccessMethodModuleAuth override

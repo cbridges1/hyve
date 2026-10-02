@@ -102,7 +102,7 @@ func init() {
 	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the host-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
 	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary, no real spec.driver) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
 	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
-	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
+	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy and host-cluster kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
 	runCmd.Flags().StringVar(&apiConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object within --namespace (GET/PATCH /api/config) — must match cmd/controller's own --config-name")
 	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters)")
 	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
@@ -326,7 +326,7 @@ func runAPI() {
 	} else {
 		server.HostProvider = &hyveapi.HostProvider{
 			Clientset:             clientset,
-			CA:                    caData,
+			PublicCA:              publicCA,
 			PublicBaseURL:         apiPublicBaseURL,
 			HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Namespace: apiNamespace, Name: apiHostServiceAccount},
 		}

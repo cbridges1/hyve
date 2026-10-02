@@ -47,7 +47,6 @@ func TestHostProvider_SuperadminMintsAgainstHostServiceAccount(t *testing.T) {
 
 	p := &HostProvider{
 		Clientset:             clientset,
-		CA:                    []byte("fake-ca-data"),
 		PublicBaseURL:         "https://hyve-api.example.com",
 		HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: "hyve-host-admin", Namespace: testNamespace},
 	}
@@ -59,6 +58,25 @@ func TestHostProvider_SuperadminMintsAgainstHostServiceAccount(t *testing.T) {
 	kcStr := string(kc)
 	assert.Contains(t, kcStr, "host-admin-token")
 	assert.Contains(t, kcStr, "https://hyve-api.example.com/proxy")
+	assert.NotContains(t, kcStr, "certificate-authority-data",
+		"with no PublicCA, kubectl must fall back to the system trust store")
+}
+
+func TestHostProvider_EmbedsPublicCA(t *testing.T) {
+	clientset := fake.NewClientset()
+	clientset.PrependReactor("create", "serviceaccounts", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, &authenticationv1.TokenRequest{Status: authenticationv1.TokenRequestStatus{Token: "t"}}, nil
+	})
+	p := &HostProvider{
+		Clientset:             clientset,
+		PublicCA:              []byte("public-ca"),
+		PublicBaseURL:         "https://hyve-api.example.com",
+		HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Name: "hyve-host-admin", Namespace: testNamespace},
+	}
+	kc, err := p.Kubeconfig(contextWithRole(context.Background(), hyvev1alpha1.RoleSuperadmin),
+		&hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "host"}})
+	require.NoError(t, err)
+	assert.Contains(t, string(kc), "certificate-authority-data: cHVibGljLWNh") // base64("public-ca")
 }
 
 func TestHostProvider_NoHostServiceAccountConfigured_Errors(t *testing.T) {
