@@ -291,3 +291,57 @@ func TestHandleListClusters_FiltersByEnvironment(t *testing.T) {
 	assert.Equal(t, "dev", dev[0].Environment)
 	assert.Empty(t, list("/clusters?env=nope"))
 }
+
+// TestResolveAddressedName_ShortNameWithoutEnv covers addressing a cluster
+// by short name with no ?env= — a CLI with no environment selected, or an
+// old console link — which used to 404 for every environment-scoped cluster.
+func TestResolveAddressedName_ShortNameWithoutEnv(t *testing.T) {
+	t.Run("sole environment", func(t *testing.T) {
+		store := newTestOrgStore(t)
+		newOrgWithEnvironments(t, store, testNamespace, orgdb.DefaultEnvironmentName)
+		s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+		require.Equal(t, http.StatusCreated, doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{Name: "web"}).Code)
+
+		rec := doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/web", nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		var dto clusterDTO
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
+		assert.Equal(t, "web", dto.Name)
+		assert.Equal(t, orgdb.DefaultEnvironmentName, dto.Environment)
+	})
+
+	t.Run("an object with that literal name wins", func(t *testing.T) {
+		store := newTestOrgStore(t)
+		newOrgWithEnvironments(t, store, testNamespace, orgdb.DefaultEnvironmentName)
+		legacy := &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: testNamespace}}
+		s := &Server{Client: newFakeClient(t, legacy), OrgStore: store, Namespace: testNamespace}
+		require.Equal(t, http.StatusCreated, doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters", createClusterRequest{Name: "web"}).Code)
+
+		req, _ := http.NewRequest(http.MethodGet, "/clusters/web", nil)
+		assert.Equal(t, "web", s.resolveAddressedName(req, testNamespace, "web"), "the pre-environments object, not default-web")
+	})
+
+	t.Run("several environments: default", func(t *testing.T) {
+		store := newTestOrgStore(t)
+		newOrgWithEnvironments(t, store, testNamespace, orgdb.DefaultEnvironmentName, "dev")
+		s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+		for _, env := range []string{orgdb.DefaultEnvironmentName, "dev"} {
+			require.Equal(t, http.StatusCreated, doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters?env="+env, createClusterRequest{Name: "web"}).Code)
+		}
+		req, _ := http.NewRequest(http.MethodGet, "/clusters/web", nil)
+		assert.Equal(t, "default-web", s.resolveAddressedName(req, testNamespace, "web"))
+		req, _ = http.NewRequest(http.MethodGet, "/clusters/web?env=dev", nil)
+		assert.Equal(t, "dev-web", s.resolveAddressedName(req, testNamespace, "web"), "an explicit ?env= still decides")
+	})
+
+	t.Run("several environments, none default: stays ambiguous", func(t *testing.T) {
+		store := newTestOrgStore(t)
+		newOrgWithEnvironments(t, store, testNamespace, "dev", "staging")
+		s := &Server{Client: newFakeClient(t), OrgStore: store, Namespace: testNamespace}
+		for _, env := range []string{"dev", "staging"} {
+			require.Equal(t, http.StatusCreated, doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodPost, "/clusters?env="+env, createClusterRequest{Name: "web"}).Code)
+		}
+		assert.Equal(t, http.StatusNotFound, doRequest(t, s, hyvev1alpha1.RoleAdmin, http.MethodGet, "/clusters/web", nil).Code,
+			"no guessing between dev and staging")
+	})
+}
