@@ -32,7 +32,7 @@ var version = "dev"
 func main() {
 	var (
 		controlPlaneURL = flag.String("control-plane-url", envOr("HYVE_CONTROL_PLANE_URL", ""), "hyve-api's own base URL, for POST /agent/bootstrap (env HYVE_CONTROL_PLANE_URL)")
-		tunnelAddress   = flag.String("tunnel-address", envOr("HYVE_TUNNEL_ADDRESS", ""), "hyve-api's own SSH tunnel listener, host:port (env HYVE_TUNNEL_ADDRESS)")
+		tunnelAddress   = flag.String("tunnel-address", envOr("HYVE_TUNNEL_ADDRESS", ""), "hyve-api's agent tunnel: its WebSocket endpoint as a wss:// URL (wss://<host>/agent/tunnel), or its raw SSH listener as host:port (env HYVE_TUNNEL_ADDRESS)")
 		namespace       = flag.String("namespace", envOr("HYVE_NAMESPACE", ""), "this agent's own namespace, for persisting its bootstrapped identity (env HYVE_NAMESPACE)")
 		clusterName     = flag.String("cluster-name", envOr("HYVE_CLUSTER_NAME", ""), "this ClusterDefinition's own name, matching what the control plane signed a certificate for (env HYVE_CLUSTER_NAME)")
 		bootstrapToken  = flag.String("bootstrap-token", envOr("HYVE_BOOTSTRAP_TOKEN", ""), "single-use bootstrap token — only needed until identity is first persisted (env HYVE_BOOTSTRAP_TOKEN)")
@@ -80,6 +80,7 @@ func main() {
 	log.Printf("hyve-agent %s starting — cluster=%s tunnel=%s", version, *clusterName, *tunnelAddress)
 	if err := agent.Run(ctx, agent.Config{
 		TunnelAddress: *tunnelAddress,
+		CACertPEM:     caCertPEM,
 		Identity:      identity,
 		Version:       version,
 	}); err != nil {

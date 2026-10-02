@@ -210,6 +210,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/request-password-reset", s.handleRequestPasswordReset)
 	mux.HandleFunc("POST /auth/reset-password", s.handleResetPassword)
 	s.registerAgentBootstrapRoutes(mux)
+	s.registerAgentTunnelWebSocketRoute(mux)
 	s.registerDocsRoutes(mux)
 
 	apiMux := http.NewServeMux()
