@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { BackLink, Card, EmptyState } from '../components/Card'
 import { ReadyBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
@@ -13,7 +13,7 @@ import { usePolledApi } from '../lib/useApi'
 const POLL_INTERVAL_MS = 5000
 const EVENTS_PAGE_SIZE = 20
 
-function KubeconfigPanel({ name }: { name: string }) {
+function KubeconfigPanel({ name, env }: { name: string; env?: string }) {
   const [result, setResult] = useState<{ kind: 'kubeconfig'; text: string } | { kind: 'auth-context'; note: string } | null>(
     null,
   )
@@ -25,7 +25,7 @@ function KubeconfigPanel({ name }: { name: string }) {
     setLoading(true)
     setResult(null)
     try {
-      const kc = await kubeconfigApi.get(name)
+      const kc = await kubeconfigApi.get(name, env)
       setResult({ kind: 'kubeconfig', text: kc })
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -33,10 +33,10 @@ function KubeconfigPanel({ name }: { name: string }) {
         // inspection, since the console can't execute a driver module's
         // auth op itself (see Phase 11's own scope note on this endpoint).
         try {
-          await authContextApi.get(name)
+          await authContextApi.get(name, env)
           setResult({
             kind: 'auth-context',
-            note: `This cluster uses client-side auth (the default) — run "hyve cluster auth ${name}" from a terminal with the driver module's tools installed.`,
+            note: `This cluster uses client-side auth (the default) — run "hyve cluster auth ${name}${env ? ` --env ${env}` : ''}" from a terminal with the driver module's tools installed.`,
           })
         } catch (innerErr) {
           setError(innerErr instanceof ApiError ? innerErr.message : 'Failed to fetch auth context')
@@ -77,15 +77,20 @@ function KubeconfigPanel({ name }: { name: string }) {
 
 export function ClusterDetailPage() {
   const { name = '' } = useParams()
+  // The cluster's environment, from the link the list page built — see
+  // clusterPath. Without it a short name finds nothing in an organization
+  // with environments.
+  const [searchParams] = useSearchParams()
+  const env = searchParams.get('env') ?? undefined
   const navigate = useNavigate()
   const confirm = useConfirm()
-  const { data: cluster, error } = usePolledApi(() => clustersApi.get(name), POLL_INTERVAL_MS, [name])
-  const { data: resources } = usePolledApi(() => clustersApi.resources(name), POLL_INTERVAL_MS, [name])
+  const { data: cluster, error } = usePolledApi(() => clustersApi.get(name, env), POLL_INTERVAL_MS, [name, env])
+  const { data: resources } = usePolledApi(() => clustersApi.resources(name, env), POLL_INTERVAL_MS, [name, env])
   const [eventsOffset, setEventsOffset] = useState(0)
   const { data: activity } = usePolledApi(
-    () => clustersApi.events(name, EVENTS_PAGE_SIZE, eventsOffset),
+    () => clustersApi.events(name, EVENTS_PAGE_SIZE, eventsOffset, env),
     POLL_INTERVAL_MS,
-    [name, eventsOffset],
+    [name, env, eventsOffset],
   )
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -107,7 +112,7 @@ export function ClusterDetailPage() {
     setDeleteError(null)
     setDeleting(true)
     try {
-      await clustersApi.delete(name)
+      await clustersApi.delete(name, env)
       navigate('/clusters')
     } catch (err) {
       setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete cluster')
@@ -178,7 +183,7 @@ export function ClusterDetailPage() {
         </p>
       </Card>
 
-      <KubeconfigPanel name={name} />
+      <KubeconfigPanel name={name} env={env} />
 
       <Card title="Recent activity">
         {cluster.agent?.enabled && (
@@ -293,7 +298,7 @@ export function ClusterDetailPage() {
 
       {cluster.spec && !cluster.pendingDeletion && (
         <AdminOnly>
-          <SpecEditor spec={cluster.spec} onSave={(spec) => clustersApi.update(name, spec).then(() => undefined)} />
+          <SpecEditor spec={cluster.spec} onSave={(spec) => clustersApi.update(name, spec, env).then(() => undefined)} />
         </AdminOnly>
       )}
     </div>

@@ -7,7 +7,7 @@ import { EnvironmentBadge, EnvironmentFilterSelect, EnvironmentPickerField, useE
 import { Modal } from '../components/Modal'
 import { ModeTabs } from '../components/ModeTabs'
 import { YamlEditor } from '../components/YamlEditor'
-import { clustersApi } from '../lib/api/clusters'
+import { clusterPath, clustersApi } from '../lib/api/clusters'
 import { templatesApi } from '../lib/api/templates'
 import { ApiError } from '../lib/api/client'
 import type { ClusterDefinitionSpec } from '../lib/api/types'
@@ -253,8 +253,8 @@ export function ClustersListPage() {
         <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
           {sorted?.map((c) => (
             <div
-              key={c.name}
-              onClick={() => navigate(`/clusters/${encodeURIComponent(c.name)}`)}
+              key={`${c.environment ?? ''}/${c.name}`}
+              onClick={() => navigate(clusterPath(c.name, c.environment))}
               className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition-colors hover:bg-neutral-50 sm:flex-row sm:items-center sm:justify-between dark:hover:bg-neutral-800/50"
             >
               <div className="min-w-0">
