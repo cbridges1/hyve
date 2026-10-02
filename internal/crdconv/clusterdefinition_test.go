@@ -40,3 +40,16 @@ func TestRunnerImage_EmptyStaysEmpty(t *testing.T) {
 	back := FromTypesClusterDefinitionSpec(def2)
 	assert.Empty(t, back.Runner.Image)
 }
+
+func TestToTypesClusterDefinition_CarriesEnvironmentLabel(t *testing.T) {
+	cr := &hyvev1alpha1.ClusterDefinition{}
+	cr.Name = "default-gke-1"
+	cr.Labels = map[string]string{hyvev1alpha1.EnvironmentLabel: "default"}
+	got := ToTypesClusterDefinition(cr)
+	if got.Metadata.Name != "default-gke-1" || got.Metadata.Environment != "default" {
+		t.Fatalf("got name %q environment %q, want default-gke-1 / default", got.Metadata.Name, got.Metadata.Environment)
+	}
+	if env := ToTypesClusterDefinition(&hyvev1alpha1.ClusterDefinition{}).Metadata.Environment; env != "" {
+		t.Fatalf("unlabeled CR: environment %q, want empty", env)
+	}
+}

@@ -202,7 +202,7 @@ type ClusterSpec struct {
 	DependsOn []string `yaml:"dependsOn,omitempty" json:"dependsOn,omitempty"`
 
 	// AccessMethod mirrors the CRD-only AccessSpec.Method (module-auth/
-	// tunnel/primary). "primary" is a pure identifying marker today — see
+	// primary). "primary" is a pure identifying marker today — see
 	// hyvev1alpha1.AccessMethodPrimary's own doc comment — consumed by
 	// `hyve migrate cluster`'s host-resolution; it carries no special
 	// reconcile behavior of its own. Every ClusterSpec, including a
@@ -248,6 +248,15 @@ type AgentSpec struct {
 type ClusterMetadata struct {
 	Name   string `yaml:"name" json:"name"`
 	Region string `yaml:"region" json:"region"`
+
+	// Environment is the cluster-mode environment this cluster belongs to
+	// (its hyve.io/environment label), whose name prefixes the real object
+	// name: a cluster "gke-1" in environment "default" is named
+	// "default-gke-1". Set only when loaded from a ClusterDefinition CR —
+	// never written to or read from a file, so local mode is unaffected.
+	// Used to resolve short-name references (dependsOn, a module's
+	// requirements.mgmtCluster) within the same environment.
+	Environment string `yaml:"-" json:"-"`
 }
 
 // ClusterDefinition represents a complete cluster definition

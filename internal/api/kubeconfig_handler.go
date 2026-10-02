@@ -18,7 +18,7 @@ func (s *Server) registerKubeconfigRoutes(mux *http.ServeMux) {
 }
 
 // handleKubeconfig resolves ?cluster=<name> and dispatches to the right
-// AccessProvider — HostProvider, TunnelProvider, or ModuleAuthProvider —
+// AccessProvider — HostProvider or ModuleAuthProvider —
 // per the target ClusterDefinition's spec.access.method. Unset (the
 // default) isn't served here at all — see ClusterDefinitionSpec.Access's
 // doc comment: that case is client-side auth, served by
@@ -81,8 +81,6 @@ func (s *Server) handleKubeconfig(w http.ResponseWriter, r *http.Request) {
 	// (client-side, like any other driver-having cluster).
 	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodPrimary && cd.Spec.Driver.Source == "":
 		provider = s.HostProvider
-	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodTunnel:
-		provider = s.TunnelProvider
 	case cd.Spec.Access.Method == hyvev1alpha1.AccessMethodModuleAuth:
 		provider = s.ModuleAuthProvider
 	default:

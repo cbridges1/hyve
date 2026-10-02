@@ -52,7 +52,6 @@ type Server struct {
 	SigningKey []byte
 
 	ModuleAuthProvider AccessProvider
-	TunnelProvider     AccessProvider
 
 	// HostProvider serves any ClusterDefinition whose access.method is
 	// AccessMethodPrimary (see kubeconfig_handler.go's switch) — nil is

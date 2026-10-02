@@ -115,8 +115,8 @@ func runClusterAuth(name string, method string) {
 // flow. Default: fetch driver info via GET /api/clusters/<name>/auth-context
 // and run the module client-side, same as local mode — the API never sees
 // the resulting credentials. A cluster explicitly opted into the
-// server-side override, tunnel access, or hyve-agent proxying instead
-// falls back to fetching an already-minted kubeconfig and merging it in
+// server-side override, or hyve-agent proxying, instead falls back to
+// fetching an already-minted kubeconfig and merging it in
 // — cd (fetched once, up front) is what lets the final branch below tell
 // the agent-proxy case apart from the others for its own, more specific
 // success message; a failure fetching it degrades gracefully to the

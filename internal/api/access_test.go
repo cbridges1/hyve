@@ -14,34 +14,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	authenticationv1 "k8s.io/api/authentication/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 )
-
-// ── TunnelProvider ──────────────────────────────────────────────────────
-
-func TestTunnelProvider_SecretExists(t *testing.T) {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod-access-kubeconfig", Namespace: testNamespace},
-		Data:       map[string][]byte{"kubeconfig": []byte("apiVersion: v1\nkind: Config\n")},
-	}
-	p := &TunnelProvider{Client: newFakeClient(t, secret), Namespace: testNamespace}
-
-	kc, err := p.Kubeconfig(context.Background(), &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "prod"}})
-	require.NoError(t, err)
-	assert.Contains(t, string(kc), "kind: Config")
-}
-
-func TestTunnelProvider_SecretMissing(t *testing.T) {
-	p := &TunnelProvider{Client: newFakeClient(t), Namespace: testNamespace}
-
-	_, err := p.Kubeconfig(context.Background(), &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "prod"}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "prod-access-kubeconfig")
-}
 
 // ── HostProvider ──────────────────────────────────────────────────────────
 
@@ -237,12 +214,10 @@ func TestHandleKubeconfig_PrimaryWithRealDriverIsNotServedHere(t *testing.T) {
 
 func TestHandleKubeconfig_DefaultIsClientSideAuthNotServed(t *testing.T) {
 	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
-	tunnel := &recordingProvider{kc: []byte("tunnel-kubeconfig")}
 	s := &Server{
 		Client:             newFakeClient(t, newClusterDef("prod")),
 		Namespace:          testNamespace,
 		ModuleAuthProvider: moduleAuth,
-		TunnelProvider:     tunnel,
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=prod", nil)
@@ -251,19 +226,16 @@ func TestHandleKubeconfig_DefaultIsClientSideAuthNotServed(t *testing.T) {
 
 	require.Equal(t, http.StatusConflict, rec.Code)
 	assert.False(t, moduleAuth.called)
-	assert.False(t, tunnel.called)
 }
 
 func TestHandleKubeconfig_DispatchesToModuleAuthWhenExplicitlyOverridden(t *testing.T) {
 	cd := newClusterDef("prod")
 	cd.Spec.Access.Method = hyvev1alpha1.AccessMethodModuleAuth
 	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
-	tunnel := &recordingProvider{kc: []byte("tunnel-kubeconfig")}
 	s := &Server{
 		Client:             newFakeClient(t, cd),
 		Namespace:          testNamespace,
 		ModuleAuthProvider: moduleAuth,
-		TunnelProvider:     tunnel,
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=prod", nil)
@@ -272,28 +244,6 @@ func TestHandleKubeconfig_DispatchesToModuleAuthWhenExplicitlyOverridden(t *test
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.True(t, moduleAuth.called)
-	assert.False(t, tunnel.called)
-}
-
-func TestHandleKubeconfig_DispatchesToTunnelWhenConfigured(t *testing.T) {
-	cd := newClusterDef("prod")
-	cd.Spec.Access.Method = hyvev1alpha1.AccessMethodTunnel
-	moduleAuth := &recordingProvider{kc: []byte("module-auth-kubeconfig")}
-	tunnel := &recordingProvider{kc: []byte("tunnel-kubeconfig")}
-	s := &Server{
-		Client:             newFakeClient(t, cd),
-		Namespace:          testNamespace,
-		ModuleAuthProvider: moduleAuth,
-		TunnelProvider:     tunnel,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/kubeconfig?cluster=prod", nil)
-	rec := httptest.NewRecorder()
-	s.handleKubeconfig(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.True(t, tunnel.called)
-	assert.False(t, moduleAuth.called)
 }
 
 func TestHandleKubeconfig_ProviderErrorSurfacesAsBadGateway(t *testing.T) {

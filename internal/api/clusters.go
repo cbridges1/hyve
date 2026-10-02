@@ -64,7 +64,6 @@ type clusterDTO struct {
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration"`
 	AccessMethod       string             `json:"accessMethod,omitempty"`
-	AccessLastMinted   string             `json:"accessLastMinted,omitempty"`
 
 	// Agent surfaces spec.access.agent (nil when unset — Proxy alone
 	// meaningfully requires Enabled, so a caller distinguishing "never
@@ -119,7 +118,7 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 		PendingDeletion:    cd.DeletionTimestamp != nil,
 		Spec:               &spec,
 		// Spec, not Status: this reflects the *declared* access method
-		// (module-auth/tunnel/primary), always known immediately — Status.
+		// (module-auth/primary), always known immediately — Status.
 		// Access.Method is a separate, rarely-populated status echo (see
 		// AccessStatus's own doc comment) that every real consumer of this
 		// DTO field (the web UI's host-cluster badge, cmd/migrate_resolve.go's
@@ -127,10 +126,9 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 		// the spec value for — confirmed live: reading Status here left the
 		// UI badge never showing and migrate's host-resolution never
 		// matching, for every access method including the new primary one.
-		AccessMethod:     cd.Spec.Access.Method,
-		AccessLastMinted: cd.Status.Access.LastMinted,
-		Agent:            cd.Spec.Access.Agent,
-		AgentStatus:      cd.Status.Agent,
+		AccessMethod: cd.Spec.Access.Method,
+		Agent:        cd.Spec.Access.Agent,
+		AgentStatus:  cd.Status.Agent,
 	}
 }
 

@@ -92,11 +92,6 @@ const (
 	// this override assumes the module's auth.yaml itself takes care of.
 	AccessMethodModuleAuth = "module-auth"
 
-	// AccessMethodTunnel reads a pre-minted kubeconfig from a stored
-	// Secret instead of a live fetch — for clusters with no cloud-native
-	// reachable endpoint (self-hosted/on-prem/home-NAT'd). See TunnelSpec.
-	AccessMethodTunnel = "tunnel"
-
 	// AccessMethodPrimary marks a ClusterDefinition as representing the
 	// cluster hyve-controller/hyve-api themselves run on (the "host"
 	// cluster — see HYVE-MULTI-TENANCY-PLAN.md's "Host cluster access"
@@ -120,19 +115,17 @@ const (
 	AccessMethodPrimary = "primary"
 )
 
-// TunnelProvider values for TunnelSpec.Provider.
-const (
-	TunnelProviderRancher  = "rancher"
-	TunnelProviderTeleport = "teleport"
-)
+// EnvironmentLabel is the label naming the environment a ClusterDefinition
+// belongs to. Its metadata.name is "<environment>-<short name>" — see
+// internal/api's joinEnvironmentName.
+const EnvironmentLabel = "hyve.io/environment"
 
 // AccessSpec.
 type AccessSpec struct {
-	Method string      `json:"method,omitempty"`
-	Tunnel *TunnelSpec `json:"tunnel,omitempty"` // only meaningful when Method is AccessMethodTunnel
+	Method string `json:"method,omitempty"`
 
 	// Agent configures hyve-agent for this cluster — see
-	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel
+	// docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method
 	// above — a cluster can use both at once, or either alone.
 	Agent *AgentSpec `json:"agent,omitempty"`
 }
@@ -158,12 +151,6 @@ type AgentSpec struct {
 	// toggleable from Enabled so a cluster can report live status without
 	// ever accepting proxied traffic.
 	Proxy bool `json:"proxy,omitempty"`
-}
-
-// TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml
-// dispatches to for this cluster.
-type TunnelSpec struct {
-	Provider string `json:"provider,omitempty"`
 }
 
 // ClusterDefinitionStatus is reconciler-owned observed state — the CRD
@@ -263,14 +250,9 @@ type AgentStatus struct {
 }
 
 // AccessStatus records which access method is currently active for a
-// cluster and, for tunnel-mode clusters, when the credential was last
-// minted — see workflows/mint-tunnel-access.yaml.
+// cluster.
 type AccessStatus struct {
 	Method string `json:"method,omitempty"`
-	// LastMinted is an RFC 3339 timestamp, set only for tunnel-mode
-	// clusters (module-auth mints fresh on every request, so there's
-	// nothing meaningful to record here for it).
-	LastMinted string `json:"lastMinted,omitempty"`
 }
 
 // Condition type strings used in ClusterDefinitionStatus.Conditions.

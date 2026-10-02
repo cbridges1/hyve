@@ -3,7 +3,7 @@ import type { AuthContext } from './types'
 
 export const kubeconfigApi = {
   /**
-   * Fetches a minted kubeconfig for a cluster using module-auth/tunnel
+   * Fetches a minted kubeconfig for a cluster using module-auth
    * access, or the API's own primary cluster. For the default (client-side
    * auth) method this 409s with a message pointing at authContextApi
    * instead — see internal/api/kubeconfig_handler.go's handleKubeconfig.

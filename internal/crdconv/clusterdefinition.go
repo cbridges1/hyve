@@ -27,8 +27,9 @@ func ToTypesClusterDefinition(cr *hyvev1alpha1.ClusterDefinition) types.ClusterD
 		APIVersion: hyvev1alpha1.GroupVersion.String(),
 		Kind:       "ClusterDefinition",
 		Metadata: types.ClusterMetadata{
-			Name:   cr.Name,
-			Region: cr.Spec.Region,
+			Name:        cr.Name,
+			Region:      cr.Spec.Region,
+			Environment: cr.Labels[hyvev1alpha1.EnvironmentLabel],
 		},
 		Spec: types.ClusterSpec{
 			Driver:           ToTypesDriverRef(cr.Spec.Driver),

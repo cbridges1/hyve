@@ -113,8 +113,8 @@ func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
 // caller down the wrong path — running the driver module's own auth.yaml
 // locally instead of ever reaching GET /api/kubeconfig's agent-proxy
 // dispatch at all). A cluster that's opted into the AccessMethodModuleAuth
-// override or AccessMethodTunnel is still server-minted via
-// GET /api/kubeconfig instead, and returning driver secrets here for
+// override is still server-minted via GET /api/kubeconfig instead, and
+// returning driver secrets here for
 // those would just be a second, weaker-guaranteed way to reach the same
 // access (no authorization check baked in, unlike the override path's
 // module-side check — see moduleEnvForClusterDefinition).
@@ -141,7 +141,7 @@ func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
 	// A primary-marked cluster with no real driver is the common,
 	// zero-config host-cluster case — GET /api/kubeconfig's HostProvider
 	// serves it automatically, with no module involved (see its own doc
-	// comment), so it's excluded here exactly like module-auth/tunnel.
+	// comment), so it's excluded here exactly like module-auth.
 	// One WITH a real driver is an admin's deliberate opt-out of that
 	// automatic path — Method stays "primary" regardless (see
 	// AccessMethodPrimary's own doc comment on why it never changes), so

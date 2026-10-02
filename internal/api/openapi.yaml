@@ -285,8 +285,8 @@ paths:
       summary: Get the data needed to run a driver module's auth op client-side
       description: |
         Only serves clusters using the default client-side auth method
-        (spec.access.method unset) — a cluster using the module-auth or
-        tunnel access override, or the API's own configured primary
+        (spec.access.method unset) — a cluster using the module-auth
+        access override, or the API's own configured primary
         cluster, is rejected with 409 (fetch its kubeconfig via
         GET /api/kubeconfig instead). Deliberately more sensitive than
         ClusterDTO: this is the one legitimate place driverOutputs/params
@@ -693,15 +693,13 @@ paths:
       tags: [kubeconfig]
       summary: Mint a kubeconfig for a managed cluster
       description: |
-        Dispatches to one of three access strategies depending on `cluster`:
+        Dispatches to one of these access strategies depending on `cluster`:
           - the API's own configured primary-cluster-name: mints a scoped
             ServiceAccount token via TokenRequest and returns a kubeconfig
             whose server: points back at this API's own /proxy path.
           - any other cluster left at the `module-auth` default: runs that
             cluster's driver module's auth.yaml live and returns the
             resulting kubeconfig, no stored Secret involved.
-          - a cluster with spec.access.method: tunnel: reads a pre-minted
-            kubeconfig from a stored Secret, no live provider call.
       parameters:
         - name: cluster
           in: query
@@ -852,8 +850,7 @@ components:
               reason: { type: string }
               message: { type: string }
         observedGeneration: { type: integer, format: int64 }
-        accessMethod: { type: string, enum: ["", "module-auth", "tunnel"] }
-        accessLastMinted: { type: string, format: date-time }
+        accessMethod: { type: string, enum: ["", "module-auth"] }
       required: [name, driver, observedGeneration]
     ClusterResourcesDTO:
       type: object
@@ -1002,11 +999,7 @@ components:
         access:
           type: object
           properties:
-            method: { type: string, enum: ["", "module-auth", "tunnel"] }
-            tunnel:
-              type: object
-              properties:
-                provider: { type: string, enum: ["rancher", "teleport"] }
+            method: { type: string, enum: ["", "module-auth"] }
     CreateClusterRequest:
       type: object
       description: Either spec or template must be set — see POST /api/clusters.

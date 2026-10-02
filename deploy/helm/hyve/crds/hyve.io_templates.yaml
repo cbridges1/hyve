@@ -79,7 +79,7 @@ spec:
                   agent:
                     description: |-
                       Agent configures hyve-agent for this cluster — see
-                      docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method/Tunnel
+                      docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method
                       above — a cluster can use both at once, or either alone.
                     properties:
                       enabled:
@@ -102,14 +102,6 @@ spec:
                     type: object
                   method:
                     type: string
-                  tunnel:
-                    description: |-
-                      TunnelSpec names which appendix pattern workflows/mint-tunnel-access.yaml
-                      dispatches to for this cluster.
-                    properties:
-                      provider:
-                        type: string
-                    type: object
                 type: object
               description:
                 type: string

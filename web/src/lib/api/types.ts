@@ -72,7 +72,6 @@ export type ClusterSummary = {
   conditions?: Condition[]
   observedGeneration: number
   accessMethod?: string
-  accessLastMinted?: string
   // metadata.deletionTimestamp != nil — DELETE only ever sets this
   // (ClusterDefinitionFinalizer keeps the object around until the
   // controller finishes OnDelete/driver-delete/AfterDelete), so a cluster
@@ -109,7 +108,7 @@ export type ClusterDefinitionSpec = {
   pause?: boolean
   expiresAt?: string
   dependsOn?: string[]
-  access?: { method?: string; tunnel?: { provider?: string }; agent?: AgentSpec }
+  access?: { method?: string; agent?: AgentSpec }
 }
 
 export type ClusterResources = {

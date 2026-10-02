@@ -66,7 +66,7 @@ func (r *Reconciler) RunAdHocWorkflow(ctx context.Context, cluster types.Cluster
 		ClusterName:           name,
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(cluster),
-		MgmtKubeconfigLocator: r.mgmtKubeconfigLocator,
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(cluster),
 	}
 
 	authResult, authErr := exec.Execute(ctx, module.OperationAuth)

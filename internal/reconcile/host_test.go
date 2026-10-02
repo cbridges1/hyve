@@ -144,7 +144,7 @@ func TestMgmtKubeconfigLocator_HostClusterMintsKubeconfig(t *testing.T) {
 	}}})
 	r.HostKubeconfigIssuer = issuer
 
-	path, err := r.mgmtKubeconfigLocator(context.Background(), "unraid-k3s")
+	path, err := r.mgmtKubeconfigLocatorFor(types.ClusterDefinition{})(context.Background(), "unraid-k3s")
 	require.NoError(t, err)
 	assert.True(t, issuer.called)
 	data, err := os.ReadFile(path)
@@ -166,7 +166,7 @@ func TestMgmtKubeconfigLocator_NonHostUsesAuthKubeconfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(authPath, []byte("auth"), 0o600))
 
-	path, err := r.mgmtKubeconfigLocator(context.Background(), "capi-mgmt")
+	path, err := r.mgmtKubeconfigLocatorFor(types.ClusterDefinition{})(context.Background(), "capi-mgmt")
 	require.NoError(t, err)
 	assert.Equal(t, authPath, path)
 	assert.False(t, issuer.called)
@@ -179,4 +179,69 @@ func TestCheckDependencyStatus_DriverlessHostIsActive(t *testing.T) {
 		Spec:     types.ClusterSpec{AccessMethod: types.AccessMethodPrimary},
 	}
 	assert.Equal(t, "ACTIVE", r.checkDependencyStatus(context.Background(), host, &module.LockFile{Version: 1}, nil))
+}
+
+// envDef builds a cluster-mode ClusterDefinition as crdconv produces it:
+// real name "<env>-<short>", Environment from the hyve.io/environment label.
+func envDef(env, short string, spec types.ClusterSpec) types.ClusterDefinition {
+	return types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: env + "-" + short, Environment: env}, Spec: spec}
+}
+
+func TestResolveClusterRef(t *testing.T) {
+	host := envDef("default", "unraid-k3s", types.ClusterSpec{AccessMethod: types.AccessMethodPrimary})
+	other := envDef("staging", "unraid-k3s", types.ClusterSpec{})
+	exact := types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "unraid-k3s"}}
+	from := envDef("default", "gke-1", types.ClusterSpec{})
+
+	got, ok := resolveClusterRef([]types.ClusterDefinition{other, host}, from, "unraid-k3s")
+	require.True(t, ok, "a short name resolves within the referencing cluster's environment")
+	assert.Equal(t, "default-unraid-k3s", got.Metadata.Name)
+
+	got, ok = resolveClusterRef([]types.ClusterDefinition{host, exact}, from, "unraid-k3s")
+	require.True(t, ok)
+	assert.Equal(t, "unraid-k3s", got.Metadata.Name, "an exact name match wins")
+
+	_, ok = resolveClusterRef([]types.ClusterDefinition{other}, from, "unraid-k3s")
+	assert.False(t, ok, "never resolves into a different environment")
+
+	_, ok = resolveClusterRef([]types.ClusterDefinition{host}, types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "gke-1"}}, "unraid-k3s")
+	assert.False(t, ok, "no environment (local mode): exact names only")
+}
+
+func TestValidateMgmtClusterRequirement_EnvironmentPrefixedName(t *testing.T) {
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: []types.ClusterDefinition{
+		envDef("default", "unraid-k3s", types.ClusterSpec{AccessMethod: types.AccessMethodPrimary}),
+	}})
+	assert.NoError(t, r.validateMgmtClusterRequirement(envDef("default", "gke-1", types.ClusterSpec{}), "unraid-k3s"))
+	err := r.validateMgmtClusterRequirement(envDef("staging", "gke-1", types.ClusterSpec{}), "unraid-k3s")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "doesn't exist")
+}
+
+func TestMgmtKubeconfigLocator_EnvironmentPrefixedHostMints(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	issuer := &fakeHostKubeconfigIssuer{kc: []byte("minted")}
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: []types.ClusterDefinition{
+		envDef("default", "unraid-k3s", types.ClusterSpec{AccessMethod: types.AccessMethodPrimary}),
+	}})
+	r.HostKubeconfigIssuer = issuer
+
+	path, err := r.mgmtKubeconfigLocatorFor(envDef("default", "gke-1", types.ClusterSpec{}))(context.Background(), "unraid-k3s")
+	require.NoError(t, err)
+	assert.True(t, issuer.called)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "minted", string(data))
+
+	_, err = r.mgmtKubeconfigLocatorFor(envDef("staging", "gke-1", types.ClusterSpec{}))(context.Background(), "unraid-k3s")
+	assert.Error(t, err, "a cluster in another environment doesn't see it")
+}
+
+func TestUnmetDependency_EnvironmentPrefixedHost(t *testing.T) {
+	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: []types.ClusterDefinition{
+		envDef("default", "unraid-k3s", types.ClusterSpec{AccessMethod: types.AccessMethodPrimary}),
+	}})
+	unmet, err := r.unmetDependency(context.Background(), envDef("default", "gke-1", types.ClusterSpec{DependsOn: []string{"unraid-k3s"}}), &module.LockFile{Version: 1}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, unmet, "dependsOn by short name resolves to the environment's host cluster")
 }

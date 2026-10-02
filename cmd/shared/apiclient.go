@@ -219,7 +219,6 @@ type ClusterDTO struct {
 	Conditions         []ConditionDTO `json:"conditions,omitempty"`
 	ObservedGeneration int64          `json:"observedGeneration"`
 	AccessMethod       string         `json:"accessMethod,omitempty"`
-	AccessLastMinted   string         `json:"accessLastMinted,omitempty"`
 
 	// Agent/AgentStatus mirror internal/api's own clusterDTO fields of the
 	// same name — see that type's doc comments. Used by `hyve cluster

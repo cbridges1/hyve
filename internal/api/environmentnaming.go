@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
@@ -25,7 +26,7 @@ import (
 // between environments an unsolved (and, given joinEnvironmentName's
 // metadata.name-baking, genuinely hard) problem for objects that never
 // needed to belong to one environment in the first place.
-const hyveEnvironmentLabel = "hyve.io/environment"
+const hyveEnvironmentLabel = hyvev1alpha1.EnvironmentLabel
 
 // joinEnvironmentName computes the real Kubernetes metadata.name for a
 // short, user-facing resource name within environment — see

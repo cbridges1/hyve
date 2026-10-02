@@ -384,7 +384,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 				return reqErr
 			}
 		}
-		if reqErr := r.validateMgmtClusterRequirement(name, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
+		if reqErr := r.validateMgmtClusterRequirement(cluster, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
 			return reqErr
 		}
 	}
@@ -409,7 +409,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		ClusterName:           name,
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(cluster),
-		MgmtKubeconfigLocator: r.mgmtKubeconfigLocator,
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(cluster),
 	}
 
 	// module.Executor.Execute guarantees a non-zero-exit status script
@@ -936,7 +936,7 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 		ClusterName:           depCluster.Metadata.Name,
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(depCluster),
-		MgmtKubeconfigLocator: r.mgmtKubeconfigLocator,
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(depCluster),
 	}
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
@@ -959,12 +959,8 @@ func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefin
 	if err != nil {
 		return "", fmt.Errorf("failed to load cluster definitions for dependsOn check: %w", err)
 	}
-	byName := make(map[string]types.ClusterDefinition, len(defs))
-	for _, d := range defs {
-		byName[d.Metadata.Name] = d
-	}
 	for _, depName := range def.Spec.DependsOn {
-		dep, ok := byName[depName]
+		dep, ok := resolveClusterRef(defs, def, depName)
 		if !ok || r.checkDependencyStatus(ctx, dep, lf, secretsEnv) != "ACTIVE" {
 			return depName, nil
 		}
@@ -980,19 +976,19 @@ func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefin
 // failure deep inside create.yaml (or wherever the module's own op files
 // try to use credentials for it). Works identically in local/CLI mode and
 // controller mode — LoadClusterDefinitions is a StateProvider method, not
-// something either mode implements specially.
-func (r *Reconciler) validateMgmtClusterRequirement(clusterName, mgmtCluster string) error {
+// something either mode implements specially. The name resolves like any
+// cluster reference — see resolveClusterRef.
+func (r *Reconciler) validateMgmtClusterRequirement(cluster types.ClusterDefinition, mgmtCluster string) error {
 	if mgmtCluster == "" {
 		return nil
 	}
+	clusterName := cluster.Metadata.Name
 	defs, err := r.stateMgr.LoadClusterDefinitions()
 	if err != nil {
 		return fmt.Errorf("cluster %s: failed to check mgmtCluster requirement %q: %w", clusterName, mgmtCluster, err)
 	}
-	for _, d := range defs {
-		if d.Metadata.Name == mgmtCluster {
-			return nil
-		}
+	if _, ok := resolveClusterRef(defs, cluster, mgmtCluster); ok {
+		return nil
 	}
 	return fmt.Errorf("cluster %s: module requires mgmtCluster %q, which doesn't exist — create it first, or check for a typo", clusterName, mgmtCluster)
 }

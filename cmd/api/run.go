@@ -217,14 +217,6 @@ func runAPI() {
 	}
 
 	moduleAuthProvider := &hyveapi.ModuleAuthProvider{ModulesDir: apiModulesDir}
-	// TunnelProvider needs a home-cluster client — left nil under
-	// --home-cluster=none, same as every other home-cluster-only provider
-	// below; handleKubeconfig's own dispatch already treats a nil provider
-	// as "unavailable" (503-equivalent), not a panic.
-	var tunnelProvider hyveapi.AccessProvider
-	if c != nil {
-		tunnelProvider = &hyveapi.TunnelProvider{Client: c, Namespace: apiNamespace}
-	}
 
 	// Optional — see --public-ca-path's own doc comment. Empty path means
 	// "not configured," not an error: most real deployments use a
@@ -300,7 +292,6 @@ func runAPI() {
 		Namespace:                 apiNamespace,
 		SigningKey:                signingKey,
 		ModuleAuthProvider:        moduleAuthProvider,
-		TunnelProvider:            tunnelProvider,
 		AgentProvider:             &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL, PublicCA: publicCA},
 		ModulesDir:                apiModulesDir,
 		Clientset:                 clientset,

@@ -11,13 +11,9 @@ import (
 	"github.com/cbridges1/hyve/internal/hostauth"
 	"github.com/cbridges1/hyve/internal/module"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // AccessProvider mints a kubeconfig for a ClusterDefinition — see
@@ -230,34 +226,4 @@ func moduleEnvForClusterDefinition(ctx context.Context, cd *hyvev1alpha1.Cluster
 		env = append(env, k+"="+v)
 	}
 	return env
-}
-
-// TunnelProvider reads a pre-minted kubeconfig from a stored Secret
-// instead of a live fetch — for clusters with no cloud-native reachable
-// endpoint. The Secret is populated by workflows/mint-tunnel-access.yaml
-// (see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's Phase 6.5b appendix
-// patterns), which this pass does not implement — it requires a real
-// Rancher or Teleport deployment to build and verify against. This
-// provider's read path is independent of that and fully implemented: once
-// the Secret exists (however it got there — the workflow, or applied by
-// hand), /api/kubeconfig serves it correctly.
-type TunnelProvider struct {
-	Client    client.Client
-	Namespace string // hyve-system by convention
-}
-
-func (p *TunnelProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.ClusterDefinition) ([]byte, error) {
-	secretName := cd.Name + "-access-kubeconfig"
-	var secret corev1.Secret
-	if err := p.Client.Get(ctx, types.NamespacedName{Namespace: p.Namespace, Name: secretName}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("cluster %q is set to access.method: tunnel but %s/%s doesn't exist yet — run workflows/mint-tunnel-access.yaml for it first", cd.Name, p.Namespace, secretName)
-		}
-		return nil, fmt.Errorf("get tunnel kubeconfig secret: %w", err)
-	}
-	data, ok := secret.Data["kubeconfig"]
-	if !ok || len(data) == 0 {
-		return nil, fmt.Errorf("secret %s/%s has no %q key", p.Namespace, secretName, "kubeconfig")
-	}
-	return data, nil
 }

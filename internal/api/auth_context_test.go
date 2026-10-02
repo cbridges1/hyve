@@ -106,18 +106,6 @@ func TestHandleAuthContext_RejectsServerSideOverride(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, rec.Code)
 }
 
-func TestHandleAuthContext_RejectsTunnel(t *testing.T) {
-	cd := newClusterDef("prod")
-	cd.Spec.Access.Method = hyvev1alpha1.AccessMethodTunnel
-	s := &Server{Client: newFakeClient(t, cd), Namespace: testNamespace}
-
-	req := httptest.NewRequest(http.MethodGet, "/clusters/prod/auth-context", nil)
-	rec := httptest.NewRecorder()
-	newAuthContextMux(s).ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusConflict, rec.Code)
-}
-
 // TestHandleAuthContext_RejectsAgentProxy is milestone 5's own regression
 // test for a real gap found live: a cluster with spec.access.agent.proxy
 // true but spec.access.method left unset (the normal, expected shape,

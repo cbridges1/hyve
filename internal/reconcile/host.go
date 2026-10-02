@@ -125,45 +125,43 @@ func (r *Reconciler) reconcileHostCluster(ctx context.Context, cluster types.Clu
 	return r.reconcileResources(ctx, &cluster, env, lf, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 }
 
-// mgmtKubeconfigLocator is the module.MgmtKubeconfigLocator every
-// reconcile-built Executor uses. When the management cluster is hyve's own
-// host (access.method: primary) and a HostKubeconfigIssuer is configured
-// (cluster mode), it mints a fresh host kubeconfig — the host has no
-// module auth kubeconfig of its own, and minting per operation means the
-// token never goes stale. Otherwise it falls back to the management
-// cluster's own auth kubeconfig (module.DefaultMgmtKubeconfigLocator).
-func (r *Reconciler) mgmtKubeconfigLocator(ctx context.Context, mgmt string) (string, error) {
-	if r.HostKubeconfigIssuer != nil && r.isHostCluster(mgmt) {
-		kc, err := r.HostKubeconfigIssuer.MintHostKubeconfig(ctx)
+// mgmtKubeconfigLocatorFor returns the module.MgmtKubeconfigLocator a
+// reconcile-built Executor uses for cluster `from`. The management cluster's
+// name resolves like any cluster reference from `from` (resolveClusterRef —
+// so a short name works inside a cluster-mode environment). When it's hyve's
+// own host (access.method: primary) and a HostKubeconfigIssuer is configured
+// (cluster mode), a fresh host kubeconfig is minted — the host has no module
+// auth kubeconfig of its own, and minting per operation means the token
+// never goes stale. Otherwise it's that cluster's own auth kubeconfig
+// (module.DefaultMgmtKubeconfigLocator), looked up by its real name.
+func (r *Reconciler) mgmtKubeconfigLocatorFor(from types.ClusterDefinition) module.MgmtKubeconfigLocator {
+	return func(ctx context.Context, mgmt string) (string, error) {
+		defs, err := r.stateMgr.LoadClusterDefinitions()
 		if err != nil {
-			return "", fmt.Errorf("mint host kubeconfig for management cluster %q: %w", mgmt, err)
+			return "", fmt.Errorf("load cluster definitions to find management cluster %q: %w", mgmt, err)
 		}
-		// Its own file, not KubeconfigPathForCluster(mgmt): a primary
-		// cluster with a real driver also has a module auth kubeconfig
-		// there, which this must not overwrite.
-		path, err := module.KubeconfigPathForCluster(mgmt + "-host-minted")
-		if err != nil {
-			return "", err
+		def, ok := resolveClusterRef(defs, from, mgmt)
+		if !ok {
+			return "", fmt.Errorf("management cluster %q doesn't exist", mgmt)
 		}
-		if err := os.WriteFile(path, kc, 0o600); err != nil {
-			return "", fmt.Errorf("write host kubeconfig for management cluster %q: %w", mgmt, err)
+		name := def.Metadata.Name
+		if r.HostKubeconfigIssuer != nil && def.Spec.AccessMethod == types.AccessMethodPrimary {
+			kc, err := r.HostKubeconfigIssuer.MintHostKubeconfig(ctx)
+			if err != nil {
+				return "", fmt.Errorf("mint host kubeconfig for management cluster %q: %w", name, err)
+			}
+			// Its own file, not KubeconfigPathForCluster(name): a primary
+			// cluster with a real driver also has a module auth kubeconfig
+			// there, which this must not overwrite.
+			path, err := module.KubeconfigPathForCluster(name + "-host-minted")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(path, kc, 0o600); err != nil {
+				return "", fmt.Errorf("write host kubeconfig for management cluster %q: %w", name, err)
+			}
+			return path, nil
 		}
-		return path, nil
+		return module.DefaultMgmtKubeconfigLocator(ctx, name)
 	}
-	return module.DefaultMgmtKubeconfigLocator(ctx, mgmt)
-}
-
-// isHostCluster reports whether name is a ClusterDefinition marked
-// access.method: primary.
-func (r *Reconciler) isHostCluster(name string) bool {
-	defs, err := r.stateMgr.LoadClusterDefinitions()
-	if err != nil {
-		return false
-	}
-	for _, d := range defs {
-		if d.Metadata.Name == name {
-			return d.Spec.AccessMethod == types.AccessMethodPrimary
-		}
-	}
-	return false
 }
