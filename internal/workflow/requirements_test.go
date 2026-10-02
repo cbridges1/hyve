@@ -66,7 +66,7 @@ func TestValidateSecret_EnvironmentVariable(t *testing.T) {
 	os.Setenv(secretName, "test-value")
 	defer os.Unsetenv(secretName)
 
-	err = validator.validateSecret(SecretRequirement{Name: secretName, Required: true})
+	err = validator.validateSecret(SecretRequirement{Name: secretName, Required: true}, nil)
 	assert.NoError(t, err)
 }
 
@@ -80,7 +80,7 @@ func TestValidateSecret_NotFoundRequired(t *testing.T) {
 		Provider:    "nonexistent-provider",
 		Required:    true,
 		Description: "Test secret",
-	})
+	}, nil)
 	assert.Error(t, err)
 }
 
@@ -94,7 +94,7 @@ func TestValidateSecret_NotFoundOptional(t *testing.T) {
 		Provider:    "optional-provider",
 		Required:    false,
 		Description: "Optional secret",
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -103,8 +103,8 @@ func TestValidateRequirements_NoRequirements(t *testing.T) {
 	require.NoError(t, err)
 	defer validator.Close()
 
-	assert.NoError(t, validator.ValidateRequirements(nil))
-	assert.NoError(t, validator.ValidateRequirements(&WorkflowRequirements{}))
+	assert.NoError(t, validator.ValidateRequirements(nil, nil, true))
+	assert.NoError(t, validator.ValidateRequirements(&WorkflowRequirements{}, nil, true))
 }
 
 func TestValidateRequirements_ToolNotFound(t *testing.T) {
@@ -116,7 +116,7 @@ func TestValidateRequirements_ToolNotFound(t *testing.T) {
 		Tools: []ToolRequirement{
 			{Name: "nonexistent-tool-xyz123", Description: "This tool does not exist"},
 		},
-	})
+	}, nil, true)
 	assert.Error(t, err)
 }
 
@@ -130,8 +130,39 @@ func TestValidateRequirements_ToolFound(t *testing.T) {
 		Tools: []ToolRequirement{
 			{Name: "go", Description: "Go programming language"},
 		},
-	})
+	}, nil, true)
 	assert.NoError(t, err)
+}
+
+func TestValidateRequirements_ToolNotFound_SkippedWhenValidateToolsFalse(t *testing.T) {
+	validator, err := NewRequirementValidator()
+	require.NoError(t, err)
+	defer validator.Close()
+
+	// Same missing tool as TestValidateRequirements_ToolNotFound, but
+	// validateTools=false (the Job-dispatch case — see
+	// ValidateRequirements' own doc comment) must not check it.
+	err = validator.ValidateRequirements(&WorkflowRequirements{
+		Tools: []ToolRequirement{
+			{Name: "nonexistent-tool-xyz123", Description: "This tool does not exist"},
+		},
+	}, nil, false)
+	assert.NoError(t, err)
+}
+
+func TestValidateRequirements_SecretsStillValidated_WhenValidateToolsFalse(t *testing.T) {
+	validator, err := NewRequirementValidator()
+	require.NoError(t, err)
+	defer validator.Close()
+
+	// validateTools=false must not also skip secret validation — the two
+	// are unrelated.
+	err = validator.ValidateRequirements(&WorkflowRequirements{
+		Secrets: []SecretRequirement{
+			{Name: "DEFINITELY_MISSING_SECRET_XYZ", Required: true, Description: "still checked"},
+		},
+	}, nil, false)
+	assert.Error(t, err)
 }
 
 func TestLoadSecretsIntoEnvironment(t *testing.T) {
@@ -187,7 +218,7 @@ func TestValidateSecret_CivoProvider_Required_NoCredentials(t *testing.T) {
 		Name:     "CIVO_TOKEN",
 		Provider: "civo",
 		Required: true,
-	})
+	}, nil)
 	assert.Error(t, err)
 }
 
@@ -201,7 +232,7 @@ func TestValidateSecret_CivoProvider_Optional_NoEnvVar(t *testing.T) {
 		Name:     "CIVO_TOKEN",
 		Provider: "civo",
 		Required: false,
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -217,7 +248,7 @@ func TestValidateSecret_CivoProvider_PresentInEnv(t *testing.T) {
 		Name:     "CIVO_TOKEN",
 		Provider: "civo",
 		Required: true,
-	})
+	}, nil)
 	assert.NoError(t, err)
 }
 
@@ -234,7 +265,7 @@ func TestValidateRequirements_MultipleErrors(t *testing.T) {
 		Secrets: []SecretRequirement{
 			{Name: "MISSING_SECRET_1", Provider: "provider1", Required: true, Description: "First missing secret"},
 		},
-	})
+	}, nil, true)
 	require.Error(t, err)
 
 	assert.ErrorContains(t, err, "nonexistent-tool-1")

@@ -23,14 +23,14 @@ import (
 // with a conflict error and the resource silently never reconciles. Not
 // shared with internal/workflow/job_runner.go's kubectl-apply action, which
 // still writes to a file path — out of scope for this change.
-func kubectlApply(ctx context.Context, workDir string, data []byte, namespace string) error {
+func kubectlApply(ctx context.Context, workDir string, env []string, data []byte, namespace string) error {
 	args := []string{"apply", "--server-side", "--force-conflicts", "-f", "-"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(data)
 	out, err := cmd.CombinedOutput()
 	if len(out) > 0 {
@@ -46,14 +46,14 @@ func kubectlApply(ctx context.Context, workDir string, data []byte, namespace st
 // diff; exit code 1 means a diff was found (not an error — kubectl diff's
 // documented exit-code convention); any other exit code (or a non-ExitError
 // failure, e.g. kubectl not found) is a real error.
-func kubectlDiff(ctx context.Context, workDir string, data []byte, namespace string) (hasDiff bool, err error) {
+func kubectlDiff(ctx context.Context, workDir string, env []string, data []byte, namespace string) (hasDiff bool, err error) {
 	args := []string{"diff", "--server-side", "-f", "-"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(data)
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
@@ -80,6 +80,21 @@ func kubectlDiff(ctx context.Context, workDir string, data []byte, namespace str
 		if strings.Contains(combined.String(), "keeps changing, diffing without lock") {
 			return true, nil
 		}
+		// A manifest that creates its own Namespace alongside namespaced
+		// objects in the same file (e.g. resource-files/pod-info/
+		// podinfo.yaml) legitimately can't be diffed on its first run: diff
+		// never persists anything, so by the time it evaluates the
+		// namespaced objects the Namespace document earlier in the same
+		// stream was never actually created, and the API server correctly
+		// reports it missing — confirmed live. A real `kubectl apply -f -`
+		// doesn't have this problem (it commits each document before
+		// processing the next), so the same "assume changed, let the
+		// caller apply for real" treatment as the case above applies here
+		// too, rather than permanently wedging the resource on every
+		// reconcile.
+		if strings.Contains(combined.String(), "(NotFound): namespaces \"") {
+			return true, nil
+		}
 		return false, fmt.Errorf("kubectl diff: exit %d: %s", exitErr.ExitCode(), combined.String())
 	}
 	return false, fmt.Errorf("kubectl diff: %w", runErr)
@@ -90,7 +105,7 @@ func kubectlDiff(ctx context.Context, workDir string, data []byte, namespace str
 // manifest (which may no longer exist locally, e.g. after a source file was
 // deleted alongside delete:true). --ignore-not-found so an object someone
 // already hand-deleted doesn't fail the whole cycle.
-func kubectlDeleteObjects(ctx context.Context, workDir string, objects []types.AppliedObject) error {
+func kubectlDeleteObjects(ctx context.Context, workDir string, env []string, objects []types.AppliedObject) error {
 	for _, obj := range objects {
 		args := []string{"delete", obj.Kind, obj.Name, "--ignore-not-found"}
 		if obj.Namespace != "" {
@@ -98,7 +113,7 @@ func kubectlDeleteObjects(ctx context.Context, workDir string, objects []types.A
 		}
 		cmd := exec.CommandContext(ctx, "kubectl", args...)
 		cmd.Dir = workDir
-		cmd.Env = os.Environ()
+		cmd.Env = append(os.Environ(), env...)
 		out, err := cmd.CombinedOutput()
 		if len(out) > 0 {
 			fmt.Print(string(out))

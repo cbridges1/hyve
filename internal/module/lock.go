@@ -14,7 +14,7 @@ func LoadLockFile(repoDir string) (*LockFile, error) {
 	path := filepath.Join(repoDir, lockFileName)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &LockFile{Version: 1, Modules: map[string]*LockedModule{}, Workflows: map[string]*LockedWorkflow{}}, nil
+		return &LockFile{Version: 1, Modules: map[string]*LockedModule{}, Workflows: map[string]*LockedWorkflow{}, Resources: map[string]*LockedResource{}}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -28,6 +28,9 @@ func LoadLockFile(repoDir string) (*LockFile, error) {
 	}
 	if lf.Workflows == nil {
 		lf.Workflows = map[string]*LockedWorkflow{}
+	}
+	if lf.Resources == nil {
+		lf.Resources = map[string]*LockedResource{}
 	}
 	return &lf, nil
 }
@@ -84,6 +87,24 @@ func (lf *LockFile) RemoveLockedWorkflow(source, version string) {
 	delete(lf.Workflows, LockKey(source, version))
 }
 
+func (lf *LockFile) GetLockedResource(source, version string) *LockedResource {
+	if lf.Resources == nil {
+		return nil
+	}
+	return lf.Resources[LockKey(source, version)]
+}
+
+func (lf *LockFile) SetLockedResource(source, version string, r *LockedResource) {
+	if lf.Resources == nil {
+		lf.Resources = map[string]*LockedResource{}
+	}
+	lf.Resources[LockKey(source, version)] = r
+}
+
+func (lf *LockFile) RemoveLockedResource(source, version string) {
+	delete(lf.Resources, LockKey(source, version))
+}
+
 // splitLockKey reverses LockKey. Safe because canonical workflow sources and
 // version strings never themselves contain "@".
 func splitLockKey(key string) (source, version string) {
@@ -92,6 +113,72 @@ func splitLockKey(key string) (source, version string) {
 		return key, ""
 	}
 	return key[:idx], key[idx+1:]
+}
+
+// CRName derives a deterministic, valid Kubernetes object name from a
+// module ref — same source+version always produces the same name, so
+// recording a resolve outcome on a Module CR (see
+// internal/controller/reconciler.go) is a plain upsert, never a growing
+// pile of near-duplicate objects.
+func CRName(source, version string) string {
+	raw := strings.ToLower(source + "-" + version)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			b.WriteRune('-')
+			lastDash = true
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) > 253 {
+		name = strings.TrimRight(name[:253], "-")
+	}
+	if name == "" {
+		name = "module"
+	}
+	return name
+}
+
+// EnsureResolved returns source@version's locked entry, resolving and
+// persisting it first if it isn't already locked — the mechanism cluster
+// mode's controller uses in place of a human running `hyve module install`
+// first (see internal/controller/reconciler.go's resolveModuleIfNeeded).
+// Local mode does not call this; it keeps requiring an explicit install
+// step (see cmd/module/install.go) — see this session's design discussion
+// on why the two modes deliberately differ here.
+func EnsureResolved(repoPath, source, version string) (*LockedModule, error) {
+	return EnsureResolvedWithToken(repoPath, source, version, "")
+}
+
+// EnsureResolvedWithToken is EnsureResolved, but with an explicit GitHub
+// token to use instead of reading GITHUB_TOKEN from the process environment
+// — see ResolveWithToken/resolveGitHubToken. Used by
+// internal/controller/reconciler.go's resolveModuleIfNeeded, which fetches
+// the token live from hyve-cli-secrets per-reconcile rather than relying on
+// a pod-start env var.
+func EnsureResolvedWithToken(repoPath, source, version, token string) (*LockedModule, error) {
+	lf, err := LoadLockFile(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if locked := lf.GetLocked(source, version); locked != nil {
+		return locked, nil
+	}
+	resolved, err := ResolveWithToken(source, version, nil, repoPath, token)
+	if err != nil {
+		return nil, err
+	}
+	entry := &LockedModule{Source: source, Resolved: resolved.Resolved, SHA256: resolved.SHA256, Runner: resolved.Runner}
+	lf.SetLocked(source, version, entry)
+	if err := SaveLockFile(repoPath, lf); err != nil {
+		return nil, err
+	}
+	return entry, nil
 }
 
 // LockedWorkflowMatch pairs a LockedWorkflow with the (source, version) pair
@@ -114,6 +201,28 @@ func (lf *LockFile) FindLockedWorkflowsByName(name string) []LockedWorkflowMatch
 		}
 		source, version := splitLockKey(key)
 		out = append(out, LockedWorkflowMatch{Source: source, Version: version, Locked: w})
+	}
+	return out
+}
+
+// LockedResourceMatch pairs a LockedResource with the (source, version) pair
+// needed to re-resolve it via resourceref.Resolve.
+type LockedResourceMatch struct {
+	Source  string
+	Version string
+	Locked  *LockedResource
+}
+
+// FindLockedResourcesByName returns every locked resource entry whose
+// declared Name matches — multiple results mean the name is ambiguous.
+func (lf *LockFile) FindLockedResourcesByName(name string) []LockedResourceMatch {
+	var out []LockedResourceMatch
+	for key, r := range lf.Resources {
+		if r.Name != name {
+			continue
+		}
+		source, version := splitLockKey(key)
+		out = append(out, LockedResourceMatch{Source: source, Version: version, Locked: r})
 	}
 	return out
 }

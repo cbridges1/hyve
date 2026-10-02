@@ -13,7 +13,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/workflow"
+	"github.com/cbridges1/hyve/internal/workflowref"
 )
 
 // Cmd is the root workflow command exposed to the parent.
@@ -37,6 +39,22 @@ If no name is provided, you'll be prompted for workflow details.`,
 		description, _ := cmd.Flags().GetString("description")
 		file, _ := cmd.Flags().GetString("file")
 
+		if sess, ok := shared.UseClusterMode(); ok {
+			client := shared.NewAPIClient(sess)
+			if file != "" {
+				createWorkflowFromFileAPI(client, file)
+			} else if template || len(args) > 0 {
+				name := ""
+				if len(args) > 0 {
+					name = args[0]
+				}
+				createWorkflowTemplateAPI(client, name, description)
+			} else {
+				log.Fatal("Must specify either workflow name with --template, or use --file to create from existing file")
+			}
+			return
+		}
+
 		if file != "" {
 			createWorkflowFromFile(file)
 		} else if template || len(args) > 0 {
@@ -56,6 +74,10 @@ var workflowListCmd = &cobra.Command{
 	Short: "List all workflows",
 	Long:  "List all available workflows in the current repository.",
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			listWorkflowsAPI(shared.NewAPIClient(sess))
+			return
+		}
 		listWorkflows()
 	},
 }
@@ -66,6 +88,10 @@ var workflowShowCmd = &cobra.Command{
 	Long:  "Display detailed information about a specific workflow.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			showWorkflowAPI(shared.NewAPIClient(sess), args[0])
+			return
+		}
 		showWorkflow(args[0])
 	},
 }
@@ -82,14 +108,25 @@ Required workflow inputs that are not already in the environment must be supplie
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		cluster, _ := cmd.Flags().GetString("cluster")
-		showLogs, _ := cmd.Flags().GetBool("logs")
 		showOutput, _ := cmd.Flags().GetBool("output")
+		showLogs, _ := cmd.Flags().GetBool("logs")
 		setStrs, _ := cmd.Flags().GetStringArray("set")
 		pathFlag, _ := cmd.Flags().GetString("path")
 
 		setVars, err := parseSetVars(setStrs)
 		if err != nil {
 			log.Fatalf("Invalid --set flag: %v", err)
+		}
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			// Cluster mode has no separate "step logs" stream to gate behind
+			// --output specifically — a WorkflowRun's status.output is one
+			// combined capture. --logs (default true, matching local mode's
+			// own default-visible behavior) is the flag that actually
+			// determines whether a caller sees anything at all; --output
+			// alone would leave `hyve workflow run` silent by default.
+			runWorkflowClusterMode(shared.NewAPIClient(sess), args[0], pathFlag, cluster, showLogs, setVars)
+			return
 		}
 
 		runWorkflowByRef(args[0], pathFlag, cluster, showLogs, showOutput, setVars)
@@ -103,6 +140,10 @@ var workflowDeleteCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		force, _ := cmd.Flags().GetBool("force")
+		if sess, ok := shared.UseClusterMode(); ok {
+			deleteWorkflowAPI(shared.NewAPIClient(sess), args[0], force)
+			return
+		}
 		deleteWorkflow(args[0], force)
 	},
 }
@@ -110,9 +151,12 @@ var workflowDeleteCmd = &cobra.Command{
 var workflowValidateCmd = &cobra.Command{
 	Use:   "validate [workflow-name]",
 	Short: "Validate a workflow",
-	Long:  "Validate the syntax and structure of a workflow definition.",
+	Long:  "Validate the syntax and structure of a workflow definition. Local mode only — same reasoning as `hyve workflow run`.",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve workflow validate` is local-mode only — it checks the definition against your local checkout, which has no equivalent in cluster mode. Run it against a local checkout instead.")
+		}
 		validateWorkflow(args[0])
 	},
 }
@@ -198,16 +242,27 @@ func listWorkflows() {
 		log.Fatalf("Failed to list workflows: %v", err)
 	}
 
-	if len(workflows) == 0 {
+	// Best-effort; a missing/unreadable hyve.lock just means no
+	// git-referenced workflows to add to the listing below — this is
+	// local mode's equivalent of cluster mode's WorkflowRefStatus merge
+	// (internal/api/workflows.go's handleListWorkflows), using the
+	// mechanism local mode already has instead of a CRD it has no use for.
+	lf, _ := module.LoadLockFile(getWorkflowLocalPath())
+
+	if len(workflows) == 0 && (lf == nil || len(lf.Workflows) == 0) {
 		log.Println("No workflows found in repository")
 		log.Printf("💡 Create a workflow with: hyve workflow create --template my-workflow")
 		return
 	}
 
-	log.Printf("📋 Workflows in repository (%d):\n", len(workflows))
+	total := len(workflows)
+	if lf != nil {
+		total += len(lf.Workflows)
+	}
+	log.Printf("📋 Workflows in repository (%d):\n", total)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tJOBS\tCREATED")
+	fmt.Fprintln(w, "NAME\tDESCRIPTION\tJOBS\tCREATED\tSOURCE")
 
 	for _, wf := range workflows {
 		created := wf.Metadata.Created.Format("2006-01-02")
@@ -220,11 +275,17 @@ func listWorkflows() {
 			description = description[:47] + "..."
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
 			wf.Metadata.Name,
 			description,
 			len(wf.Spec.Jobs),
-			created)
+			created,
+			"")
+	}
+	if lf != nil {
+		for _, locked := range lf.Workflows {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", locked.Name, "", "", "", locked.Source)
+		}
 	}
 
 	w.Flush()
@@ -243,7 +304,8 @@ func showWorkflow(name string) {
 
 	wf, err := manager.GetWorkflow(name)
 	if err != nil {
-		log.Fatalf("Failed to get workflow: %v", err)
+		showRemoteWorkflowFromLock(name)
+		return
 	}
 
 	log.Printf("📋 Workflow: %s", wf.Metadata.Name)
@@ -251,7 +313,6 @@ func showWorkflow(name string) {
 		log.Printf("📝 Description: %s", wf.Metadata.Description)
 	}
 	log.Printf("📅 Created: %s", wf.Metadata.Created.Format("2006-01-02 15:04:05"))
-	log.Printf("📅 Updated: %s", wf.Metadata.Updated.Format("2006-01-02 15:04:05"))
 
 	if len(wf.Metadata.Labels) > 0 {
 		log.Printf("🏷️  Labels:")
@@ -316,6 +377,40 @@ func showWorkflow(name string) {
 	log.Printf("\n💡 Run with: hyve workflow run %s", name)
 }
 
+// showRemoteWorkflowFromLock is showWorkflow's fallback once the local
+// workflows/ dir has no such name — mirrors runWorkflowByRef's own
+// hyve.lock-by-Name lookup (cmd/workflow/run_remote.go) exactly, but
+// displays the resolved content instead of executing it.
+func showRemoteWorkflowFromLock(name string) {
+	repoPath := getWorkflowLocalPath()
+	lf, err := module.LoadLockFile(repoPath)
+	if err != nil {
+		log.Fatalf("Failed to get workflow: not found locally, and failed to load hyve.lock: %v", err)
+	}
+	matches := lf.FindLockedWorkflowsByName(name)
+	switch len(matches) {
+	case 0:
+		log.Fatalf("workflow %q not found locally or in hyve.lock — run `hyve workflow list` or `hyve workflow install`", name)
+	case 1:
+		full := matches[0].Source
+		if matches[0].Version != "" {
+			full += "@" + matches[0].Version
+		}
+		files, err := workflowref.Resolve(full, "", lf, "")
+		if err != nil {
+			log.Fatalf("Failed to resolve workflow %q: %v", full, err)
+		}
+		log.Printf("📋 Workflow: %s (git-referenced: %s)\n", name, full)
+		log.Println(string(files[0].Data))
+	default:
+		var b strings.Builder
+		for _, m := range matches {
+			fmt.Fprintf(&b, "  %s@%s\n", m.Source, m.Version)
+		}
+		log.Fatalf("workflow name %q is ambiguous across %d locked sources — run with the full source string instead:\n%s", name, len(matches), b.String())
+	}
+}
+
 func runWorkflow(name, cluster string, showLogs, showOutput bool, setVars map[string]string) {
 	manager, err := workflow.NewManager(getWorkflowLocalPath())
 	if err != nil {
@@ -327,6 +422,7 @@ func runWorkflow(name, cluster string, showLogs, showOutput bool, setVars map[st
 		log.Fatalf("Failed to create workflow executor: %v", err)
 	}
 	defer executor.Close()
+	executor.KubeconfigLocator = module.KubeconfigPathForCluster
 
 	if len(setVars) > 0 {
 		executor.InjectVars(setVars)

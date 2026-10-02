@@ -1,0 +1,401 @@
+// Package api implements `hyve cluster-config api run` — nested under
+// cmd/clusterconfig, see that package's own doc comment for why — the HTTP
+// API + auth layer described in HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+// Phase 6. Not a
+// resurrection of the removed hyve serve: real, independent authz (backed
+// by internal/orgdb's Postgres/SQLite Binding rows, not a Kubernetes CRD,
+// since HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 4)
+// drives it, and it's a thin front door onto the ClusterDefinition CRD the
+// controller already reconciles, not a second implementation of hyve's
+// logic. Cluster mode never requires this API — plain kubectl against the
+// CRDs always works.
+package api
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/cbridges1/hyve/internal/agentpki"
+	hyveapi "github.com/cbridges1/hyve/internal/api"
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/orgdb"
+
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// organizationDeletionSweepInterval is how often SweepPendingOrganizationDeletions
+// runs in the background — short enough that a caller deleting an
+// already-empty (or quick-to-terminate) organization sees its row actually
+// disappear soon after, without needing to wait on handleDeleteOrganization's
+// own opportunistic same-request check to have caught it.
+const organizationDeletionSweepInterval = 30 * time.Second
+
+// reconcilingClusterHealthSweepInterval is how often
+// SweepReconcilingClusterHealth runs — longer than the deletion sweep
+// since a reachability check is a real network round trip per registered
+// cluster (potentially many), not a handful of cheap Namespace Gets, and
+// "is this cluster up" doesn't need second-to-second freshness the way a
+// caller waiting on their own delete does.
+const reconcilingClusterHealthSweepInterval = 2 * time.Minute
+
+var (
+	apiNamespace                 string
+	apiModulesDir                string
+	apiBindAddress               string
+	apiPublicBaseURL             string
+	apiProxyTarget               string
+	apiInClusterCAPath           string
+	apiHostServiceAccount        string
+	apiAgentBindAddress          string
+	apiPublicCAPath              string
+	apiConfigName                string
+	apiDBDriver                  string
+	apiDBDSN                     string
+	apiHomeCluster               string
+	apiRequireReconcilingCluster bool
+	apiSMTPHost                  string
+	apiSMTPPort                  int
+	apiSMTPUsername              string
+	apiSMTPPasswordFile          string
+	apiSMTPFromAddress           string
+	apiBootstrapAdminUsername    string
+	apiBootstrapAdminPassFile    string
+	apiBootstrapAdminUserFile    string
+)
+
+// Cmd is the api command.
+var Cmd = &cobra.Command{
+	Use:   "api",
+	Short: "Run hyve's HTTP API + auth layer, or manage its local users",
+	Long:  "Commands for hyve's HTTP API + auth layer — a convenience layer in front of the ClusterDefinition CRD (and, for organizations/RBAC/sessions, its own Postgres/SQLite datastore), not a required gateway.",
+}
+
+var runCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Start the HTTP API + auth layer",
+	Long: `Starts hyve's API server: local (username/password) login, role-gated
+ClusterDefinition CRUD, and GET /api/kubeconfig kubeconfig minting for any
+managed cluster.
+
+Generates its own session-signing key on first start and keeps it in its
+datastore (--db) — there's no Secret to create beforehand.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		runAPI()
+	},
+}
+
+func init() {
+	runCmd.Flags().StringVar(&apiNamespace, "namespace", "hyve-system", "Namespace ClusterDefinitions live in on this install's own home cluster, and this install's own control-plane Organization/namespace name in internal/orgdb")
+	runCmd.Flags().StringVar(&apiModulesDir, "modules-dir", "/var/lib/hyve/modules", "Directory containing the baked-in hyve.lock and resolved modules — see cmd/controller's --modules-dir")
+	runCmd.Flags().StringVar(&apiBindAddress, "bind-address", ":8090", "Address the API binds to")
+	runCmd.Flags().StringVar(&apiPublicBaseURL, "public-base-url", "", "This API's own public address (e.g. https://hyve-api.example.com) — required for the host-cluster and agent-proxy kubeconfig paths' server: fields")
+	runCmd.Flags().StringVar(&apiProxyTarget, "proxy-target", "https://kubernetes.default.svc", "Upstream /proxy/* forwards to")
+	runCmd.Flags().StringVar(&apiInClusterCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used both for the host-cluster kubeconfig's certificate-authority-data and to trust the /proxy upstream")
+	runCmd.Flags().StringVar(&apiHostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) a superadmin's host-cluster kubeconfig (access.method: primary, no real spec.driver) mints a token against — see deploy/helm/hyve/templates/api-access-roles.yaml")
+	runCmd.Flags().StringVar(&apiAgentBindAddress, "agent-bind-address", ":8092", "Address hyve-agent's own SSH tunnel listener binds to — see internal/api.Server.ServeAgentTunnel")
+	runCmd.Flags().StringVar(&apiPublicCAPath, "public-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --public-base-url (an Ingress, a LoadBalancer, ...) — embedded into every agent-proxy kubeconfig's certificate-authority-data so callers trust it without needing it in their own system trust store. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/api.AgentProvider.PublicCA")
+	runCmd.Flags().StringVar(&apiConfigName, "config-name", "hyve-config", "Name of the singleton HyveConfig object within --namespace (GET/PATCH /api/config) — must match cmd/controller's own --config-name")
+	runCmd.Flags().StringVar(&apiDBDriver, "db", "sqlite", "Backend for hyve-api's own organization/environment/RBAC datastore — 'sqlite' (default, single API replica only) or 'postgres' (required for horizontal API scaling or any use of per-organization reconciling clusters)")
+	runCmd.Flags().StringVar(&apiDBDSN, "db-dsn", "/data/orgdb.sqlite", "Data source name for --db: a file path for sqlite, a standard connection string (e.g. postgres://user:pass@host:5432/dbname) for postgres")
+	runCmd.Flags().StringVar(&apiHomeCluster, "home-cluster", "required", "Whether this process needs a Kubernetes cluster of its own — 'required' (default: in-cluster config or --kubeconfig must resolve, Fatal if not) or 'none' (skip Kubernetes client construction entirely; every organization's resources must be reachable through a registered reconciling cluster instead). Features that are inherently home-cluster-only (GET/PATCH /api/config, the host-cluster kubeconfig path, /proxy) become unavailable under 'none', same soft-fail stance those already have for other missing prerequisites.")
+	runCmd.Flags().BoolVar(&apiRequireReconcilingCluster, "require-reconciling-cluster", false, "Refuse to let any organization other than this install's own control-plane one land on, or migrate back to, the home cluster — every organization must be assigned an explicit registered reconciling cluster (see 'hyve reconciling-cluster pool add') instead. Off by default, preserving every existing install's behavior. For a self-hosted install that wants a hard guarantee tenants can never touch the cluster hyve-controller/hyve-api themselves run on, or a hosted/managed offering where end users must never reach the operator's own shared infrastructure at all. Startup refuses to proceed if any existing organization is already on the home cluster when this is set.")
+	runCmd.Flags().StringVar(&apiSMTPHost, "smtp-host", "", "Bootstrap-only SMTP server address for password-reset/notification email (see internal/orgdb.EmailSettings) — seeds email_settings on first startup ONLY if nothing has been configured through the console yet (PATCH /api/system/email always wins after that; this flag is never re-applied over a saved value on a later restart). Leave unset to configure SMTP entirely through the console instead.")
+	runCmd.Flags().IntVar(&apiSMTPPort, "smtp-port", 587, "Bootstrap-only SMTP server port — see --smtp-host")
+	runCmd.Flags().StringVar(&apiSMTPUsername, "smtp-username", "", "Bootstrap-only SMTP auth username — see --smtp-host. Omit along with --smtp-password-file for an anonymous relay.")
+	runCmd.Flags().StringVar(&apiSMTPPasswordFile, "smtp-password-file", "", "Path to a file containing the bootstrap-only SMTP auth password — see --smtp-host. A file, not a bare --smtp-password flag value, so the password isn't visible in `ps`/process args or a committed Helm values file.")
+	runCmd.Flags().StringVar(&apiSMTPFromAddress, "smtp-from-address", "", "Bootstrap-only From: address for outbound email — see --smtp-host")
+	runCmd.Flags().StringVar(&apiBootstrapAdminUsername, "bootstrap-admin-username", "", "Create this superadmin on startup if --namespace has no superadmin yet — a fresh install's first login, with no `create-user` step. Never re-applied once any superadmin exists (no password resets, no renames). Requires --bootstrap-admin-password-file. See also --bootstrap-admin-username-file.")
+	runCmd.Flags().StringVar(&apiBootstrapAdminUserFile, "bootstrap-admin-username-file", "", "Path to a file containing the bootstrap superadmin's username — an alternative to --bootstrap-admin-username for a username kept in a Secret alongside the password (--bootstrap-admin-username wins if both are set)")
+	runCmd.Flags().StringVar(&apiBootstrapAdminPassFile, "bootstrap-admin-password-file", "", "Path to a file containing --bootstrap-admin-username's password — a file (typically a mounted Secret), not a flag value, so it never appears in process args or a Helm values file")
+
+	Cmd.AddCommand(runCmd)
+	Cmd.AddCommand(createUserCmd)
+}
+
+func runAPI() {
+	if err := hyvev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		log.Fatalf("❌ Failed to register hyve.io/v1alpha1 scheme: %v", err)
+	}
+
+	if apiHomeCluster != "required" && apiHomeCluster != "none" {
+		log.Fatalf("❌ --home-cluster must be \"required\" or \"none\", got %q", apiHomeCluster)
+	}
+
+	// Opened before any Kubernetes client construction below (Milestone 10
+	// Part C — HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs):
+	// organization/environment/RBAC data isn't an opt-in capability the way
+	// hyve-agent is, and — as of Part C — neither is hyve-api's own signing
+	// key or any local account's password hash, both of which now live here
+	// too (see EnsureSigningKey). Fatal on failure, unlike AgentCA/
+	// agentpki's soft-fail stance further below.
+	orgStore, dbErr := orgdb.Open(apiDBDriver, apiDBDSN)
+	if dbErr != nil {
+		log.Fatalf("❌ Failed to open --db=%s organization datastore at %q: %v", apiDBDriver, orgdb.RedactDSN(apiDBDSN), dbErr)
+	}
+
+	signingKey, skErr := hyveapi.EnsureSigningKey(context.Background(), orgStore, apiNamespace)
+	if skErr != nil {
+		log.Fatalf("❌ Failed to load/generate session-signing key: %v", skErr)
+	}
+
+	// Bootstrap-only — soft-fail, unlike the signing key above: an
+	// operator who never set --smtp-host (the common case) shouldn't see
+	// a startup log line about it at all, and one who mistyped
+	// --smtp-password-file shouldn't lose the whole API over a feature
+	// that degrades gracefully everywhere else it's used (see
+	// email.ErrNotConfigured's own callers).
+	smtpPassword := ""
+	if apiSMTPPasswordFile != "" {
+		data, err := os.ReadFile(apiSMTPPasswordFile)
+		if err != nil {
+			log.Printf("⚠️  Failed to read --smtp-password-file %q: %v — continuing without a bootstrap SMTP password", apiSMTPPasswordFile, err)
+		} else {
+			smtpPassword = strings.TrimSpace(string(data))
+		}
+	}
+	if seedErr := hyveapi.SeedEmailSettings(context.Background(), orgStore, apiSMTPHost, apiSMTPPort, apiSMTPUsername, smtpPassword, apiSMTPFromAddress); seedErr != nil {
+		log.Printf("⚠️  Failed to seed email settings from --smtp-* flags: %v — configure SMTP through the console instead", seedErr)
+	}
+
+	// Unlike SMTP above, a bootstrap admin that should exist but can't be
+	// created is fatal: on a fresh install it's the only way in. Reading the
+	// file is soft — once a superadmin exists, SeedBootstrapAdmin never needs
+	// the password, so a Secret removed after the first start is harmless.
+	if apiBootstrapAdminUsername != "" || apiBootstrapAdminUserFile != "" {
+		adminUsername := apiBootstrapAdminUsername
+		if adminUsername == "" {
+			adminUsername = readBootstrapFile("--bootstrap-admin-username-file", apiBootstrapAdminUserFile)
+		}
+		adminPassword := readBootstrapFile("--bootstrap-admin-password-file", apiBootstrapAdminPassFile)
+		created, err := hyveapi.SeedBootstrapAdmin(context.Background(), orgStore, apiNamespace, adminUsername, adminPassword)
+		if err != nil {
+			log.Fatalf("❌ Failed to create bootstrap superadmin %q: %v", adminUsername, err)
+		}
+		if created {
+			log.Printf("✅ Created bootstrap superadmin %q", adminUsername)
+		}
+	}
+
+	// This process's own Kubernetes client/clientset — genuinely optional
+	// as of Milestone 10 Part C (see Server.Client's own doc comment and
+	// --home-cluster's flag help above). "required" (the default) matches
+	// every pre-Milestone-10 install's behavior exactly: an unresolvable
+	// config is still Fatal, not a silent downgrade — deliberately not
+	// "auto-detect and soft-fail," since that would turn a genuine
+	// misconfiguration on an install that expects a home cluster into a
+	// silently reduced-capability start instead of the clear failure an
+	// operator needs to see.
+	var c client.Client
+	var clientset kubernetes.Interface
+	if apiHomeCluster == "none" {
+		log.Printf("ℹ️  --home-cluster=none: this process has no Kubernetes client of its own — every organization's resources must be reachable through a registered reconciling cluster")
+	} else {
+		cfg := ctrl.GetConfigOrDie()
+
+		var err error
+		c, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+		if err != nil {
+			log.Fatalf("❌ Failed to build Kubernetes client: %v", err)
+		}
+
+		// Needed for agent bootstrap token validation (agentpki), the agent
+		// tunnel CA, and raw Events() reads/writes — see Server.Clientset's
+		// own doc comment.
+		clientset, err = kubernetes.NewForConfig(cfg)
+		if err != nil {
+			log.Fatalf("❌ Failed to build Kubernetes clientset: %v", err)
+		}
+	}
+
+	moduleAuthProvider := &hyveapi.ModuleAuthProvider{ModulesDir: apiModulesDir}
+
+	// Optional — see --public-ca-path's own doc comment. Empty path means
+	// "not configured," not an error: most real deployments use a
+	// publicly-trusted certificate and have no CA of their own to embed.
+	var publicCA []byte
+	if apiPublicCAPath != "" {
+		var caErr error
+		publicCA, caErr = os.ReadFile(apiPublicCAPath)
+		if caErr != nil {
+			log.Fatalf("❌ Failed to read --public-ca-path %s: %v", apiPublicCAPath, caErr)
+		}
+	}
+
+	// The SQLite/Postgres deployment gate becomes real here (Milestone 6 —
+	// see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's own deployment-strategy
+	// section, nexus-config/docs): a single-file SQLite database has no
+	// story for the concurrent, cross-process access Milestone 6's
+	// reconciling-cluster migration (PATCH /organizations/{name}) assumes
+	// once any organization actually lives on a cluster other than this
+	// process's own home cluster. Checked once at startup, not per
+	// request — an org can only reach that state through this same API, so
+	// a fresh `--db=sqlite` process either already has one or doesn't; it
+	// can't newly acquire one without going through this same startup path
+	// again on its next restart.
+	if apiDBDriver == "sqlite" {
+		anyMigrated, checkErr := orgStore.AnyOrganizationHasReconcilingCluster(context.Background())
+		if checkErr != nil {
+			log.Fatalf("❌ Failed to check for organizations on a non-home reconciling cluster: %v", checkErr)
+		}
+		if anyMigrated {
+			log.Fatalf("❌ --db=sqlite refused: at least one organization has been moved to a reconciling cluster other than this install's own home cluster — switch to --db=postgres before restarting")
+		}
+	}
+
+	// Milestone 10 Part A (HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md,
+	// nexus-config/docs) — see ensureControlPlaneOrganization's own doc
+	// comment for what/why.
+	if seeded, err := ensureControlPlaneOrganization(context.Background(), orgStore, apiNamespace); err != nil {
+		log.Fatalf("❌ Failed to seed control-plane organization %q: %v", apiNamespace, err)
+	} else if seeded {
+		log.Printf("ℹ️  Seeded control-plane organization %q", apiNamespace)
+	}
+
+	// --require-reconciling-cluster: fail loud at startup, not silently
+	// allow an inconsistent state, the same stance the SQLite/Postgres
+	// deployment gate above already takes — an operator turning this flag
+	// on for the first time against a database with existing tenant
+	// organizations still on the home cluster needs to know that
+	// explicitly, not discover it one rejected POST/PATCH at a time.
+	// ListOrganizationsByReconcilingCluster(ctx, nil) is the same
+	// "everything currently on the home cluster" query Milestone 6's own
+	// controller-side namespace resolution already uses; apiNamespace
+	// (the control plane's own organization) is exempt, matching
+	// handlePatchOrganization's own exemption for it.
+	if apiRequireReconcilingCluster {
+		homeOrgs, err := orgStore.ListOrganizationsByReconcilingCluster(context.Background(), nil)
+		if err != nil {
+			log.Fatalf("❌ Failed to check for organizations still on the home cluster: %v", err)
+		}
+		var offenders []string
+		for _, org := range homeOrgs {
+			if org.Namespace != apiNamespace {
+				offenders = append(offenders, org.Name)
+			}
+		}
+		if len(offenders) > 0 {
+			log.Fatalf("❌ --require-reconciling-cluster refused: %d organization(s) still on the home cluster: %s — migrate each with 'hyve organization migrate <name> --reconciling-cluster <name>' before enabling this flag", len(offenders), strings.Join(offenders, ", "))
+		}
+	}
+
+	server := &hyveapi.Server{
+		Client:                    c,
+		Namespace:                 apiNamespace,
+		SigningKey:                signingKey,
+		ModuleAuthProvider:        moduleAuthProvider,
+		AgentProvider:             &hyveapi.AgentProvider{PublicBaseURL: apiPublicBaseURL, PublicCA: publicCA},
+		ModulesDir:                apiModulesDir,
+		Clientset:                 clientset,
+		ConfigName:                apiConfigName,
+		OrgStore:                  orgStore,
+		RequireReconcilingCluster: apiRequireReconcilingCluster,
+		PublicBaseURL:             apiPublicBaseURL,
+	}
+
+	// Soft-fail, not Fatal: hyve-agent (docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md)
+	// is an opt-in capability — an install that never uses it shouldn't be
+	// unable to start API just because CA bootstrap hit a transient
+	// problem. Server.AgentCA's own doc comment covers the left-nil case
+	// (POST /agent/bootstrap 500s with a clear message instead). clientset
+	// == nil (--home-cluster=none, Milestone 10 Part C) gets the identical
+	// treatment — nothing here needs a home cluster of its own to be
+	// available, so this is folded into the same soft-fail branch rather
+	// than a separate check.
+	if clientset == nil {
+		log.Printf("⚠️  No home cluster (--home-cluster=none) — POST /agent/bootstrap will be unavailable")
+	} else if agentCA, agentCAErr := agentpki.LoadOrCreateCA(context.Background(), clientset, apiNamespace); agentCAErr != nil {
+		log.Printf("⚠️  Could not load/create hyve-agent's internal CA (%v) — POST /agent/bootstrap will be unavailable", agentCAErr)
+	} else {
+		server.AgentCA = agentCA
+		server.AgentRegistry = hyveapi.NewAgentRegistry()
+	}
+
+	if clientset == nil {
+		log.Printf("⚠️  No home cluster (--home-cluster=none) — the host-cluster kubeconfig path and /proxy will be unavailable")
+	} else if caData, caErr := os.ReadFile(apiInClusterCAPath); caErr != nil {
+		log.Printf("⚠️  Could not read in-cluster CA at %s (%v) — the host-cluster kubeconfig path and /proxy will be unavailable until this runs inside a real pod", apiInClusterCAPath, caErr)
+	} else {
+		server.HostProvider = &hyveapi.HostProvider{
+			Clientset:             clientset,
+			CA:                    caData,
+			PublicBaseURL:         apiPublicBaseURL,
+			HostServiceAccountRef: hyvev1alpha1.ServiceAccountRef{Namespace: apiNamespace, Name: apiHostServiceAccount},
+		}
+		proxy, pErr := hyveapi.BuildProxy(apiProxyTarget, caData)
+		if pErr != nil {
+			log.Fatalf("❌ Failed to build /proxy handler: %v", pErr)
+		}
+		server.Proxy = proxy
+	}
+
+	// Milestone 5's organization-deletion sweep — the periodic half of
+	// Server.SweepPendingOrganizationDeletions' "check on next relevant
+	// request, or a periodic sweep" design (see that method's own doc
+	// comment). Its own goroutine, like the agent tunnel listener below:
+	// logs are already handled inside the sweep itself, nothing here can
+	// fail startup.
+	go func() {
+		ticker := time.NewTicker(organizationDeletionSweepInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			server.SweepPendingOrganizationDeletions(context.Background())
+		}
+	}()
+
+	// Milestone 6's reconciling-cluster health check — the periodic
+	// discovery-call probe behind reconcilingClusterDTO's own
+	// reachable/lastCheckedAt/lastError fields (see
+	// Server.SweepReconcilingClusterHealth's own doc comment). Same
+	// standing-goroutine shape as the deletion sweep just above.
+	go func() {
+		ticker := time.NewTicker(reconcilingClusterHealthSweepInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			server.SweepReconcilingClusterHealth(context.Background())
+		}
+	}()
+
+	// The agent tunnel listener is a raw TCP+SSH listener, not an
+	// http.Handler — see Server.ServeAgentTunnel's own doc comment. Its
+	// own goroutine, logs rather than kills the whole API on error;
+	// skipped entirely if AgentCA/AgentRegistry never got configured (the
+	// soft-fail branch above already logged why).
+	if server.AgentCA != nil && server.AgentRegistry != nil {
+		go func() {
+			log.Printf("🚀 hyve agent tunnel listener starting — bind=%s", apiAgentBindAddress)
+			if err := server.ServeAgentTunnel(context.Background(), apiAgentBindAddress); err != nil {
+				log.Printf("❌ Agent tunnel listener exited with error: %v", err)
+			}
+		}()
+	}
+
+	log.Printf("🚀 hyve api starting — namespace=%s bind=%s", apiNamespace, apiBindAddress)
+	if err := http.ListenAndServe(apiBindAddress, server.Routes()); err != nil {
+		log.Fatalf("❌ Server exited with error: %v", err)
+	}
+}
+
+// readBootstrapFile reads one of the --bootstrap-admin-*-file values,
+// trimmed. Soft: a missing file (a Secret removed after the first start)
+// yields "", which SeedBootstrapAdmin only rejects when an admin still
+// needs creating.
+func readBootstrapFile(flag, path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("⚠️  Failed to read %s %q: %v", flag, path, err)
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}

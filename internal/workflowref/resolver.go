@@ -28,8 +28,12 @@ import (
 //     is no single lock key for a directory reference.
 //
 // pathOverride is a `path:` field ("" when not set); it takes precedence
-// over an inline "//path" in rawSource per ApplyPathOverride.
-func Resolve(rawSource, pathOverride string, lf *module.LockFile) ([]*ResolvedWorkflowFile, error) {
+// over an inline "//path" in rawSource per ApplyPathOverride. token is an
+// explicit GitHub-style access token to use instead of reading GITHUB_TOKEN
+// from the process environment — see module.resolveGitHubToken; empty
+// falls back to that env var exactly as before, so every existing caller
+// passing "" is unaffected.
+func Resolve(rawSource, pathOverride string, lf *module.LockFile, token string) ([]*ResolvedWorkflowFile, error) {
 	ps, err := ParseSource(rawSource)
 	if err != nil {
 		return nil, err
@@ -42,17 +46,17 @@ func Resolve(rawSource, pathOverride string, lf *module.LockFile) ([]*ResolvedWo
 	}
 
 	if kind == PathKindFile {
-		f, err := resolveFile(ps, lf)
+		f, err := resolveFile(ps, lf, token)
 		if err != nil {
 			return nil, err
 		}
 		return []*ResolvedWorkflowFile{f}, nil
 	}
-	return resolveDir(ps)
+	return resolveDir(ps, token)
 }
 
 // resolveFile resolves a single-file source, short-circuiting on a cache hit.
-func resolveFile(ps ParsedSource, lf *module.LockFile) (*ResolvedWorkflowFile, error) {
+func resolveFile(ps ParsedSource, lf *module.LockFile, token string) (*ResolvedWorkflowFile, error) {
 	canonicalSource := ps.CanonicalSource()
 
 	var locked *module.LockedWorkflow
@@ -75,12 +79,12 @@ func resolveFile(ps ParsedSource, lf *module.LockFile) (*ResolvedWorkflowFile, e
 		}, nil
 	}
 
-	ref, err := module.ResolveRef(ps.Host, ps.Org, ps.Repo, ps.Version)
+	ref, err := module.ResolveRefWithToken(ps.Host, ps.Org, ps.Repo, ps.Version, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", ps.Version, canonicalSource, err)
 	}
 
-	archiveDir, cleanup, err := FetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref)
+	archiveDir, cleanup, err := FetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref, token)
 	if err != nil {
 		return nil, err
 	}
@@ -105,13 +109,13 @@ func resolveFile(ps ParsedSource, lf *module.LockFile) (*ResolvedWorkflowFile, e
 // resolveDir resolves a directory-form source: always fetches, always
 // expands into N files — no cache short-circuit is possible for a directory
 // reference since there is no single lock key for it.
-func resolveDir(ps ParsedSource) ([]*ResolvedWorkflowFile, error) {
-	ref, err := module.ResolveRef(ps.Host, ps.Org, ps.Repo, ps.Version)
+func resolveDir(ps ParsedSource, token string) ([]*ResolvedWorkflowFile, error) {
+	ref, err := module.ResolveRefWithToken(ps.Host, ps.Org, ps.Repo, ps.Version, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", ps.Version, ps.RepoSource(), err)
 	}
 
-	archiveDir, cleanup, err := FetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref)
+	archiveDir, cleanup, err := FetchRepoArchive(ps.Host, ps.Org, ps.Repo, ref, token)
 	if err != nil {
 		return nil, err
 	}
@@ -130,22 +134,40 @@ func resolveDir(ps ParsedSource) ([]*ResolvedWorkflowFile, error) {
 	return files, nil
 }
 
-// FetchRepoArchive downloads+extracts the WHOLE repo at ref into a temp dir
-// (module.DownloadAndExtract with subdir=""), returning the dir and a
-// cleanup func the caller must defer. Exported so internal/resourceref can
-// reuse this fetch primitive rather than reimplementing the temp-dir +
-// download wrapper a third time.
-func FetchRepoArchive(host, org, repo, ref string) (dir string, cleanup func(), err error) {
-	downloadURL := fmt.Sprintf("https://%s/%s/%s/archive/%s.tar.gz", host, org, repo, ref)
+// FetchRepoArchive clones the WHOLE repo at ref into a temp dir
+// (module.CloneAndExtract with subdir=""), returning the dir and a cleanup
+// func the caller must defer. Exported so internal/resourceref can reuse
+// this fetch primitive rather than reimplementing it a third time.
+//
+// Uses a real `git clone` + `git checkout`, not an HTTP archive download —
+// deliberately git-host-agnostic: works identically against GitHub,
+// GitLab, Bitbucket, or a self-hosted server, using whatever git
+// credential mechanism is already configured (SSH key, credential
+// helper), the same reasoning module.resolveGit already established for
+// module resolution. token is resolved via module.ResolveToken (explicit
+// wins, falling back to the process's own GITHUB_TOKEN env var — so every
+// existing caller passing "" keeps working via the env var exactly as
+// before this function grew a token param at all). When non-empty, it's
+// embedded in the clone URL as a bare-username HTTPS credential
+// (https://TOKEN@host/org/repo.git) — broadly supported across git hosts,
+// and deliberately NOT gated to host == "github.com" the way
+// module.resolveGit's own token-embedding currently is; that's a narrower,
+// pre-existing choice made there, not one to propagate into new code.
+func FetchRepoArchive(host, org, repo, ref, token string) (dir string, cleanup func(), err error) {
+	token = module.ResolveToken(token)
+	cloneURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
+	if token != "" {
+		cloneURL = fmt.Sprintf("https://%s@%s/%s/%s.git", token, host, org, repo)
+	}
 	tmpDir, err := os.MkdirTemp("", "hyve-workflowref-*")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup = func() { os.RemoveAll(tmpDir) }
 
-	if err := module.DownloadAndExtract(downloadURL, tmpDir, repo, ref, ""); err != nil {
+	if err := module.CloneAndExtract(cloneURL, ref, "", tmpDir); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("failed to download workflow source from %s: %w", downloadURL, err)
+		return "", nil, fmt.Errorf("failed to fetch workflow source from %s/%s/%s@%s: %w", host, org, repo, ref, err)
 	}
 	return tmpDir, cleanup, nil
 }

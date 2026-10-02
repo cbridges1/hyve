@@ -81,6 +81,18 @@ func newDB(configDir string) (*DB, error) {
 		return nil, err
 	}
 
+	// Additive column migration for pre-existing databases created before
+	// the repositories table grew its api_url/session_token/
+	// session_expires_at columns — CREATE TABLE IF NOT EXISTS above is a
+	// no-op against an already-existing table, so a real ALTER TABLE step
+	// is needed for anyone upgrading from an older hyve.db. No-op against a
+	// freshly-created database, since the CREATE TABLE above already
+	// includes these columns.
+	if err := d.ensureRepositoryCredentialColumns(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	// Run migrations from old databases
 	if err := d.migrateFromOldDatabases(); err != nil {
 		// Log but don't fail - migration is best-effort
@@ -99,7 +111,10 @@ func (d *DB) initialize() error {
 	}
 	defer tx.Rollback()
 
-	// Repositories table
+	// Repositories table — each row is a "environment": a local directory
+	// (see internal/repository, cmd/context) plus, optionally, cluster-mode
+	// login credentials (api_url/session_token/session_expires_at) attached
+	// by `hyve context login`. One is_current flag switches both halves together.
 	_, err = tx.Exec(`
 		CREATE TABLE IF NOT EXISTS repositories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +122,11 @@ func (d *DB) initialize() error {
 			repo_url TEXT NOT NULL,
 			local_path TEXT NOT NULL,
 			is_current BOOLEAN DEFAULT FALSE,
+			api_url TEXT,
+			api_ca_cert TEXT,
+			server_environment TEXT,
+			session_token TEXT,
+			session_expires_at TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -115,6 +135,27 @@ func (d *DB) initialize() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to create repositories table: %w", err)
+	}
+
+	// Environment secrets table — KEY=VALUE pairs attached to one
+	// environment (a repositories row), loaded into the process
+	// environment before every command (see cmd/shared.
+	// LoadEnvironmentSecrets) and deleted alongside their environment when
+	// it's removed (see internal/repository.Manager.DeleteRepository).
+	_, err = tx.Exec(`
+		CREATE TABLE IF NOT EXISTS environment_secrets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			repository_id INTEGER NOT NULL,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(repository_id, key)
+		);
+		CREATE INDEX IF NOT EXISTS idx_environment_secrets_repo ON environment_secrets(repository_id)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create environment_secrets table: %w", err)
 	}
 
 	// Kubeconfigs table
@@ -133,10 +174,80 @@ func (d *DB) initialize() error {
 		return fmt.Errorf("failed to create kubeconfigs table: %w", err)
 	}
 
+	// Session table — see internal/session. A single row (id is always 1),
+	// deliberately independent of the repositories table: `hyve context login` is
+	// one global, machine-wide credential, not an attribute of whichever
+	// local directory happens to be the current environment (see
+	// cmd/context/cmd.go's own doc comment on why local directories and
+	// cluster-mode sessions are two unrelated concepts, not one). Holds
+	// both halves of the credential a login issues: the long-lived session
+	// (id/secret/expiry, presented to POST /auth/refresh) and the current
+	// cached short-lived access token (presented on every /api/* request).
+	_, err = tx.Exec(`
+		CREATE TABLE IF NOT EXISTS session (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			username TEXT NOT NULL,
+			api_url TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			session_secret TEXT NOT NULL,
+			session_expires_at TEXT NOT NULL,
+			access_token TEXT NOT NULL,
+			access_token_expires_at TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create session table: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// ensureRepositoryCredentialColumns adds any of api_url/api_ca_cert/
+// session_token/session_expires_at missing from an existing repositories
+// table — see the call site in newDB for why this can't just live in the
+// CREATE TABLE statement alone. api_ca_cert holds a PEM-encoded CA
+// certificate to trust in addition to the system trust store when talking
+// to this environment's api_url, for an install whose TLS certificate is
+// signed by a CA that isn't publicly trusted (a self-signed CA for a bare
+// IP/nip.io address with no real domain — same situation
+// internal/reconcile.Reconciler.AgentCACertPEM exists for on the
+// hyve-agent side; this is the CLI's own equivalent, set via 'hyve context
+// create --ca-cert'/'hyve context login --ca-cert'). server_environment is the
+// hyve-api environment (an organization's own named sub-scope, see
+// internal/orgdb.Environment) this context's cluster-mode commands target —
+// set by 'hyve environment use', NULL for "let the server pick".
+func (d *DB) ensureRepositoryCredentialColumns() error {
+	rows, err := d.db.Query(`PRAGMA table_info(repositories)`)
+	if err != nil {
+		return fmt.Errorf("failed to inspect repositories table: %w", err)
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to read repositories column info: %w", err)
+		}
+		existing[name] = true
+	}
+	rows.Close()
+
+	for _, col := range []string{"api_url", "api_ca_cert", "server_environment", "session_token", "session_expires_at"} {
+		if existing[col] {
+			continue
+		}
+		if _, err := d.db.Exec(fmt.Sprintf(`ALTER TABLE repositories ADD COLUMN %s TEXT`, col)); err != nil {
+			return fmt.Errorf("failed to add %s column to repositories: %w", col, err)
+		}
+	}
 	return nil
 }
 

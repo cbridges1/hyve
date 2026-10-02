@@ -29,6 +29,22 @@ type LockedRef struct {
 	SHA256          string `json:"sha256"`
 }
 
+// RefResult is the outcome of resolving one ref during Install — populated
+// for every ref Install attempts, unlike LockedRef (only refs whose lock
+// entry actually changed this call) or resolveErrors (a pre-formatted
+// string, not machine-usable). This is what lets a caller mirror current
+// status for every ref on every call, including the common steady-state
+// case where nothing changed (see internal/controller/reconciler.go's
+// resolveWorkflowIfNeeded, the reason this exists at all).
+type RefResult struct {
+	Name            string
+	CanonicalSource string
+	RawVersion      string
+	ResolvedVersion string // concrete resolved ref (tag/branch/HEAD); "" on a cache-hit resolve
+	SHA256          string
+	Err             error // nil on success
+}
+
 // GatherWorkflowRefs collects the deduplicated remote WorkflowRefs referenced
 // by every template's and cluster's lifecycle hooks in the repo — the input
 // Install expects.
@@ -63,9 +79,10 @@ func GatherWorkflowRefs(stateMgr *state.Manager, repoPath string) ([]types.Workf
 	for _, t := range templates {
 		add(t.Spec.Workflows.BeforeCreate)
 		add(t.Spec.Workflows.OnCreate)
+		add(t.Spec.Workflows.AfterCreate)
 		add(t.Spec.Workflows.OnDelete)
 		add(t.Spec.Workflows.AfterDelete)
-		// TemplateWorkflowsSpec has no PreReconcile — nothing to add here.
+		add(t.Spec.Workflows.PreReconcile)
 	}
 	for _, c := range clusterDefs {
 		add(c.Spec.Workflows.PreReconcile)
@@ -80,18 +97,21 @@ func GatherWorkflowRefs(stateMgr *state.Manager, repoPath string) ([]types.Workf
 // Install resolves every ref (as gathered by GatherWorkflowRefs) into
 // hyve.lock, skipping any file whose content hasn't changed since the last
 // install (to avoid a no-op commit). The caller is responsible for
-// committing the repo when changed is true.
-func Install(repoPath string, refs []types.WorkflowRef) (locked []LockedRef, collisions []NameCollision, resolveErrors []string, changed bool, err error) {
+// committing the repo when changed is true. token is an explicit GitHub-
+// style access token for a private source (see Resolve's own doc comment);
+// empty falls back to the process's own GITHUB_TOKEN env var.
+func Install(repoPath string, refs []types.WorkflowRef, token string) (locked []LockedRef, collisions []NameCollision, resolveErrors []string, results []RefResult, changed bool, err error) {
 	lf, err := module.LoadLockFile(repoPath)
 	if err != nil {
-		return nil, nil, nil, false, fmt.Errorf("failed to load lock file: %w", err)
+		return nil, nil, nil, nil, false, fmt.Errorf("failed to load lock file: %w", err)
 	}
 
 	nameOwner := map[string]string{} // name -> first canonical source seen this run
 	for _, ref := range refs {
-		files, resolveErr := Resolve(ref.Source, ref.Path, lf)
+		files, resolveErr := Resolve(ref.Source, ref.Path, lf, token)
 		if resolveErr != nil {
 			resolveErrors = append(resolveErrors, fmt.Sprintf("%s: %v", ref.String(), resolveErr))
+			results = append(results, RefResult{CanonicalSource: ref.Source, Err: resolveErr})
 			continue
 		}
 		for _, f := range files {
@@ -99,6 +119,11 @@ func Install(repoPath string, refs []types.WorkflowRef) (locked []LockedRef, col
 				collisions = append(collisions, NameCollision{Name: f.Name, FirstSource: owner, CollidedSource: f.CanonicalSource})
 			}
 			nameOwner[f.Name] = f.CanonicalSource
+
+			results = append(results, RefResult{
+				Name: f.Name, CanonicalSource: f.CanonicalSource, RawVersion: f.RawVersion,
+				ResolvedVersion: f.ResolvedVersion, SHA256: f.SHA256,
+			})
 
 			existing := lf.GetLockedWorkflow(f.CanonicalSource, f.RawVersion)
 			if existing != nil && existing.SHA256 == f.SHA256 {
@@ -116,25 +141,25 @@ func Install(repoPath string, refs []types.WorkflowRef) (locked []LockedRef, col
 	}
 
 	if !changed {
-		return nil, collisions, resolveErrors, false, nil
+		return nil, collisions, resolveErrors, results, false, nil
 	}
 	if err := module.SaveLockFile(repoPath, lf); err != nil {
-		return nil, collisions, resolveErrors, false, fmt.Errorf("failed to save lock file: %w", err)
+		return nil, collisions, resolveErrors, results, false, fmt.Errorf("failed to save lock file: %w", err)
 	}
-	return locked, collisions, resolveErrors, true, nil
+	return locked, collisions, resolveErrors, results, true, nil
 }
 
 // Update forces a full re-resolve (bypassing the lock-file cache hint) of one
 // source, refreshing hyve.lock entries for every file it resolves to. The
 // caller is responsible for committing the repo afterward.
-func Update(repoPath, source, pathOverride string) ([]LockedRef, error) {
+func Update(repoPath, source, pathOverride, token string) ([]LockedRef, error) {
 	lf, err := module.LoadLockFile(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load lock file: %w", err)
 	}
 
 	// nil lf forces a full re-resolve, bypassing any cache short-circuit.
-	files, err := Resolve(source, pathOverride, nil)
+	files, err := Resolve(source, pathOverride, nil, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve workflow: %w", err)
 	}

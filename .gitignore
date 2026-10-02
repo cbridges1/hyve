@@ -33,8 +33,15 @@ go.work.sum
 # .vscode/
 .claude
 
-hyve
+/hyve
 .hyve
 
 # GoReleaser output
 dist/
+# ...except the checked-in placeholder internal/webui/dist embeds by
+# default (go:embed requires something to exist at build time even when
+# nobody's run `npm run build` yet) — deploy/Dockerfile.dev overwrites
+# this with the real build before compiling; see internal/webui's own
+# doc comment.
+!internal/webui/dist/
+!internal/webui/dist/**

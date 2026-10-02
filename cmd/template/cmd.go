@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -32,6 +33,15 @@ var templateCreateCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		templateName := args[0]
+		file, _ := cmd.Flags().GetString("file")
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			if file != "" {
+				createTemplateFromFileAPI(shared.NewAPIClient(sess), file)
+				return
+			}
+		}
+
 		description, _ := cmd.Flags().GetString("description")
 		driverSource, _ := cmd.Flags().GetString("driver")
 		driverVersion, _ := cmd.Flags().GetString("driver-version")
@@ -57,6 +67,12 @@ var templateCreateCmd = &cobra.Command{
 			params[parts[0]] = parts[1]
 		}
 
+		if sess, ok := shared.UseClusterMode(); ok {
+			createTemplateAPI(shared.NewAPIClient(sess), templateName, description, driverSource, driverVersion, region, params,
+				beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
+			return
+		}
+
 		createTemplate(templateName, description, driverSource, driverVersion, region, params,
 			beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
 	},
@@ -66,6 +82,10 @@ var templateListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all cluster templates",
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			listTemplatesAPI(shared.NewAPIClient(sess))
+			return
+		}
 		listTemplates()
 	},
 }
@@ -75,6 +95,10 @@ var templateDeleteCmd = &cobra.Command{
 	Short: "Delete a cluster template",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			deleteTemplateAPI(shared.NewAPIClient(sess), args[0])
+			return
+		}
 		deleteTemplate(args[0])
 	},
 }
@@ -84,6 +108,10 @@ var templateShowCmd = &cobra.Command{
 	Short: "Show template details",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if sess, ok := shared.UseClusterMode(); ok {
+			showTemplateAPI(shared.NewAPIClient(sess), args[0])
+			return
+		}
 		showTemplate(args[0])
 	},
 }
@@ -91,15 +119,22 @@ var templateShowCmd = &cobra.Command{
 var templateValidateCmd = &cobra.Command{
 	Use:   "validate [template-name]",
 	Short: "Validate a template",
-	Args:  cobra.ExactArgs(1),
+	Long: `Local mode only. Validation checks resource-file paths and module
+resolution against your local checkout — there's no equivalent server-side
+context for a Template CR (no repo checkout, no hyve.lock) to validate
+against in cluster mode.`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve template validate` is local-mode only — it checks resource-file paths and module resolution against your local checkout, which has no equivalent in cluster mode (no repo checkout or hyve.lock server-side). Run it against a local checkout instead.")
+		}
 		validateTemplate(args[0])
 	},
 }
 
 func init() {
 	templateCreateCmd.Flags().StringP("description", "d", "", "Template description")
-	templateCreateCmd.Flags().String("driver", "", "Module source (e.g. github.com/hyve-modules/aws-eks)")
+	templateCreateCmd.Flags().String("driver", "", "Module source (e.g. github.com/your-org/hyve-aws-eks-module)")
 	templateCreateCmd.Flags().String("driver-version", "latest", "Module version (semver constraint, tag, or commit)")
 	templateCreateCmd.Flags().StringP("region", "r", "", "Default region for clusters created from this template")
 	templateCreateCmd.Flags().StringArray("set", nil, "Default driver params (repeatable): KEY=VALUE")
@@ -109,6 +144,7 @@ func init() {
 	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5')")
 	templateCreateCmd.Flags().Bool("lock-params", false, "Prevent users from overriding default params when creating a cluster from this template")
+	templateCreateCmd.Flags().StringP("file", "f", "", "Create from an existing Template YAML file instead of flags (cluster mode only)")
 
 	templateCmd.AddCommand(templateCreateCmd)
 	templateCmd.AddCommand(templateListCmd)
@@ -125,7 +161,6 @@ func createTemplate(
 	lockParams bool,
 ) {
 	ctx := context.Background()
-	shared.SyncRepoState(ctx)
 
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -156,17 +191,17 @@ func createTemplate(
 	}
 
 	tmpl := &template.Template{
-		APIVersion: "v1",
-		Kind:       "Template",
+		APIVersion: template.APIVersion,
+		Kind:       template.Kind,
 		Metadata: template.TemplateMetadata{
 			Name:        name,
 			Description: description,
 		},
 		Spec: template.TemplateSpec{
-			Driver: template.TemplateDriverRef{Source: driverSource, Version: driverVersion},
+			Driver: types.DriverRef{Source: driverSource, Version: driverVersion},
 			Region: region,
 			Params: params,
-			Workflows: template.TemplateWorkflowsSpec{
+			Workflows: types.WorkflowsSpec{
 				BeforeCreate: parseWorkflows(beforeCreateStr),
 				OnCreate:     parseWorkflows(onCreateStr),
 				OnDelete:     parseWorkflows(onDeleteStr),
@@ -183,14 +218,8 @@ func createTemplate(
 
 	log.Printf("✅ Template '%s' created successfully", name)
 
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to create state manager: %v", err)
-		log.Println("💡 Template saved locally but not pushed to git")
-	} else {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create template %s", name))
-	}
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create template %s", name))
 	log.Printf("Template path: %s", templateMgr.GetTemplatePath(name))
 	log.Println("\n📋 Template Details:")
 	log.Printf("  Driver: %s@%s", driverSource, driverVersion)
@@ -227,8 +256,6 @@ func createTemplate(
 }
 
 func listTemplates() {
-	shared.SyncRepoState(context.Background())
-
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)
@@ -285,7 +312,6 @@ func listTemplates() {
 
 func deleteTemplate(name string) {
 	ctx := context.Background()
-	shared.SyncRepoState(ctx)
 
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -307,19 +333,11 @@ func deleteTemplate(name string) {
 
 	log.Printf("✅ Template '%s' deleted successfully", name)
 
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-	stateMgr, err := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if err != nil {
-		log.Printf("⚠️  Warning: Failed to create state manager: %v", err)
-		log.Println("💡 Template deleted locally but not pushed to git")
-	} else {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Delete template %s", name))
-	}
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Delete template %s", name))
 }
 
 func showTemplate(name string) {
-	shared.SyncRepoState(context.Background())
-
 	repoMgr, err := repository.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create repository manager: %v", err)

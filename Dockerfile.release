@@ -15,6 +15,12 @@ ARG TARGETOS
 ARG TARGETARCH
 COPY ${TARGETOS}/${TARGETARCH}/hyve /usr/local/bin/hyve
 
+# Same layout as deploy/Dockerfile.dev: the chart runs hyve-api with
+# --modules-dir=/var/lib/hyve/modules and the controller with HOME set to
+# its own PVC.
+ENV HOME=/root
+RUN mkdir -p /var/lib/hyve/modules
+
 WORKDIR /repo
 ENTRYPOINT ["hyve"]
 CMD ["--help"]

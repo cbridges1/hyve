@@ -19,11 +19,14 @@ var addCmd = &cobra.Command{
 Version is optional. When omitted, the latest semver tag is resolved automatically.
 
 Examples:
-  hyve module add github.com/hyve-modules/civo
-  hyve module add github.com/hyve-modules/civo@v1.0.0
-  hyve module add github.com/hyve-modules/civo@~> 1.0`,
+  hyve module add github.com/your-org/hyve-civo-module
+  hyve module add github.com/your-org/hyve-civo-module@v1.0.0
+  hyve module add github.com/your-org/hyve-civo-module@~> 1.0`,
 	Args: cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve module add` is local-mode only — modules resolve automatically when referenced by a cluster/template in cluster mode; see `hyve module list` to inspect what's been resolved.")
+		}
 		source, version := parseSourceVersion(args)
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)

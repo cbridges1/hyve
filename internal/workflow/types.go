@@ -2,6 +2,15 @@ package workflow
 
 import (
 	"time"
+
+	"github.com/cbridges1/hyve/internal/secretsfrom"
+)
+
+// Runtime values for WorkflowSpec.Runtime — see WorkflowSpec.Runtime's doc
+// comment.
+const (
+	RuntimeClient  = "client"
+	RuntimeCluster = "cluster" // also the default when Runtime is unset
 )
 
 // Workflow represents a workflow definition
@@ -12,13 +21,16 @@ type Workflow struct {
 	Spec       WorkflowSpec     `yaml:"spec" json:"spec"`
 }
 
-// WorkflowMetadata contains workflow metadata
+// WorkflowMetadata contains workflow metadata. Created maps to the real
+// Workflow CR's ObjectMeta.CreationTimestamp (server/manager-set once, at
+// creation) — there's no clean CRD equivalent for a separate "Updated"
+// field (closest is resourceVersion/generation, different semantics), so
+// unlike the pre-unification file format this no longer tracks it.
 type WorkflowMetadata struct {
 	Name        string            `yaml:"name" json:"name"`
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Created     time.Time         `yaml:"created,omitempty" json:"created,omitempty"`
-	Updated     time.Time         `yaml:"updated,omitempty" json:"updated,omitempty"`
 }
 
 // WorkflowInput declares a variable that must be present before the workflow runs.
@@ -50,6 +62,25 @@ type WorkflowSpec struct {
 	Triggers     []WorkflowTrigger     `yaml:"triggers,omitempty" json:"triggers,omitempty"`
 	Jobs         []WorkflowJob         `yaml:"jobs" json:"jobs"`
 	Env          map[string]string     `yaml:"env,omitempty" json:"env,omitempty"`
+
+	// Runtime is either "client" (this workflow always runs as a local
+	// subprocess on the invoking machine, never scheduled as a Job — see
+	// Executor.AllowClientRuntime) or unset/"cluster" (today's behavior:
+	// local in CLI mode, a container Job in controller mode). container:
+	// has no effect on a runtime: client workflow — same "informational,
+	// ignored" treatment it already gets in plain CLI/local mode, not a
+	// validation error (see internal/workflow/job_runner.go's executeStep
+	// and Validate's lint warning for this combination).
+	Runtime string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+
+	// SecretsFrom declares Kubernetes Secrets to resolve into env vars
+	// before this workflow's steps run — e.g. Harbor registry credentials
+	// already sitting in a cluster the user has legitimate access to. Each
+	// entry's Cluster is resolved via whatever kubeconfig the caller
+	// already has for it (see secretsfrom.KubeconfigLocator); the fetch
+	// grants no access beyond what that kubeconfig's own credentials
+	// already have.
+	SecretsFrom []secretsfrom.SecretSource `yaml:"secretsFrom,omitempty" json:"secretsFrom,omitempty"`
 }
 
 // WorkflowRequirements defines prerequisites for workflow execution
@@ -90,6 +121,15 @@ type WorkflowJob struct {
 	Steps       []WorkflowStep       `yaml:"steps" json:"steps"`
 	Timeout     string               `yaml:"timeout,omitempty" json:"timeout,omitempty"` // e.g., "5m", "1h"
 	Retry       *WorkflowRetryPolicy `yaml:"retry,omitempty" json:"retry,omitempty"`
+
+	// Container is the image every step in this job runs in when executed
+	// via KubernetesJobStepRunner (controller mode) — meaningless, and
+	// ignored rather than validated, under LocalStepRunner (plain CLI/local
+	// mode, or any runtime: client workflow regardless of hyve's mode — see
+	// Phase 5). A step's own Container overrides this job-level default;
+	// if neither is set, HyveConfig.spec.defaultWorkflowImage is the last
+	// fallback before a hard pre-flight failure. See StepRunner.RequiresContainer.
+	Container string `yaml:"container,omitempty" json:"container,omitempty"`
 }
 
 // WorkflowStep represents a single step in a job
@@ -105,6 +145,10 @@ type WorkflowStep struct {
 	WorkingDir      string            `yaml:"workingDir,omitempty" json:"workingDir,omitempty"`           // Working directory for this step
 	Timeout         string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`                 // Step timeout
 	ContinueOnError bool              `yaml:"continueOnError,omitempty" json:"continueOnError,omitempty"` // Continue even if step fails
+
+	// Container overrides WorkflowJob.Container for this step only. See
+	// WorkflowJob.Container's doc comment for the full resolution order.
+	Container string `yaml:"container,omitempty" json:"container,omitempty"`
 }
 
 // WorkflowRetryPolicy defines retry behavior for jobs

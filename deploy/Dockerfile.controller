@@ -1,0 +1,78 @@
+# Controller-mode image — bakes a state repo's hyve.lock and every module/
+# workflow it locks into the image at build time, as a SEED for the
+# PersistentVolumeClaim deploy/helm/hyve/templates/controller-pvc.yaml
+# mounts at runtime (see controller-deployment.yaml's initContainer, which
+# copies this seed into the PVC only if it's still empty). The controller
+# no longer strictly needs a pre-baked module — since this session's
+# module-auto-resolve fix (see internal/controller/reconciler.go's
+# resolveModuleIfNeeded), a ClusterDefinition referencing an unresolved
+# module gets it fetched over the network automatically, once, on first
+# use, then cached on the PVC for every reconcile after. Baking a state
+# repo in here at build time is still supported and still avoids that
+# first-use network fetch/delay for whatever it locks — just no longer
+# required for the controller to function at all.
+#
+# Build context is your STATE repo (hyve.lock + clusters/ + templates/ +
+# workflows/ — the same repo you'd otherwise `hyve set-state` and
+# `hyve reconcile` against locally), NOT this hyve source repo:
+#
+#   docker build -f path/to/hyve/deploy/Dockerfile.controller \
+#     -t your-registry/hyve-controller:v1 \
+#     /path/to/your-state-repo
+#
+# IMPORTANT — HOME must match between build and runtime: module.CacheDir()
+# (internal/module/cache.go) resolves the resolved-module cache to
+# $HOME/.hyve/module-cache, unconditionally — it does not respect
+# --home/HYVE_HOME. The build stages below fix HOME=/root; at runtime,
+# controller-deployment.yaml sets HOME=/data (the PVC mount point) instead
+# — the seed paths below are deliberately NOT at /root/.hyve or
+# /var/lib/hyve/modules, since a volume mounted at either of those at
+# runtime would otherwise shadow (hide) whatever this build baked in,
+# making the seed step below unable to see it.
+FROM golang:1.25-alpine AS resolver
+ENV HOME=/root
+RUN apk add --no-cache git
+
+# ARG HYVE_VERSION pins which hyve release builds/resolves the modules
+# below — go install already verifies the module against the Go checksum
+# database, the same integrity guarantee `go get` gives any other
+# dependency. Override with --build-arg HYVE_VERSION=vX.Y.Z for a specific
+# release instead of always floating to latest.
+ARG HYVE_VERSION=latest
+RUN go install github.com/cbridges1/hyve@${HYVE_VERSION}
+
+WORKDIR /state
+COPY . .
+
+# Registers /state as a plain local state directory (no git operations —
+# see `hyve set-state`) and resolves every module/workflow hyve.lock
+# already pins into $HOME/.hyve/module-cache. If hyve.lock references
+# anything not yet locked, `hyve module install` locks it now, at build
+# time — the image build is the one place a network fetch to a module's
+# source repo is expected to happen, never at controller runtime.
+RUN /root/go/bin/hyve --home /root/.hyve set-state --current /state && \
+    /root/go/bin/hyve --home /root/.hyve module install
+
+FROM alpine:3.20
+ENV HOME=/root
+
+# Same package list as the plain-CLI Dockerfile/Dockerfile.release at this
+# repo's root — module operation scripts commonly shell out to these
+# regardless of which mode hyve runs in. Cloud-provider CLIs (aws/gcloud/
+# az/civo) are intentionally not included — install whichever your modules
+# need on top of this image, the same guidance as the plain-CLI image.
+RUN apk add --no-cache ca-certificates bash git curl jq openssl \
+    kubectl helm
+
+COPY --from=resolver /root/go/bin/hyve /usr/local/bin/hyve
+COPY --from=resolver /root/.hyve/module-cache /opt/hyve-seed/module-cache
+
+# The whole state repo (hyve.lock, workflows/, any locally-sourced module
+# under ./..., clusters/ and templates/ too, though those are unused in
+# controller mode — ClusterDefinition CRs are the source of truth, not
+# files) — seeds the PVC-backed --modules-dir target (LocalPath() for
+# module/workflow/hyve.lock resolution) on first boot; see this file's
+# header comment.
+COPY --from=resolver /state /opt/hyve-seed/state
+
+ENTRYPOINT ["hyve", "cluster-config", "controller", "run"]

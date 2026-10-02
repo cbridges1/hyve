@@ -1,0 +1,240 @@
+{{- if .Values.api.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
+  namespace: {{ .Values.namespace }}
+{{- end }}
+---
+# api.multiTenant.enabled (default false, HYVE-MULTI-TENANCY-PLAN.md's
+# "Phase 2") switches this from a namespaced Role (Phase 1's one-install-
+# per-tenant model, confirmed live: hyve-api's own ServiceAccount can only
+# List/Get inside its own bound namespace, matching s.Namespace) to a
+# ClusterRole — required once a single install serves many tenant
+# namespaces chosen per-login (see internal/api.Server.TenantNamespace):
+# hyve-api's own client needs to reach whichever namespace a given
+# request resolves to, not just one fixed one. Tenant-level isolation
+# still comes entirely from the app layer (HyveAccessBinding + per-request
+# TenantNamespace scoping), never from this Kubernetes RBAC grant — same
+# as Phase 1's tenant-admin roles already work via api-access-roles.yaml.
+#
+# Namespace-scoped: ClusterDefinition/Template/Workflow CRUD, Secrets
+# (credentials + tunnel kubeconfigs), and read access to Jobs/Pods/pod logs
+# for the future log-streaming endpoint (Phase 6.7, not yet implemented —
+# granted now so a later rollout of that feature needs no RBAC change).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if .Values.api.multiTenant.enabled }}ClusterRole{{ else }}Role{{ end }}
+metadata:
+  name: hyve-api
+  {{- if not .Values.api.multiTenant.enabled }}
+  namespace: {{ .Values.namespace }}
+  {{- end }}
+rules:
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterdefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # patch (beyond the original read-only get) backs
+  # internal/api/agent_listener.go's writeAgentStatus — confirmed live,
+  # missing here 403's every agent connect/disconnect status write
+  # silently from hyve-agent's own point of view (the tunnel itself stays
+  # up; only ClusterDefinitionStatus.Agent fails to update). writeAgentStatus
+  # itself always uses a merge patch, deliberately, never a full-object
+  # Status().Update — see that function's own doc comment. update is for a
+  # different caller: Milestone 6's PATCH /organizations/{name} migration
+  # endpoint (organizations.go's runOrganizationMigration, via
+  # internal/migrate.ClusterDefinitions' own CRDStateProvider.SaveClusterDefinition)
+  # copies a migrated ClusterDefinition's full status verbatim onto the
+  # destination cluster — a real, deliberate full replace (the whole point
+  # of migrating an already-provisioned cluster is preserving its
+  # driverOutputs/appliedResources exactly, not re-deriving them), not a
+  # merge patch. Confirmed live: missing here 500'd every organization
+  # migration with a ClusterDefinition in it, on the destination-is-the-
+  # control-plane-itself case specifically (this Role's own RBAC, not a
+  # remote reconciling cluster's, which has no such restriction since
+  # nothing about a reconciling cluster's own kubeconfig is scoped by this
+  # chart at all).
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterdefinitions/status"]
+    verbs: ["get", "patch", "update"]
+  # update backs PATCH /clusters, /templates, /workflows, /resources (raw-
+  # spec editing from the web UI) — confirmed live, missing here 403's the
+  # update call with no indication beforehand (fake-clientset-backed tests
+  # don't enforce RBAC at all, so this was invisible short of a real
+  # cluster).
+  - apiGroups: ["hyve.io"]
+    resources: ["templates", "workflows", "resources"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # HyveConfig backs GET/PATCH /config (internal/api/config.go) — the
+  # web console's Settings page, superadmin-only. Read+write, unlike
+  # controller-rbac.yaml's own get/list/watch-only grant for the same
+  # resource: the controller only ever reads this singleton (its own
+  # comment: "this chart never overwrites an existing HyveConfig object it
+  # doesn't own"), but this new endpoint is specifically how an operator is
+  # meant to create/edit it now, so create+update are both required here.
+  # No list/watch — handleGetConfig/handleUpdateConfig always address it
+  # by its one fixed name (s.ConfigName), never enumerate.
+  - apiGroups: ["hyve.io"]
+    resources: ["hyveconfigs"]
+    verbs: ["get", "create", "update"]
+  # Read-only: the API never writes Module CRs (only the controller does,
+  # via resolveModuleIfNeeded) — this is purely for `hyve module list`/
+  # `info` in cluster mode to have something to read.
+  - apiGroups: ["hyve.io"]
+    resources: ["modules"]
+    verbs: ["get", "list", "watch"]
+  # Same read-only reasoning as modules above — only the controller writes
+  # these (upsertWorkflowRefStatusCR/upsertResourceRefStatusCR); the API
+  # merges them into `hyve workflow list`/`resource list`'s output
+  # alongside real Workflow/Resource CRs.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowrefstatuses", "resourcerefstatuses"]
+    verbs: ["get", "list", "watch"]
+  # WorkflowRun is `hyve workflow run`'s cluster-mode execution surface
+  # (internal/api/workflowruns.go) — the API only ever creates one (POST)
+  # and polls its status (GET); WorkflowRunReconciler (in hyve-controller,
+  # see controller-rbac.yaml) does the actual work. No update/delete here —
+  # a WorkflowRun is a one-shot request the API never mutates after
+  # creation.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns/status"]
+    verbs: ["get"]
+  # Namespace/ServiceAccount/RoleBinding: POST /organizations creates a new
+  # tenant's namespace and its hyve-access-admin/hyve-access-readonly
+  # ServiceAccount+RoleBinding pair programmatically (the same objects
+  # api-access-roles.yaml would otherwise create once per Helm install
+  # under Phase 1 — Phase 2 has exactly one install, so this endpoint does
+  # it instead). Namespace is cluster-scoped by nature; get is needed for
+  # this endpoint's own "does it already exist" idempotency check. update
+  # backs trySweepOrganizationDeletion's own self-heal strip of a leftover
+  # hyvev1alpha1.OrganizationNamespaceFinalizer from a namespace created
+  # before that finalizer's own retirement (see that constant's own doc
+  # comment). delete backs handleDeleteOrganization's own namespace delete —
+  # confirmed live this was missing (a real 500 from a real DELETE
+  # /organizations/{name} call, "cannot delete resource namespaces") before
+  # this rule existed.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "create"]
+  # Kubernetes RBAC refuses to let a subject create a RoleBinding
+  # referencing permissions it doesn't itself hold ("attempting to grant
+  # RBAC permissions not currently held") unless it also has bind on that
+  # specific ClusterRole — confirmed live, the RoleBinding create above
+  # 403's without this. Scoped to exactly the two built-in ClusterRoles
+  # ensureAccessRoleScaffolding ever references — not a blanket bind-anything
+  # grant.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["cluster-admin", "view"]
+    verbs: ["bind"]
+  # list, alongside get: Milestone 10's control-plane-as-organization work
+  # made hyve-system's own namespace migratable like any tenant, and
+  # internal/migrate.AccessBindings enumerates *-credentials Secrets via
+  # source.List(ctx, &list, client.InNamespace(namespace)) rather than
+  # fetching them by exact name. Every earlier live migration test used a
+  # remote reconciling cluster as the source, reached through that
+  # cluster's own (unrestricted, admin-level) registered kubeconfig, which
+  # never exercised hyve-api's own constrained ServiceAccount RBAC for this
+  # call — confirmed live: migrating hyve-system itself, the first
+  # migration whose source is the home cluster and thus hyve-api's own
+  # identity, 403'd on exactly this List with only "get" held.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  # hyve-cli-secrets backs `hyve context secrets` in cluster mode (see
+  # internal/api/secrets.go). Kubernetes RBAC can't scope "create" by
+  # resourceNames at all — a rule with resourceNames simply never matches a
+  # create request (confirmed live: combining create with resourceNames
+  # made every create 403, not "unscoped" as might be assumed), so create
+  # needs its own unscoped rule. update/patch/delete CAN be scoped by
+  # resourceNames and are, for hyve-cli-secrets specifically.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["update", "patch", "delete"]
+    resourceNames: ["hyve-cli-secrets"]
+  # Unscoped delete/update, unlike the resourceNames-scoped rule directly
+  # above: account deletion (handleDeleteAccount, accounts.go) removes a
+  # <username>-credentials Secret, and Milestone 6's own
+  # handleCreateReconcilingCluster rotates a
+  # reconciling-cluster-<name>-kubeconfig Secret in place on re-POST — both
+  # names vary per created account/cluster, and RBAC resourceNames can't do
+  # prefix/pattern matching, only exact names, which is infeasible here.
+  # This does let hyve-api delete/update *any* Secret in this namespace,
+  # including hyve-api-credentials (its own signing key) and
+  # hyve-cli-secrets — a real, deliberate widening, not an oversight;
+  # accepted because an admin-role caller through this API already has
+  # broad control of this namespace's own resources via ordinary
+  # ClusterDefinition/Template/Secret CRUD. Confirmed live: update missing
+  # here 403'd every reconciling-cluster kubeconfig rotation with no
+  # indication beforehand (fake-clientset-backed tests don't enforce RBAC
+  # at all, same "invisible short of a real cluster" gap this file's other
+  # comments already flag).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["delete", "update", "patch"]
+  # Backs internal/api's HostProvider (GET /api/kubeconfig for
+  # access.method: primary, no real spec.driver — see
+  # docs/HYVE-AGENT-MIGRATION-GUIDE.md's "Host cluster access" section):
+  # mints a short-lived token against the dedicated hyve-host-admin
+  # ServiceAccount via TokenRequest. Scoped to exactly that one
+  # ServiceAccount — unlike the plain "secrets" create rule above,
+  # resourceNames DOES work here (confirmed live): a subresource create
+  # like serviceaccounts/token targets an already-existing, named parent
+  # object (the URL itself names it, e.g. POST .../serviceaccounts/NAME/
+  # token), unlike a bare top-level create with a client-supplied name and
+  # no prior identity to match against.
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.api.hostServiceAccount | default "hyve-host-admin" | quote }}]
+    verbs: ["create"]
+  # get/list (beyond nothing before) granted ahead of Phase 6.7's
+  # log-streaming feature, not yet implemented — see pods/pods-log below.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # GET /clusters/{name}/events (see internal/api/clusters.go's
+  # handleGetClusterEvents) reads the Events the controller emits at each
+  # reconcile lifecycle milestone (internal/controller.
+  # ClusterDefinitionReconciler.Recorder) via a raw client-go
+  # involvedObject.name field selector, not the cached controller-runtime
+  # client. create backs agent_proxy.go's own emitAgentProxyEvent — the
+  # milestone 5 audit-trail write for every proxied kubectl request (see
+  # docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md's "Audit trail: connection-
+  # level for v1"), the one write this Role needs alongside its
+  # otherwise-read-only Events access.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if .Values.api.multiTenant.enabled }}ClusterRoleBinding{{ else }}RoleBinding{{ end }}
+metadata:
+  name: hyve-api
+  {{- if not .Values.api.multiTenant.enabled }}
+  namespace: {{ .Values.namespace }}
+  {{- end }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: {{ if .Values.api.multiTenant.enabled }}ClusterRole{{ else }}Role{{ end }}
+  name: hyve-api
+  apiGroup: rbac.authorization.k8s.io

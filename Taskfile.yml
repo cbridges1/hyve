@@ -66,3 +66,51 @@ tasks:
   check:
     desc: Run vet and tests
     deps: [vet, test]
+
+  test:concurrency:
+    desc: Live smoke test proving --max-concurrent-reconciles is safe (needs a working kubectl context + reachable cluster; installs/removes hyve's CRDs and a scratch namespace)
+    cmds:
+      - cmd: bash ./scripts/test-concurrency.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "test:concurrency needs bash — run scripts/test-concurrency.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  test:secretsfrom:
+    desc: Live smoke test for Phase 5's runtime:client workflows + secretsFrom (needs a working kubectl context + reachable cluster; fully isolated via a scratch HYVE_HOME, plus a scratch namespace it removes on exit)
+    cmds:
+      - cmd: bash ./scripts/test-secretsfrom.sh
+        platforms: [linux, darwin]
+      - cmd: echo "test:secretsfrom needs bash — run scripts/test-secretsfrom.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  test:api:
+    desc: Live smoke test for Phase 6's API + auth layer — login, authn/authz, cluster CRUD, module-auth kubeconfig (needs kubectl + reachable cluster + curl/jq/openssl; runs the API as a local process, primary-cluster/proxy paths need a real in-cluster deployment and aren't covered here)
+    cmds:
+      - cmd: bash ./scripts/test-api.sh
+        platforms: [linux, darwin]
+      - cmd: echo "test:api needs bash — run scripts/test-api.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  cluster:local:
+    desc: Create (idempotently) a standalone k3d cluster for local hyve dev, with host 80/443 mapped to k3d's Traefik ingress — run this once before install:local. Sets your kubectl context to it. Needs k3d.
+    cmds:
+      - cmd: bash ./scripts/create-local-cluster.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "cluster:local needs bash — run scripts/create-local-cluster.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  install:local:
+    desc: Build hyve from local source and install controller + API onto whatever cluster your kubectl context points at — run `task cluster:local` first. Exposes the API via Ingress (hyve-api.localhost), no port-forward needed. Persistent, not a self-cleaning smoke test. Needs docker/kubectl/helm/openssl.
+    cmds:
+      - cmd: bash ./scripts/install-local.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "install:local needs bash — run scripts/install-local.sh via WSL or Git Bash on Windows"
+        platforms: [windows]
+
+  api:docker:
+    desc: 'Run hyve-api as a standalone Docker container (no Kubernetes Deployment of its own — Milestone 10''s --home-cluster=none) pointed at an existing k3d cluster for reconciliation (Milestone 6). Usage: task api:docker -- <k3d-cluster-name>. Persistent, not a self-cleaning smoke test. Needs docker/k3d/kubectl/python3.'
+    cmds:
+      - cmd: bash ./scripts/run-api-docker.sh {{.CLI_ARGS}}
+        platforms: [linux, darwin]
+      - cmd: echo "api:docker needs bash — run scripts/run-api-docker.sh via WSL or Git Bash on Windows"
+        platforms: [windows]

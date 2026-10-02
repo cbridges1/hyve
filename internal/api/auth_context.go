@@ -1,0 +1,207 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/module"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+// authContextDTO is the response shape for
+// GET /api/clusters/<name>/auth-context — everything a CLI needs to run a
+// driver module's auth operation entirely client-side, with NO local
+// hyve.lock/module resolution of its own (see cmd/cluster/auth.go's
+// cluster-mode path, and ClusterDefinitionSpec.Access's doc comment for why
+// this is the default). The module is resolved here, server-side, against
+// this API's own baked-in ModulesDir (the same one ModuleAuthProvider uses
+// for the AccessMethodModuleAuth override) — AuthFileContent is that
+// resolved auth operation file's raw bytes, verbatim, so the CLI only has
+// to write them to a temp directory and run Executor against it. Deriving
+// this from the API's own module cache, not the CLI's, is what makes
+// client-side auth possible for a machine with no local environment/git
+// checkout at all — cluster mode and local directories are otherwise
+// completely independent (see internal/session's own doc comment), and
+// requiring a local hyve.lock here would silently reintroduce that
+// coupling for this one command.
+//
+// Deliberately a separate, more sensitive endpoint from clusterDTO
+// (GET /api/clusters/<name>) — that one intentionally excludes
+// driverOutputs/params (see its own doc comment); this one exists
+// specifically to expose them for the one legitimate purpose that needs
+// them, and only for clusters actually using client-side auth.
+type authContextDTO struct {
+	DriverSource    string                `json:"driverSource"`
+	DriverVersion   string                `json:"driverVersion"`
+	Region          string                `json:"region,omitempty"`
+	Params          map[string]string     `json:"params,omitempty"`
+	DriverOutputs   map[string]string     `json:"driverOutputs,omitempty"`
+	AuthFileName    string                `json:"authFileName"`
+	AuthFileContent string                `json:"authFileContent"`
+	Tools           []authToolRequirement `json:"tools,omitempty"`
+	// MgmtCluster is the module's requirements.mgmtCluster, so the CLI can
+	// set HYVE_MGMT_KUBECONFIG itself (it only receives the auth file, not
+	// module.yaml).
+	MgmtCluster string `json:"mgmtCluster,omitempty"`
+}
+
+// authToolRequirement mirrors module.ToolRequirement's Name/Description —
+// just enough for the CLI to run the same local-PATH tool validation it
+// always has, sourced from the server's resolved module.yaml instead of a
+// local one (see cmd/cluster/auth.go's use of this).
+type authToolRequirement struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// githubToken does a live, uncached read of hyve-cli-secrets' GITHUB_TOKEN
+// (see internal/api/secrets.go's cliSecretsName — the same Secret
+// `hyve context secrets set GITHUB_TOKEN ...` writes) so a private Git-sourced
+// driver module can actually be cloned here, mirroring
+// internal/controller/reconciler.go's own fetchCLISecrets/
+// resolveModuleIfNeeded, which already does this for the controller's own
+// reconcile-time module resolution — this endpoint had none of that,
+// silently depending on either a pre-baked ModulesDir or a public repo.
+// Best-effort: a missing Secret or key just means an empty token, which
+// module.ResolveWithToken falls back to the process's own GITHUB_TOKEN env
+// var for (almost certainly also unset here) — the same "not configured
+// yet is fine, let the actual git clone fail with its own clear error"
+// stance used everywhere else this token is threaded through.
+//
+// namespace is the caller's own TenantNamespace(r), threaded in by every
+// call site rather than derived here — this Secret is per-tenant (see
+// secrets.go's own doc comment on cliSecretsName), and this function has no
+// *http.Request of its own to resolve it from. Resolves through
+// resourceClient (Milestone 10 Part C), not s.Client directly — an
+// organization on a remote reconciling cluster has its hyve-cli-secrets
+// Secret there too, not on this control plane's own home cluster.
+func (s *Server) githubToken(ctx context.Context, namespace string) string {
+	c, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		return ""
+	}
+	var secret corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cliSecretsName}, &secret); err != nil {
+		return ""
+	}
+	return string(secret.Data["GITHUB_TOKEN"])
+}
+
+// registerAuthContextRoutes wires GET /clusters/{name}/auth-context —
+// mounted under /api/ (behind requireAuth+requireRole) by Server.Routes.
+func (s *Server) registerAuthContextRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /clusters/{name}/auth-context", s.requireOrganizationNotMigrating(s.handleAuthContext))
+}
+
+// handleAuthContext only serves clusters using the default client-side auth
+// method (spec.access.method unset — or AccessMethodPrimary with a real
+// spec.driver explicitly configured, see the usesClientSideAuth comment
+// below — AND spec.access.agent.proxy not set — milestone 5's own
+// agent-proxy path is checked here too, alongside Method, even though
+// it's a separate field: Agent/Proxy is deliberately orthogonal to
+// Method, meaning a real agent+proxy cluster typically leaves Method
+// unset entirely, and without this check it would incorrectly look
+// exactly like an ordinary client-side-auth cluster here, sending a
+// caller down the wrong path — running the driver module's own auth.yaml
+// locally instead of ever reaching GET /api/kubeconfig's agent-proxy
+// dispatch at all). A cluster that's opted into the AccessMethodModuleAuth
+// override is still server-minted via GET /api/kubeconfig instead, and
+// returning driver secrets here for
+// those would just be a second, weaker-guaranteed way to reach the same
+// access (no authorization check baked in, unlike the override path's
+// module-side check — see moduleEnvForClusterDefinition).
+func (s *Server) handleAuthContext(w http.ResponseWriter, r *http.Request) {
+	ns := s.TenantNamespace(r)
+	name := s.resolveAddressedName(r, ns, r.PathValue("name"))
+
+	c, err := s.resourceClient(r.Context(), ns)
+	if err != nil {
+		log.Printf("api: failed to resolve resource client for auth-context %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
+	var cd hyvev1alpha1.ClusterDefinition
+	if err := c.Get(r.Context(), types.NamespacedName{Namespace: ns, Name: name}, &cd); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		log.Printf("api: failed to get cluster %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to get cluster")
+		return
+	}
+	// A primary-marked cluster with no real driver is the common,
+	// zero-config host-cluster case — GET /api/kubeconfig's HostProvider
+	// serves it automatically, with no module involved (see its own doc
+	// comment), so it's excluded here exactly like module-auth.
+	// One WITH a real driver is an admin's deliberate opt-out of that
+	// automatic path — Method stays "primary" regardless (see
+	// AccessMethodPrimary's own doc comment on why it never changes), so
+	// this is the one case Method alone can't decide; Driver.Source is
+	// what actually distinguishes them.
+	usesClientSideAuth := cd.Spec.Access.Method == "" ||
+		(cd.Spec.Access.Method == hyvev1alpha1.AccessMethodPrimary && cd.Spec.Driver.Source != "")
+	if !usesClientSideAuth {
+		writeError(w, http.StatusConflict, fmt.Sprintf("cluster %q uses access.method %q, not client-side auth — fetch its kubeconfig via GET /api/kubeconfig instead", name, cd.Spec.Access.Method))
+		return
+	}
+	if cd.Spec.Access.Agent != nil && cd.Spec.Access.Agent.Proxy {
+		writeError(w, http.StatusConflict, fmt.Sprintf("cluster %q has spec.access.agent.proxy enabled, not client-side auth — fetch its kubeconfig via GET /api/kubeconfig instead", name))
+		return
+	}
+
+	lf, err := module.LoadLockFile(s.ModulesDir)
+	if err != nil {
+		log.Printf("api: failed to load hyve.lock for auth-context %q: %v", name, err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve driver module")
+		return
+	}
+	locked := lf.GetLocked(cd.Spec.Driver.Source, cd.Spec.Driver.Version)
+	resolved, err := module.ResolveWithToken(cd.Spec.Driver.Source, cd.Spec.Driver.Version, locked, s.ModulesDir, s.githubToken(r.Context(), s.TenantNamespace(r)))
+	if err != nil {
+		log.Printf("api: failed to resolve driver module %s@%s for auth-context %q: %v", cd.Spec.Driver.Source, cd.Spec.Driver.Version, name, err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve driver module")
+		return
+	}
+
+	authPath, ok := module.FindOperationFile(resolved.Dir, module.OperationAuth)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("driver module %s has no auth operation", cd.Spec.Driver.Source))
+		return
+	}
+	authContent, err := os.ReadFile(authPath)
+	if err != nil {
+		log.Printf("api: failed to read auth file %s for %q: %v", authPath, name, err)
+		writeError(w, http.StatusInternalServerError, "failed to read driver module auth file")
+		return
+	}
+
+	var tools []authToolRequirement
+	var mgmtCluster string
+	if manifest, _ := module.LoadManifestForSource(cd.Spec.Driver.Source, cd.Spec.Driver.Version, s.ModulesDir, lf); manifest != nil {
+		for _, t := range manifest.Spec.Requirements.Tools {
+			tools = append(tools, authToolRequirement{Name: t.Name, Description: t.Description})
+		}
+		mgmtCluster = manifest.Spec.Requirements.MgmtCluster
+	}
+
+	writeJSON(w, http.StatusOK, authContextDTO{
+		DriverSource:    cd.Spec.Driver.Source,
+		DriverVersion:   cd.Spec.Driver.Version,
+		Region:          cd.Spec.Region,
+		Params:          cd.Spec.Params,
+		DriverOutputs:   cd.Status.DriverOutputs,
+		AuthFileName:    filepath.Base(authPath),
+		AuthFileContent: string(authContent),
+		Tools:           tools,
+		MgmtCluster:     mgmtCluster,
+	})
+}

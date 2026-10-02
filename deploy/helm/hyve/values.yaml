@@ -1,0 +1,364 @@
+# Default values for hyve — one chart deploying both hyve-controller and
+# hyve-api (see Chart.yaml for why they're one release).
+
+image:
+  # Published with every hyve release. tag defaults to the chart's
+  # appVersion, which the release sets to the same version as the image.
+  repository: ghcr.io/cbridges1/hyve
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# namespace both components watch/deploy into.
+namespace: hyve-system
+
+controller:
+  # Name of the singleton HyveConfig object within namespace — see
+  # cmd/controller/run.go's --config-name flag.
+  configName: hyve-config
+
+  # hyveConfig, if set, is templated into a HyveConfig object at install
+  # time. Leave unset to manage HyveConfig by hand instead (kubectl apply /
+  # kubectl edit) — this chart never overwrites an existing HyveConfig
+  # object it doesn't own.
+  hyveConfig:
+    create: false
+    strictResourceDelete: false
+    defaultWorkflowImage: ""
+    defaultModuleImage: ""
+    # See HyveConfigSpec.DefaultAgentImage's own doc comment — empty falls
+    # back to reconcile/agent.go's own built-in placeholder constant, not
+    # to nothing (hyve-agent installation itself is what's disabled by
+    # leaving controller.agent.controlPlaneURL/tunnelAddress below unset,
+    # not by leaving this empty).
+    defaultAgentImage: ""
+    # Names of existing kubernetes.io/dockerconfigjson Secrets (in
+    # namespace, above) for pulling private runner/container: images —
+    # this chart never creates them, create yours first (e.g.
+    # `kubectl create secret docker-registry`). e.g. ["ghcr-pull-secret"]
+    imagePullSecrets: []
+
+  # agent configures hyve-agent installation (milestone 4 — see
+  # internal/reconcile/agent.go) — both values must be set together for
+  # spec.access.agent.enabled to do anything on any cluster; leaving
+  # either unset disables hyve-agent installation entirely, logged as an
+  # info line at controller startup rather than failing it.
+  agent:
+    # controlPlaneURL is hyve-api's own externally-reachable base URL for
+    # POST /agent/bootstrap — see cmd/controller/run.go's
+    # --agent-control-plane-url. Typically the same host as
+    # api.publicBaseURL/api.ingress.host, since a managed cluster's own
+    # hyve-agent dials in from outside this cluster's pod network, same as
+    # a user's browser.
+    controlPlaneURL: ""
+    # tunnelAddress is hyve-api's own externally-reachable SSH tunnel
+    # listener, host:port — see api.agentBindAddress's own comment in this
+    # file for why reaching it needs its own exposure (a raw TCP listener
+    # can't go through the same HTTP Ingress api.ingress.host uses).
+    tunnelAddress: ""
+
+    # caBundle mirrors api.publicCABundle exactly, one layer over: if
+    # whatever terminates TLS in front of controlPlaneURL/tunnelAddress is
+    # signed by a CA not in the public trust store (a self-signed CA for a
+    # bare IP/nip.io address with no real domain, same situation
+    # api.publicCABundle exists for), every newly-installed hyve-agent's
+    # own POST /agent/bootstrap call fails TLS verification — confirmed
+    # live, this exact failure mode
+    # ("x509: certificate signed by unknown authority"), before this
+    # existed. Set to the same ConfigMap api.publicCABundle already
+    # names (its own certificate's CA) unless hyve-agent needs to trust a
+    # different one. Read by the controller at startup
+    # (--agent-ca-path, cmd/controller/run.go) and embedded as a literal
+    # ConfigMap on each remote cluster hyve-agent installs onto — a
+    # cross-cluster mount isn't possible, so the PEM content itself
+    # travels with the rendered agent manifest (internal/reconcile/agent.go)
+    # rather than a same-cluster volume reference the way api.publicCABundle
+    # uses. Leave unset for a publicly-trusted certificate (e.g. a real
+    # ACME/Let's Encrypt cert) — hyve-agent's default system trust store
+    # already covers that case with no configuration needed.
+    caBundle:
+      configMapName: ""
+      key: ca.crt
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  leaderElection: false
+
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+
+  # PersistentVolumeClaim backing the controller's --modules-dir + resolved-
+  # module cache (mounted at /data, HOME redirected there — see
+  # controller-deployment.yaml and internal/module/cache.go's own comment on
+  # why HOME must point inside it). Without this, a module the controller
+  # auto-resolves at runtime (see internal/controller/reconciler.go's
+  # resolveModuleIfNeeded) would be re-fetched from scratch on every pod
+  # restart instead of actually being cached. ReadWriteOnce only — this
+  # design deliberately never needs ReadWriteMany (confirmed against k3d's
+  # own default local-path StorageClass, which is RWO-only).
+  moduleStorage:
+    size: 1Gi
+    storageClassName: "" # empty = cluster default
+
+  # RBAC: the controller needs to read/write ClusterDefinition/HyveConfig,
+  # read Workflow (see internal/controller's CR-first WorkflowRef
+  # resolution), and to create/manage batch/v1 Jobs + read Pod logs for
+  # KubernetesJobStepRunner. Scoped to `namespace` only.
+  serviceAccount:
+    create: true
+    name: ""
+
+api:
+  bindAddress: ":8090"
+
+  # replicaCount is api-deployment.yaml's own Deployment.spec.replicas —
+  # chart-level validated (not just documented) against db.driver: sqlite
+  # only ever supports 1, since SQLite has no story for concurrent
+  # multi-process writers (a second replica writing to the same file would
+  # corrupt it) — a values override setting this above 1 while
+  # db.driver is still sqlite fails the template render outright with a
+  # clear message, rather than silently clamping to 1 and masking what's
+  # almost certainly a real misconfiguration. Only db.driver: postgres
+  # supports more than one.
+  replicaCount: 1
+
+  # db controls hyve-api's own organization/environment/RBAC/session
+  # datastore (internal/orgdb) — see HYVE-ORGANIZATION-MODEL-PROPOSAL.md's
+  # "Deployment strategy" section and
+  # HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 7
+  # (nexus-config/docs) for the full design this implements.
+  db:
+    # driver: "sqlite" (default) or "postgres". sqlite is the simplest
+    # choice for a single-tenant/low-traffic install — no external
+    # database to run — but caps replicaCount at 1 (see above) and is
+    # refused outright by hyve-api itself once any organization is moved
+    # to a reconciling cluster other than this install's own home cluster
+    # (Milestone 6's own deployment gate, cmd/api/run.go). postgres is
+    # required for horizontal API scaling or any real use of per-
+    # organization reconciling clusters. Switching between the two after
+    # an install already has data needs `hyve cluster-config api
+    # migrate-db` (Milestone 7) — this chart has no in-place conversion of
+    # its own.
+    driver: sqlite
+
+    # sqlite-only: this chart provisions a ReadWriteOnce PersistentVolumeClaim
+    # (api-orgdb-pvc.yaml) mounted at /data, so the orgdb file survives a
+    # pod reschedule/restart — without this, every redeploy silently loses
+    # every organization/account/session (the actual gap that made this
+    # milestone necessary; a fresh install before Milestone 7 had no /data
+    # volume declared at all). A PVC alone only protects against pod
+    # rescheduling, not a lost/corrupted underlying volume or a
+    # accidentally-deleted PVC — see litestream below for real backup.
+    sqliteVolumeSize: 1Gi
+    # sqlite-only: StorageClass for the PVC above. Empty (default) uses
+    # the cluster's own default StorageClass.
+    sqliteStorageClassName: ""
+
+    # postgres-only: name of an existing Secret (in .namespace) holding
+    # the full Postgres connection string under `key` — this chart never
+    # creates or sees the value of this Secret, same bring-your-own-secret
+    # stance as publicCABundle below takes for TLS material: a database
+    # credential isn't something a values.yaml file (typically committed
+    # to git) should ever hold, even indirectly.
+    postgresDSNSecret:
+      name: ""
+      key: dsn
+
+    # litestream: an optional sidecar container (sqlite only) that
+    # continuously streams the orgdb SQLite file to S3-compatible object
+    # storage — see https://litestream.io. Disabled by default: this
+    # chart never requires an object-storage bucket to exist, matching
+    # every other genuinely-optional, bring-your-own-backing-resource
+    # feature here (e.g. publicCABundle below). A PVC (above) already
+    # protects against pod rescheduling; litestream additionally protects
+    # against losing or corrupting the PVC itself.
+    litestream:
+      enabled: false
+      image: "litestream/litestream:0.3.13"
+      # replicaURL: the litestream replica destination, e.g.
+      # s3://my-bucket/hyve-orgdb — see litestream's own config
+      # documentation for the exact URL shape per backend.
+      replicaURL: ""
+      # credentialsSecret: an existing Secret (in .namespace) holding
+      # object-storage credentials as literal env vars this sidecar reads
+      # directly (e.g. LITESTREAM_ACCESS_KEY_ID/LITESTREAM_SECRET_ACCESS_KEY
+      # for S3-compatible storage — adjust the key names to match whatever
+      # backend replicaURL points at) — never created or seen by this
+      # chart, same stance as postgresDSNSecret above.
+      credentialsSecret:
+        name: ""
+
+  # requireReconcilingCluster (default false, preserving every existing
+  # install's behavior) refuses to let any organization other than this
+  # install's own control-plane one land on, or migrate back to, the home
+  # cluster — every organization must be assigned an explicit registered
+  # reconciling cluster (`hyve reconciling-cluster create`, Milestone 6)
+  # instead. See internal/api.Server.RequireReconcilingCluster's own doc
+  # comment for the full design. Two use cases this exists for: a
+  # self-hosted install that wants a hard guarantee tenant organizations
+  # can never touch the cluster hyve-controller/hyve-api themselves run
+  # on, and a hosted/managed offering where end users must never reach
+  # the operator's own shared infrastructure at all. Turning this on
+  # against an install that already has tenant organizations on the home
+  # cluster requires migrating each of them first
+  # (`hyve organization migrate <name> --reconciling-cluster <name>`) —
+  # hyve-api refuses to start otherwise, the same "fail loud at startup"
+  # stance the db.driver=sqlite deployment gate already takes.
+  requireReconcilingCluster: false
+
+  # smtp seeds hyve-api's outbound email settings (password resets,
+  # notifications) on first start — only while nothing has been saved
+  # through the console yet; a value saved there always wins afterwards.
+  # Leave host empty to configure SMTP entirely through the console.
+  # passwordSecret names an existing Secret in .namespace, mounted as a
+  # file so the password never appears in pod args or these values.
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    fromAddress: ""
+    passwordSecret:
+      name: ""
+      key: password
+
+  # bootstrapAdmin creates the install's first superadmin on startup, only
+  # while no superadmin exists yet — replaces the manual
+  # `hyve cluster-config api create-user --role superadmin` step on a
+  # fresh install. Never re-applied afterwards (no password resets or
+  # renames on restart). Not an API endpoint: hyve-api does this in-process
+  # at startup. passwordSecret names an existing Secret in .namespace.
+  # Set either username, or usernameKey — a key in that same Secret holding
+  # the username, so neither lands in values (username wins if both are set).
+  bootstrapAdmin:
+    username: ""
+    usernameKey: ""
+    passwordSecret:
+      name: ""
+      key: password
+
+  # modulesDir must match whatever the controller's own image bakes its
+  # state/modules under — ModuleAuthProvider (internal/api/access.go)
+  # resolves driver modules the same way internal/reconcile does.
+  modulesDir: /var/lib/hyve/modules
+
+  # publicBaseURL is this API's own public address, e.g.
+  # https://hyve-api.example.com — required for the host-cluster and
+  # agent-proxy kubeconfig paths' server: fields (see HostProvider/
+  # AgentProvider, internal/api/access.go). Left empty, those paths stay
+  # disabled.
+  publicBaseURL: ""
+
+  # publicCABundle embeds a CA into every agent-proxy kubeconfig
+  # (AgentProvider.PublicCA, internal/api/access.go) so kubectl trusts
+  # whatever terminates TLS in front of publicBaseURL without relying on
+  # the caller's OS/system trust store — the Kubernetes-native answer to
+  # "I don't want to install mkcert on every machine that needs this,"
+  # since a kubeconfig embedding its own CA is exactly how every real
+  # cluster's kubeconfig already works. Only needed for a self-signed or
+  # otherwise not-publicly-trusted certificate; leave configMapName empty
+  # (default) for a real ACME/Let's Encrypt certificate, which every
+  # caller's system trust store already trusts on its own.
+  publicCABundle:
+    # Name of an existing ConfigMap (in .namespace) holding the CA
+    # certificate as a PEM-encoded key — a ConfigMap, not a Secret, since a
+    # CA's public certificate isn't sensitive data. This chart doesn't
+    # create it or the certificate that needs signing with it — see
+    # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md for why exposure/TLS stays
+    # entirely the deployer's own choice.
+    configMapName: ""
+    key: ca.crt
+
+  # hostServiceAccount names the dedicated ServiceAccount (in .namespace,
+  # created by api-access-roles.yaml) a superadmin's host-cluster
+  # kubeconfig mints a token against, for a ClusterDefinition with
+  # spec.access.method: primary and no real spec.driver. Matches
+  # --host-service-account's own default in cmd/api/run.go; only needs
+  # setting here if the ServiceAccount name is customized away from
+  # "hyve-host-admin" (also update controller-rbac.yaml's own
+  # resourceNames reference if you do).
+  hostServiceAccount: ""
+
+  proxyTarget: "https://kubernetes.default.svc"
+
+  # agentBindAddress is hyve-agent's own SSH tunnel listener's port — see
+  # internal/api.Server.ServeAgentTunnel. Exposed on the MAIN hyve-api
+  # Service (api-service.yaml): a managed cluster's hyve-agent dials in
+  # from outside this cluster's own pod network, the same way a user's
+  # browser reaches api.ingress.host. A raw SSH TCP listener can't be
+  # routed through the same HTTP Ingress as the rest of the API, so
+  # reaching it from outside the cluster needs its own exposure (a
+  # LoadBalancer Service, a TCP-mode Ingress/gateway, or — for local dev —
+  # kubectl port-forward svc/hyve-api).
+  agentBindAddress: ":8092"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  serviceAccount:
+    create: true
+    name: ""
+
+  service:
+    port: 80
+    # type/nodePort default to a plain ClusterIP for a real install — this
+    # chart does not create any Ingress/LoadBalancer of its own (see
+    # docs/HYVE-CLOUD-EXPOSURE-PROPOSAL.md): exposing hyve-api publicly,
+    # and terminating TLS in front of it, is entirely the deployer's own
+    # choice (a cloud LoadBalancer Service, your own Ingress controller,
+    # port-forward for local use). A NodePort override only makes sense on
+    # a cluster whose node ports are actually mapped to the host (e.g. a
+    # kind/k3d dev cluster created with extraPortMappings) — that's also
+    # the local-dev script's own approach; see scripts/install-local.sh,
+    # which applies its own plain-kubectl Ingress against local k3d's
+    # bundled Traefik rather than anything this chart templates.
+    type: ClusterIP
+    nodePort: ""
+
+  # accessRoles controls whether this chart also creates the two default
+  # roles' backing ServiceAccounts + RoleBindings/ClusterRoleBindings
+  # (hyve-access-admin -> cluster-admin, hyve-access-readonly -> view) that
+  # a Binding's own ServiceAccountName points at by default (internal/orgdb;
+  # was HyveAccessBinding.spec.serviceAccountRef before Milestone 4 moved
+  # bindings out of Kubernetes CRDs). Disable
+  # if you'd rather define your own custom roles and reference those
+  # instead.
+  accessRoles:
+    create: true
+    # clusterScoped: false (default) binds these roles as namespaced
+    # RoleBindings, so a caller whose driver module mints a kubeconfig
+    # against hyve-access-admin/hyve-access-readonly (e.g. one that routes
+    # through /proxy — see internal/api/proxy.go) only gets cluster-admin/
+    # view over THIS install's own namespace — required for multiple hyve
+    # installs (tenants) to safely share one cluster. Set true only for a
+    # genuinely single-tenant cluster where cluster-wide cluster-admin/view
+    # for these roles is actually intended.
+    clusterScoped: false
+
+  # multiTenant.enabled (default false, HYVE-MULTI-TENANCY-PLAN.md's
+  # "Phase 2") switches hyve-api's own RBAC (api-rbac.yaml) from a
+  # namespaced Role bound to just .Values.namespace to a ClusterRole,
+  # needed once a single install serves many tenant namespaces resolved
+  # per-login instead of one install per tenant. Leave false for Phase 1's
+  # one-install-per-tenant model (the default, least-privilege choice).
+  multiTenant:
+    enabled: false
+
+# No separate ui.* block anymore — the web console (web/) is embedded
+# directly into the hyve binary (internal/webui, go:embed) and served by
+# hyve-api itself at "/", alongside /api, /auth, /proxy, etc. (see
+# internal/api/server.go's own Routes() doc comment). There's no second
+# image, Deployment, or Service to configure: api.image.*/api.service
+# above already cover it. Whatever exposes hyve-api publicly gets the UI
+# for free at the same origin — see scripts/install-local.sh's own
+# Ingress (local dev only) for a worked example, now routing everything
+# through hyve-api's single Service.

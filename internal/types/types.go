@@ -122,12 +122,31 @@ type DriverRef struct {
 	Version string `yaml:"version" json:"version"`
 }
 
+// RunnerSpec configures the container image cluster mode dispatches this
+// cluster's module create/status/delete/auth operations to as a Kubernetes
+// Job (see module.JobRunner) — set here (or on the Template a cluster was
+// created from, which this is rendered from — see
+// hyvev1alpha1.RenderClusterDefinitionSpec) rather than on the module
+// itself: a module's own module.yaml can document/recommend a suitable
+// image (its requirements.tools entries' description field), but doesn't
+// choose one, since the same module may run under different images across
+// different deployments (a private registry mirror, extra bundled tools,
+// a hardened base). Ignored entirely in local/CLI mode, where modules
+// always run inline.
+type RunnerSpec struct {
+	Image string `yaml:"image,omitempty" json:"image,omitempty"`
+}
+
 // ClusterSpec represents the desired cluster configuration.
 // The module identified by Driver is responsible for translating Params into
 // cloud API calls; the reconciler is provider-agnostic and only orchestrates.
 type ClusterSpec struct {
 	// Driver identifies the module that manages this cluster (e.g. github.com/hyve-modules/aws-eks).
 	Driver DriverRef `yaml:"driver,omitempty" json:"driver,omitempty"`
+
+	// Runner configures the image cluster mode's Job dispatch uses for this
+	// cluster's module operations — see RunnerSpec.
+	Runner RunnerSpec `yaml:"runner,omitempty" json:"runner,omitempty"`
 
 	// Params are arbitrary key/value pairs passed to the driver as HYVE_PARAM_<KEY>
 	// environment variables when running module operations.
@@ -173,12 +192,71 @@ type ClusterSpec struct {
 	// ExpiresAt is an optional RFC 3339 timestamp. When the current time is past this
 	// value the reconciler treats the cluster as if delete: true is set.
 	ExpiresAt string `yaml:"expiresAt,omitempty" json:"expiresAt,omitempty"`
+
+	// DependsOn names other clusters this one depends on — e.g. a Cluster
+	// API-backed workload cluster that needs its CAPI management cluster
+	// ACTIVE first. Optional; see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+	// "Optional dependsOn ordering" section. ReconcileOne skips (does not
+	// fail) a reconcile cycle for this cluster while any named dependency
+	// isn't ACTIVE.
+	DependsOn []string `yaml:"dependsOn,omitempty" json:"dependsOn,omitempty"`
+
+	// AccessMethod mirrors the CRD-only AccessSpec.Method (module-auth/
+	// primary). "primary" is a pure identifying marker today — see
+	// hyvev1alpha1.AccessMethodPrimary's own doc comment — consumed by
+	// `hyve migrate cluster`'s host-resolution; it carries no special
+	// reconcile behavior of its own. Every ClusterSpec, including a
+	// primary-marked one, needs a real Driver — reconcile enforces this
+	// uniformly.
+	AccessMethod string `yaml:"accessMethod,omitempty" json:"accessMethod,omitempty"`
+
+	// Agent mirrors the CRD-only AccessSpec.Agent (hyvev1alpha1.AgentSpec)
+	// — same "primary needed to reach internal/types" reasoning as
+	// AccessMethod above applies here too: internal/reconcile is the
+	// mode-agnostic engine that actually drives hyve-agent's install/
+	// removal (see internal/reconcile/agent.go), so this needs to reach
+	// this package rather than staying CRD-only. Meaningless in local/CLI
+	// mode today (there's no control-plane API process for an agent to
+	// dial into without cluster mode) — see Reconciler.AgentTokenIssuer's
+	// own doc comment for how that's enforced (a soft no-op, not an
+	// error).
+	Agent AgentSpec `yaml:"agent,omitempty" json:"agent,omitempty"`
+
+	// AppliedAgent is reconciler-owned state tracking hyve-agent's current
+	// installation, mirroring AppliedResources' own pattern one level up
+	// (a single record, not a map, since there's only ever one agent
+	// installation per cluster). nil means "not installed" — see
+	// AppliedAgent's own doc comment.
+	AppliedAgent *AppliedAgent `yaml:"appliedAgent,omitempty" json:"appliedAgent,omitempty"`
+}
+
+// AccessMethodPrimary mirrors hyvev1alpha1.AccessMethodPrimary — duplicated
+// rather than imported, same "internal/types stays independent of the CRD
+// package" precedent as every other mirrored constant/type in this file.
+const AccessMethodPrimary = "primary"
+
+// AgentSpec mirrors hyvev1alpha1.AgentSpec — see that type's own doc
+// comment (internal/apis/hyve/v1alpha1/clusterdefinition_types.go) for the
+// full Enabled/Proxy semantics; duplicated here rather than imported, same
+// precedent as every other mirrored type in this file.
+type AgentSpec struct {
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Proxy   bool `yaml:"proxy,omitempty" json:"proxy,omitempty"`
 }
 
 // ClusterMetadata represents cluster metadata
 type ClusterMetadata struct {
 	Name   string `yaml:"name" json:"name"`
 	Region string `yaml:"region" json:"region"`
+
+	// Environment is the cluster-mode environment this cluster belongs to
+	// (its hyve.io/environment label), whose name prefixes the real object
+	// name: a cluster "gke-1" in environment "default" is named
+	// "default-gke-1". Set only when loaded from a ClusterDefinition CR —
+	// never written to or read from a file, so local mode is unaffected.
+	// Used to resolve short-name references (dependsOn, a module's
+	// requirements.mgmtCluster) within the same environment.
+	Environment string `yaml:"-" json:"-"`
 }
 
 // ClusterDefinition represents a complete cluster definition

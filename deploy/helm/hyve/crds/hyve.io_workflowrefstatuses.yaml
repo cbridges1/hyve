@@ -1,0 +1,122 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: workflowrefstatuses.hyve.io
+spec:
+  group: hyve.io
+  names:
+    kind: WorkflowRefStatus
+    listKind: WorkflowRefStatusList
+    plural: workflowrefstatuses
+    shortNames:
+    - wfrs
+    singular: workflowrefstatus
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .spec.source
+      name: Source
+      type: string
+    - jsonPath: .status.resolved
+      name: Resolved
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          WorkflowRefStatus is a visibility record of a remote (git-referenced)
+          WorkflowRef the controller has (attempted to) resolve automatically while
+          reconciling a ClusterDefinition that referenced it — cluster mode's
+          equivalent of Module for driver modules. The ClusterDefinition never
+          references this CR; it's a byproduct the controller keeps in sync every
+          reconcile (see internal/controller/reconciler.go's resolveWorkflowIfNeeded
+          and upsertWorkflowRefStatusCR), purely so `hyve workflow list`/`kubectl
+          get workflowrefstatuses.hyve.io` can show what a plain `kubectl get
+          workflows.hyve.io` can't — a git-referenced workflow was never, and still
+          isn't, represented by a real Workflow CR (see that kind's own doc
+          comment). Not a trigger: creating or editing one by hand does not cause
+          the controller to resolve anything.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              WorkflowRefStatusSpec identifies which remote WorkflowRef this mirrors.
+              Name is the declared ref's short name (WorkflowRef.Name) — the
+              human-facing display identity; metadata.name is a derived, collision-safe
+              slug (see module.CRName), not this, since two different sources can
+              legitimately share the same short Name (see workflowref.NameCollision).
+            properties:
+              name:
+                type: string
+              source:
+                type: string
+            required:
+            - name
+            - source
+            type: object
+          status:
+            description: |-
+              WorkflowRefStatusStatus is reconciler-owned observed state — written only
+              via the status subresource. Mirrors ModuleStatus exactly: a write-only
+              record of an auto-resolve outcome, not something any reconcile loop
+              watches or acts on.
+            properties:
+              error:
+                description: |-
+                  Error holds the most recent resolution failure, if any — cleared on
+                  the next successful resolve.
+                type: string
+              rawVersion:
+                description: RawVersion is the version as written in the ref ("" means
+                  "latest").
+                type: string
+              resolved:
+                description: |-
+                  Resolved is true once this ref has been successfully fetched and
+                  locked (see internal/workflowref.Install).
+                type: boolean
+              resolvedAt:
+                description: ResolvedAt is when Resolved last became true.
+                format: date-time
+                type: string
+              resolvedVersion:
+                description: |-
+                  ResolvedVersion is the concrete ref hyve resolved to (tag/branch/
+                  HEAD). Blank on a cache-hit resolve pass — cosmetic, not
+                  correctness-bearing; SHA256 is the real integrity marker.
+                type: string
+              sha256:
+                description: SHA256 is the resolved file's content hash, set once
+                  Resolved.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

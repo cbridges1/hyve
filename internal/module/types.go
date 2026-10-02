@@ -40,6 +40,16 @@ type ParamSpec struct {
 type ModuleRequirements struct {
 	Env   []EnvRequirement  `yaml:"env,omitempty" json:"env,omitempty"`
 	Tools []ToolRequirement `yaml:"tools,omitempty" json:"tools,omitempty"`
+
+	// MgmtCluster names another hyve-managed ClusterDefinition this module
+	// depends on for credentials — e.g. a module wrapping Cluster API,
+	// which needs a kubeconfig for a separate CAPI management cluster
+	// that's itself just another cluster hyve already knows about. Optional;
+	// see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's "A typed mgmtCluster
+	// module requirement" section. Checked at reconcile pre-flight (see
+	// internal/reconcile) — a missing/wrong mgmtCluster otherwise only ever
+	// surfaces as a script failure deep inside create.yaml.
+	MgmtCluster string `yaml:"mgmtCluster,omitempty" json:"mgmtCluster,omitempty"`
 }
 
 type EnvRequirement struct {
@@ -59,6 +69,7 @@ type LockFile struct {
 	Version   int                        `yaml:"version" json:"version"`
 	Modules   map[string]*LockedModule   `yaml:"modules" json:"modules"`
 	Workflows map[string]*LockedWorkflow `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	Resources map[string]*LockedResource `yaml:"resources,omitempty" json:"resources,omitempty"`
 }
 
 type LockedModule struct {
@@ -82,6 +93,20 @@ type LockedWorkflow struct {
 type LockedRunner struct {
 	Image  string `yaml:"image,omitempty" json:"image,omitempty"`
 	Digest string `yaml:"digest,omitempty" json:"digest,omitempty"`
+}
+
+// LockedResource is one resolved, content-hashed remote resource manifest.
+// Unlike LockedModule, it carries a Name for the same reason LockedWorkflow
+// does — a resource is referenced by Name after install, not by
+// source+version. Unlike LockedWorkflow, Name comes from the ResourceRef
+// itself rather than being derived from file content: a raw K8s manifest
+// has no single canonical "hyve name" the way a Workflow file's own
+// metadata.name does, especially once multi-document.
+type LockedResource struct {
+	Name     string `yaml:"name" json:"name"`
+	Source   string `yaml:"source" json:"source"`     // canonical "host/org/repo//path/file.yaml" — never a directory
+	Resolved string `yaml:"resolved" json:"resolved"` // full download URL for this exact file at the pinned ref
+	SHA256   string `yaml:"sha256" json:"sha256"`     // sha256 of this file's raw bytes only
 }
 
 // ClusterAuth is parsed from auth.yaml (kind: ClusterAuth).
@@ -125,11 +150,12 @@ type AuthMethod struct {
 type OperationType string
 
 const (
-	OperationCreate OperationType = "create"
-	OperationDelete OperationType = "delete"
-	OperationStatus OperationType = "status"
-	OperationAuth   OperationType = "auth"
-	OperationScale  OperationType = "scale"
+	OperationCreate   OperationType = "create"
+	OperationDelete   OperationType = "delete"
+	OperationStatus   OperationType = "status"
+	OperationAuth     OperationType = "auth"
+	OperationScale    OperationType = "scale"
+	OperationDescribe OperationType = "describe"
 )
 
 // ModuleTypeAuthOnly marks a module that only manages authentication for an
@@ -143,4 +169,16 @@ const ModuleTypeAuthOnly = "authOnly"
 type OperationResult struct {
 	Outputs  map[string]string
 	ExitCode int
+
+	// RawOutput is the operation's full raw stdout (capped — see
+	// capRawOutput in executor.go), for callers that need more than the
+	// parsed HYVE_KEY=value subset — e.g. internal/reconcile's create/delete
+	// paths, which persist it onto ClusterDefinitionStatus so a failed or
+	// unexpected script run is diagnosable without shelling into a Job pod
+	// that k8sjob.Run has already deleted by the time anyone looks. Set by
+	// executeScript/executeScriptViaJob/executeWorkflow; left empty by
+	// executeAuth (which returns a purpose-built result of its own, never a
+	// generic script's raw output — that path already has kubeconfig-marker
+	// extraction, which is the auth contract's own richer signal).
+	RawOutput string
 }

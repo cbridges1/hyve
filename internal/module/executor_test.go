@@ -1,0 +1,199 @@
+package module
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestExecuteScript_NonZeroExitIsAHardError is the regression test for a
+// real, live-confirmed bug: a bare (non-YAML) operation script that ran
+// and genuinely failed used to come back from Execute as (result, nil) —
+// ExitCode set, but no Go error — since executeScript only ever treated a
+// non-*exec.ExitError as a hard failure, silently swallowing an ordinary
+// non-zero exit instead. Every real caller of Execute (reconcileCluster's
+// own status/create/delete checks) only ever inspects err, never
+// ExitCode, so a genuinely failing operation was indistinguishable from
+// one that simply printed nothing — confirmed live via a driver module's
+// status.yaml exhausting its own retry loop and exiting 1, which silently
+// became an "unrecognized status" no-op instead of a real, diagnosable
+// error. executeScriptViaJob and executeWorkflow's own Job-dispatch
+// branch had the identical pattern, fixed the same way — not independently
+// covered here since JobRunner needs a real Kubernetes API to dispatch
+// against; this is the one of the three fixes that's cheaply testable
+// with a plain os/exec script and no cluster at all.
+func TestExecuteScript_NonZeroExitIsAHardError(t *testing.T) {
+	moduleDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.sh"), []byte(
+		"#!/bin/sh\necho \"could not authenticate against the cloud provider\"\nexit 1\n",
+	), 0644))
+
+	exec := &Executor{ModuleDir: moduleDir, ClusterName: "my-cluster"}
+	result, err := exec.Execute(context.Background(), OperationStatus)
+
+	require.Error(t, err, "a script that ran and genuinely exited non-zero must be a hard error, not silently swallowed")
+	assert.Contains(t, err.Error(), "exited 1")
+	assert.Contains(t, err.Error(), "could not authenticate", "the script's own output must reach the error, not just a generic message")
+	require.NotNil(t, result, "the result (ExitCode, RawOutput) must still be returned alongside the error, for a caller that wants both")
+	assert.Equal(t, 1, result.ExitCode)
+}
+
+// TestExecuteYAMLWorkflowOperation_RunsInlineWhenRunnerNil confirms a
+// kind:Workflow module operation file still runs inline via os/exec in
+// local/CLI mode (Runner == nil) exactly as before — the Job-dispatch
+// branch added to executeWorkflow only applies when Runner is set.
+func TestExecuteYAMLWorkflowOperation_RunsInlineWhenRunnerNil(t *testing.T) {
+	moduleDir := t.TempDir()
+	statusYAML := `apiVersion: v1
+kind: Workflow
+metadata:
+  name: status
+spec:
+  jobs:
+    main:
+      steps:
+        - run: echo HYVE_CLUSTER_STATUS=ACTIVE
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.yaml"), []byte(statusYAML), 0644))
+
+	exec := &Executor{ModuleDir: moduleDir, ClusterName: "my-cluster"}
+	result, err := exec.Execute(context.Background(), OperationStatus)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Equal(t, "ACTIVE", result.Outputs["HYVE_CLUSTER_STATUS"])
+}
+
+func TestExtractBetweenMarkers_WithTrailingNewlineInFile(t *testing.T) {
+	// The wrapper's `cat "$KUBECONFIG"` output already ends in "\n" here
+	// (a real kubeconfig file almost always does), plus the wrapper's own
+	// unconditional blank echo before the end marker.
+	stdout := "noise before\n___HYVE_KUBECONFIG_BEGIN___\nline1\nline2\n\n___HYVE_KUBECONFIG_END___\nnoise after\n"
+	content, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker)
+	require.True(t, ok)
+	assert.Equal(t, "line1\nline2\n", content)
+}
+
+func TestExtractBetweenMarkers_NoTrailingNewlineInFile(t *testing.T) {
+	// cat's output does NOT end in "\n" here — only the wrapper's own
+	// unconditional blank echo (exactly one "\n") separates it from the
+	// end marker.
+	stdout := "___HYVE_KUBECONFIG_BEGIN___\nline1\n___HYVE_KUBECONFIG_END___\n"
+	content, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker)
+	require.True(t, ok)
+	assert.Equal(t, "line1", content)
+}
+
+func TestExtractBetweenMarkers_MissingMarkersReturnsFalse(t *testing.T) {
+	_, ok := extractBetweenMarkers("no markers here\n", kubeconfigBeginMarker, kubeconfigEndMarker)
+	assert.False(t, ok)
+}
+
+func TestExtractBetweenMarkers_MissingEndMarkerReturnsFalse(t *testing.T) {
+	stdout := "___HYVE_KUBECONFIG_BEGIN___\nline1\n"
+	_, ok := extractBetweenMarkers(stdout, kubeconfigBeginMarker, kubeconfigEndMarker)
+	assert.False(t, ok)
+}
+
+func TestKubeconfigPathForCluster_UniquePerCluster(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	pathA, err := KubeconfigPathForCluster("cluster-a")
+	require.NoError(t, err)
+	pathB, err := KubeconfigPathForCluster("cluster-b")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, pathA, pathB)
+	assert.Equal(t, filepath.Join(home, ".hyve", "kubeconfigs"), filepath.Dir(pathA))
+}
+
+func TestKubeconfigPathForCluster_SanitizesUnsafeCharacters(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path, err := KubeconfigPathForCluster("../../etc/passwd")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".hyve", "kubeconfigs"), filepath.Dir(path))
+}
+
+// TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv is the direct
+// regression test for the MaxConcurrentReconciles fix: two clusters'
+// concurrent auth calls must never be able to clobber each other via
+// process-wide KUBECONFIG. Confirms the auth script (inline mode — no
+// Runner set) sees a per-cluster KUBECONFIG value (so tools like civo
+// --save write there), the returned OperationResult carries that same
+// path, and the process environment is never mutated as a side effect.
+func TestExecuteAuth_WritesPerClusterKubeconfig_NotProcessEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", "")
+
+	moduleDir := t.TempDir()
+	authYAML := `apiVersion: v1
+kind: ClusterAuth
+metadata:
+  name: test
+spec:
+  methods:
+    - name: default
+      auth:
+        script: "echo fake-kubeconfig > \"$KUBECONFIG\""
+      exports: KUBECONFIG
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
+
+	exec := &Executor{ModuleDir: moduleDir, WorkDir: t.TempDir(), ClusterName: "my-cluster"}
+	result, err := exec.Execute(context.Background(), OperationAuth)
+	require.NoError(t, err)
+
+	wantPath, err := KubeconfigPathForCluster("my-cluster")
+	require.NoError(t, err)
+	assert.Equal(t, wantPath, result.Outputs["KUBECONFIG"])
+	assert.FileExists(t, wantPath)
+
+	assert.Empty(t, os.Getenv("KUBECONFIG"), "auth must never mutate the process-wide KUBECONFIG env var")
+}
+
+// TestExecuteAuth_DifferentClustersGetIsolatedKubeconfigs proves two
+// clusters' auth calls through the same process never collide on a single
+// file — the property MaxConcurrentReconciles > 1 depends on.
+func TestExecuteAuth_DifferentClustersGetIsolatedKubeconfigs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	moduleDir := t.TempDir()
+	authYAML := `apiVersion: v1
+kind: ClusterAuth
+metadata:
+  name: test
+spec:
+  methods:
+    - name: default
+      auth:
+        script: "echo \"cluster=$HYVE_CLUSTER_NAME\" > \"$KUBECONFIG\""
+      exports: KUBECONFIG
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "auth.yaml"), []byte(authYAML), 0644))
+
+	execA := &Executor{ModuleDir: moduleDir, WorkDir: t.TempDir(), ClusterName: "cluster-a", Env: []string{"HYVE_CLUSTER_NAME=cluster-a"}}
+	execB := &Executor{ModuleDir: moduleDir, WorkDir: t.TempDir(), ClusterName: "cluster-b", Env: []string{"HYVE_CLUSTER_NAME=cluster-b"}}
+
+	resultA, err := execA.Execute(context.Background(), OperationAuth)
+	require.NoError(t, err)
+	resultB, err := execB.Execute(context.Background(), OperationAuth)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, resultA.Outputs["KUBECONFIG"], resultB.Outputs["KUBECONFIG"])
+
+	contentA, err := os.ReadFile(resultA.Outputs["KUBECONFIG"])
+	require.NoError(t, err)
+	contentB, err := os.ReadFile(resultB.Outputs["KUBECONFIG"])
+	require.NoError(t, err)
+
+	assert.Contains(t, string(contentA), "cluster=cluster-a")
+	assert.Contains(t, string(contentB), "cluster=cluster-b")
+}

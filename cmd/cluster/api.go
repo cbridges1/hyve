@@ -1,0 +1,147 @@
+package cluster
+
+import (
+	"encoding/json"
+	"log"
+	"os"
+
+	"github.com/cbridges1/hyve/cmd/shared"
+
+	"sigs.k8s.io/yaml"
+)
+
+// listClustersAPI is cluster mode's counterpart to listClusters (crud.go)
+// — see shared.UseClusterMode's doc comment for how a command picks
+// between the two. Errors are fatal, not a silent fall-back to local
+// files: a caller who's logged in and expects cluster mode should never
+// get local (possibly stale, possibly nonexistent) data without knowing
+// their actual request failed.
+func listClustersAPI(client *shared.APIClient) {
+	clusters, err := client.ListClusters()
+	if err != nil {
+		log.Fatalf("Failed to list clusters: %v", err)
+	}
+
+	inEnv := ""
+	if client.Env != "" {
+		inEnv = " in environment " + client.Env
+	}
+	if len(clusters) == 0 {
+		log.Printf("❌ No clusters found%s", inEnv)
+		log.Println("\n💡 Run 'hyve cluster create <cluster> --file <path>' to create a cluster")
+		return
+	}
+
+	log.Printf("📦 Clusters%s (%d):\n", inEnv, len(clusters))
+	for _, c := range clusters {
+		log.Printf("  %s", c.Name)
+		if c.Environment != "" && client.Env == "" {
+			log.Printf("    Environment: %s", c.Environment)
+		}
+		log.Printf("    Driver: %s", c.Driver)
+		if c.AccessMethod != "" {
+			log.Printf("    Access: %s", c.AccessMethod)
+		}
+		for _, cond := range c.Conditions {
+			log.Printf("    %s: %s", cond.Type, cond.Status)
+		}
+		log.Println()
+	}
+
+	log.Println("💡 Commands:")
+	log.Println("  hyve cluster show <name>      # Show cluster definition")
+	log.Println("  hyve cluster delete <name>    # Delete cluster")
+}
+
+func showClusterAPI(client *shared.APIClient, name string) {
+	c, err := client.GetCluster(name)
+	if err != nil {
+		log.Fatalf("Failed to get cluster %q: %v", name, err)
+	}
+
+	log.Printf("Name:   %s", c.Name)
+	log.Printf("Driver: %s", c.Driver)
+	log.Printf("Observed generation: %d", c.ObservedGeneration)
+	if c.AccessMethod != "" {
+		log.Printf("Access method: %s", c.AccessMethod)
+	}
+	if c.Agent != nil && c.Agent.Enabled {
+		log.Printf("Agent: enabled (proxy: %v)", c.Agent.Proxy)
+		log.Printf("  Connected: %v", c.AgentStatus.Connected)
+		if c.AgentStatus.Version != "" {
+			log.Printf("  Version: %s", c.AgentStatus.Version)
+		}
+		if c.AgentStatus.LastConnectedAt != "" {
+			log.Printf("  Last connected: %s", c.AgentStatus.LastConnectedAt)
+		}
+		if c.AgentStatus.LastDisconnectedAt != "" {
+			log.Printf("  Last disconnected: %s", c.AgentStatus.LastDisconnectedAt)
+		}
+	}
+	if len(c.Conditions) > 0 {
+		log.Println("Conditions:")
+		for _, cond := range c.Conditions {
+			log.Printf("  %s: %s (%s)", cond.Type, cond.Status, cond.Reason)
+			if cond.Message != "" {
+				log.Printf("    %s", cond.Message)
+			}
+		}
+	}
+}
+
+func deleteClusterAPI(client *shared.APIClient, name string) {
+	if err := client.DeleteCluster(name); err != nil {
+		log.Fatalf("Failed to delete cluster %q: %v", name, err)
+	}
+	log.Printf("📝 Cluster '%s' marked for deletion", name)
+	log.Printf("   The controller will run onDelete workflows, delete via the module, and remove the object.")
+}
+
+// createClusterFromTemplateAPI is cluster mode's counterpart to
+// createClusterFromTemplate — the named Template CR is rendered server-side
+// (POST /api/clusters with a template field, via the same
+// hyvev1alpha1.RenderClusterDefinitionSpec function local mode's own
+// GenerateClusterDefinition uses), so no separate render round-trip is
+// needed for the common case.
+func createClusterFromTemplateAPI(client *shared.APIClient, clusterName, templateName, region string, overrides map[string]string) {
+	log.Printf("🚀 Creating cluster '%s' from template '%s' via the API...", clusterName, templateName)
+	c, err := client.CreateClusterFromTemplate(clusterName, templateName, region, overrides)
+	if err != nil {
+		log.Fatalf("Failed to create cluster: %v", err)
+	}
+	log.Printf("✅ Cluster '%s' created (driver: %s)", c.Name, c.Driver)
+}
+
+// createClusterFromFileAPI reads path as the same apiVersion/kind/metadata/
+// spec YAML shape a local clusters/<name>.yaml already uses, extracts
+// metadata.name and spec, and POSTs them to the API.
+func createClusterFromFileAPI(client *shared.APIClient, path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("Failed to read %s: %v", path, err)
+	}
+	jsonData, err := yaml.YAMLToJSON(data)
+	if err != nil {
+		log.Fatalf("Failed to parse %s: %v", path, err)
+	}
+
+	var parsed struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Spec json.RawMessage `json:"spec"`
+	}
+	if err := json.Unmarshal(jsonData, &parsed); err != nil {
+		log.Fatalf("Failed to parse %s: %v", path, err)
+	}
+	if parsed.Metadata.Name == "" {
+		log.Fatalf("%s: metadata.name is required", path)
+	}
+
+	log.Printf("🚀 Creating cluster '%s' via the API...", parsed.Metadata.Name)
+	c, err := client.CreateCluster(parsed.Metadata.Name, parsed.Spec)
+	if err != nil {
+		log.Fatalf("Failed to create cluster: %v", err)
+	}
+	log.Printf("✅ Cluster '%s' created (driver: %s)", c.Name, c.Driver)
+}

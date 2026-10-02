@@ -1,14 +1,47 @@
 package reconcile
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cbridges1/hyve/internal/module"
+	"github.com/cbridges1/hyve/internal/resource"
+	"github.com/cbridges1/hyve/internal/state"
 	"github.com/cbridges1/hyve/internal/types"
+	"github.com/cbridges1/hyve/internal/workflow"
 )
+
+// fakeStateProvider is a minimal in-memory StateProvider for tests that
+// only need LoadClusterDefinitions to return a fixed set — everything else
+// panics if called, so a test using it fails loudly if it exercises more
+// of the interface than intended.
+type fakeStateProvider struct {
+	defs      []types.ClusterDefinition
+	localPath string
+}
+
+func (f *fakeStateProvider) LocalPath() string { return f.localPath }
+func (f *fakeStateProvider) LoadRepoConfig() (*state.RepoConfig, error) {
+	return &state.RepoConfig{}, nil
+}
+func (f *fakeStateProvider) LoadClusterDefinitions() ([]types.ClusterDefinition, error) {
+	return f.defs, nil
+}
+func (f *fakeStateProvider) SaveClusterDefinition(def *types.ClusterDefinition) error { return nil }
+func (f *fakeStateProvider) RemoveClusterFile(name string) error                      { return nil }
+func (f *fakeStateProvider) HasStateSidecar(name string) bool                         { return false }
+func (f *fakeStateProvider) WorkflowSource() workflow.Source {
+	return workflow.FileSource{Dir: f.LocalPath()}
+}
+func (f *fakeStateProvider) ResourceSource() resource.Source {
+	return resource.FileSource{Dir: f.LocalPath()}
+}
 
 func TestValidateDriverModuleLocked(t *testing.T) {
 	t.Run("no driver source errors", func(t *testing.T) {
@@ -60,6 +93,29 @@ func TestValidateDriverModuleLocked(t *testing.T) {
 			Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "github.com/hyve-modules/civo", Version: "v1.0.0"}},
 		}
 		assert.NoError(t, validateDriverModuleLocked(c, lf))
+	})
+
+	t.Run("primary-marked host cluster with no driver needs no lock entry", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "host"},
+			Spec:     types.ClusterSpec{AccessMethod: types.AccessMethodPrimary},
+		}
+		assert.NoError(t, validateDriverModuleLocked(c, lf))
+	})
+
+	t.Run("primary-marked host cluster WITH a real driver still validates it normally", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "host"},
+			Spec: types.ClusterSpec{
+				AccessMethod: types.AccessMethodPrimary,
+				Driver:       types.DriverRef{Source: "github.com/hyve-modules/civo", Version: "v1.0.0"},
+			},
+		}
+		err := validateDriverModuleLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in hyve.lock")
 	})
 }
 
@@ -160,4 +216,394 @@ func TestValidateWorkflowRefsLocked(t *testing.T) {
 			assert.Error(t, validateWorkflowRefsLocked(c, lf))
 		}
 	})
+}
+
+// TestValidateResourceRefsLocked mirrors TestValidateWorkflowRefsLocked
+// exactly, one tier below it — validateResourceRefsLocked has the same
+// local/Name-is-fine, remote-must-be-locked, directory-kind-rejected shape.
+func TestValidateResourceRefsLocked(t *testing.T) {
+	t.Run("local and Name-only refs are always fine", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{
+					{Name: "local-resource", Source: "./x.yaml"},
+					{Name: "by-name"},
+				},
+			},
+		}
+		assert.NoError(t, validateResourceRefsLocked(c, lf))
+	})
+
+	t.Run("remote ref not in lock errors", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//a.yaml@v1.0.0"}},
+			},
+		}
+		err := validateResourceRefsLocked(c, lf)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in hyve.lock")
+	})
+
+	t.Run("remote ref present in lock passes", func(t *testing.T) {
+		lf := &module.LockFile{
+			Version: 1,
+			Resources: map[string]*module.LockedResource{
+				"github.com/org/repo//a.yaml@v1.0.0": {Name: "a", Source: "github.com/org/repo//a.yaml", SHA256: "abc"},
+			},
+		}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//a.yaml@v1.0.0"}},
+			},
+		}
+		assert.NoError(t, validateResourceRefsLocked(c, lf))
+	})
+
+	t.Run("directory-kind ref needs no lock entry", func(t *testing.T) {
+		lf := &module.LockFile{Version: 1}
+		c := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "test"},
+			Spec: types.ClusterSpec{
+				Resources: []types.ResourceRef{{Name: "a", Source: "github.com/org/repo//manifests/"}},
+			},
+		}
+		assert.NoError(t, validateResourceRefsLocked(c, lf), "directory sources are resolved fresh each reconcile, never locked")
+	})
+}
+
+// TestReconcileCluster_ToolRequirements_OnlyEnforcedInlineNotViaJobDispatch
+// is the regression test for the "civo not found in PATH" bug: modules
+// declaring spec.requirements.tools are meant to be checked against
+// whatever process actually runs their scripts. In local/CLI mode that's
+// this process, so the check is real and correct. In cluster mode
+// (r.ModuleRunner != nil) the module instead runs inside a separate Job on
+// its own runner.image — this process's own PATH says nothing about what's
+// in that image, so the pre-flight check must be skipped there (a missing
+// tool still surfaces, just naturally, as the Job's script failing with
+// "command not found").
+func TestReconcileCluster_ToolRequirements_OnlyEnforcedInlineNotViaJobDispatch(t *testing.T) {
+	repoRoot := t.TempDir()
+	moduleDir := filepath.Join(repoRoot, "modules", "test-driver")
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.yaml"), []byte(`apiVersion: v1
+kind: Module
+metadata:
+  name: test-driver
+  version: 0.1.0
+  type: authOnly
+spec:
+  requirements:
+    tools:
+      - name: definitely-not-a-real-tool-xyz-123
+`), 0644))
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./modules/test-driver", Version: "local"}},
+	}
+	lf := &module.LockFile{Version: 1}
+
+	t.Run("local mode: missing tool is a hard error", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "definitely-not-a-real-tool-xyz-123")
+	})
+
+	t.Run("cluster mode: tool check is skipped, module dispatches to its own runner.image instead", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		r.ModuleRunner = &module.JobRunner{} // never actually invoked — this authOnly module has no auth/create/status/delete files to dispatch
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+		assert.NoError(t, err)
+	})
+}
+
+// TestReconcileCluster_EnvRequirements_OnlyEnforcedViaJobDispatchNotInline is
+// the inverse of the tool-requirements test above: a required env var (e.g.
+// this module's own CIVO_TOKEN) is only a hard, checkable requirement in
+// cluster mode, where the Job's container starts fresh every time with no
+// alternative. Local/CLI mode is deliberately exempt — a required env var
+// there may have an equally valid non-env alternative hyve has no
+// visibility into (e.g. `civo apikey save`), so enforcing presence would
+// risk a false positive against an already-working local setup. Confirmed
+// live: a real cluster-mode install with a driver module needing CIVO_TOKEN
+// and no such key in hyve-cli-secrets silently never created the cluster at
+// all (see TestReconcileCluster_UnrecognizedStatus_IsAHardErrorNotASilentNoop
+// for the other half of that same live bug) — this is the pre-flight check
+// that now catches it immediately instead.
+func TestReconcileCluster_EnvRequirements_OnlyEnforcedViaJobDispatchNotInline(t *testing.T) {
+	repoRoot := t.TempDir()
+	moduleDir := filepath.Join(repoRoot, "modules", "test-driver")
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.yaml"), []byte(`apiVersion: v1
+kind: Module
+metadata:
+  name: test-driver
+  version: 0.1.0
+  type: authOnly
+spec:
+  requirements:
+    env:
+      - name: DEFINITELY_NOT_SET_XYZ_123
+        description: fake credential for this test
+`), 0644))
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./modules/test-driver", Version: "local"}},
+	}
+	lf := &module.LockFile{Version: 1}
+
+	t.Run("local mode: missing env var is not enforced", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+		assert.NoError(t, err)
+	})
+
+	t.Run("cluster mode: missing env var is a hard, immediate error", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		r.ModuleRunner = &module.JobRunner{} // never actually invoked — the env check fails before dispatch
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_XYZ_123")
+	})
+
+	t.Run("cluster mode: a satisfied env requirement (via hyve-cli-secrets) passes", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+		r.ModuleRunner = &module.JobRunner{}
+		secretsEnv := map[string]string{"DEFINITELY_NOT_SET_XYZ_123": "some-real-value"}
+		err := r.reconcileCluster(context.Background(), cluster, lf, false, secretsEnv, nil)
+		assert.NoError(t, err)
+	})
+}
+
+// TestReconcileCluster_UnrecognizedStatus_IsAHardErrorNotASilentNoop is the
+// regression test for a real, live-confirmed bug: a driver's own status op
+// returning something reconcileCluster's switch doesn't recognize (an empty
+// string is the case that actually happened) used to fall into a silent
+// default no-op that returned nil — the ClusterDefinition's own Ready
+// condition then reported "last reconcile succeeded" from whatever the
+// last actually-successful pass set, even though this pass concluded
+// nothing and no cluster had ever been created. Reported directly: "the
+// cluster page indicated that the cluster was ready even though that was
+// not true."
+func TestReconcileCluster_UnrecognizedStatus_IsAHardErrorNotASilentNoop(t *testing.T) {
+	repoRoot := t.TempDir()
+	moduleDir := filepath.Join(repoRoot, "modules", "test-driver")
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.yaml"), []byte(`apiVersion: v1
+kind: Module
+metadata:
+  name: test-driver
+  version: 0.1.0
+spec: {}
+`), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.yaml"), []byte(`apiVersion: v1
+kind: Workflow
+metadata:
+  name: status
+spec:
+  jobs:
+    main:
+      steps:
+        - run: echo "nothing recognizable printed here"
+`), 0644))
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "test-cluster"},
+		Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./modules/test-driver", Version: "local"}},
+	}
+	lf := &module.LockFile{Version: 1}
+	r := NewReconciler(&fakeStateProvider{localPath: repoRoot})
+
+	err := r.reconcileCluster(context.Background(), cluster, lf, false, nil, nil)
+	require.Error(t, err, "an unrecognized/empty status must be a hard error, not a silent no-op leaving a stale Ready:true")
+	assert.Contains(t, err.Error(), "unrecognized status")
+}
+
+// TestModuleImage covers the resolution chain: a ClusterDefinition's own
+// spec.runner.image (set directly, or inherited from a Template at
+// creation time) wins over HyveConfig's cluster-wide DefaultModuleImage —
+// the module's own module.yaml is never consulted at all (see moduleImage's
+// doc comment for why: a module recommends, but doesn't choose).
+func TestModuleImage(t *testing.T) {
+	t.Run("cluster's own runner.image wins", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		r.DefaultModuleImage = "cluster-wide-default:latest"
+		cluster := types.ClusterDefinition{Spec: types.ClusterSpec{Runner: types.RunnerSpec{Image: "per-cluster:v2"}}}
+		assert.Equal(t, "per-cluster:v2", r.moduleImage(cluster))
+	})
+
+	t.Run("falls back to DefaultModuleImage when unset", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		r.DefaultModuleImage = "cluster-wide-default:latest"
+		assert.Equal(t, "cluster-wide-default:latest", r.moduleImage(types.ClusterDefinition{}))
+	})
+
+	t.Run("empty when neither is set", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		assert.Empty(t, r.moduleImage(types.ClusterDefinition{}))
+	})
+}
+
+func TestValidateMgmtClusterRequirement(t *testing.T) {
+	t.Run("empty requirement is always fine", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		assert.NoError(t, r.validateMgmtClusterRequirement(types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, ""))
+	})
+
+	t.Run("named cluster exists passes", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{defs: []types.ClusterDefinition{
+			{Metadata: types.ClusterMetadata{Name: "mgmt"}},
+		}})
+		assert.NoError(t, r.validateMgmtClusterRequirement(types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, "mgmt"))
+	})
+
+	t.Run("named cluster missing errors with a clear message", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		err := r.validateMgmtClusterRequirement(types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, "mgmt")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `mgmtCluster "mgmt"`)
+		assert.Contains(t, err.Error(), "doesn't exist")
+	})
+}
+
+func TestUnmetDependency(t *testing.T) {
+	lf := &module.LockFile{Version: 1}
+
+	t.Run("no dependsOn is always met", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		def := types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}
+		unmet, err := r.unmetDependency(context.Background(), def, lf, nil)
+		require.NoError(t, err)
+		assert.Empty(t, unmet)
+	})
+
+	t.Run("dependency not present in state at all is unmet", func(t *testing.T) {
+		r := NewReconciler(&fakeStateProvider{})
+		def := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "workload"},
+			Spec:     types.ClusterSpec{DependsOn: []string{"mgmt"}},
+		}
+		unmet, err := r.unmetDependency(context.Background(), def, lf, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "mgmt", unmet)
+	})
+
+	t.Run("dependency present but its module can't resolve is unmet, not an error", func(t *testing.T) {
+		// dependsOn's whole point is "skip this cycle, don't fail hard" —
+		// a dependency whose own status check errors out (bad driver
+		// source here) must read the same as one that's simply not ready.
+		r := NewReconciler(&fakeStateProvider{defs: []types.ClusterDefinition{
+			{
+				Metadata: types.ClusterMetadata{Name: "mgmt"},
+				Spec:     types.ClusterSpec{Driver: types.DriverRef{Source: "./does-not-exist", Version: "latest"}},
+			},
+		}})
+		def := types.ClusterDefinition{
+			Metadata: types.ClusterMetadata{Name: "workload"},
+			Spec:     types.ClusterSpec{DependsOn: []string{"mgmt"}},
+		}
+		unmet, err := r.unmetDependency(context.Background(), def, lf, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "mgmt", unmet)
+	})
+}
+
+func TestParamsHash_DeterministicRegardlessOfMapIterationOrder(t *testing.T) {
+	a := map[string]string{"node_count": "3", "node_size": "g4s.kube.medium"}
+	b := map[string]string{"node_size": "g4s.kube.medium", "node_count": "3"}
+	assert.Equal(t, ParamsHash(a), ParamsHash(b))
+	assert.NotEmpty(t, ParamsHash(a))
+}
+
+func TestParamsHash_DifferentParamsDifferentHash(t *testing.T) {
+	a := map[string]string{"node_count": "3"}
+	b := map[string]string{"node_count": "5"}
+	assert.NotEqual(t, ParamsHash(a), ParamsHash(b))
+}
+
+func TestParamsHash_EmptyIsEmptyString(t *testing.T) {
+	assert.Equal(t, "", ParamsHash(nil))
+	assert.Equal(t, "", ParamsHash(map[string]string{}))
+}
+
+// TestParamsHash_MatchesDriftDetection guards against ParamsHash and
+// paramsChanged's own comparison ever drifting apart now that adopt (via
+// cmd/shared.ParamsHash) seeds HYVE_LAST_PARAMS_HASH from outside this
+// package — a cluster adopted with this hash must read back as "no drift"
+// on the very next paramsChanged check.
+func TestParamsHash_MatchesDriftDetection(t *testing.T) {
+	r := NewReconciler(&fakeStateProvider{})
+	params := map[string]string{"node_count": "3", "node_size": "g4s.kube.medium"}
+	cluster := types.ClusterDefinition{
+		Spec: types.ClusterSpec{
+			Params:        params,
+			DriverOutputs: map[string]string{"HYVE_LAST_PARAMS_HASH": ParamsHash(params)},
+		},
+	}
+	assert.False(t, r.paramsChanged(cluster))
+}
+
+// savingStateProvider records every SaveClusterDefinition call.
+type savingStateProvider struct {
+	fakeStateProvider
+	saved []types.ClusterDefinition
+}
+
+func (s *savingStateProvider) SaveClusterDefinition(def *types.ClusterDefinition) error {
+	s.saved = append(s.saved, *def)
+	return nil
+}
+
+// TestReconcileCluster_ScaleRecordsParamsHash is the regression test for
+// scale re-running on every reconcile: only create saved
+// HYVE_LAST_PARAMS_HASH, so after a successful scale the drift never
+// cleared. A failed scale must keep the old hash so it's retried.
+func TestReconcileCluster_ScaleRecordsParamsHash(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		scaleExit int
+		wantSaved bool
+	}{
+		{"successful scale saves the new hash", 0, true},
+		{"failed scale keeps the old hash", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			moduleDir := filepath.Join(repoRoot, "modules", "d")
+			require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "status.sh"), []byte("#!/bin/sh\necho HYVE_CLUSTER_STATUS=ACTIVE\n"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "scale.sh"), []byte(fmt.Sprintf("#!/bin/sh\nexit %d\n", tc.scaleExit)), 0o755))
+
+			oldParams := map[string]string{"worker_count": "1"}
+			cluster := types.ClusterDefinition{
+				Metadata: types.ClusterMetadata{Name: "c"},
+				Spec: types.ClusterSpec{
+					Driver:        types.DriverRef{Source: "./modules/d", Version: "local"},
+					Params:        map[string]string{"worker_count": "2"},
+					DriverOutputs: map[string]string{"HYVE_LAST_PARAMS_HASH": ParamsHash(oldParams)},
+				},
+			}
+			sp := &savingStateProvider{fakeStateProvider: fakeStateProvider{localPath: repoRoot}}
+			r := NewReconciler(sp)
+			require.NoError(t, r.reconcileCluster(context.Background(), cluster, &module.LockFile{Version: 1}, false, nil, &ReconcileHooks{}))
+
+			var savedHash string
+			for _, d := range sp.saved {
+				savedHash = d.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"]
+			}
+			if tc.wantSaved {
+				assert.Equal(t, ParamsHash(cluster.Spec.Params), savedHash)
+			} else {
+				assert.NotEqual(t, ParamsHash(cluster.Spec.Params), savedHash)
+			}
+		})
+	}
 }

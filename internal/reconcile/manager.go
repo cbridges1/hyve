@@ -24,16 +24,129 @@ import (
 // Reconciler orchestrates cluster lifecycle by delegating all cloud operations
 // to the module identified by each cluster's spec.driver.
 type Reconciler struct {
-	stateMgr *state.Manager
+	stateMgr StateProvider
 
 	// Logger, when set, additionally receives every progress line logged
-	// during a reconcile run — used by hyve-server to capture live progress
-	// for polling/WebSocket streaming without affecting the CLI's normal
+	// during a reconcile run, without affecting the CLI's normal
 	// stdout/log.Printf behavior. Left nil by the CLI, which never sets it.
 	Logger io.Writer
+
+	// StepRunner, when set, is propagated onto every workflow.Executor this
+	// Reconciler creates for lifecycle-hook workflows (onCreate/onDelete/
+	// etc. — see runWorkflows). Left nil by the CLI, which lets
+	// workflow.NewExecutor's own default (LocalStepRunner) apply — zero
+	// behavior change for local/CLI mode. cmd/controller/run.go is the
+	// only caller that sets this, to a *workflow.KubernetesJobStepRunner.
+	StepRunner workflow.StepRunner
+
+	// DefaultWorkflowImage is propagated the same way — see
+	// workflow.Executor.DefaultWorkflowImage's doc comment for the
+	// container: resolution order it participates in. Left empty by the
+	// CLI; cmd/controller/run.go sets it from HyveConfig.spec.defaultWorkflowImage.
+	DefaultWorkflowImage string
+
+	// ModuleRunner, when set, is propagated onto every module.Executor this
+	// Reconciler creates — cluster mode's equivalent of StepRunner, moving
+	// create/status/delete/auth execution from an inline os/exec child
+	// process to a fresh per-execution Kubernetes Job. Left nil by the CLI,
+	// which leaves module.Executor's default (Runner == nil, today's inline
+	// path) untouched — zero behavior change for local/CLI mode.
+	// cmd/controller/run.go is the only caller that sets this.
+	ModuleRunner *module.JobRunner
+
+	// DefaultModuleImage is the image a module.Executor falls back to when
+	// its module has no spec.runner.image of its own (see
+	// HyveConfigSpec.DefaultModuleImage's doc comment for the two-tier
+	// resolution order). Only consulted when ModuleRunner != nil. Left
+	// empty by the CLI; cmd/controller/run.go sets it from
+	// HyveConfig.spec.defaultModuleImage.
+	DefaultModuleImage string
+
+	// AgentTokenIssuer mints hyve-agent bootstrap tokens for milestone 4's
+	// agent-install step (see agent.go's reconcileAgent) — left nil by the
+	// CLI, which disables spec.access.agent.enabled entirely in local/file
+	// mode (see AgentTokenIssuer's own doc comment). cmd/controller/run.go
+	// is the only caller that sets this, to an *agentpki.TokenIssuer.
+	AgentTokenIssuer AgentTokenIssuer
+
+	// DefaultAgentImage mirrors DefaultModuleImage/DefaultWorkflowImage's
+	// own pattern for hyve-agent's own image — see
+	// HyveConfigSpec.DefaultAgentImage's doc comment. Left empty by the
+	// CLI; cmd/controller/run.go sets it from
+	// HyveConfig.spec.defaultAgentImage.
+	DefaultAgentImage string
+
+	// AgentControlPlaneNamespace is where hyve-agent bootstrap-token
+	// Secrets are stored (must match hyve-api's own --namespace) and,
+	// under today's one-namespace-per-install model, also the namespace
+	// half of the SSH certificate principal a freshly-bootstrapped agent
+	// is signed for (see agentpki.AgentPrincipal) — cmd/controller/run.go
+	// sets this from its own --namespace flag, the same value
+	// hyve-controller is already scoped to for every other CRD it
+	// watches. Kept as its own field (rather than reusing some other
+	// existing "namespace" the Reconciler already has, since it doesn't
+	// have one at all today — internal/reconcile is otherwise entirely
+	// namespace-agnostic) so a later multi-namespace-per-organization
+	// model (see docs/HYVE-ORGANIZATION-MODEL-PROPOSAL.md) can resolve
+	// this per-cluster instead of once at startup, without an interface
+	// change.
+	AgentControlPlaneNamespace string
+
+	// AgentControlPlaneURL is hyve-api's own externally-reachable base URL
+	// for POST /agent/bootstrap — the value hyve-agent's own
+	// --control-plane-url flag needs (see cmd/agent/main.go). Left empty,
+	// agent installation is skipped with a warning (see reconcileAgent) —
+	// there's no sensible built-in default the way DefaultAgentImage has
+	// one, since this is inherently install-specific.
+	AgentControlPlaneURL string
+
+	// AgentTunnelAddress is hyve-api's own externally-reachable SSH tunnel
+	// listener address (host:port) — hyve-agent's own --tunnel-address.
+	// Same "no sensible default, skip with a warning" stance as
+	// AgentControlPlaneURL.
+	AgentTunnelAddress string
+
+	// AgentCACertPEM is the PEM-encoded CA that signed whatever terminates
+	// TLS in front of AgentControlPlaneURL, when it isn't publicly trusted
+	// (a self-signed CA for a bare IP/nip.io address, the same situation
+	// internal/api's own AgentProvider.PublicCA exists for) — embedded as
+	// a literal ConfigMap on each remote cluster hyve-agent installs onto
+	// by renderAgentCoreManifest, then read by hyve-agent's own
+	// --ca-cert flag (see cmd/agent/main.go) for its POST /agent/bootstrap
+	// call. Left empty, hyve-agent falls back to its process's default
+	// system trust store — correct for a publicly-trusted certificate,
+	// and the reason this is opt-in rather than required.
+	AgentCACertPEM string
+
+	// HostKubeconfigIssuer mints a kubeconfig for hyve's own host cluster
+	// — see reconcileHostCluster's own doc comment. Left nil by the CLI,
+	// which disables spec.resources reconciliation for a no-driver
+	// primary-marked cluster entirely (logged as a warning, not an
+	// error) — local/file mode has no control-plane cluster concept for
+	// this to mean anything against, same "nil disables it softly" stance
+	// AgentTokenIssuer above takes. cmd/controller/run.go is the only
+	// caller that sets this.
+	HostKubeconfigIssuer HostKubeconfigIssuer
 }
 
-func NewReconciler(stateMgr *state.Manager) *Reconciler {
+// moduleImage resolves the image a module.Executor should use when
+// dispatching to ModuleRunner — cluster.Spec.Runner.Image (set directly, or
+// inherited from a Template at creation time — see
+// hyvev1alpha1.RenderClusterDefinitionSpec) if set, else
+// r.DefaultModuleImage. Deliberately does not consult the module's own
+// module.yaml spec.runner.image/hyve.lock entry: a module can
+// recommend/document a suitable image (its requirements.tools entries),
+// but doesn't choose one — the same module may need different images
+// across different deployments, which is a per-cluster/per-Template
+// decision, not the module's to make.
+func (r *Reconciler) moduleImage(cluster types.ClusterDefinition) string {
+	if cluster.Spec.Runner.Image != "" {
+		return cluster.Spec.Runner.Image
+	}
+	return r.DefaultModuleImage
+}
+
+func NewReconciler(stateMgr StateProvider) *Reconciler {
 	return &Reconciler{stateMgr: stateMgr}
 }
 
@@ -66,6 +179,9 @@ func (r *Reconciler) ReconcileAll(ctx context.Context, clusterDefs []types.Clust
 			return err
 		}
 		if err := validateWorkflowRefsLocked(c, lf); err != nil {
+			return err
+		}
+		if err := validateResourceRefsLocked(c, lf); err != nil {
 			return err
 		}
 	}
@@ -106,31 +222,8 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 		name := next.Metadata.Name
 		processed[name] = true
 
-		r.logf("───────────────────────────────────────────")
-		r.logf("  [%s]  driver=%s@%s  region=%s", name, next.Spec.Driver.Source, next.Spec.Driver.Version, next.Metadata.Region)
-		r.logf("───────────────────────────────────────────")
-
-		if next.Spec.Pause {
-			r.logf("[%s] Paused — skipping reconciliation", name)
-		} else {
-			if next.Spec.ExpiresAt != "" {
-				if t, err := time.Parse(time.RFC3339, next.Spec.ExpiresAt); err == nil {
-					if time.Now().After(t) {
-						r.logf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, next.Spec.ExpiresAt)
-						next.Spec.Delete = true
-					}
-				} else {
-					r.logf("[%s] Warning: invalid expiresAt value '%s': %v", name, next.Spec.ExpiresAt, err)
-				}
-			}
-
-			if err := r.reconcileCluster(ctx, *next, lf, dryRun); err != nil {
-				r.logf("[%s] reconcile error: %v", name, err)
-			}
-		}
-
-		if err := r.stateMgr.SyncWithRemote(ctx); err != nil {
-			r.logf("Warning: failed to sync after %s: %v", name, err)
+		if err := r.ReconcileOne(ctx, *next, lf, dryRun, nil, nil); err != nil {
+			r.logf("[%s] reconcile error: %v", name, err)
 		}
 
 		reloaded, err := r.stateMgr.LoadClusterDefinitions()
@@ -142,6 +235,116 @@ func (r *Reconciler) convergenceLoop(ctx context.Context, initialDefs []types.Cl
 	}
 
 	return currentDefs
+}
+
+// ReconcileHooks bundles optional callbacks a caller can set to observe
+// lifecycle events and captured operation output as ReconcileOne runs.
+// Threaded as an explicit parameter through ReconcileOne/reconcileCluster/
+// createCluster/deleteCluster — never a Reconciler field — for the same
+// reason secretsEnv is (see ReconcileOne's own doc comment):
+// MaxConcurrentReconciles reconciles different ClusterDefinitions
+// concurrently against the same shared Reconciler instance, so anything
+// per-reconcile can't live on a shared mutable field. A nil *ReconcileHooks,
+// or a nil field within a non-nil one, is always safe — see emitEvent/
+// recordOutput below. Local/CLI mode (ReconcileAll, cmd/shared/state.go)
+// passes nil throughout, so file-mode reconcile behavior is unchanged; only
+// internal/controller/reconciler.go constructs a real one, freshly per
+// Reconcile(ctx, req) call, scoped to that one ClusterDefinition object via
+// a real record.EventRecorder.
+type ReconcileHooks struct {
+	// OnEvent fires at each lifecycle milestone this package already logs
+	// via r.logf (status resolved, create/delete started/succeeded/failed,
+	// auth failures) — eventType is "Normal" or "Warning" (matching
+	// corev1.EventTypeNormal/EventTypeWarning as plain strings, so this
+	// mode-agnostic package never imports client-go).
+	OnEvent func(eventType, reason, message string)
+
+	// OnOperationOutput fires once per completed create/delete operation
+	// with that operation's captured raw stdout (module.OperationResult.
+	// RawOutput) — cluster mode persists this onto ClusterDefinitionStatus,
+	// since k8sjob.Run always deletes its Job immediately after fetching
+	// logs, so nothing else survives to inspect after the fact.
+	OnOperationOutput func(op module.OperationType, output string)
+}
+
+func (h *ReconcileHooks) emitEvent(eventType, reason, message string) {
+	if h != nil && h.OnEvent != nil {
+		h.OnEvent(eventType, reason, message)
+	}
+}
+
+func (h *ReconcileHooks) recordOutput(op module.OperationType, output string) {
+	if h != nil && h.OnOperationOutput != nil {
+		h.OnOperationOutput(op, output)
+	}
+}
+
+// ReconcileOne reconciles a single cluster definition — the pause check,
+// expiry-to-delete promotion, and dispatch logic ReconcileAll's convergence
+// loop runs per cluster today, extracted so a controller-mode reconcile
+// loop (one ClusterDefinition CR per Reconcile(ctx, req) call, no batch of
+// definitions to iterate) can drive the exact same engine a file-based
+// `hyve reconcile` run does — "same engine, different source of truth," not
+// a second implementation. def is taken by value and only ever mutated on
+// a local copy (matching convergenceLoop's prior in-place mutation of its
+// own loop variable, never the caller's), so lf's per-cluster lock
+// validation below runs against exactly what def's driver/workflow refs
+// name, independent of whatever ReconcileAll's own upfront batch validation
+// already checked for a file-mode run.
+//
+// secretsEnv, when non-nil, is merged into every module/workflow
+// operation's env as "KEY=VALUE" pairs — cluster mode's live, per-reconcile
+// fetch of the hyve-cli-secrets Secret (see
+// internal/controller/reconciler.go's Reconcile), passed explicitly rather
+// than via a shared mutable field so concurrent reconciles of different
+// clusters (MaxConcurrentReconciles > 1) can't race on it. File/CLI mode
+// always passes nil here: its module/workflow child processes already
+// inherit the CLI's own os.Environ() directly, the same secrets flow
+// that's always existed for local mode.
+func (r *Reconciler) ReconcileOne(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string, hooks *ReconcileHooks) error {
+	name := def.Metadata.Name
+
+	if err := validateDriverModuleLocked(def, lf); err != nil {
+		return err
+	}
+	if err := validateWorkflowRefsLocked(def, lf); err != nil {
+		return err
+	}
+	if err := validateResourceRefsLocked(def, lf); err != nil {
+		return err
+	}
+
+	r.logf("───────────────────────────────────────────")
+	r.logf("  [%s]  driver=%s@%s  region=%s", name, def.Spec.Driver.Source, def.Spec.Driver.Version, def.Metadata.Region)
+	r.logf("───────────────────────────────────────────")
+
+	if def.Spec.Pause {
+		r.logf("[%s] Paused — skipping reconciliation", name)
+		return nil
+	}
+
+	if def.Spec.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, def.Spec.ExpiresAt); err == nil {
+			if time.Now().After(t) {
+				r.logf("[%s] Cluster has expired (expiresAt: %s) — marking for deletion", name, def.Spec.ExpiresAt)
+				def.Spec.Delete = true
+			}
+		} else {
+			r.logf("[%s] Warning: invalid expiresAt value '%s': %v", name, def.Spec.ExpiresAt, err)
+		}
+	}
+
+	if unmet, err := r.unmetDependency(ctx, def, lf, secretsEnv); err != nil {
+		r.logf("[%s] Warning: failed to check dependsOn: %v", name, err)
+	} else if unmet != "" {
+		r.logf("[%s] Waiting on dependsOn cluster %q to become ACTIVE — skipping this cycle", name, unmet)
+		return nil
+	}
+
+	if isHostClusterWithoutDriver(def) {
+		return r.reconcileHostCluster(ctx, def, lf, dryRun, secretsEnv, hooks)
+	}
+	return r.reconcileCluster(ctx, def, lf, dryRun, secretsEnv, hooks)
 }
 
 // effectiveStatus applies the authOnly default: an authOnly module's status
@@ -157,7 +360,7 @@ func effectiveStatus(status string, isAuthOnly bool) string {
 	return status
 }
 
-func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool) error {
+func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.ClusterDefinition, lf *module.LockFile, dryRun bool, secretsEnv map[string]string, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	locked := lf.GetLocked(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version)
 	resolved, err := module.Resolve(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
@@ -167,21 +370,64 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 
 	manifest, _ := module.LoadManifestForSource(cluster.Spec.Driver.Source, cluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
 	if manifest != nil {
-		if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+		// ValidateToolRequirements checks *this process's own* PATH — only
+		// meaningful when the module actually runs inline in it (local/CLI
+		// mode, r.ModuleRunner == nil). In cluster mode the module runs
+		// inside a separate Job, on its own runner.image, which this
+		// process has no visibility into and was never meant to share
+		// tooling with — that's the entire point of Job dispatch. Skipping
+		// this pre-flight check there is safe: a genuinely missing tool
+		// still fails, just naturally, as an ordinary "command not found"
+		// from inside the Job's own script.
+		if r.ModuleRunner == nil {
+			if reqErr := module.ValidateToolRequirements(manifest.Spec.Requirements.Tools); reqErr != nil {
+				return reqErr
+			}
+		}
+		if reqErr := r.validateMgmtClusterRequirement(cluster, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
 			return reqErr
 		}
 	}
 	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
 
-	env := buildModuleEnv(cluster, nil)
-	exec := &module.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: r.stateMgr.LocalPath()}
+	env := buildModuleEnv(cluster, secretsEnv)
 
+	// Cluster-mode only — see ValidateEnvRequirements' own doc comment for
+	// why a local/CLI-mode run is deliberately exempt (a required env var
+	// there may have an equally valid non-env alternative, e.g. this
+	// module's own "run `civo apikey save` instead" case).
+	if manifest != nil && r.ModuleRunner != nil {
+		if reqErr := module.ValidateEnvRequirements(manifest.Spec.Requirements.Env, env); reqErr != nil {
+			return fmt.Errorf("cluster %s: %w", name, reqErr)
+		}
+	}
+
+	exec := &module.Executor{
+		ModuleDir:             resolved.Dir,
+		Env:                   env,
+		WorkDir:               r.stateMgr.LocalPath(),
+		ClusterName:           name,
+		Runner:                r.ModuleRunner,
+		Image:                 r.moduleImage(cluster),
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(cluster),
+	}
+
+	// module.Executor.Execute guarantees a non-zero-exit status script
+	// surfaces as a non-nil err here (never a nil-err result with an
+	// empty/garbled Outputs map that would be indistinguishable from a
+	// script that legitimately printed nothing) — see its own doc
+	// comments on why that invariant matters specifically for this call
+	// site: an unrecognized/empty status falls into reconcileCluster's own
+	// default case below, and a real script failure silently looking
+	// identical to that (confirmed live, before Execute's own fix) left an
+	// operator with no idea their driver module was actually failing.
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
 		return fmt.Errorf("status check failed: %w", err)
 	}
 	status := effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
 	r.logf("[%s] status: %s", name, status)
+	hooks.emitEvent("Normal", "StatusChecked", fmt.Sprintf("Status: %s", status))
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
@@ -189,7 +435,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] DRY RUN: would delete cluster", name)
 			return nil
 		}
-		return r.deleteCluster(ctx, cluster, exec, env, lf)
+		return r.deleteCluster(ctx, cluster, exec, env, lf, hooks)
 
 	case cluster.Spec.Delete && status == "NOT_FOUND":
 		if dryRun {
@@ -204,7 +450,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] DRY RUN: would create cluster", name)
 			return nil
 		}
-		return r.createCluster(ctx, cluster, exec, env, lf)
+		return r.createCluster(ctx, cluster, exec, env, lf, secretsEnv, hooks)
 
 	case status == "ACTIVE" && !cluster.Spec.Delete:
 		// Hoisted out of the paramsChanged branch: resource reconciliation
@@ -216,10 +462,16 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		// is read-only (credential/kubeconfig setup) so it still runs for
 		// real even in dry-run — kubectl diff needs it to reach the live
 		// cluster.
-		if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+		authResult, authErr := exec.Execute(ctx, module.OperationAuth)
+		if authErr != nil {
 			r.logf("[%s] Warning: auth failed: %v", name, authErr)
+			hooks.emitEvent("Warning", "AuthFailed", authErr.Error())
 		} else {
-			r.dedupeKubeconfigAfterAuth(name)
+			if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
+				env = append(env, "KUBECONFIG="+kc)
+				exec.Env = env
+			}
+			r.dedupeKubeconfigAfterAuth(name, authResult.Outputs["KUBECONFIG"])
 		}
 
 		if r.paramsChanged(cluster) {
@@ -230,10 +482,38 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 				r.runWorkflows(ctx, cluster.Spec.Workflows.PreReconcile, cluster, env, lf)
 				if _, scaleErr := exec.Execute(ctx, module.OperationScale); scaleErr != nil {
 					r.logf("[%s] Warning: scale failed: %v", name, scaleErr)
+				} else {
+					// Record the applied params, as create does — otherwise
+					// the drift never clears and scale re-runs every cycle.
+					// A failed scale leaves the old hash, so it's retried.
+					if cluster.Spec.DriverOutputs == nil {
+						cluster.Spec.DriverOutputs = make(map[string]string)
+					}
+					cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = ParamsHash(cluster.Spec.Params)
+					if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
+						r.logf("[%s] Warning: failed to save params hash after scale: %v", name, err)
+					}
 				}
 			}
 		} else {
 			r.logf("[%s] Up to date — no action needed", name)
+		}
+
+		// Runs unconditionally, like the auth call above — hyve-agent's own
+		// install state is independent of param drift, exactly like
+		// spec.resources below it. A failure here is logged, not returned:
+		// blocking resource reconciliation on an agent-install hiccup
+		// would conflate two independent concerns (matches this branch's
+		// own existing "warn and continue" stance for auth/scale
+		// failures, not reconcileResources' own hard-return convention).
+		// Skipped in dry-run mode — reconcileAgent has mutating side
+		// effects (kubectl apply/delete, a minted bootstrap token) with no
+		// read-only mode of its own, unlike reconcileResources' diff-based
+		// preview.
+		if dryRun {
+			r.logf("[%s] DRY RUN: skipping hyve-agent reconciliation", name)
+		} else if agentErr := r.reconcileAgent(ctx, &cluster, env); agentErr != nil {
+			r.logf("[%s] Warning: hyve-agent reconciliation failed: %v", name, agentErr)
 		}
 
 		repoCfg, cfgErr := r.stateMgr.LoadRepoConfig()
@@ -241,26 +521,47 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 			r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 			repoCfg = &state.RepoConfig{}
 		}
-		return r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, dryRun)
+		return r.reconcileResources(ctx, &cluster, env, lf, repoCfg.Reconcile.StrictResourceDelete, dryRun)
 
 	case status == "CREATING" || status == "UPDATING" || status == "DELETING":
 		r.logf("[%s] Operation in progress (%s) — skipping", name, status)
 
 	default:
-		r.logf("[%s] Unhandled status %q", name, status)
+		// Confirmed live, this exact bug: returning nil here (a plain
+		// no-op) left the ClusterDefinition's own Ready condition reading
+		// "last reconcile succeeded" from whatever the previous successful
+		// pass set, even though this pass concluded nothing at all — an
+		// operator had no way to tell "genuinely ready" apart from "the
+		// driver's own status op returned something hyve doesn't
+		// recognize, so nothing happened this cycle" just by looking at
+		// the cluster's own status. An empty string is exactly this case
+		// in practice (see status.yaml's own "unrecognized status" comment
+		// for why the module itself refuses to guess NOT_FOUND/ACTIVE
+		// here) — surfacing it as a real error is what makes it show up as
+		// Error/ReconcileFailed instead of a stale Ready:true.
+		return fmt.Errorf("cluster %s: driver reported unrecognized status %q", name, status)
 	}
 
 	return nil
 }
 
-func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
+func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, secretsEnv map[string]string, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Creating cluster...", name)
+	hooks.emitEvent("Normal", "Creating", "Cluster create operation starting")
 
-	r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
+	hookVars := r.runWorkflows(ctx, cluster.Spec.Workflows.BeforeCreate, cluster, env, lf)
+	for k, v := range hookVars {
+		env = append(env, k+"="+v)
+	}
+	exec.Env = env
 
 	result, err := exec.Execute(ctx, module.OperationCreate)
+	if result != nil {
+		hooks.recordOutput(module.OperationCreate, result.RawOutput)
+	}
 	if err != nil {
+		hooks.emitEvent("Warning", "CreateFailed", err.Error())
 		return fmt.Errorf("create operation failed: %w", err)
 	}
 
@@ -270,26 +571,29 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	for k, v := range result.Outputs {
 		cluster.Spec.DriverOutputs[k] = v
 	}
-	cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = paramsHash(cluster.Spec.Params)
+	cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"] = ParamsHash(cluster.Spec.Params)
 
 	if err := r.stateMgr.SaveClusterDefinition(&cluster); err != nil {
 		r.logf("[%s] Warning: failed to save driverOutputs: %v", name, err)
-	} else {
-		if commitErr := r.stateMgr.CommitAndPush(ctx, "reconcile: create "+name); commitErr != nil {
-			r.logf("[%s] Warning: failed to commit driverOutputs: %v", name, commitErr)
-		}
 	}
 
 	r.logf("[%s] ✅ Cluster created", name)
+	hooks.emitEvent("Normal", "Created", "Cluster created successfully")
 
 	// Rebuild env so onCreate workflows see the new driverOutputs.
-	env = buildModuleEnv(cluster, nil)
+	env = buildModuleEnv(cluster, secretsEnv)
 	exec.Env = env
 
-	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
+	if authErr != nil {
 		r.logf("[%s] Warning: auth failed: %v", name, authErr)
+		hooks.emitEvent("Warning", "AuthFailed", authErr.Error())
 	} else {
-		r.dedupeKubeconfigAfterAuth(name)
+		if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
+			env = append(env, "KUBECONFIG="+kc)
+			exec.Env = env
+		}
+		r.dedupeKubeconfigAfterAuth(name, authResult.Outputs["KUBECONFIG"])
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnCreate, cluster, env, lf)
@@ -303,7 +607,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 		r.logf("[%s] Warning: failed to load hyve.yaml (defaulting strictResourceDelete=false): %v", name, cfgErr)
 		repoCfg = &state.RepoConfig{}
 	}
-	if resErr := r.reconcileResources(ctx, &cluster, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
+	if resErr := r.reconcileResources(ctx, &cluster, env, lf, repoCfg.Reconcile.StrictResourceDelete, false); resErr != nil {
 		r.logf("[%s] Warning: resource reconciliation failed: %v", name, resErr)
 	}
 
@@ -316,37 +620,50 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 	return nil
 }
 
-func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile) error {
+func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Deleting cluster...", name)
+	hooks.emitEvent("Normal", "Deleting", "Cluster delete operation starting")
 
-	if _, authErr := exec.Execute(ctx, module.OperationAuth); authErr != nil {
+	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
+	if authErr != nil {
 		r.logf("[%s] Warning: auth failed before onDelete: %v", name, authErr)
+		hooks.emitEvent("Warning", "AuthFailed", authErr.Error())
 	} else {
-		r.dedupeKubeconfigAfterAuth(name)
+		if kc := authResult.Outputs["KUBECONFIG"]; kc != "" {
+			env = append(env, "KUBECONFIG="+kc)
+			exec.Env = env
+		}
+		r.dedupeKubeconfigAfterAuth(name, authResult.Outputs["KUBECONFIG"])
 	}
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.OnDelete, cluster, env, lf)
 
-	if _, err := exec.Execute(ctx, module.OperationDelete); err != nil {
+	result, err := exec.Execute(ctx, module.OperationDelete)
+	if result != nil {
+		hooks.recordOutput(module.OperationDelete, result.RawOutput)
+	}
+	if err != nil {
+		hooks.emitEvent("Warning", "DeleteFailed", err.Error())
 		return fmt.Errorf("delete operation failed: %w", err)
 	}
 
 	r.logf("[%s] ✅ Cluster deleted", name)
+	hooks.emitEvent("Normal", "Deleted", "Cluster deleted successfully")
 
 	r.runWorkflows(ctx, cluster.Spec.Workflows.AfterDelete, cluster, env, lf)
 
 	return r.removeClusterFile(ctx, cluster)
 }
 
-// dedupeKubeconfigAfterAuth rewrites ~/.kube/config to remove duplicate
-// entries an external auth tool may have appended (e.g. civo without
-// --merge). Failures are logged as warnings, never fatal — kubeconfig
-// hygiene is best-effort, not part of the reconcile contract.
-func (r *Reconciler) dedupeKubeconfigAfterAuth(name string) {
-	kcPath, err := module.DefaultKubeconfigPath()
-	if err != nil {
-		r.logf("[%s] Warning: could not resolve kubeconfig path: %v", name, err)
+// dedupeKubeconfigAfterAuth rewrites cluster name's kubeconfig file to
+// remove duplicate entries an external auth tool may have appended across
+// reconcile cycles (e.g. civo without --merge). kcPath is empty when auth
+// didn't export a kubeconfig at all, in which case there's nothing to
+// dedupe. Failures are logged as warnings, never fatal — kubeconfig hygiene
+// is best-effort, not part of the reconcile contract.
+func (r *Reconciler) dedupeKubeconfigAfterAuth(name, kcPath string) {
+	if kcPath == "" {
 		return
 	}
 	if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
@@ -354,27 +671,32 @@ func (r *Reconciler) dedupeKubeconfigAfterAuth(name string) {
 	}
 }
 
-func (r *Reconciler) removeClusterFile(ctx context.Context, cluster types.ClusterDefinition) error {
+func (r *Reconciler) removeClusterFile(_ context.Context, cluster types.ClusterDefinition) error {
 	name := cluster.Metadata.Name
 	if err := r.stateMgr.RemoveClusterFile(name); err != nil {
 		return fmt.Errorf("remove cluster file: %w", err)
 	}
-	if err := r.stateMgr.CommitAndPush(ctx, "reconcile: delete "+name); err != nil {
-		r.logf("[%s] Warning: failed to commit cluster file removal: %v", name, err)
-	}
 	return nil
 }
 
-func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef, cluster types.ClusterDefinition, env []string, lf *module.LockFile) {
+// runWorkflows runs every ref in refs against one shared workflow.Executor,
+// then returns whatever HYVE_VAR=value lines those steps printed (see
+// workflow.Executor.HookOutputVars) — createCluster merges these explicitly
+// into the driver module's env before OperationCreate, replacing the old
+// os.Setenv-based hand-off so concurrent reconciles of different clusters
+// (see MaxConcurrentReconciles) can't cross-contaminate each other's
+// captured values.
+func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef, cluster types.ClusterDefinition, env []string, lf *module.LockFile) map[string]string {
 	if len(refs) == 0 {
-		return
+		return nil
 	}
 	name := cluster.Metadata.Name
+	githubToken := envValue(env, "GITHUB_TOKEN")
 
-	wfMgr, err := workflow.NewManager(r.stateMgr.LocalPath())
+	wfMgr, err := workflow.NewManagerWithSource(r.stateMgr.LocalPath(), r.stateMgr.WorkflowSource())
 	if err != nil {
 		r.logf("[%s] Failed to create workflow manager: %v", name, err)
-		return
+		return nil
 	}
 
 	injected := make(map[string]string, len(env))
@@ -387,10 +709,21 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 	executor, err := workflow.NewExecutor(wfMgr, "")
 	if err != nil {
 		r.logf("[%s] Failed to create workflow executor: %v", name, err)
-		return
+		return nil
 	}
 	defer executor.Close()
 	executor.Output = r.Logger
+	if r.StepRunner != nil {
+		executor.StepRunner = r.StepRunner
+	}
+	executor.DefaultWorkflowImage = r.DefaultWorkflowImage
+	// Lifecycle hooks (onCreate/onDelete/etc.) are triggered by an
+	// automated reconcile, never a human — a runtime: client workflow
+	// referenced here would have no "invoking machine" to run on in
+	// controller mode, so refuse it explicitly rather than silently running
+	// it on whichever process happens to host the reconcile loop.
+	executor.AllowClientRuntime = false
+	executor.KubeconfigLocator = module.KubeconfigPathForCluster
 	executor.InjectVars(injected)
 
 	for _, ref := range refs {
@@ -402,7 +735,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 		if !ref.IsRemote() {
 			execution, runErr = executor.RunWorkflow(ctx, ref.Name, "")
 		} else {
-			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf)
+			execution, runErr = r.runRemoteWorkflowHook(ctx, executor, ref, lf, githubToken)
 		}
 		if runErr != nil {
 			r.logf("[%s] ⚠️  Workflow '%s' failed: %v", name, label, runErr)
@@ -414,6 +747,8 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 			r.logf("[%s] ⚠️  Workflow '%s' finished with status: %s", name, label, execution.Status)
 		}
 	}
+
+	return executor.HookOutputVars()
 }
 
 // runRemoteWorkflowHook resolves a remote WorkflowRef using hyve.lock as a
@@ -422,7 +757,7 @@ func (r *Reconciler) runWorkflows(ctx context.Context, refs []types.WorkflowRef,
 // exists) and executes it. A lifecycle hook ref must resolve to a single
 // file: directory-kind sources are rejected here — a hook names exactly one
 // workflow to run, not a batch.
-func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workflow.Executor, ref types.WorkflowRef, lf *module.LockFile) (*workflow.WorkflowExecution, error) {
+func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workflow.Executor, ref types.WorkflowRef, lf *module.LockFile, githubToken string) (*workflow.WorkflowExecution, error) {
 	ps, err := workflowref.ParseSource(ref.Source)
 	if err != nil {
 		return nil, err
@@ -436,7 +771,7 @@ func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workfl
 		return nil, fmt.Errorf("lifecycle hook workflow ref %q resolves to a directory — must reference exactly one file", ref.Source)
 	}
 
-	files, err := workflowref.Resolve(ref.Source, ref.Path, lf)
+	files, err := workflowref.Resolve(ref.Source, ref.Path, lf, githubToken)
 	if err != nil {
 		return nil, err
 	}
@@ -447,22 +782,46 @@ func (r *Reconciler) runRemoteWorkflowHook(ctx context.Context, executor *workfl
 	return executor.RunResolvedWorkflow(ctx, &wf, ref.String(), "")
 }
 
+// envValue reads key's value out of a "KEY=VALUE" env slice, or "" if
+// unset. Used to recover GITHUB_TOKEN (already merged into env by cluster
+// mode's live hyve-cli-secrets fetch — see internal/controller.
+// ClusterDefinitionReconciler.fetchCLISecrets) for the rare case a remote
+// workflow/resource ref's cache-hint misses at runtime and a live re-fetch
+// is needed — the normal path is a cache hit with no token required at
+// all, since resolveWorkflowIfNeeded/resolveResourceIfNeeded already
+// installed everything earlier in the same reconcile.
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			return kv[len(prefix):]
+		}
+	}
+	return ""
+}
+
 // validateDriverModuleLocked checks that a cluster's driver module is either
 // a local path (needs no hyve.lock entry — module.Resolve reads it straight
 // off disk via module.resolveLocal, with no digest to verify, so a lock
 // entry for one only ever holds an empty resolved/sha256 pair: required
 // presence, zero actual integrity value) or already present in hyve.lock.
-// Mirrors validateWorkflowRefsLocked's local/remote split below.
+// Mirrors validateWorkflowRefsLocked's local/remote split below. A
+// no-driver primary-marked cluster (see isHostClusterWithoutDriver) is the
+// one exception — that's a real, supported zero-config shape, not a
+// misconfiguration, so it skips this check entirely rather than erroring.
 func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) error {
 	if c.Spec.Driver.Source == "" {
+		if isHostClusterWithoutDriver(c) {
+			return nil
+		}
 		return fmt.Errorf("cluster %s: no driver specified — set spec.driver.source in the cluster YAML", c.Metadata.Name)
 	}
 	if module.IsLocalSource(c.Spec.Driver.Source) {
 		return nil
 	}
 	if lf.GetLocked(c.Spec.Driver.Source, c.Spec.Driver.Version) == nil {
-		return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install`",
-			c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version)
+		return fmt.Errorf("cluster %s: module %s@%s not in hyve.lock — run `hyve module install` (local mode), or check `kubectl get module` for %s@%s's own resolve error (cluster mode resolves this automatically per-reconcile — see internal/controller.resolveModuleIfNeeded — a private module repo needs a GITHUB_TOKEN via `hyve context secrets set GITHUB_TOKEN ...`)",
+			c.Metadata.Name, c.Spec.Driver.Source, c.Spec.Driver.Version, c.Spec.Driver.Source, c.Spec.Driver.Version)
 	}
 	return nil
 }
@@ -470,42 +829,181 @@ func validateDriverModuleLocked(c types.ClusterDefinition, lf *module.LockFile) 
 // validateWorkflowRefsLocked checks — with no network access — that every
 // remote WorkflowRef in a cluster's lifecycle hooks is already present in
 // hyve.lock. Mirrors validateDriverModuleLocked's local/remote split above.
-func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+// AllWorkflowHookRefs returns every WorkflowRef across all of c's lifecycle
+// hooks — the single list validateWorkflowRefsLocked validates against and
+// internal/controller's resolveWorkflowIfNeeded resolves against, so the
+// two can never drift out of sync with each other (or with runWorkflows'
+// own set of hook fields it actually runs).
+func AllWorkflowHookRefs(c types.ClusterDefinition) []types.WorkflowRef {
 	lists := [][]types.WorkflowRef{
 		c.Spec.Workflows.PreReconcile, c.Spec.Workflows.BeforeCreate,
-		c.Spec.Workflows.OnCreate, c.Spec.Workflows.OnDelete, c.Spec.Workflows.AfterDelete,
+		c.Spec.Workflows.OnCreate, c.Spec.Workflows.AfterCreate,
+		c.Spec.Workflows.OnDelete, c.Spec.Workflows.AfterDelete,
 	}
+	var refs []types.WorkflowRef
 	for _, list := range lists {
-		for _, ref := range list {
-			if !ref.IsRemote() {
-				continue
-			}
-			ps, err := workflowref.ParseSource(ref.Source)
-			if err != nil {
-				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
-			}
-			ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
-			kind, err := workflowref.ClassifyPath(ps.Path)
-			if err != nil {
-				return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
-			}
-			if kind == workflowref.PathKindDir {
-				return fmt.Errorf("cluster %s: workflow ref %q resolves to a directory — lifecycle hooks must reference a single file", c.Metadata.Name, ref.Source)
-			}
-			if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
-				return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install`", c.Metadata.Name, ref.Source)
-			}
+		refs = append(refs, list...)
+	}
+	return refs
+}
+
+func validateWorkflowRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	for _, ref := range AllWorkflowHookRefs(c) {
+		if !ref.IsRemote() {
+			continue
+		}
+		ps, err := workflowref.ParseSource(ref.Source)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		ps, _ = workflowref.ApplyPathOverride(ps, ref.Path)
+		kind, err := workflowref.ClassifyPath(ps.Path)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		if kind == workflowref.PathKindDir {
+			return fmt.Errorf("cluster %s: workflow ref %q resolves to a directory — lifecycle hooks must reference a single file", c.Metadata.Name, ref.Source)
+		}
+		if lf.GetLockedWorkflow(ps.CanonicalSource(), ps.Version) == nil {
+			return fmt.Errorf("cluster %s: workflow %s not in hyve.lock — run `hyve workflow install` (local mode), or check the controller logs for a resolution failure (cluster mode resolves this automatically per-reconcile — see resolveWorkflowIfNeeded)", c.Metadata.Name, ref.Source)
 		}
 	}
 	return nil
 }
 
-func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {
-	stored := cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"]
-	return stored != "" && stored != paramsHash(cluster.Spec.Params)
+// validateResourceRefsLocked mirrors validateWorkflowRefsLocked exactly, one
+// tier below it: a remote single-file ResourceRef.Source is install-required,
+// just like a remote WorkflowRef.Source — no live/uninstalled fallback. A
+// directory source is exempt: it has no lock entry by design. A local-path
+// or Name-only ResourceRef needs no lock entry at all (IsRemote() is false
+// for both), so this only ever validates c.Spec.Resources entries whose
+// Source is a remote git ref.
+func validateResourceRefsLocked(c types.ClusterDefinition, lf *module.LockFile) error {
+	for _, ref := range c.Spec.Resources {
+		if !ref.IsRemote() {
+			continue
+		}
+		ps, err := workflowref.ParseSource(ref.Source)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		kind, err := workflowref.ClassifyPath(ps.Path)
+		if err != nil {
+			return fmt.Errorf("cluster %s: %w", c.Metadata.Name, err)
+		}
+		if kind == workflowref.PathKindDir {
+			// Directory sources aren't locked — they're expanded and
+			// resolved fresh on every reconcile (see resourceref.ResolveDir).
+			continue
+		}
+		if lf.GetLockedResource(ps.CanonicalSource(), ps.Version) == nil {
+			return fmt.Errorf("cluster %s: resource %s not in hyve.lock — run `hyve resource install` (local mode), or check the controller logs for a resolution failure (cluster mode resolves this automatically per-reconcile — see resolveResourceIfNeeded)", c.Metadata.Name, ref.Source)
+		}
+	}
+	return nil
 }
 
-func paramsHash(params map[string]string) string {
+// checkDependencyStatus resolves depCluster's driver module and returns its
+// current status — a lighter-weight duplicate of reconcileCluster's own
+// module-resolve-then-status preamble (deliberately not shared: that
+// preamble also builds a module.Executor for the caller to run create/
+// delete against afterward, which a dependsOn check never does — reusing
+// it would mean threading an unused Executor back out for no reason).
+// Treats a resolve/execute failure as "not ACTIVE" rather than propagating
+// the error — dependsOn's whole point is "skip this cycle, don't fail
+// hard," so a dependency that's erroring out should read the same as one
+// that's simply not ready yet.
+func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types.ClusterDefinition, lf *module.LockFile, secretsEnv map[string]string) string {
+	// A driver-less host cluster has no status op to run — it's the cluster
+	// hyve itself runs on, so it's ACTIVE by definition (the usual CAPI
+	// management cluster a workload cluster depends on).
+	if isHostClusterWithoutDriver(depCluster) {
+		return "ACTIVE"
+	}
+	locked := lf.GetLocked(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version)
+	resolved, err := module.Resolve(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, locked, r.stateMgr.LocalPath())
+	if err != nil {
+		return ""
+	}
+	manifest, _ := module.LoadManifestForSource(depCluster.Spec.Driver.Source, depCluster.Spec.Driver.Version, r.stateMgr.LocalPath(), lf)
+	isAuthOnly := manifest != nil && manifest.Metadata.Type == module.ModuleTypeAuthOnly
+
+	env := buildModuleEnv(depCluster, secretsEnv)
+	exec := &module.Executor{
+		ModuleDir:             resolved.Dir,
+		Env:                   env,
+		WorkDir:               r.stateMgr.LocalPath(),
+		ClusterName:           depCluster.Metadata.Name,
+		Runner:                r.ModuleRunner,
+		Image:                 r.moduleImage(depCluster),
+		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(depCluster),
+	}
+	statusResult, err := exec.Execute(ctx, module.OperationStatus)
+	if err != nil {
+		return ""
+	}
+	return effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
+}
+
+// unmetDependency returns the first entry in def.Spec.DependsOn that isn't
+// currently ACTIVE, if any — see HYVE-CONTROLLER-ARCHITECTURE-PLAN.md's
+// "Optional dependsOn ordering" section. A named dependency that doesn't
+// exist at all counts as unmet, same as one that exists but isn't ACTIVE
+// yet — both mean "not ready," and ReconcileOne's caller treats either the
+// same way (skip this cycle, log it, don't fail hard).
+func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefinition, lf *module.LockFile, secretsEnv map[string]string) (string, error) {
+	if len(def.Spec.DependsOn) == 0 {
+		return "", nil
+	}
+	defs, err := r.stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		return "", fmt.Errorf("failed to load cluster definitions for dependsOn check: %w", err)
+	}
+	for _, depName := range def.Spec.DependsOn {
+		dep, ok := resolveClusterRef(defs, def, depName)
+		if !ok || r.checkDependencyStatus(ctx, dep, lf, secretsEnv) != "ACTIVE" {
+			return depName, nil
+		}
+	}
+	return "", nil
+}
+
+// validateMgmtClusterRequirement checks that a module's optional
+// requirements.mgmtCluster (see internal/module.ModuleRequirements) names a
+// cluster that actually exists in the current StateProvider, before
+// reconcile ever attempts one of the module's operations against it — a
+// missing/wrong mgmtCluster would otherwise only ever surface as a script
+// failure deep inside create.yaml (or wherever the module's own op files
+// try to use credentials for it). Works identically in local/CLI mode and
+// controller mode — LoadClusterDefinitions is a StateProvider method, not
+// something either mode implements specially. The name resolves like any
+// cluster reference — see resolveClusterRef.
+func (r *Reconciler) validateMgmtClusterRequirement(cluster types.ClusterDefinition, mgmtCluster string) error {
+	if mgmtCluster == "" {
+		return nil
+	}
+	clusterName := cluster.Metadata.Name
+	defs, err := r.stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		return fmt.Errorf("cluster %s: failed to check mgmtCluster requirement %q: %w", clusterName, mgmtCluster, err)
+	}
+	if _, ok := resolveClusterRef(defs, cluster, mgmtCluster); ok {
+		return nil
+	}
+	return fmt.Errorf("cluster %s: module requires mgmtCluster %q, which doesn't exist — create it first, or check for a typo", clusterName, mgmtCluster)
+}
+
+func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {
+	stored := cluster.Spec.DriverOutputs["HYVE_LAST_PARAMS_HASH"]
+	return stored != "" && stored != ParamsHash(cluster.Spec.Params)
+}
+
+// ParamsHash deterministically hashes a cluster's params map — exported so
+// `hyve cluster adopt` (cmd/cluster, via cmd/shared) can seed
+// HYVE_LAST_PARAMS_HASH with the exact same algorithm reconcile itself uses
+// for drift detection. Must never diverge from paramsChanged's own call to
+// this function above.
+func ParamsHash(params map[string]string) string {
 	if len(params) == 0 {
 		return ""
 	}

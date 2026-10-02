@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cbridges1/hyve/internal/secretsfrom"
 )
 
 // setupExecutor creates a workflow manager and executor with an empty cluster (no
@@ -456,4 +458,74 @@ func TestRunWorkflow_InjectedVarSatisfiesRequiredSecret(t *testing.T) {
 	result, err := exec.RunWorkflow(context.Background(), "needs-secret", "")
 	require.NoError(t, err)
 	assert.Equal(t, StatusCompleted, result.Status)
+}
+
+func TestRunWorkflow_RuntimeClient_AllowedByDefault(t *testing.T) {
+	mgr, _ := setupTestEnvironment(t)
+
+	wf := &Workflow{
+		Metadata: WorkflowMetadata{Name: "client-only"},
+		Spec: WorkflowSpec{
+			Runtime: RuntimeClient,
+			Jobs: []WorkflowJob{
+				{Name: "j", Steps: []WorkflowStep{{Name: "s", Command: "true"}}},
+			},
+		},
+	}
+	require.NoError(t, mgr.CreateWorkflow(wf))
+
+	exec, err := NewExecutor(mgr, "") // NewExecutor defaults AllowClientRuntime to true
+	require.NoError(t, err)
+
+	result, err := exec.RunWorkflow(context.Background(), "client-only", "")
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, result.Status)
+}
+
+func TestRunWorkflow_RuntimeClient_DeniedWhenNotAllowed(t *testing.T) {
+	mgr, _ := setupTestEnvironment(t)
+
+	wf := &Workflow{
+		Metadata: WorkflowMetadata{Name: "client-only"},
+		Spec: WorkflowSpec{
+			Runtime: RuntimeClient,
+			Jobs: []WorkflowJob{
+				{Name: "j", Steps: []WorkflowStep{{Name: "s", Command: "true"}}},
+			},
+		},
+	}
+	require.NoError(t, mgr.CreateWorkflow(wf))
+
+	exec, err := NewExecutor(mgr, "")
+	require.NoError(t, err)
+	// Simulates internal/reconcile/manager.go's runWorkflows (lifecycle hooks) —
+	// an automated reconcile, not a human running `hyve workflow run`.
+	exec.AllowClientRuntime = false
+
+	result, err := exec.RunWorkflow(context.Background(), "client-only", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runtime: client")
+	assert.Equal(t, StatusFailed, result.Status)
+}
+
+func TestResolveSecretsFrom_EmptyIsNoOp(t *testing.T) {
+	exec, _ := setupExecutor(t)
+	// No KubeconfigLocator configured — must not matter since there's
+	// nothing to resolve.
+	err := exec.resolveSecretsFrom(context.Background(), &Workflow{})
+	assert.NoError(t, err)
+}
+
+func TestResolveSecretsFrom_NoLocatorConfigured_Errors(t *testing.T) {
+	exec, _ := setupExecutor(t)
+	wf := &Workflow{
+		Spec: WorkflowSpec{
+			SecretsFrom: []secretsfrom.SecretSource{
+				{Cluster: "main", Namespace: "ns", SecretRef: "creds", Keys: []secretsfrom.SecretKeyMap{{Key: "token"}}},
+			},
+		},
+	}
+	err := exec.resolveSecretsFrom(context.Background(), wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "KubeconfigLocator")
 }

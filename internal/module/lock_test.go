@@ -87,3 +87,66 @@ func TestFindLockedWorkflowsByName(t *testing.T) {
 		assert.Len(t, matches, 2)
 	})
 }
+
+func TestLockedResource_RoundTripYAML(t *testing.T) {
+	lf := &LockFile{
+		Version: 1,
+		Modules: map[string]*LockedModule{},
+		Resources: map[string]*LockedResource{
+			"github.com/org/repo//a.yaml@v1.0.0": {
+				Name:     "podinfo",
+				Source:   "github.com/org/repo//a.yaml",
+				Resolved: "https://raw.githubusercontent.com/org/repo/v1.0.0/a.yaml",
+				SHA256:   "deadbeef",
+			},
+		},
+	}
+
+	data, err := yaml.Marshal(lf)
+	require.NoError(t, err)
+
+	var got LockFile
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	require.Contains(t, got.Resources, "github.com/org/repo//a.yaml@v1.0.0")
+	assert.Equal(t, lf.Resources["github.com/org/repo//a.yaml@v1.0.0"], got.Resources["github.com/org/repo//a.yaml@v1.0.0"])
+}
+
+func TestGetSetRemoveLockedResource(t *testing.T) {
+	lf := &LockFile{Version: 1}
+
+	assert.Nil(t, lf.GetLockedResource("github.com/org/repo//a.yaml", "v1.0.0"))
+
+	r := &LockedResource{Name: "podinfo", Source: "github.com/org/repo//a.yaml", SHA256: "abc"}
+	lf.SetLockedResource("github.com/org/repo//a.yaml", "v1.0.0", r)
+	assert.Equal(t, r, lf.GetLockedResource("github.com/org/repo//a.yaml", "v1.0.0"))
+
+	lf.RemoveLockedResource("github.com/org/repo//a.yaml", "v1.0.0")
+	assert.Nil(t, lf.GetLockedResource("github.com/org/repo//a.yaml", "v1.0.0"))
+}
+
+func TestFindLockedResourcesByName(t *testing.T) {
+	lf := &LockFile{
+		Version: 1,
+		Resources: map[string]*LockedResource{
+			"github.com/org/repo//a.yaml@v1.0.0":  {Name: "podinfo", Source: "github.com/org/repo//a.yaml"},
+			"github.com/org/other//b.yaml@v2.0.0": {Name: "podinfo", Source: "github.com/org/other//b.yaml"},
+			"github.com/org/repo//c.yaml@v1.0.0":  {Name: "config", Source: "github.com/org/repo//c.yaml"},
+		},
+	}
+
+	t.Run("no match", func(t *testing.T) {
+		assert.Empty(t, lf.FindLockedResourcesByName("missing"))
+	})
+
+	t.Run("one match", func(t *testing.T) {
+		matches := lf.FindLockedResourcesByName("config")
+		require.Len(t, matches, 1)
+		assert.Equal(t, "github.com/org/repo//c.yaml", matches[0].Source)
+		assert.Equal(t, "v1.0.0", matches[0].Version)
+	})
+
+	t.Run("ambiguous", func(t *testing.T) {
+		matches := lf.FindLockedResourcesByName("podinfo")
+		assert.Len(t, matches, 2)
+	})
+}

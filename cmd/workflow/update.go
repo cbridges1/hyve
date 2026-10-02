@@ -17,6 +17,9 @@ var workflowUpdateCmd = &cobra.Command{
 unlike a version-argument command, there is no separate <version> argument.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve workflow update` is not supported in cluster mode yet — hyve.lock-based remote-ref resolution is a local-checkout concept only.")
+		}
 		source := args[0]
 		pathFlag, _ := cmd.Flags().GetString("path")
 
@@ -25,7 +28,7 @@ unlike a version-argument command, there is no separate <version> argument.`,
 		repoPath := stateMgr.LocalPath()
 
 		log.Printf("Re-resolving %s ...", source)
-		updated, err := workflowref.Update(repoPath, source, pathFlag)
+		updated, err := workflowref.Update(repoPath, source, pathFlag, "")
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

@@ -33,3 +33,51 @@ jobs:
         uses: becheran/go-testreport@main
         with:
           input: report.json
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check and build
+        run: npm run build
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint
+        run: helm lint deploy/helm/hyve
+
+      - name: Render (defaults, and Postgres + bootstrap admin + SMTP)
+        run: |
+          helm template hyve deploy/helm/hyve > /dev/null
+          helm template hyve deploy/helm/hyve \
+            --set api.db.driver=postgres --set api.db.postgresDSNSecret.name=db \
+            --set api.bootstrapAdmin.username=admin --set api.bootstrapAdmin.passwordSecret.name=admin \
+            --set api.smtp.host=smtp.example.com --set api.smtp.passwordSecret.name=smtp > /dev/null
+          helm template hyve deploy/helm/hyve \
+            --set api.bootstrapAdmin.usernameKey=username --set api.bootstrapAdmin.passwordSecret.name=admin \
+            | grep -q -- '--bootstrap-admin-username-file=/etc/hyve/bootstrap-admin/username'

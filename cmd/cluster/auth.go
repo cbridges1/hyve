@@ -2,8 +2,11 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,8 +21,37 @@ var authMethodFlag string
 
 var authCmd = &cobra.Command{
 	Use:   "auth [cluster-name]",
-	Short: "Configure kubeconfig for a cluster via the module's auth operation",
-	Args:  cobra.ExactArgs(1),
+	Short: "Configure kubeconfig for a cluster",
+	Long: `Local mode (no 'hyve context login' session active): runs the driver module's auth
+operation directly against the target cloud/cluster and writes the result to
+your local kubeconfig, exactly as before.
+
+Cluster mode (a valid 'hyve context login' session exists): by default, runs the
+same auth operation client-side too, but with no local module resolution
+required at all — GET /api/clusters/<name>/auth-context delivers the
+resolved auth operation file's content directly (resolved against the API's
+own module cache, not yours), along with driver info
+(source/version/params/outputs). No local context, git checkout, or
+'hyve module install' is needed; only your own local credentials/tools
+(civo, aws, gcloud, etc.) still apply, since the script runs on your
+machine.
+
+If the cluster has opted into server-side auth (spec.access.method:
+module-auth on its ClusterDefinition), the module instead runs inside the
+API pod and this fetches an already-minted kubeconfig (GET /api/kubeconfig)
+and merges it in — --method isn't supported for that path, since the server
+always uses the module's default auth method.
+
+If the cluster has hyve-agent proxying enabled (spec.access.agent.proxy:
+true), this also fetches an already-minted kubeconfig (GET
+/api/kubeconfig, same call as the server-side-auth case above) — but its
+server: doesn't point at the target cluster's own real apiserver, or at
+any driver module's auth op at all. It points back at this API's own
+/api/agent-proxy/<name> path: every kubectl request against the resulting
+context is relayed through hyve-api, over hyve-agent's own outbound SSH
+tunnel, to the cluster's real apiserver — the cluster never needs a
+directly reachable endpoint or its own native driver auth.`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		runClusterAuth(args[0], authMethodFlag)
 	},
@@ -30,6 +62,11 @@ func init() {
 }
 
 func runClusterAuth(name string, method string) {
+	if sess, ok := shared.UseClusterMode(); ok {
+		authClusterAPI(shared.NewAPIClient(sess), name, method)
+		return
+	}
+
 	ctx := context.Background()
 	stateMgr, _ := shared.CreateStateManager(ctx)
 	repoPath := stateMgr.LocalPath()
@@ -62,19 +99,185 @@ func runClusterAuth(name string, method string) {
 	}
 
 	env := moduleEnv(cluster)
-	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: repoPath, AuthMethod: method}
+	executor := &mod.Executor{ModuleDir: resolved.Dir, Env: env, WorkDir: repoPath, ClusterName: name, AuthMethod: method}
 
-	if _, err := executor.Execute(ctx, mod.OperationAuth); err != nil {
+	result, err := executor.Execute(ctx, mod.OperationAuth)
+	if err != nil {
 		log.Fatalf("Auth failed: %v", err)
 	}
 
-	if kcPath, pathErr := mod.DefaultKubeconfigPath(); pathErr != nil {
-		log.Printf("Warning: could not resolve kubeconfig path: %v", pathErr)
-	} else if err := kubeconfig.DeduplicateKubeconfigEntries(kcPath); err != nil {
-		log.Printf("Warning: failed to deduplicate kubeconfig: %v", err)
-	}
+	mergeAuthResultIntoDefaultKubeconfig(name, result.Outputs["KUBECONFIG"])
 
 	fmt.Printf("kubectl context for '%s' configured\n", name)
+}
+
+// authClusterAPI is cluster mode's counterpart to runClusterAuth's local
+// flow. Default: fetch driver info via GET /api/clusters/<name>/auth-context
+// and run the module client-side, same as local mode — the API never sees
+// the resulting credentials. A cluster explicitly opted into the
+// server-side override, or hyve-agent proxying, instead falls back to
+// fetching an already-minted kubeconfig and merging it in
+// — cd (fetched once, up front) is what lets the final branch below tell
+// the agent-proxy case apart from the others for its own, more specific
+// success message; a failure fetching it degrades gracefully to the
+// generic message rather than blocking auth entirely.
+func authClusterAPI(client *shared.APIClient, name string, method string) {
+	cd, cdErr := client.GetCluster(name)
+
+	authCtx, err := client.GetAuthContext(name)
+	if err == nil {
+		runModuleAuthLocally(client, name, authCtx, method)
+		return
+	}
+	if !errors.Is(err, shared.ErrClientSideAuthUnavailable) {
+		log.Fatalf("Failed to fetch auth context for '%s': %v", name, err)
+	}
+
+	if method != "" {
+		log.Printf("Warning: --method is ignored — '%s' uses server-side auth, where the API always uses the module's default auth method", name)
+	}
+
+	kc, err := client.GetKubeconfig(name)
+	if err != nil {
+		log.Fatalf("Failed to fetch kubeconfig for '%s': %v", name, err)
+	}
+
+	kcPath, err := mod.DefaultKubeconfigPath()
+	if err != nil {
+		log.Fatalf("Failed to resolve local kubeconfig path: %v", err)
+	}
+	if err := kubeconfig.MergeKubeconfigEntry(kcPath, kc, name); err != nil {
+		log.Fatalf("Failed to merge kubeconfig: %v", err)
+	}
+
+	if cdErr == nil && cd.Agent != nil && cd.Agent.Proxy {
+		fmt.Printf("kubectl context for '%s' configured (via hyve-agent's proxy tunnel — kubectl traffic is relayed through the API to this cluster's own agent, not a direct connection)\n", name)
+	} else {
+		fmt.Printf("kubectl context for '%s' configured (via the API, server-side auth)\n", name)
+	}
+}
+
+// runModuleAuthLocally is cluster mode's client-side-default path: runs the
+// auth operation file the API's auth-context response already delivered
+// (AuthFileContent, resolved server-side against the API's own module
+// cache — see internal/api's handleAuthContext) by writing it to a fresh
+// temp directory and pointing Executor at that, instead of resolving the
+// module from a local hyve.lock. No local environment/git checkout is
+// required for this at all — matching how cluster-mode login and local
+// directories are otherwise completely independent (see internal/session's
+// own doc comment); requiring `hyve module install` here would have been
+// exactly the kind of silent re-coupling that split was meant to prevent.
+func runModuleAuthLocally(client *shared.APIClient, name string, authCtx *shared.AuthContextDTO, method string) {
+	ctx := context.Background()
+
+	if len(authCtx.Tools) > 0 {
+		tools := make([]mod.ToolRequirement, len(authCtx.Tools))
+		for i, t := range authCtx.Tools {
+			tools[i] = mod.ToolRequirement{Name: t.Name, Description: t.Description}
+		}
+		if reqErr := mod.ValidateToolRequirements(tools); reqErr != nil {
+			log.Fatalf("%v", reqErr)
+		}
+	}
+
+	tmpDir, err := os.MkdirTemp("", "hyve-cluster-auth-*")
+	if err != nil {
+		log.Fatalf("Failed to create temp directory for auth module: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, authCtx.AuthFileName), []byte(authCtx.AuthFileContent), 0600); err != nil {
+		log.Fatalf("Failed to write auth module file: %v", err)
+	}
+
+	env := authContextEnv(name, authCtx)
+	if authCtx.MgmtCluster != "" {
+		mgmtPath, mgmtErr := mgmtKubeconfigViaAPI(client, authCtx.MgmtCluster, tmpDir)
+		if mgmtErr != nil {
+			log.Fatalf("Module requires mgmtCluster %q: %v", authCtx.MgmtCluster, mgmtErr)
+		}
+		env = append(env, mod.MgmtKubeconfigEnv+"="+mgmtPath)
+	}
+	executor := &mod.Executor{ModuleDir: tmpDir, Env: env, WorkDir: tmpDir, ClusterName: name, AuthMethod: method}
+
+	result, err := executor.Execute(ctx, mod.OperationAuth)
+	if err != nil {
+		log.Fatalf("Auth failed: %v", err)
+	}
+
+	mergeAuthResultIntoDefaultKubeconfig(name, result.Outputs["KUBECONFIG"])
+
+	fmt.Printf("kubectl context for '%s' configured (module run locally)\n", name)
+}
+
+// mgmtKubeconfigViaAPI gets the management cluster's kubeconfig for a
+// module with requirements.mgmtCluster: from the API first (a server-side
+// kubeconfig — what the host cluster, the usual CAPI management cluster,
+// always has), falling back to the one `hyve cluster auth <mgmt>` last
+// wrote locally. The API copy goes in dir, cleaned up with the auth run.
+func mgmtKubeconfigViaAPI(client *shared.APIClient, mgmt, dir string) (string, error) {
+	if kc, err := client.GetKubeconfig(mgmt); err == nil {
+		path := filepath.Join(dir, "mgmt-kubeconfig")
+		if err := os.WriteFile(path, kc, 0600); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	return mod.DefaultMgmtKubeconfigLocator(context.Background(), mgmt)
+}
+
+// mergeAuthResultIntoDefaultKubeconfig reads the per-cluster kubeconfig
+// executeAuth just wrote (see module.KubeconfigPathForCluster) and merges
+// its cluster/context/user entry into the user's real default kubeconfig
+// (~/.kube/config), named after the cluster — this is what actually makes
+// "kubectl context for '%s' configured" true; without it, the per-cluster
+// file gets written but kubectl (which reads ~/.kube/config by default)
+// never sees it. Best-effort no-op when perClusterKcPath is empty — not
+// every auth method exports a KUBECONFIG (see ClusterAuth's Exports
+// field), and that's not an error.
+func mergeAuthResultIntoDefaultKubeconfig(name, perClusterKcPath string) {
+	if perClusterKcPath == "" {
+		return
+	}
+	// Dedupe the per-cluster file first — MergeKubeconfigEntry only ever
+	// reads its first cluster/context/user entry, so a stale duplicate left
+	// over from an earlier `hyve cluster auth` run (if the module's own
+	// script appends rather than overwrites) would otherwise silently win
+	// over the fresh entry just written.
+	if err := kubeconfig.DeduplicateKubeconfigEntries(perClusterKcPath); err != nil {
+		log.Printf("Warning: failed to deduplicate %s: %v", perClusterKcPath, err)
+	}
+	data, err := os.ReadFile(perClusterKcPath)
+	if err != nil {
+		log.Printf("Warning: failed to read %s: %v", perClusterKcPath, err)
+		return
+	}
+	defaultKcPath, err := mod.DefaultKubeconfigPath()
+	if err != nil {
+		log.Printf("Warning: could not resolve kubeconfig path: %v", err)
+		return
+	}
+	if err := kubeconfig.MergeKubeconfigEntry(defaultKcPath, data, name); err != nil {
+		log.Printf("Warning: failed to merge kubeconfig: %v", err)
+	}
+}
+
+// authContextEnv mirrors moduleEnv but builds off shared.AuthContextDTO
+// (the API's auth-context response) instead of a locally-loaded
+// types.ClusterDefinition — same duplication precedent as
+// internal/api/access.go's own moduleEnvForClusterDefinition.
+func authContextEnv(clusterName string, authCtx *shared.AuthContextDTO) []string {
+	env := []string{
+		"HYVE_CLUSTER_NAME=" + clusterName,
+		"HYVE_CLUSTER_REGION=" + authCtx.Region,
+	}
+	for k, v := range authCtx.Params {
+		env = append(env, "HYVE_PARAM_"+strings.ToUpper(k)+"="+v)
+	}
+	for k, v := range authCtx.DriverOutputs {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 func moduleEnv(cluster *types.ClusterDefinition) []string {

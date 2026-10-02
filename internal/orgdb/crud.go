@@ -1,0 +1,1139 @@
+package orgdb
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// ErrNotFound is returned by every Get*/lookup method below when no row
+// matches — callers translate this into a 404, the same convention
+// client.Client's own apierrors.IsNotFound already establishes elsewhere
+// in this codebase for the Kubernetes-backed lookups this package is
+// replacing.
+var ErrNotFound = errors.New("orgdb: not found")
+
+// CreateOrganization inserts a new organization row. Callers are
+// responsible for the surrounding Kubernetes namespace/RBAC provisioning
+// and for creating the organization's default Environment — this method
+// only ever writes the one row, so it can be composed into a single
+// transaction with those alongside CreateEnvironment/CreateBinding (see
+// Milestone 2 in HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md).
+func (s *Store) CreateOrganization(ctx context.Context, org Organization) (Organization, error) {
+	if org.ID == "" {
+		org.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO organizations (id, name, namespace, plan, metadata, reconciling_cluster_id, pending_deletion)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, org.ID, org.Name, org.Namespace, org.Plan, org.Metadata, org.ReconcilingClusterID, org.PendingDeletion)
+	if err != nil {
+		return Organization{}, fmt.Errorf("insert organization: %w", err)
+	}
+	return s.GetOrganization(ctx, org.ID)
+}
+
+// GetOrganization looks up an organization by id.
+func (s *Store) GetOrganization(ctx context.Context, id string) (Organization, error) {
+	row := s.queryRow(ctx, `
+		SELECT id, name, namespace, plan, metadata,
+		       reconciling_cluster_id, reconciling_cluster_migration_status,
+		       pending_deletion, created_at
+		FROM organizations WHERE id = ?
+	`, id)
+	return scanOrganization(row)
+}
+
+// GetOrganizationByName looks up an organization by its unique name.
+func (s *Store) GetOrganizationByName(ctx context.Context, name string) (Organization, error) {
+	row := s.queryRow(ctx, `
+		SELECT id, name, namespace, plan, metadata,
+		       reconciling_cluster_id, reconciling_cluster_migration_status,
+		       pending_deletion, created_at
+		FROM organizations WHERE name = ?
+	`, name)
+	return scanOrganization(row)
+}
+
+func scanOrganization(row *sql.Row) (Organization, error) {
+	var org Organization
+	err := row.Scan(
+		&org.ID, &org.Name, &org.Namespace, &org.Plan, &org.Metadata,
+		&org.ReconcilingClusterID, &org.ReconcilingClusterMigrationStatus,
+		&org.PendingDeletion, &org.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Organization{}, ErrNotFound
+	}
+	if err != nil {
+		return Organization{}, fmt.Errorf("scan organization: %w", err)
+	}
+	return org, nil
+}
+
+// ListOrganizations returns every organization — used by GET /organizations
+// (an admin UX listing) and by `hyve migrate cluster --namespace
+// hyve-system` to enumerate every tenant to migrate alongside the control
+// plane, replacing that command's former HyveEnvironment-CRD-based
+// enumeration (see internal/migrate's own history for that swap).
+func (s *Store) ListOrganizations(ctx context.Context) ([]Organization, error) {
+	rows, err := s.query(ctx, `
+		SELECT id, name, namespace, plan, metadata,
+		       reconciling_cluster_id, reconciling_cluster_migration_status,
+		       pending_deletion, created_at
+		FROM organizations ORDER BY name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list organizations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Organization
+	for rows.Next() {
+		var org Organization
+		if err := rows.Scan(
+			&org.ID, &org.Name, &org.Namespace, &org.Plan, &org.Metadata,
+			&org.ReconcilingClusterID, &org.ReconcilingClusterMigrationStatus,
+			&org.PendingDeletion, &org.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan organization: %w", err)
+		}
+		out = append(out, org)
+	}
+	return out, rows.Err()
+}
+
+// MarkOrganizationPendingDeletion flips an organization's pending_deletion
+// flag to true — the durable, crash-safe signal
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md's Namespace-finalizer design relies
+// on: written before the Kubernetes namespace delete is even issued, so a
+// process restart between the two has something to resume from (the next
+// sweep over ListOrganizationsPendingDeletion picks it back up) rather than
+// silently losing track of an in-flight deletion.
+func (s *Store) MarkOrganizationPendingDeletion(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `UPDATE organizations SET pending_deletion = ? WHERE id = ?`, true, id)
+	if err != nil {
+		return fmt.Errorf("mark organization pending deletion: %w", err)
+	}
+	return nil
+}
+
+// ListOrganizationsPendingDeletion returns every organization currently
+// mid-deletion — the sweep set a periodic check (or the next relevant
+// request) walks to see whether each one's Namespace has finished
+// terminating yet (see DeleteOrganization's own doc comment for the step
+// that follows).
+func (s *Store) ListOrganizationsPendingDeletion(ctx context.Context) ([]Organization, error) {
+	rows, err := s.query(ctx, `
+		SELECT id, name, namespace, plan, metadata,
+		       reconciling_cluster_id, reconciling_cluster_migration_status,
+		       pending_deletion, created_at
+		FROM organizations WHERE pending_deletion = ? ORDER BY name
+	`, true)
+	if err != nil {
+		return nil, fmt.Errorf("list organizations pending deletion: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Organization
+	for rows.Next() {
+		var org Organization
+		if err := rows.Scan(
+			&org.ID, &org.Name, &org.Namespace, &org.Plan, &org.Metadata,
+			&org.ReconcilingClusterID, &org.ReconcilingClusterMigrationStatus,
+			&org.PendingDeletion, &org.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan organization: %w", err)
+		}
+		out = append(out, org)
+	}
+	return out, rows.Err()
+}
+
+// DeleteOrganization permanently removes an organization's row along with
+// every environment and binding scoped to it — called only once the
+// caller has confirmed the organization's Kubernetes Namespace is fully
+// gone (a Get 404, per the finalizer design), never before: this is the
+// final step, not the trigger. Bindings and environments are deleted
+// first in one transaction, ahead of the organization row itself, purely
+// to satisfy their own FK references to it (see 0001_init.sql) — none of
+// this is a Kubernetes-side cascade, since bindings/environments are
+// Postgres/SQLite rows, not objects that live inside the Namespace and so
+// were never touched by Kubernetes' own namespace-termination cascade.
+func (s *Store) DeleteOrganization(ctx context.Context, id string) error {
+	org, err := s.GetOrganization(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	deleteBindings := rebind(s.driver, `DELETE FROM bindings WHERE namespace = ?`)
+	if _, err := tx.ExecContext(ctx, deleteBindings, org.Namespace); err != nil {
+		return fmt.Errorf("delete bindings for organization: %w", err)
+	}
+
+	deleteEnvs := rebind(s.driver, `DELETE FROM environments WHERE organization_id = ?`)
+	if _, err := tx.ExecContext(ctx, deleteEnvs, org.ID); err != nil {
+		return fmt.Errorf("delete environments for organization: %w", err)
+	}
+
+	// The organization's own reconciling clusters go with it — their
+	// credentials belong to it. Detach first: organizations.reconciling_cluster_id
+	// may point at one of them, and the two tables reference each other.
+	detach := rebind(s.driver, `UPDATE organizations SET reconciling_cluster_id = NULL WHERE id = ?`)
+	if _, err := tx.ExecContext(ctx, detach, org.ID); err != nil {
+		return fmt.Errorf("detach organization's reconciling cluster: %w", err)
+	}
+	deleteClusters := rebind(s.driver, `DELETE FROM reconciling_clusters WHERE organization_id = ?`)
+	if _, err := tx.ExecContext(ctx, deleteClusters, org.ID); err != nil {
+		return fmt.Errorf("delete reconciling clusters for organization: %w", err)
+	}
+
+	deleteOrg := rebind(s.driver, `DELETE FROM organizations WHERE id = ?`)
+	if _, err := tx.ExecContext(ctx, deleteOrg, org.ID); err != nil {
+		return fmt.Errorf("delete organization: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// CreateOrganizationWithDefaults inserts an organization, its default
+// environment, and (only if adminIdentity is non-empty) an initial admin
+// Binding for that identity — all in one transaction, per
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md's "one atomic Postgres transaction"
+// decision. adminIdentity is optional here specifically because, as of
+// Milestone 2, nothing reads Binding rows for authorization yet (that
+// starts at Milestone 4) — a caller may pass "" and grant access the old
+// way in the meantime, or pass a real identity to start populating the
+// table its own future auth checks will read.
+func (s *Store) CreateOrganizationWithDefaults(ctx context.Context, org Organization, adminIdentity, adminRole string) (Organization, Environment, error) {
+	if org.ID == "" {
+		org.ID = newID()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Organization{}, Environment{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	insertOrg := rebind(s.driver, `INSERT INTO organizations (id, name, namespace, plan, metadata, reconciling_cluster_id, pending_deletion) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if _, err := tx.ExecContext(ctx, insertOrg, org.ID, org.Name, org.Namespace, org.Plan, org.Metadata, org.ReconcilingClusterID, org.PendingDeletion); err != nil {
+		return Organization{}, Environment{}, fmt.Errorf("insert organization: %w", err)
+	}
+
+	envID := newID()
+	insertEnv := rebind(s.driver, `INSERT INTO environments (id, organization_id, name, metadata) VALUES (?, ?, ?, ?)`)
+	if _, err := tx.ExecContext(ctx, insertEnv, envID, org.ID, DefaultEnvironmentName, "{}"); err != nil {
+		return Organization{}, Environment{}, fmt.Errorf("insert default environment: %w", err)
+	}
+
+	if adminIdentity != "" {
+		insertBinding := rebind(s.driver, `
+			INSERT INTO bindings (id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`)
+		saName := ServiceAccountNameForRole(adminRole)
+		// No password_hash column here: this binding has no password of
+		// its own yet (adminIdentity is an OIDC subject or a placeholder
+		// identity — a real local account's own password is always set via
+		// CreateBinding directly, e.g. handleCreateAccount, never through
+		// this convenience path).
+		if _, err := tx.ExecContext(ctx, insertBinding, newID(), org.Namespace, org.ID, envID, SubjectTypeLocal, adminIdentity, adminRole, saName, org.Namespace); err != nil {
+			return Organization{}, Environment{}, fmt.Errorf("insert initial admin binding: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Organization{}, Environment{}, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	createdOrg, err := s.GetOrganization(ctx, org.ID)
+	if err != nil {
+		return Organization{}, Environment{}, err
+	}
+	createdEnv, err := s.GetEnvironmentByName(ctx, org.ID, DefaultEnvironmentName)
+	if err != nil {
+		return Organization{}, Environment{}, err
+	}
+	return createdOrg, createdEnv, nil
+}
+
+// CreateEnvironment inserts a new environment row scoped to organizationID.
+func (s *Store) CreateEnvironment(ctx context.Context, env Environment) (Environment, error) {
+	if env.ID == "" {
+		env.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO environments (id, organization_id, name, metadata)
+		VALUES (?, ?, ?, ?)
+	`, env.ID, env.OrganizationID, env.Name, env.Metadata)
+	if err != nil {
+		return Environment{}, fmt.Errorf("insert environment: %w", err)
+	}
+	return s.GetEnvironmentByName(ctx, env.OrganizationID, env.Name)
+}
+
+// GetEnvironmentByName looks up an environment within one organization by
+// its short name — the pair (organizationID, name) is what's actually
+// unique, per the schema's own UNIQUE(organization_id, name) constraint.
+func (s *Store) GetEnvironmentByName(ctx context.Context, organizationID, name string) (Environment, error) {
+	row := s.queryRow(ctx, `
+		SELECT id, organization_id, name, metadata, created_at
+		FROM environments WHERE organization_id = ? AND name = ?
+	`, organizationID, name)
+	var env Environment
+	err := row.Scan(&env.ID, &env.OrganizationID, &env.Name, &env.Metadata, &env.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Environment{}, ErrNotFound
+	}
+	if err != nil {
+		return Environment{}, fmt.Errorf("scan environment: %w", err)
+	}
+	return env, nil
+}
+
+// ListEnvironments returns every environment for organizationID, ordered by
+// name — used to resolve "no ?env= given" against an org with exactly one
+// environment (the common case, per HYVE-ORGANIZATION-MODEL-PROPOSAL.md's
+// own CLI/API surface section) and to list environments for an admin UI.
+func (s *Store) ListEnvironments(ctx context.Context, organizationID string) ([]Environment, error) {
+	rows, err := s.query(ctx, `
+		SELECT id, organization_id, name, metadata, created_at
+		FROM environments WHERE organization_id = ? ORDER BY name
+	`, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("list environments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Environment
+	for rows.Next() {
+		var env Environment
+		if err := rows.Scan(&env.ID, &env.OrganizationID, &env.Name, &env.Metadata, &env.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan environment: %w", err)
+		}
+		out = append(out, env)
+	}
+	return out, rows.Err()
+}
+
+// DeleteEnvironment permanently removes one environment row. Any binding
+// that happened to default to this specific environment (bindings.environment_id
+// is optional resolution metadata, never the actual isolation boundary —
+// see 0001_init.sql's own comment on that column) has the reference cleared
+// first, in the same transaction, rather than blocking the delete or
+// leaving a dangling FK: namespace is what actually scopes a binding's
+// access, so clearing this can never widen or narrow what it's authorized
+// for. Returns ErrNotFound if id doesn't exist.
+func (s *Store) DeleteEnvironment(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	clearBindings := rebind(s.driver, `UPDATE bindings SET environment_id = NULL WHERE environment_id = ?`)
+	if _, err := tx.ExecContext(ctx, clearBindings, id); err != nil {
+		return fmt.Errorf("clear bindings referencing environment: %w", err)
+	}
+
+	deleteEnv := rebind(s.driver, `DELETE FROM environments WHERE id = ?`)
+	res, err := tx.ExecContext(ctx, deleteEnv, id)
+	if err != nil {
+		return fmt.Errorf("delete environment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check delete environment result: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+const bindingColumns = `id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, email, created_at`
+
+// ServiceAccountNameForRole is the role -> ServiceAccount convention
+// preserved from the retired HyveAccessBindingSpec.ServiceAccountRef (see
+// that type's own predecessor doc comment) — admin and superadmin share
+// hyve-access-admin (a superadmin's real privilege comes from Role alone,
+// not this field; this SA only matters if they also fetch an ordinary
+// kubeconfig for some tenant's cluster), read-only gets
+// hyve-access-readonly. A custom role has no default — callers creating
+// one must supply their own operator-defined ServiceAccount name directly
+// rather than through this helper.
+func ServiceAccountNameForRole(role string) string {
+	switch role {
+	case "read-only":
+		return "hyve-access-readonly"
+	default: // "admin", "superadmin"
+		return "hyve-access-admin"
+	}
+}
+
+// rolePriority ranks roles for FindBindingBySubject's "if this identity
+// somehow has more than one binding in the same namespace, which one
+// governs coarse (non-environment-scoped) authorization checks"
+// resolution — highest wins. Ties (e.g. two "admin" bindings, which
+// UNIQUE(namespace, environment_id, subject_type, identity) prevents
+// within one environment but not across two) fall back to whichever sorts
+// first, which is fine: same role, no real difference which row is "the"
+// match.
+func rolePriority(role string) int {
+	switch role {
+	case "superadmin":
+		return 4
+	case "admin":
+		return 3
+	case "read-only":
+		return 2
+	default: // "custom"
+		return 1
+	}
+}
+
+// CreateBinding inserts a new RBAC grant, scoped to Namespace (required —
+// the actual isolation boundary, see Binding's own doc comment).
+// OrganizationID/EnvironmentID must both be set or both be nil — set
+// together only when Namespace has a matching Organization (a caller
+// creating an unscoped grant within a real Organization resolves
+// EnvironmentID to that organization's DefaultEnvironmentName environment
+// before calling this — see the proposal doc's "no wildcard grant"
+// decision); nil together otherwise.
+func (s *Store) CreateBinding(ctx context.Context, b Binding) (Binding, error) {
+	if b.ID == "" {
+		b.ID = newID()
+	}
+	if b.Namespace == "" {
+		return Binding{}, fmt.Errorf("create binding: namespace is required")
+	}
+	if (b.OrganizationID == nil) != (b.EnvironmentID == nil) {
+		return Binding{}, fmt.Errorf("create binding: organization_id and environment_id must both be set or both be nil, got organization_id=%v environment_id=%v", b.OrganizationID, b.EnvironmentID)
+	}
+	if b.SubjectType == "" {
+		b.SubjectType = SubjectTypeLocal
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO bindings (id, namespace, organization_id, environment_id, subject_type, identity, role, service_account_name, service_account_namespace, password_hash, email)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, b.ID, b.Namespace, b.OrganizationID, b.EnvironmentID, b.SubjectType, b.Identity, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace, b.PasswordHash, b.Email)
+	if err != nil {
+		return Binding{}, fmt.Errorf("insert binding: %w", err)
+	}
+	return s.getBindingByID(ctx, b.ID)
+}
+
+func scanBinding(row *sql.Row) (Binding, error) {
+	var b Binding
+	err := row.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.Email, &b.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Binding{}, ErrNotFound
+	}
+	if err != nil {
+		return Binding{}, fmt.Errorf("scan binding: %w", err)
+	}
+	return b, nil
+}
+
+func (s *Store) getBindingByID(ctx context.Context, id string) (Binding, error) {
+	row := s.queryRow(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE id = ?`, id)
+	return scanBinding(row)
+}
+
+// FindBindingBySubject looks up (subjectType, identity)'s binding within
+// namespace — the actual isolation boundary (see Binding's own doc
+// comment), matching the retired CRD-based FindBindingBySubject's own
+// namespace-scoped signature exactly. If the identity somehow has more
+// than one binding in this namespace (multiple environment-scoped
+// grants), the highest-privilege one is returned — see rolePriority —
+// since this is the coarse, namespace-level lookup used by login and the
+// ordinary role gate (RequireRole), not a per-environment-resource
+// authorization check.
+func (s *Store) FindBindingBySubject(ctx context.Context, namespace, subjectType, identity string) (Binding, error) {
+	bindings, err := s.findBindingsByNamespace(ctx, namespace, identity)
+	if err != nil {
+		return Binding{}, err
+	}
+	var best *Binding
+	for i := range bindings {
+		if bindings[i].SubjectType != subjectType {
+			continue
+		}
+		if best == nil || rolePriority(bindings[i].Role) > rolePriority(best.Role) {
+			best = &bindings[i]
+		}
+	}
+	if best == nil {
+		return Binding{}, ErrNotFound
+	}
+	return *best, nil
+}
+
+// findBindingsByNamespace returns every binding for identity within
+// namespace — shared by FindBindingBySubject (which then picks the
+// highest-privilege match) and ListBindingsForScope (which returns every
+// one, for an accounts listing).
+func (s *Store) findBindingsByNamespace(ctx context.Context, namespace, identity string) ([]Binding, error) {
+	rows, err := s.query(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE namespace = ? AND identity = ?`, namespace, identity)
+	if err != nil {
+		return nil, fmt.Errorf("query bindings: %w", err)
+	}
+	defer rows.Close()
+	return scanBindings(rows)
+}
+
+func scanBindings(rows *sql.Rows) ([]Binding, error) {
+	var out []Binding
+	for rows.Next() {
+		var b Binding
+		if err := rows.Scan(&b.ID, &b.Namespace, &b.OrganizationID, &b.EnvironmentID, &b.SubjectType, &b.Identity, &b.Role, &b.ServiceAccountName, &b.ServiceAccountNamespace, &b.PasswordHash, &b.Email, &b.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan binding: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// FindBindingByEmail looks up a local binding by its unique-within-
+// namespace email address — used both to support login-by-email
+// (Server.handleLogin, tried as a fallback after a username lookup fails)
+// and to enforce the same per-namespace uniqueness at the application
+// level that bindings_namespace_email's partial index also enforces at the
+// database level (belt-and-suspenders: the app-level check gives a clean
+// 409 instead of surfacing a raw constraint-violation error).
+func (s *Store) FindBindingByEmail(ctx context.Context, namespace, email string) (Binding, error) {
+	row := s.queryRow(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE namespace = ? AND email = ?`, namespace, email)
+	return scanBinding(row)
+}
+
+// ListBindingsForScope returns every binding within namespace — used by
+// GET /accounts. Unlike FindBindingBySubject, this doesn't collapse to one
+// row per identity: an identity with grants in two different environments
+// shows up twice, which is correct for an admin auditing exactly what's
+// granted.
+func (s *Store) ListBindingsForScope(ctx context.Context, namespace string) ([]Binding, error) {
+	rows, err := s.query(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE namespace = ? ORDER BY identity`, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("list bindings: %w", err)
+	}
+	defer rows.Close()
+	return scanBindings(rows)
+}
+
+// SetBindingPassword updates a local binding's stored password hash in
+// place — used for both self-service password changes and admin-driven
+// resets, neither of which should disturb the binding's role/identity/scope.
+func (s *Store) SetBindingPassword(ctx context.Context, id, passwordHash string) error {
+	_, err := s.exec(ctx, `UPDATE bindings SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	if err != nil {
+		return fmt.Errorf("set binding password: %w", err)
+	}
+	return nil
+}
+
+// UpdateBinding overwrites b's mutable fields (namespace, organization_id,
+// environment_id, role, service_account_name, service_account_namespace,
+// email) on the existing row named by b.ID — everything a role
+// promotion/demotion or an email edit might touch (see
+// internal/api.handleUpdateAccount), in one statement so a caller building
+// the full target state doesn't need several partial updates. Deliberately
+// leaves subject_type/identity/password_hash/created_at untouched: a
+// binding's underlying identity and credentials are never what this call
+// is for (identity is immutable everywhere else in this API too; password
+// changes go through SetBindingPassword instead, which callers should
+// still invoke separately since a role change and a password reset are
+// unrelated operations that happen to share a row).
+func (s *Store) UpdateBinding(ctx context.Context, b Binding) (Binding, error) {
+	if (b.OrganizationID == nil) != (b.EnvironmentID == nil) {
+		return Binding{}, fmt.Errorf("update binding: organization_id and environment_id must both be set or both be nil, got organization_id=%v environment_id=%v", b.OrganizationID, b.EnvironmentID)
+	}
+	_, err := s.exec(ctx, `
+		UPDATE bindings
+		SET namespace = ?, organization_id = ?, environment_id = ?, role = ?, service_account_name = ?, service_account_namespace = ?, email = ?
+		WHERE id = ?
+	`, b.Namespace, b.OrganizationID, b.EnvironmentID, b.Role, b.ServiceAccountName, b.ServiceAccountNamespace, b.Email, b.ID)
+	if err != nil {
+		return Binding{}, fmt.Errorf("update binding: %w", err)
+	}
+	return s.getBindingByID(ctx, b.ID)
+}
+
+// DeleteBinding removes one binding by id, along with any password reset
+// token still outstanding for it — no ON DELETE CASCADE backs this (see
+// migrations/*/0005_password_reset_tokens.sql's own comment), so an
+// orphaned token row is this call's responsibility to prevent, not the
+// database's.
+func (s *Store) DeleteBinding(ctx context.Context, id string) error {
+	if _, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, id); err != nil {
+		return fmt.Errorf("delete password reset tokens for binding: %w", err)
+	}
+	_, err := s.exec(ctx, `DELETE FROM bindings WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete binding: %w", err)
+	}
+	return nil
+}
+
+// CreateReconcilingCluster registers a new physical cluster, storing its
+// kubeconfig content directly (Milestone 10 Part C — see ReconcilingCluster's
+// own doc comment for why this replaced a Kubernetes-Secret-reference
+// design).
+func (s *Store) CreateReconcilingCluster(ctx context.Context, rc ReconcilingCluster) (ReconcilingCluster, error) {
+	if rc.ID == "" {
+		rc.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO reconciling_clusters (id, name, organization_id, kubeconfig)
+		VALUES (?, ?, ?, ?)
+	`, rc.ID, rc.Name, rc.OrganizationID, rc.Kubeconfig)
+	if err != nil {
+		return ReconcilingCluster{}, fmt.Errorf("insert reconciling cluster: %w", err)
+	}
+	return s.GetReconcilingCluster(ctx, rc.ID)
+}
+
+// SetReconcilingClusterKubeconfig rotates rc's stored kubeconfig content in
+// place — the Store-backed counterpart of the old "re-POST rotates the
+// Secret" precedent (see handleCreateReconcilingCluster).
+func (s *Store) SetReconcilingClusterKubeconfig(ctx context.Context, id, kubeconfig string) error {
+	_, err := s.exec(ctx, `UPDATE reconciling_clusters SET kubeconfig = ? WHERE id = ?`, kubeconfig, id)
+	if err != nil {
+		return fmt.Errorf("set reconciling cluster kubeconfig: %w", err)
+	}
+	return nil
+}
+
+// DeleteReconcilingCluster permanently removes a registered reconciling
+// cluster's row, including its stored kubeconfig — the self-service
+// "remove" counterpart to CreateReconcilingCluster/SetReconcilingClusterKubeconfig,
+// used once an organization's own dedicated cluster (named identically to
+// its own namespace — see handlePutOrgReconcilingCluster's own doc
+// comment) is no longer wanted. A hard delete, not a soft one, matching
+// this table's own "never echo the kubeconfig back once stored" stance —
+// once removed, the credential is gone. The caller is responsible for
+// detaching every organization from id first (organizations.reconciling_cluster_id
+// has no FK-cascade behavior defined here); see
+// handleDeleteOrgReconcilingCluster's own doc comment for why it always
+// does that first.
+func (s *Store) DeleteReconcilingCluster(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `DELETE FROM reconciling_clusters WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete reconciling cluster: %w", err)
+	}
+	return nil
+}
+
+// GetReconcilingCluster looks up a reconciling cluster by id.
+func (s *Store) GetReconcilingCluster(ctx context.Context, id string) (ReconcilingCluster, error) {
+	return s.scanReconcilingCluster(s.queryRow(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
+		FROM reconciling_clusters WHERE id = ?
+	`, id))
+}
+
+// SetReconcilingClusterHealth records the result of a reachability check —
+// written by the API server's own periodic health-check loop (Milestone
+// 6), never by the controller, which never touches this store at all.
+// version is the cluster's own reported Kubernetes version from that same
+// check (empty on a failed check) — see ReconcilingCluster.KubernetesVersion's
+// own doc comment for why a failed check leaves the previously observed
+// value alone rather than clearing it.
+func (s *Store) SetReconcilingClusterHealth(ctx context.Context, id string, reachable bool, checkErr error, version string) error {
+	var lastError *string
+	if checkErr != nil {
+		msg := checkErr.Error()
+		lastError = &msg
+	}
+	now := time.Now().UTC()
+	if version != "" {
+		_, err := s.exec(ctx, `
+			UPDATE reconciling_clusters SET reachable = ?, last_checked_at = ?, last_error = ?, kubernetes_version = ? WHERE id = ?
+		`, reachable, now, lastError, version, id)
+		if err != nil {
+			return fmt.Errorf("update reconciling cluster health: %w", err)
+		}
+		return nil
+	}
+	_, err := s.exec(ctx, `
+		UPDATE reconciling_clusters SET reachable = ?, last_checked_at = ?, last_error = ? WHERE id = ?
+	`, reachable, now, lastError, id)
+	if err != nil {
+		return fmt.Errorf("update reconciling cluster health: %w", err)
+	}
+	return nil
+}
+
+// GetPoolReconcilingClusterByName looks up a superadmin-pool reconciling
+// cluster (organization_id NULL) by name — used by POST /organizations' and
+// PATCH /organizations/{name}'s own `reconcilingCluster` request field, and
+// by an organization selecting a shared cluster. Never matches an
+// organization-owned row, whose name is only unique within its owner.
+func (s *Store) GetPoolReconcilingClusterByName(ctx context.Context, name string) (ReconcilingCluster, error) {
+	return s.scanReconcilingCluster(s.queryRow(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
+		FROM reconciling_clusters WHERE organization_id IS NULL AND name = ?
+	`, name))
+}
+
+// GetOrgReconcilingClusterByName looks up one of organizationID's own
+// reconciling clusters by name.
+func (s *Store) GetOrgReconcilingClusterByName(ctx context.Context, organizationID, name string) (ReconcilingCluster, error) {
+	return s.scanReconcilingCluster(s.queryRow(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
+		FROM reconciling_clusters WHERE organization_id = ? AND name = ?
+	`, organizationID, name))
+}
+
+func (s *Store) scanReconcilingCluster(row *sql.Row) (ReconcilingCluster, error) {
+	var rc ReconcilingCluster
+	err := row.Scan(
+		&rc.ID, &rc.Name, &rc.OrganizationID, &rc.Kubeconfig,
+		&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReconcilingCluster{}, ErrNotFound
+	}
+	if err != nil {
+		return ReconcilingCluster{}, fmt.Errorf("scan reconciling cluster: %w", err)
+	}
+	return rc, nil
+}
+
+// SetReconcilingClusterOwner sets organization_id after the fact — only for
+// Migrate, which has to insert reconciling clusters before organizations
+// (organizations.reconciling_cluster_id references them) and so can't set
+// the reverse reference at insert time.
+func (s *Store) SetReconcilingClusterOwner(ctx context.Context, id string, organizationID *string) error {
+	_, err := s.exec(ctx, `UPDATE reconciling_clusters SET organization_id = ? WHERE id = ?`, organizationID, id)
+	if err != nil {
+		return fmt.Errorf("set reconciling cluster owner: %w", err)
+	}
+	return nil
+}
+
+// ListOrgReconcilingClusters returns organizationID's own reconciling
+// clusters, by name.
+func (s *Store) ListOrgReconcilingClusters(ctx context.Context, organizationID string) ([]ReconcilingCluster, error) {
+	return s.listReconcilingClusters(ctx, `WHERE organization_id = ?`, organizationID)
+}
+
+// ListReconcilingClusters returns every registered reconciling cluster —
+// GET /reconciling-clusters' own listing, and the set the API server's
+// periodic health-check loop walks each tick.
+func (s *Store) ListReconcilingClusters(ctx context.Context) ([]ReconcilingCluster, error) {
+	return s.listReconcilingClusters(ctx, ``)
+}
+
+func (s *Store) listReconcilingClusters(ctx context.Context, where string, args ...any) ([]ReconcilingCluster, error) {
+	rows, err := s.query(ctx, `
+		SELECT id, name, organization_id, kubeconfig,
+		       reachable, last_checked_at, last_error, kubernetes_version, created_at
+		FROM reconciling_clusters `+where+` ORDER BY name
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list reconciling clusters: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ReconcilingCluster
+	for rows.Next() {
+		var rc ReconcilingCluster
+		if err := rows.Scan(
+			&rc.ID, &rc.Name, &rc.OrganizationID, &rc.Kubeconfig,
+			&rc.Reachable, &rc.LastCheckedAt, &rc.LastError, &rc.KubernetesVersion, &rc.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan reconciling cluster: %w", err)
+		}
+		out = append(out, rc)
+	}
+	return out, rows.Err()
+}
+
+// ListOrganizationsByReconcilingCluster returns every organization mapped
+// to reconcilingClusterID — used by `cmd/controller/run.go`'s own
+// `--reconciling-cluster-id` startup filter (a read-only Store query, the
+// one deliberate, narrow exception to "the controller never touches
+// Store" the proposal calls out: this is the sole reason a controller
+// process needs to know its own reconciling-cluster identity at all)
+// to determine which namespaces this particular controller process should
+// watch/reconcile. nil means "the control plane's own home cluster" —
+// every organization that has never been migrated anywhere else.
+func (s *Store) ListOrganizationsByReconcilingCluster(ctx context.Context, reconcilingClusterID *string) ([]Organization, error) {
+	var rows *sql.Rows
+	var err error
+	if reconcilingClusterID == nil {
+		rows, err = s.query(ctx, `
+			SELECT id, name, namespace, plan, metadata,
+			       reconciling_cluster_id, reconciling_cluster_migration_status,
+			       pending_deletion, created_at
+			FROM organizations WHERE reconciling_cluster_id IS NULL ORDER BY name
+		`)
+	} else {
+		rows, err = s.query(ctx, `
+			SELECT id, name, namespace, plan, metadata,
+			       reconciling_cluster_id, reconciling_cluster_migration_status,
+			       pending_deletion, created_at
+			FROM organizations WHERE reconciling_cluster_id = ? ORDER BY name
+		`, *reconcilingClusterID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list organizations by reconciling cluster: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Organization
+	for rows.Next() {
+		var org Organization
+		if err := rows.Scan(
+			&org.ID, &org.Name, &org.Namespace, &org.Plan, &org.Metadata,
+			&org.ReconcilingClusterID, &org.ReconcilingClusterMigrationStatus,
+			&org.PendingDeletion, &org.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan organization: %w", err)
+		}
+		out = append(out, org)
+	}
+	return out, rows.Err()
+}
+
+// SetOrganizationMigrationStatus sets or clears (pass nil) an
+// organization's reconciling_cluster_migration_status — 'migrating' locks
+// every request against it to 423 (see RequireOrganizationNotMigrating)
+// for the duration of a PATCH /organizations/{name} reconciling-cluster
+// move, per the proposal's decided lock-don't-dual-serve design.
+func (s *Store) SetOrganizationMigrationStatus(ctx context.Context, id string, status *string) error {
+	_, err := s.exec(ctx, `UPDATE organizations SET reconciling_cluster_migration_status = ? WHERE id = ?`, status, id)
+	if err != nil {
+		return fmt.Errorf("set organization migration status: %w", err)
+	}
+	return nil
+}
+
+// AnyOrganizationHasReconcilingCluster reports whether any organization is
+// currently mapped to a reconciling cluster other than the control
+// plane's own home cluster — `cmd/api/run.go`'s own deployment-gate check
+// (Milestone 7's SQLite/Postgres gate, made real here per the proposal's
+// own decision): once true, a `--db=sqlite` API process should refuse to
+// start, since Milestone 6's cross-organization-database migration
+// primitive assumes a real, concurrently-accessible Postgres backend, not
+// a single-file SQLite database.
+func (s *Store) AnyOrganizationHasReconcilingCluster(ctx context.Context) (bool, error) {
+	row := s.queryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE reconciling_cluster_id IS NOT NULL)`)
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return false, fmt.Errorf("check organizations for reconciling cluster: %w", err)
+	}
+	return exists, nil
+}
+
+// SetOrganizationReconcilingCluster flips an organization's
+// reconciling_cluster_id to reconcilingClusterID (nil moves it back to the
+// control plane's own home cluster) and clears
+// reconciling_cluster_migration_status in the same write — called only
+// once PATCH /organizations/{name}'s own migration copy is confirmed
+// complete.
+func (s *Store) SetOrganizationReconcilingCluster(ctx context.Context, id string, reconcilingClusterID *string) error {
+	_, err := s.exec(ctx, `
+		UPDATE organizations SET reconciling_cluster_id = ?, reconciling_cluster_migration_status = NULL WHERE id = ?
+	`, reconcilingClusterID, id)
+	if err != nil {
+		return fmt.Errorf("set organization reconciling cluster: %w", err)
+	}
+	return nil
+}
+
+// RenameOrganization changes an organization's own display Name — its
+// Namespace (the real, immutable Kubernetes namespace everything else
+// actually resolves against: bindings, resourceClient, login) is never
+// touched, so this is purely cosmetic/addressing, not a migration of any
+// kind. The caller is responsible for uniqueness (see
+// handlePatchOrganization's own pre-check, GetOrganizationByName) — this is
+// a raw UPDATE relying on the name column's own UNIQUE constraint as the
+// actual backstop, not a second check here.
+func (s *Store) RenameOrganization(ctx context.Context, id, name string) error {
+	_, err := s.exec(ctx, `UPDATE organizations SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("rename organization: %w", err)
+	}
+	return nil
+}
+
+// GetSigningKeyByNamespace looks up hyve-api's own session-signing key by
+// its install's control-plane namespace (Milestone 10 Part C) — see
+// SigningKey's own doc comment.
+func (s *Store) GetSigningKeyByNamespace(ctx context.Context, namespace string) (SigningKey, error) {
+	row := s.queryRow(ctx, `SELECT id, namespace, key_material, created_at FROM signing_keys WHERE namespace = ?`, namespace)
+	var k SigningKey
+	err := row.Scan(&k.ID, &k.Namespace, &k.KeyMaterial, &k.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SigningKey{}, ErrNotFound
+	}
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("scan signing key: %w", err)
+	}
+	return k, nil
+}
+
+// CreateSigningKey inserts a new signing key row — called once per install,
+// on first startup, by cmd/api's ensureSigningKey.
+func (s *Store) CreateSigningKey(ctx context.Context, k SigningKey) (SigningKey, error) {
+	if k.ID == "" {
+		k.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO signing_keys (id, namespace, key_material) VALUES (?, ?, ?)
+	`, k.ID, k.Namespace, k.KeyMaterial)
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("insert signing key: %w", err)
+	}
+	return s.GetSigningKeyByNamespace(ctx, k.Namespace)
+}
+
+// CreateSession inserts a new session row (Milestone 10 Part D) — see
+// Session's own doc comment.
+func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error) {
+	if sess.ID == "" {
+		sess.ID = newID()
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO sessions (id, subject, tenant_namespace, token_hash, expires_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, sess.ID, sess.Subject, sess.TenantNamespace, sess.TokenHash, sess.ExpiresAt)
+	if err != nil {
+		return Session{}, fmt.Errorf("insert session: %w", err)
+	}
+	return s.GetSession(ctx, sess.ID)
+}
+
+// GetSession looks up a session by id — the lookup-key half of a session
+// token (see auth_handlers.go's splitSessionToken).
+func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
+	row := s.queryRow(ctx, `SELECT id, subject, tenant_namespace, token_hash, expires_at, created_at FROM sessions WHERE id = ?`, id)
+	var sess Session
+	err := row.Scan(&sess.ID, &sess.Subject, &sess.TenantNamespace, &sess.TokenHash, &sess.ExpiresAt, &sess.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("scan session: %w", err)
+	}
+	return sess, nil
+}
+
+// DeleteSession removes a session by id — real, immediate revocation (see
+// handleLogout). A missing row is not an error: the caller's own
+// best-effort, always-succeeds stance already treats "already gone" and
+// "just deleted" identically.
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// DeleteSessionsBySubject removes every session for (subject, namespace) —
+// bulk revocation, unlike DeleteSession's single-id form. Added for the
+// password-reset flow (HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 4):
+// a successful reset should kill every *other* still-active session for
+// that binding, not just the one (if any) the reset itself was performed
+// through. Same caveat as handleLogout's own doc comment already states:
+// this revokes session tokens (the refresh capability), not any
+// already-issued, still-valid short-TTL access token — those keep working
+// until AccessTokenTTL lapses regardless.
+func (s *Store) DeleteSessionsBySubject(ctx context.Context, subject, namespace string) error {
+	_, err := s.exec(ctx, `DELETE FROM sessions WHERE subject = ? AND tenant_namespace = ?`, subject, namespace)
+	if err != nil {
+		return fmt.Errorf("delete sessions for subject: %w", err)
+	}
+	return nil
+}
+
+// ListAllBindings returns every binding across every namespace — unlike
+// ListBindingsForScope (one namespace's own accounts listing), this exists
+// purely for Migrate (Milestone 7's sqlite->postgres dump/restore tool),
+// which needs a whole-database enumeration with no namespace to scope by.
+func (s *Store) ListAllBindings(ctx context.Context) ([]Binding, error) {
+	rows, err := s.query(ctx, `SELECT `+bindingColumns+` FROM bindings ORDER BY namespace, identity`)
+	if err != nil {
+		return nil, fmt.Errorf("list all bindings: %w", err)
+	}
+	defer rows.Close()
+	return scanBindings(rows)
+}
+
+// ListSigningKeys returns every signing_keys row — in practice always
+// exactly one (UNIQUE(namespace), and every real install has one
+// namespace — see EnsureSigningKey), but Migrate enumerates rather than
+// assumes, matching how it treats every other table.
+func (s *Store) ListSigningKeys(ctx context.Context) ([]SigningKey, error) {
+	rows, err := s.query(ctx, `SELECT id, namespace, key_material, created_at FROM signing_keys ORDER BY namespace`)
+	if err != nil {
+		return nil, fmt.Errorf("list signing keys: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SigningKey
+	for rows.Next() {
+		var k SigningKey
+		if err := rows.Scan(&k.ID, &k.Namespace, &k.KeyMaterial, &k.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan signing key: %w", err)
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// ListSessions returns every session row — used only by Migrate; no
+// request-serving code needs a whole-database session listing (a session
+// is always looked up by its own id, see GetSession).
+func (s *Store) ListSessions(ctx context.Context) ([]Session, error) {
+	rows, err := s.query(ctx, `SELECT id, subject, tenant_namespace, token_hash, expires_at, created_at FROM sessions ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		if err := rows.Scan(&sess.ID, &sess.Subject, &sess.TenantNamespace, &sess.TokenHash, &sess.ExpiresAt, &sess.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
+const emailSettingsColumns = `id, smtp_host, smtp_port, smtp_username, smtp_password, use_tls, skip_verify, from_address, from_name, updated_at`
+
+// GetEmailSettings returns the singleton email_settings row, or a
+// zero-value EmailSettings (Configured() == false) if none has ever been
+// saved — never orgdb.ErrNotFound. Every caller already has to handle
+// "not configured yet" as a normal, expected state (see EmailSettings.
+// Configured's own doc comment), so there's no separate "row is missing"
+// case to special-case on top of that.
+func (s *Store) GetEmailSettings(ctx context.Context) (EmailSettings, error) {
+	row := s.queryRow(ctx, `SELECT `+emailSettingsColumns+` FROM email_settings WHERE id = ?`, EmailSettingsID)
+	var e EmailSettings
+	err := row.Scan(&e.ID, &e.SMTPHost, &e.SMTPPort, &e.SMTPUsername, &e.SMTPPassword, &e.UseTLS, &e.SkipVerify, &e.FromAddress, &e.FromName, &e.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// SMTPPort: 587 — the same sane default the migration's own
+		// column default carries for a row that DOES exist; a caller
+		// merging a partial PATCH onto this "never saved" zero-value
+		// (see internal/api.handleUpdateEmailSettings) should start from
+		// that same default, not Go's int zero-value 0, or a PATCH that
+		// only sets, say, SkipVerify would silently leave the port unset.
+		return EmailSettings{SMTPPort: 587}, nil
+	}
+	if err != nil {
+		return EmailSettings{}, fmt.Errorf("scan email settings: %w", err)
+	}
+	return e, nil
+}
+
+// UpsertEmailSettings creates or replaces the singleton email_settings
+// row — a caller building the full desired state (see
+// internal/api.handleUpdateEmailSettings, which merges an existing
+// GetEmailSettings result with a partial PATCH request before calling
+// this) rather than a set of independent column updates, the same shape
+// UpdateBinding already uses for the same reason.
+func (s *Store) UpsertEmailSettings(ctx context.Context, e EmailSettings) (EmailSettings, error) {
+	e.ID = EmailSettingsID
+	_, err := s.exec(ctx, `
+		INSERT INTO email_settings (id, smtp_host, smtp_port, smtp_username, smtp_password, use_tls, skip_verify, from_address, from_name, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (id) DO UPDATE SET
+			smtp_host = excluded.smtp_host,
+			smtp_port = excluded.smtp_port,
+			smtp_username = excluded.smtp_username,
+			smtp_password = excluded.smtp_password,
+			use_tls = excluded.use_tls,
+			skip_verify = excluded.skip_verify,
+			from_address = excluded.from_address,
+			from_name = excluded.from_name,
+			updated_at = CURRENT_TIMESTAMP
+	`, e.ID, e.SMTPHost, e.SMTPPort, e.SMTPUsername, e.SMTPPassword, e.UseTLS, e.SkipVerify, e.FromAddress, e.FromName)
+	if err != nil {
+		return EmailSettings{}, fmt.Errorf("upsert email settings: %w", err)
+	}
+	return s.GetEmailSettings(ctx)
+}
+
+const passwordResetTokenColumns = `id, binding_id, token_hash, expires_at, created_at`
+
+func scanPasswordResetToken(row *sql.Row) (PasswordResetToken, error) {
+	var t PasswordResetToken
+	err := row.Scan(&t.ID, &t.BindingID, &t.TokenHash, &t.ExpiresAt, &t.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PasswordResetToken{}, ErrNotFound
+	}
+	if err != nil {
+		return PasswordResetToken{}, fmt.Errorf("scan password reset token: %w", err)
+	}
+	return t, nil
+}
+
+// CreatePasswordResetToken deletes any existing token for b.BindingID and
+// inserts b — at most one live token per binding, the same "delete then
+// recreate" shape CreateUser's own "safe to re-run" CLI convention
+// already uses, done here inside one call (not a separate transaction
+// type this Store doesn't otherwise expose) since both statements are
+// simple unconditional deletes/inserts with nothing to roll back for.
+func (s *Store) CreatePasswordResetToken(ctx context.Context, t PasswordResetToken) (PasswordResetToken, error) {
+	if t.ID == "" {
+		t.ID = newID()
+	}
+	if _, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, t.BindingID); err != nil {
+		return PasswordResetToken{}, fmt.Errorf("clear existing password reset token: %w", err)
+	}
+	_, err := s.exec(ctx, `
+		INSERT INTO password_reset_tokens (id, binding_id, token_hash, expires_at)
+		VALUES (?, ?, ?, ?)
+	`, t.ID, t.BindingID, t.TokenHash, t.ExpiresAt)
+	if err != nil {
+		return PasswordResetToken{}, fmt.Errorf("insert password reset token: %w", err)
+	}
+	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM password_reset_tokens WHERE id = ?`, t.ID)
+	return scanPasswordResetToken(row)
+}
+
+// GetPasswordResetTokenByBindingID looks up bindingID's live token, if
+// any — orgdb.ErrNotFound if none exists (already expired-and-deleted
+// tokens aren't distinguished from never-requested ones; the caller
+// checks ExpiresAt itself for a row that does exist, see
+// handleResetPassword).
+func (s *Store) GetPasswordResetTokenByBindingID(ctx context.Context, bindingID string) (PasswordResetToken, error) {
+	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM password_reset_tokens WHERE binding_id = ?`, bindingID)
+	return scanPasswordResetToken(row)
+}
+
+// DeletePasswordResetTokensForBinding removes bindingID's token, if any —
+// called once a reset succeeds (single-use) or is otherwise no longer
+// wanted. A missing row is not an error, same stance as DeleteSession.
+func (s *Store) DeletePasswordResetTokensForBinding(ctx context.Context, bindingID string) error {
+	_, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, bindingID)
+	if err != nil {
+		return fmt.Errorf("delete password reset tokens: %w", err)
+	}
+	return nil
+}

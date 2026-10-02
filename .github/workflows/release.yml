@@ -8,13 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       snapshot:
-        description: "Snapshot mode — build everything (binaries, archives, Docker images, Homebrew formula) but publish nothing. Safe to run anytime, on any branch, with or without a tag, to test the pipeline itself."
+        description: "Snapshot mode — build everything (binaries, archives, Docker images, Helm chart, Homebrew formula) but publish nothing. Safe to run anytime, on any branch, with or without a tag, to test the pipeline itself."
         type: boolean
         default: true
 
 permissions:
   contents: write   # create the GitHub Release and upload artifacts
-  packages: write   # push images to ghcr.io
+  packages: write   # push images and the Helm chart to ghcr.io
 
 jobs:
   release:
@@ -30,6 +30,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # GoReleaser's before hooks build the web console (web/) that gets
+      # embedded into the binary — see .goreleaser.yaml.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -69,6 +81,31 @@ jobs:
           # Not needed in snapshot mode (nothing is pushed), so this workflow
           # runs fine even before that secret/repo exist yet.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # The chart's version and appVersion are both the release version, so
+      # image.tag's default (appVersion) is the image GoReleaser just pushed.
+      # Published as an OCI artifact:
+      #   helm install hyve oci://ghcr.io/cbridges1/charts/hyve --version <version>
+      - name: Package Helm chart
+        id: chart
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.snapshot }}" = "true" ]; then
+            VERSION="0.0.0-snapshot.${GITHUB_SHA::7}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          helm lint deploy/helm/hyve
+          helm package deploy/helm/hyve --version "$VERSION" --app-version "$VERSION" --destination dist/chart
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Helm chart
+        if: github.event_name != 'workflow_dispatch' || inputs.snapshot == false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          helm push "dist/chart/hyve-${{ steps.chart.outputs.version }}.tgz" oci://ghcr.io/cbridges1/charts
+          gh release upload "$GITHUB_REF_NAME" "dist/chart/hyve-${{ steps.chart.outputs.version }}.tgz" --clobber
 
       - name: Upload snapshot artifacts
         if: github.event_name == 'workflow_dispatch' && inputs.snapshot

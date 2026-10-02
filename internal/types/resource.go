@@ -1,6 +1,9 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ResourceRef declares one Kubernetes resource hyve should own, drift-check,
 // and re-apply on every reconcile cycle. See ClusterSpec.Resources. Exactly
@@ -41,6 +44,18 @@ type ResourceRef struct {
 	// generic manifest path a Source resource uses. Mutually exclusive with
 	// Source/Helm.
 	Secret *SecretSpec `yaml:"secret,omitempty" json:"secret,omitempty"`
+}
+
+// IsRemote reports whether this ref names a remote git source rather than
+// a local file path — mirrors resourceref.Resolve's own local/remote
+// dispatch exactly (a "./" or "/" prefix is local; anything else,
+// including empty, is not a remote git ref either — an empty Source is the
+// zero-set, resolve-by-Name case instead, see ClusterSpec.Resources'
+// resolution order). Unlike WorkflowRef.IsRemote (WorkflowRef.Source is
+// always remote when set), ResourceRef.Source is dual-purpose today, so
+// this can't be a bare non-empty check.
+func (r ResourceRef) IsRemote() bool {
+	return r.Source != "" && !strings.HasPrefix(r.Source, "./") && !strings.HasPrefix(r.Source, "../") && !strings.HasPrefix(r.Source, "/")
 }
 
 // HelmSpec declares a Helm chart release to install/upgrade and drift-check.
@@ -175,4 +190,27 @@ type AppliedResource struct {
 
 	AppliedAt string          `yaml:"appliedAt" json:"appliedAt"` // RFC 3339
 	Objects   []AppliedObject `yaml:"objects,omitempty" json:"objects,omitempty"`
+}
+
+// AppliedAgent is the reconciler-owned record of what hyve currently
+// believes it installed for hyve-agent on this cluster — never hand-edit.
+// Unlike AppliedResource, there's no Objects list: hyve-agent's own
+// manifest identities (Namespace/ServiceAccount/ClusterRole/
+// ClusterRoleBinding/Deployment, plus the two proxy ClusterRoleBindings)
+// are fixed and deterministic, not derived from an arbitrary applied
+// manifest — see internal/reconcile/agent.go's own object-identity
+// constants, which both apply and removal work off directly instead of
+// anything recorded here.
+type AppliedAgent struct {
+	// ConfigHash detects drift in exactly the inputs that actually change
+	// what gets applied (Proxy, the resolved agent image) — deliberately
+	// excludes Enabled itself (a false Enabled means "not installed at
+	// all," represented by AppliedAgent being nil, not by a hash) and
+	// excludes the bootstrap token (single-use and never something to
+	// re-apply over just because a prior token happened to differ — see
+	// internal/reconcile/agent.go's reconcileAgent for why a token is only
+	// ever minted on a real config transition, not every reconcile cycle).
+	ConfigHash string `yaml:"configHash" json:"configHash"`
+
+	AppliedAt string `yaml:"appliedAt" json:"appliedAt"` // RFC 3339
 }

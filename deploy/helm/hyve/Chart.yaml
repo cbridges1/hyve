@@ -1,0 +1,10 @@
+apiVersion: v2
+name: hyve
+description: hyve's server-side components — the controller/operator reconcile loop and the HTTP API + auth layer, deployed together as one release (they're always used together, and always run from the same binary — see cmd/clusterconfig).
+type: application
+# version/appVersion here are placeholders for local use — the release
+# workflow packages the chart with both set to the release's own version
+# (so image.tag's default matches the image published with it).
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/cbridges1/hyve

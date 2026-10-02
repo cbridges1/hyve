@@ -1,12 +1,8 @@
 package module
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,14 +42,45 @@ func githubToken() string {
 	return os.Getenv("GITHUB_TOKEN")
 }
 
+// resolveGitHubToken prefers an explicit token (cluster mode's live
+// hyve-cli-secrets fetch, threaded in per-reconcile via
+// ResolveWithToken/ResolveRefWithToken — see internal/controller/
+// reconciler.go's resolveModuleIfNeeded) over the process-wide GITHUB_TOKEN
+// env var, falling back to the latter when explicit is empty. Explicit,
+// not os.Setenv: MaxConcurrentReconciles already permits concurrently
+// reconciling different ClusterDefinitions in one process, and a
+// per-reconcile token mutated into a global env var would race.
+func resolveGitHubToken(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return githubToken()
+}
+
+// ResolveToken is resolveGitHubToken, exported so other packages that fetch
+// from a private git host (internal/workflowref.FetchRepoArchive) apply the
+// identical explicit-wins-over-GITHUB_TOKEN-env-var rule, without each
+// duplicating the env var name themselves.
+func ResolveToken(explicit string) string {
+	return resolveGitHubToken(explicit)
+}
+
 // Resolve fetches and caches a module, returning its local directory.
 // For local paths (starting with "./" or absolute): returns the dir directly, no caching.
 // For Git sources: downloads, hashes, and caches under ~/.hyve/module-cache/{sha256}/.
 func Resolve(source, version string, locked *LockedModule, repoRoot string) (*ResolvedModule, error) {
+	return ResolveWithToken(source, version, locked, repoRoot, "")
+}
+
+// ResolveWithToken is Resolve, but with an explicit GitHub token to use
+// instead of reading GITHUB_TOKEN from the process environment — see
+// resolveGitHubToken. An empty token falls back to GITHUB_TOKEN exactly as
+// Resolve does, so every other existing caller is unaffected.
+func ResolveWithToken(source, version string, locked *LockedModule, repoRoot, token string) (*ResolvedModule, error) {
 	if IsLocalSource(source) {
 		return resolveLocal(source, repoRoot)
 	}
-	return resolveGit(source, version, locked)
+	return resolveGit(source, version, locked, token)
 }
 
 func resolveLocal(source, repoRoot string) (*ResolvedModule, error) {
@@ -69,7 +96,7 @@ func resolveLocal(source, repoRoot string) (*ResolvedModule, error) {
 	return &ResolvedModule{Dir: dir}, nil
 }
 
-func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, error) {
+func resolveGit(source, version string, locked *LockedModule, token string) (*ResolvedModule, error) {
 	host, org, repo, subdir, err := parseGitSource(source)
 	if err != nil {
 		return nil, err
@@ -91,7 +118,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	}
 
 	// Resolve version to a concrete ref (tag or HEAD)
-	ref, err := ResolveRef(host, org, repo, version)
+	ref, err := ResolveRefWithToken(host, org, repo, version, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve version %q for %s: %w", version, source, err)
 	}
@@ -119,8 +146,8 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	// there.
 	cleanRepoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
 	cloneURL := cleanRepoURL
-	if token := githubToken(); token != "" && host == "github.com" {
-		cloneURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", token, host, org, repo)
+	if t := resolveGitHubToken(token); t != "" && host == "github.com" {
+		cloneURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", t, host, org, repo)
 	}
 	tmpDir, err := os.MkdirTemp("", "hyve-module-*")
 	if err != nil {
@@ -128,7 +155,7 @@ func resolveGit(source, version string, locked *LockedModule) (*ResolvedModule, 
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := cloneAndExtract(cloneURL, ref, subdir, tmpDir); err != nil {
+	if err := CloneAndExtract(cloneURL, ref, subdir, tmpDir); err != nil {
 		return nil, fmt.Errorf("failed to fetch module from %s@%s: %w", cleanRepoURL, ref, err)
 	}
 
@@ -187,13 +214,19 @@ func parseGitSource(source string) (host, org, repo, subdir string, err error) {
 // - semver constraint (e.g. "~> 1.2", ">= 1.0"): picks the highest matching tag.
 // - anything else: treated as an exact tag or commit ref.
 func ResolveRef(host, org, repo, version string) (string, error) {
+	return ResolveRefWithToken(host, org, repo, version, "")
+}
+
+// ResolveRefWithToken is ResolveRef, but with an explicit GitHub token — see
+// resolveGitHubToken/ResolveWithToken.
+func ResolveRefWithToken(host, org, repo, version, token string) (string, error) {
 	repoURL := fmt.Sprintf("https://%s/%s/%s.git", host, org, repo)
 	// `git ls-remote` below has no credential prompt to fall back on in a
 	// non-interactive reconcile run — a private repo needs the token
 	// embedded directly in the URL (GitHub's documented HTTPS PAT format)
 	// rather than relying on a credential helper being configured.
-	if token := githubToken(); token != "" && host == "github.com" {
-		repoURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", token, host, org, repo)
+	if t := resolveGitHubToken(token); t != "" && host == "github.com" {
+		repoURL = fmt.Sprintf("https://x-access-token:%s@%s/%s/%s.git", t, host, org, repo)
 	}
 
 	if version == "" || version == "latest" {
@@ -281,20 +314,22 @@ func listRemoteTags(repoURL string) ([]string, error) {
 	return tags, nil
 }
 
-// cloneAndExtract fetches a module by shelling out to `git clone` + `git
+// CloneAndExtract fetches a repo by shelling out to `git clone` + `git
 // checkout` rather than downloading an archive — see resolveGit's own
-// comment for why: this is what lets a private module resolve using
-// whatever git authentication the environment already has configured,
-// with no separate token needed in the common case. cloneURL may embed
-// credentials (an x-access-token@ prefix); callers must not log or persist
-// it anywhere — see resolveGit's cleanRepoURL, which is what actually gets
-// recorded in hyve.lock.
+// comment for why: this is what lets a private repo resolve using
+// whatever git authentication the environment already has configured
+// (SSH key, credential helper, or a token embedded in cloneURL), the same
+// way for any git host — GitHub, GitLab, Bitbucket, self-hosted — since
+// `git` itself doesn't care which one it's talking to. Exported so
+// internal/workflowref.FetchRepoArchive can reuse it directly (shared by
+// both Workflow and Resource remote resolution) instead of each package
+// reimplementing its own fetch transport. cloneURL may embed credentials;
+// callers must not log or persist it anywhere — see resolveGit's
+// cleanRepoURL, which is what actually gets recorded in hyve.lock.
 //
 // destDir ends up containing the repo's tree at ref (or, if subdir is set,
-// just that subdirectory's contents) with .git removed — matching what
-// the archive-based DownloadAndExtract produces, so callers can't tell
-// the difference between the two fetch strategies.
-func cloneAndExtract(cloneURL, ref, subdir, destDir string) error {
+// just that subdirectory's contents) with .git removed.
+func CloneAndExtract(cloneURL, ref, subdir, destDir string) error {
 	cloneCmd := exec.Command("git", "clone", "--quiet", cloneURL, destDir)
 	cloneCmd.Stderr = os.Stderr
 	if err := cloneCmd.Run(); err != nil {
@@ -358,85 +393,6 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(target, data, info.Mode())
 	})
-}
-
-func DownloadAndExtract(url, destDir, repo, ref, subdir string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("HTTP GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, url)
-	}
-
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	// GitHub archive prefix: "<repo>-<ref>/" — strip it. The ref in the URL is
-	// typically a tag like "v1.2.3"; the directory inside the tarball strips
-	// any leading "v". We try both forms.
-	prefix1 := repo + "-" + strings.TrimPrefix(ref, "v") + "/"
-	prefix2 := repo + "-" + ref + "/"
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("tar read: %w", err)
-		}
-		name := hdr.Name
-		var stripped string
-		switch {
-		case strings.HasPrefix(name, prefix1):
-			stripped = strings.TrimPrefix(name, prefix1)
-		case strings.HasPrefix(name, prefix2):
-			stripped = strings.TrimPrefix(name, prefix2)
-		default:
-			// Fall back: strip the first path segment whatever it is.
-			idx := strings.IndexByte(name, '/')
-			if idx < 0 {
-				continue
-			}
-			stripped = name[idx+1:]
-		}
-		if subdir != "" {
-			if !strings.HasPrefix(stripped, subdir+"/") && stripped != subdir {
-				continue
-			}
-			stripped = strings.TrimPrefix(stripped, subdir+"/")
-			stripped = strings.TrimPrefix(stripped, subdir)
-		}
-		if stripped == "" {
-			continue
-		}
-		target := filepath.Join(destDir, stripped)
-		if hdr.Typeflag == tar.TypeDir {
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(f, tr); err != nil {
-			f.Close()
-			return err
-		}
-		f.Close()
-	}
-	return nil
 }
 
 // hashDir computes a deterministic SHA256 over all files in a directory.

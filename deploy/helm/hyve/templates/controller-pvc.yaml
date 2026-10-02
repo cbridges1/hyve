@@ -1,0 +1,18 @@
+# Backs the controller's --modules-dir + resolved-module cache — see
+# controller-deployment.yaml's volumeMounts and this chart's values.yaml
+# comment on moduleStorage. ReadWriteOnce: only the controller pod ever
+# mounts this, so no ReadWriteMany storage class is required.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hyve-controller-modules
+  namespace: {{ .Values.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.controller.moduleStorage.storageClassName }}
+  storageClassName: {{ .Values.controller.moduleStorage.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.controller.moduleStorage.size }}

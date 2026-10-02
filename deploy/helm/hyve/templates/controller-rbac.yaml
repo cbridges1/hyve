@@ -1,0 +1,157 @@
+{{- if .Values.controller.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
+  namespace: {{ .Values.namespace }}
+{{- end }}
+---
+# Namespace-scoped Role, not a ClusterRole — ClusterDefinition/HyveConfig
+# are both Namespaced CRDs (see internal/apis/hyve/v1alpha1), and Jobs/Pods
+# for KubernetesJobStepRunner live in the same namespace. The controller
+# needs no cluster-wide access for anything else this chart deploys: it
+# used to also get a dedicated cluster-wide ClusterRole purely to back
+# NamespaceReconciler's own organization-deletion confirmation sweep, now
+# retired (see hyvev1alpha1.OrganizationNamespaceFinalizer's own doc
+# comment for why) — removing that reconciler dropped this controller's
+# access back down to just this one namespaced Role, a real reduction in
+# what it can touch, not just a code cleanup.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hyve-controller
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterdefinitions"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterdefinitions/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["hyveconfigs"]
+    verbs: ["get", "list", "watch"]
+  # watch is required, not decorative, even though the controller never
+  # registers a Watches()/For() builder for this kind — a controller-runtime
+  # cached client needs watch permission to populate its informer cache for
+  # ANY Get/List against a scheme-registered type, or every lookup silently
+  # fails. Same failure class that already bit
+  # internal/api/clusters.go's namespace-scoped List once this session.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflows"]
+    verbs: ["get", "list", "watch"]
+  # resources mirrors workflows exactly, one tier below it — see
+  # internal/controller/state_provider.go's CRDStateProvider.ResourceSource
+  # and reconciler.go's resolveResourceIfNeeded.
+  - apiGroups: ["hyve.io"]
+    resources: ["resources"]
+    verbs: ["get", "list", "watch"]
+  # modules is the controller's own write target — see
+  # internal/controller/reconciler.go's resolveModuleIfNeeded, which
+  # creates/updates one Module CR per auto-resolved driver module as a
+  # visibility record (not a second watch loop — no separate Watches()/
+  # For() builder exists for this kind, so the same cached-client watch
+  # requirement noted above for workflows applies here too).
+  - apiGroups: ["hyve.io"]
+    resources: ["modules"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["modules/status"]
+    verbs: ["get", "update", "patch"]
+  # workflowrefstatuses/resourcerefstatuses mirror modules exactly, one
+  # tier up/down respectively — see reconciler.go's
+  # upsertWorkflowRefStatusCR/upsertResourceRefStatusCR, the sole writers.
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowrefstatuses", "resourcerefstatuses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowrefstatuses/status", "resourcerefstatuses/status"]
+    verbs: ["get", "update", "patch"]
+  # workflowruns is WorkflowRunReconciler's own watch target (see
+  # internal/controller/workflowrun_reconciler.go) — a WorkflowRun is
+  # created by the API (see api-rbac.yaml) and driven to completion here.
+  # No delete — this reconciler never removes a WorkflowRun itself (see
+  # that kind's own doc comment on why it's never garbage-collected).
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["hyve.io"]
+    resources: ["workflowruns/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # hyve-cli-secrets (see `hyve context secrets`, cluster mode) is fetched live
+  # once per reconcile — internal/controller/reconciler.go's
+  # fetchCLISecrets — via mgr.GetAPIReader(), an uncached direct read, not
+  # the cached Client used for hyve.io's own kinds above. Kubernetes RBAC
+  # cannot scope list/watch by resourceNames (only get), so a cached read
+  # here would force granting list/watch on every Secret in the namespace
+  # just to read this one by name — confirmed live: a get+list+watch rule
+  # with resourceNames set still 403'd the informer's List call. get alone,
+  # scoped by resourceNames, is both sufficient and correctly restrictive
+  # for an uncached read.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["hyve-cli-secrets"]
+  # create backs agentpki.TokenIssuer (internal/agentpki/issuer.go,
+  # wired in cmd/controller/run.go's own AgentTokenIssuer field) minting a
+  # fresh hyve-agent-bootstrap-* Secret per milestone 4's agent-install
+  # step (internal/reconcile/agent.go) — unscoped because, same gotcha as
+  # api-rbac.yaml's own hyve-cli-secrets comment, RBAC resourceNames can't
+  # scope create at all, and a bootstrap-token Secret's name varies per
+  # mint (it's derived from the token's own hash). hyve-api's RBAC (not
+  # this one) already holds get+delete on Secrets unscoped — see
+  # api-rbac.yaml — which is what actually consumes these.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  # Backs internal/reconcile/host.go's own host-cluster spec.resources
+  # reconciliation (a primary-marked ClusterDefinition with no real
+  # spec.driver — see docs/HYVE-AGENT-MIGRATION-GUIDE.md's "Host cluster
+  # access" section): mints a token against the dedicated hyve-host-admin
+  # ServiceAccount via TokenRequest, exactly like internal/api's own
+  # HostProvider does for GET /api/kubeconfig (see api-rbac.yaml's twin
+  # rule and its own comment on why resourceNames DOES work for this
+  # particular create verb). hyve-controller talks to the cluster it's
+  # already running on directly (server: https://kubernetes.default.svc),
+  # not through /proxy — it has no need for that reverse-proxy hop the way
+  # an external kubectl caller does.
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.api.hostServiceAccount | default "hyve-host-admin" | quote }}]
+    verbs: ["create"]
+  # record.EventRecorder (see reconciler.go's Recorder field, wired via
+  # mgr.GetEventRecorderFor in SetupWithManager) creates a fresh Event object
+  # per emitted event — patch is also needed since client-go's recorder
+  # implementation batches near-identical repeated events onto one object via
+  # a patch rather than a fresh Create every time.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- if .Values.controller.leaderElection }}
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyve-controller
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: hyve-controller
+  apiGroup: rbac.authorization.k8s.io

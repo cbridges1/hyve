@@ -12,12 +12,6 @@ import (
 // single numbers, ranges (1-5), and comma-separated lists (1,2,3). Used to
 // evaluate Spec.Schedule into a cluster's spec.expiresAt when a cluster is
 // created from a template.
-//
-// This mirrors cmd/shared.CronNextOccurrence (used by the CLI's TUI schedule
-// picker) rather than importing it — cmd/shared is CLI-presentation code and
-// internal/* packages don't depend on cmd/*. The algorithm is a small, pure,
-// side-effect-free function, so this is a deliberate exception to the
-// "extract, don't duplicate" approach used elsewhere in this package.
 func CronNextOccurrence(expr string, from time.Time) (time.Time, error) {
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {

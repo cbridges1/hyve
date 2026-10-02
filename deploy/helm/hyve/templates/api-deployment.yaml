@@ -1,0 +1,200 @@
+{{- if and (eq .Values.api.db.driver "sqlite") (gt (.Values.api.replicaCount | int) 1) }}
+{{- fail "api.db.driver=sqlite only supports a single API replica (SQLite has no story for concurrent multi-process writers) — set api.replicaCount: 1, or switch to api.db.driver=postgres for horizontal scaling (see Milestone 7, HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md)" }}
+{{- end }}
+{{- if and (eq .Values.api.db.driver "postgres") (not .Values.api.db.postgresDSNSecret.name) }}
+{{- fail "api.db.driver=postgres requires api.db.postgresDSNSecret.name — this chart never generates or stores a database credential itself, see values.yaml's own comment" }}
+{{- end }}
+{{- if and .Values.api.db.litestream.enabled (ne .Values.api.db.driver "sqlite") }}
+{{- fail "api.db.litestream.enabled only applies to api.db.driver=sqlite — it streams the /data orgdb SQLite file, which only exists in sqlite mode" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hyve-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  {{- if eq .Values.api.db.driver "sqlite" }}
+  # Recreate, not the default RollingUpdate: a rolling update briefly runs
+  # old+new pods together, and the old one won't release its ReadWriteOnce
+  # PVC mount (api-orgdb-pvc.yaml) until it terminates — the new pod's
+  # mount would hang waiting for it. Recreate fully terminates the old pod
+  # first, matching how every other ReadWriteOnce-PVC-backed single-replica
+  # workload in Kubernetes is normally deployed.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hyve-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hyve-api
+    spec:
+      serviceAccountName: {{ .Values.api.serviceAccount.name | default "hyve-api" }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The image's own ENTRYPOINT is just ["hyve"] (unlike
+          # deploy/Dockerfile.controller's fixed "cluster-config controller
+          # run") — command+args here select the cluster-config api
+          # subcommand, so the same image backs both this Deployment and
+          # hyve-controller's.
+          command: ["hyve"]
+          args:
+            - cluster-config
+            - api
+            - run
+            - --namespace={{ .Values.namespace }}
+            - --config-name={{ .Values.controller.configName }}
+            - --modules-dir={{ .Values.api.modulesDir }}
+            - --bind-address={{ .Values.api.bindAddress }}
+            {{- if .Values.api.publicBaseURL }}
+            - --public-base-url={{ .Values.api.publicBaseURL }}
+            {{- end }}
+            {{- if .Values.api.hostServiceAccount }}
+            - --host-service-account={{ .Values.api.hostServiceAccount }}
+            {{- end }}
+            - --proxy-target={{ .Values.api.proxyTarget }}
+            - --agent-bind-address={{ .Values.api.agentBindAddress }}
+            {{- if .Values.api.publicCABundle.configMapName }}
+            - --public-ca-path=/etc/hyve/public-ca/{{ .Values.api.publicCABundle.key }}
+            {{- end }}
+            - --db={{ .Values.api.db.driver }}
+            {{- if eq .Values.api.db.driver "sqlite" }}
+            - --db-dsn=/data/orgdb.sqlite
+            {{- else }}
+            # $(HYVE_DB_DSN) is Kubernetes' own container-command variable
+            # expansion (substituted from this container's env: list below
+            # before exec, no shell involved) — not a shell substitution,
+            # so the Secret-sourced connection string never appears in
+            # plaintext in this Deployment object itself.
+            - --db-dsn=$(HYVE_DB_DSN)
+            {{- end }}
+            {{- if .Values.api.requireReconcilingCluster }}
+            - --require-reconciling-cluster
+            {{- end }}
+            {{- with .Values.api.smtp }}
+            {{- if .host }}
+            - --smtp-host={{ .host }}
+            - --smtp-port={{ .port }}
+            {{- if .username }}
+            - --smtp-username={{ .username }}
+            {{- end }}
+            {{- if .passwordSecret.name }}
+            - --smtp-password-file=/etc/hyve/smtp/{{ .passwordSecret.key }}
+            {{- end }}
+            {{- if .fromAddress }}
+            - --smtp-from-address={{ .fromAddress }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey }}
+            {{- if .Values.api.bootstrapAdmin.username }}
+            - --bootstrap-admin-username={{ .Values.api.bootstrapAdmin.username }}
+            {{- else }}
+            - --bootstrap-admin-username-file=/etc/hyve/bootstrap-admin/{{ .Values.api.bootstrapAdmin.usernameKey }}
+            {{- end }}
+            - --bootstrap-admin-password-file=/etc/hyve/bootstrap-admin/{{ .Values.api.bootstrapAdmin.passwordSecret.key }}
+            {{- end }}
+          {{- if eq .Values.api.db.driver "postgres" }}
+          env:
+            - name: HYVE_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.db.postgresDSNSecret.name }}
+                  key: {{ .Values.api.db.postgresDSNSecret.key }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.bindAddress | trimPrefix ":" }}
+            - name: agent
+              containerPort: {{ .Values.api.agentBindAddress | trimPrefix ":" }}
+          {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) (or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey) }}
+          volumeMounts:
+            {{- if .Values.api.publicCABundle.configMapName }}
+            - name: public-ca
+              mountPath: /etc/hyve/public-ca
+              readOnly: true
+            {{- end }}
+            {{- if eq .Values.api.db.driver "sqlite" }}
+            - name: orgdb
+              mountPath: /data
+            {{- end }}
+            {{- if and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name }}
+            - name: smtp-password
+              mountPath: /etc/hyve/smtp
+              readOnly: true
+            {{- end }}
+            {{- if or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey }}
+            - name: bootstrap-admin
+              mountPath: /etc/hyve/bootstrap-admin
+              readOnly: true
+            {{- end }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+        {{- if .Values.api.db.litestream.enabled }}
+        # Streams continuous backups of the /data orgdb SQLite file to
+        # object storage — see values.yaml's own api.db.litestream comment
+        # for the full design/tradeoffs. Shares the orgdb volume read-write
+        # (litestream needs write access for its own WAL-tracking metadata
+        # alongside the database file) with the api container above.
+        - name: litestream
+          image: "{{ .Values.api.db.litestream.image }}"
+          command: ["litestream"]
+          args:
+            - replicate
+            - /data/orgdb.sqlite
+            - "{{ .Values.api.db.litestream.replicaURL }}"
+          {{- if .Values.api.db.litestream.credentialsSecret.name }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.api.db.litestream.credentialsSecret.name }}
+          {{- end }}
+          volumeMounts:
+            - name: orgdb
+              mountPath: /data
+        {{- end }}
+      {{- if or .Values.api.publicCABundle.configMapName (eq .Values.api.db.driver "sqlite") (and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name) (or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey) }}
+      volumes:
+        {{- if .Values.api.publicCABundle.configMapName }}
+        - name: public-ca
+          configMap:
+            name: {{ .Values.api.publicCABundle.configMapName }}
+        {{- end }}
+        {{- if eq .Values.api.db.driver "sqlite" }}
+        - name: orgdb
+          persistentVolumeClaim:
+            claimName: hyve-api-orgdb
+        {{- end }}
+        {{- if and .Values.api.smtp.host .Values.api.smtp.passwordSecret.name }}
+        - name: smtp-password
+          secret:
+            secretName: {{ .Values.api.smtp.passwordSecret.name }}
+        {{- end }}
+        {{- if or .Values.api.bootstrapAdmin.username .Values.api.bootstrapAdmin.usernameKey }}
+        - name: bootstrap-admin
+          secret:
+            secretName: {{ required "api.bootstrapAdmin.passwordSecret.name is required when api.bootstrapAdmin.username or usernameKey is set" .Values.api.bootstrapAdmin.passwordSecret.name }}
+            # Optional: once a superadmin exists neither key is read
+            # again, so deleting the Secret later must not block the pod.
+            optional: true
+        {{- end }}
+      {{- end }}

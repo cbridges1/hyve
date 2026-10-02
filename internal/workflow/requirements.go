@@ -21,24 +21,41 @@ func (v *RequirementValidator) Close() error {
 	return nil
 }
 
-// ValidateRequirements validates all workflow requirements
-func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequirements) error {
+// ValidateRequirements validates all workflow requirements. extraEnv is
+// checked ahead of the process environment for secret requirements — the
+// caller's own variable set (--set flags, definition-derived vars, a
+// module's auth output), not process-global state, so this is safe to call
+// concurrently for different clusters (see MaxConcurrentReconciles). May be
+// nil.
+//
+// validateTools controls whether tool presence is checked against *this
+// process's own PATH* — only meaningful when the workflow's steps actually
+// run inline in it (LocalStepRunner). Under KubernetesJobStepRunner, each
+// step runs inside a separate Job on its own resolved container image,
+// which this process has no visibility into and was never meant to share
+// tooling with — see HyveConfig.spec.imageInstalls for how a required tool
+// gets there instead. Callers pass false in that case; a genuinely missing
+// tool still fails, just naturally, as an ordinary "command not found" from
+// inside the Job's own script. Secret validation is unaffected by this
+// flag either way — unrelated to container tooling.
+func (v *RequirementValidator) ValidateRequirements(requirements *WorkflowRequirements, extraEnv map[string]string, validateTools bool) error {
 	if requirements == nil {
 		return nil // No requirements to validate
 	}
 
 	var errors []string
 
-	// Validate tool requirements
-	for _, tool := range requirements.Tools {
-		if err := v.validateTool(tool); err != nil {
-			errors = append(errors, err.Error())
+	if validateTools {
+		for _, tool := range requirements.Tools {
+			if err := v.validateTool(tool); err != nil {
+				errors = append(errors, err.Error())
+			}
 		}
 	}
 
 	// Validate secret requirements
 	for _, secret := range requirements.Secrets {
-		if err := v.validateSecret(secret); err != nil {
+		if err := v.validateSecret(secret, extraEnv); err != nil {
 			errors = append(errors, err.Error())
 		}
 	}
@@ -78,8 +95,13 @@ func (v *RequirementValidator) validateTool(tool ToolRequirement) error {
 }
 
 // validateSecret checks if a required secret is available
-func (v *RequirementValidator) validateSecret(secret SecretRequirement) error {
-	// First check environment variable
+func (v *RequirementValidator) validateSecret(secret SecretRequirement, extraEnv map[string]string) error {
+	// Caller-provided vars (--set, definition-derived, auth output) first.
+	if value := extraEnv[secret.Name]; value != "" {
+		return nil
+	}
+
+	// Then the process environment (secrets set externally or via .env).
 	if value := os.Getenv(secret.Name); value != "" {
 		return nil // Secret available in environment
 	}

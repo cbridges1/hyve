@@ -1,0 +1,27 @@
+{{- if eq .Values.api.db.driver "sqlite" }}
+# Backs hyve-api's own /data/orgdb.sqlite (internal/orgdb) — see
+# HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md's Milestone 7
+# (nexus-config/docs). ReadWriteOnce is correct, not a limitation to work
+# around: SQLite itself only supports one writer at a time (api.replicaCount
+# is chart-validated to 1 whenever db.driver is sqlite — see
+# api-deployment.yaml), so there is never a second pod that would need to
+# mount this concurrently. Without this PVC, /data lives on the pod's own
+# writable container layer — gone on every reschedule/restart, which is
+# the exact gap this milestone exists to close.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hyve-api-orgdb
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.api.db.sqliteStorageClassName }}
+  storageClassName: {{ .Values.api.db.sqliteStorageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.api.db.sqliteVolumeSize }}
+{{- end }}

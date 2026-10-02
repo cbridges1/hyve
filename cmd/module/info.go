@@ -18,6 +18,12 @@ var infoCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		source := args[0]
 		version := args[1]
+
+		if sess, ok := shared.UseClusterMode(); ok {
+			showModuleAPI(shared.NewAPIClient(sess), mod.CRName(source, version))
+			return
+		}
+
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()

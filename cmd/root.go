@@ -2,55 +2,49 @@ package cmd
 
 import (
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/cluster"
-	gitpkg "github.com/cbridges1/hyve/cmd/git"
+	"github.com/cbridges1/hyve/cmd/clusterconfig"
+	contextcmd "github.com/cbridges1/hyve/cmd/context"
+	"github.com/cbridges1/hyve/cmd/environment"
 	modcmd "github.com/cbridges1/hyve/cmd/module"
+	"github.com/cbridges1/hyve/cmd/organization"
+	"github.com/cbridges1/hyve/cmd/reconcilingcluster"
+	rescmd "github.com/cbridges1/hyve/cmd/resource"
+	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/cmd/template"
 	"github.com/cbridges1/hyve/cmd/workflow"
 	"github.com/cbridges1/hyve/internal/database"
 )
 
-var hyveHomeFlagValue string
-
 var rootCmd = &cobra.Command{
 	Use:   "hyve",
-	Short: "Hyve cluster management CLI",
-	Long: `A CLI tool for managing Kubernetes clusters on various cloud providers.
-Supports cluster creation, modification, deletion, and reconciliation.`,
+	Short: "Hyve — Kubernetes cluster lifecycle management",
+	Long: `hyve manages the full lifecycle of Kubernetes clusters — creation,
+configuration, reconciliation, and teardown — across any cloud provider.
+Run it as a GitOps CLI against a local/git-backed directory, or deploy it
+as a cluster-native controller + API (see 'hyve cluster-config') for
+team/multi-tenant use. Both modes share the same YAML and the same
+reconcile engine.`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		home := resolvedHyveHome()
+		home := shared.HyveHome()
 		if home != "" {
 			database.SetConfigDir(home)
 		}
+		shared.LoadEnvironmentSecrets() // higher precedence — see 'hyve context secrets'
+		shared.LoadLegacyRepoEnvFile()  // lower precedence, relocated from main.go
 		return nil
 	},
 }
 
-// HyveHome returns the effective Hyve home directory. It respects (in order):
-//  1. --home flag
-//  2. HYVE_HOME environment variable
-//  3. ~/.hyve (default)
+// HyveHome returns the effective Hyve home directory — see
+// shared.HyveHome's doc comment for the resolution order. Kept as a thin
+// re-export so existing callers in this package don't need to change.
 func HyveHome() string {
-	if home := resolvedHyveHome(); home != "" {
-		return home
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	return filepath.Join(homeDir, ".hyve")
-}
-
-func resolvedHyveHome() string {
-	if hyveHomeFlagValue != "" {
-		return hyveHomeFlagValue
-	}
-	return os.Getenv("HYVE_HOME")
+	return shared.HyveHome()
 }
 
 func Execute() {
@@ -60,18 +54,44 @@ func Execute() {
 }
 
 func init() {
-	// Inject HyveHome into the git package to avoid circular imports
-	gitpkg.SetHyveHomeFunc(HyveHome)
+	rootCmd.PersistentFlags().StringVar(&shared.HomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
+	rootCmd.PersistentFlags().StringVar(&shared.ServerEnvFlagValue, "env", "", "hyve-api environment to target for this command, overriding 'hyve environment use' (cluster mode only)")
 
-	rootCmd.PersistentFlags().StringVar(&hyveHomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
-
+	// Verbs that do something, first (apply/migrate self-register via
+	// their own file's init()). login/logout/whoami live under 'hyve
+	// context' (cmd/context/login.go, cmd/context/whoami.go) — identity is
+	// still a separate, global session independent of which context is
+	// current (see cmd/context/login.go's own doc comment), just reachable
+	// from the same command group as context selection.
 	rootCmd.AddCommand(reconcileCmd)
+
+	// Where the CLI's state lives (context), then which server-side
+	// environment cluster commands target — almost everything below
+	// depends on both.
+	rootCmd.AddCommand(contextcmd.Cmd)
+	rootCmd.AddCommand(environment.Cmd)
+
+	// Resource-type command groups, in dependency order: a cluster is the
+	// thing you ultimately want, templates/workflows support it, modules
+	// are the driver layer underneath.
 	rootCmd.AddCommand(cluster.Cmd)
-	rootCmd.AddCommand(gitpkg.Cmd)
-	rootCmd.AddCommand(workflow.Cmd)
 	rootCmd.AddCommand(template.Cmd)
+	rootCmd.AddCommand(workflow.Cmd)
+	rootCmd.AddCommand(rescmd.Cmd)
 	rootCmd.AddCommand(modcmd.Cmd)
-	rootCmd.AddCommand(tuiCmd)
-	rootCmd.AddCommand(serveCmd)
-	rootCmd.AddCommand(openCmd)
+
+	// Multi-tenant control-plane management (Milestone 2/6,
+	// HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md, nexus-config/docs) —
+	// cluster-mode only, unlike everything above.
+	rootCmd.AddCommand(organization.Cmd)
+	rootCmd.AddCommand(reconcilingcluster.Cmd)
+
+	// 'controller'/'api' run are ops-only (Helm's own Deployment args call
+	// them directly — `hyve cluster-config controller run` / `... api
+	// run`), but 'api' also nests the local-user management commands
+	// (create-user, ...) a real operator runs interactively when
+	// bootstrapping a cluster-mode install, so the whole tree is visible
+	// in `hyve --help` rather than Cmd.Hidden — see cmd/clusterconfig's
+	// own doc comment.
+	rootCmd.AddCommand(clusterconfig.Cmd)
 }

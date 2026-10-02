@@ -1,16 +1,13 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -150,125 +147,136 @@ func (e *Executor) executeStep(ctx context.Context, step *WorkflowStep, job *Wor
 		}
 	}
 
-	// Determine command to execute
-	var command string
-	var args []string
-
-	if step.Command != "" {
-		// Execute command via shell for consistent variable substitution across platforms
-		// Expand workflow variables first
-		expandedCommand := e.expandVariables(step.Command)
-		// Get the appropriate shell for the platform
-		shellCmd, shellFlag := getShellCommand()
-		command = shellCmd
-		args = []string{shellFlag, expandedCommand}
-	} else if step.Script != "" {
-		// Execute script via shell (shell will expand variables)
-		// Expand workflow variables first
-		expandedScript := e.expandVariables(step.Script)
-		// Get the appropriate shell for the platform
-		shellCmd, shellFlag := getShellCommand()
-		command = shellCmd
-		args = []string{shellFlag, expandedScript}
-	} else if step.Action != "" {
-		// Execute predefined action
-		return e.executeAction(ctx, step.Action, step.With, result)
-	} else {
+	// step.Action bypasses StepRunner entirely — it's a small, fixed set of
+	// hyve-defined kubectl wrappers, always run locally regardless of which
+	// StepRunner is selected (there's no meaningful "run this action as a
+	// Kubernetes Job" translation for it).
+	if step.Command == "" && step.Script == "" {
+		if step.Action != "" {
+			return e.executeAction(ctx, step.Action, step.With, result)
+		}
 		result.Status = JobStatusFailed
 		result.Error = "no command, script, or action specified"
 		return result, fmt.Errorf("no command, script, or action specified")
 	}
 
-	// Set up command
-	cmd := exec.CommandContext(ctx, command, args...)
+	// Expand workflow variables in the command/script text itself before
+	// handing it to StepRunner — variable expansion is Executor's own
+	// concern (it owns e.variables), not something every StepRunner
+	// implementation should have to reimplement.
+	resolvedStep := *step
+	resolvedStep.Command = e.expandVariables(step.Command)
+	resolvedStep.Script = e.expandVariables(step.Script)
 
-	// Set working directory
+	// A runtime: client workflow always runs as a local subprocess,
+	// regardless of e.StepRunner — the second of two independent paths to
+	// LocalStepRunner (the other being plain CLI/local mode). This is also
+	// what makes container: naturally a no-op rather than a validation
+	// error for this runtime: LocalStepRunner.RequiresContainer() is always
+	// false, so the pre-flight check below never fires here even if
+	// container: is set — same "informational, ignored" treatment it
+	// already gets under plain CLI/local mode, no special-casing needed.
+	runner := e.StepRunner
+	if workflow.Spec.Runtime == RuntimeClient {
+		runner = LocalStepRunner{}
+	}
+
+	// Resolution order: per-step container: -> per-job container: ->
+	// HyveConfig.spec.defaultWorkflowImage (Executor.DefaultWorkflowImage,
+	// empty for every local-mode caller) -> k8sjob's own fallback image
+	// (only consulted when the selected runner actually needs a container
+	// at all — container: is meaningless, and ignored rather than
+	// resolved, under LocalStepRunner). Left empty here on purpose when
+	// every tier above is unset and the runner requires a container:
+	// resolvedStep.Container is passed straight through to
+	// runner.RunStep -> k8sjob.Run, which applies its own default rather
+	// than this function hard-failing pre-flight — see k8sjob's
+	// defaultFallbackImage doc comment.
+	resolvedStep.Container = step.Container
+	if resolvedStep.Container == "" {
+		resolvedStep.Container = job.Container
+	}
+	if resolvedStep.Container == "" {
+		resolvedStep.Container = e.DefaultWorkflowImage
+	}
+
+	workingDir := e.workingDir
 	if step.WorkingDir != "" {
-		cmd.Dir = filepath.Join(e.workingDir, step.WorkingDir)
-	} else {
-		cmd.Dir = e.workingDir
+		workingDir = filepath.Join(e.workingDir, step.WorkingDir)
 	}
 
-	// Set environment variables. Inherited process env (which already includes
-	// any --set-injected vars, exported via os.Setenv in applyInjectedVars)
-	// always wins over workflow/job/step spec.env — those are fallback defaults
-	// for a variable that isn't otherwise present, not overrides. A duplicate
-	// KEY= entry later in cmd.Env silently blanks out an earlier real value
-	// (confirmed: the shell resolves duplicate env entries to the last one), so
-	// a workflow declaring e.g. `PANGOLIN_ENDPOINT: ""` purely to self-document
-	// an expected external input would otherwise wipe out the real value a
-	// caller had already exported.
-	cmd.Env = os.Environ()
-	envPresent := make(map[string]bool, len(cmd.Env))
-	for _, kv := range cmd.Env {
-		if idx := strings.IndexByte(kv, '='); idx > 0 {
-			envPresent[kv[:idx]] = true
-		}
-	}
-	addDefaultEnv := func(key, value string) {
-		if envPresent[key] {
-			return
-		}
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
-		envPresent[key] = true
-	}
+	env := e.buildStepEnv(workflow, job, step)
 
-	// Add workflow-level env vars
-	for key, value := range workflow.Spec.Env {
-		addDefaultEnv(key, value)
-	}
-
-	// Add job-level env vars
-	for key, value := range job.Env {
-		addDefaultEnv(key, value)
-	}
-
-	// Add step-level env vars
-	for key, value := range step.Env {
-		addDefaultEnv(key, value)
-	}
-
-	// Stream output live so interactive steps (e.g. OAuth Device Authorization)
-	// can print prompts before waiting for user input. A MultiWriter tees the
-	// stream into buf so captureHookOutputVars still works on the full output.
-	var buf bytes.Buffer
-	stdoutWriters := []io.Writer{os.Stdout, &buf}
-	stderrWriters := []io.Writer{os.Stderr, &buf}
-	if e.Output != nil {
-		stdoutWriters = append(stdoutWriters, e.Output)
-		stderrWriters = append(stderrWriters, e.Output)
-	}
-	cmd.Stdout = io.MultiWriter(stdoutWriters...)
-	cmd.Stderr = io.MultiWriter(stderrWriters...)
-	err := cmd.Run()
-	output := buf.Bytes()
-	result.Output = string(output)
+	stdout, _, exitCode, runErr := runner.RunStep(ctx, resolvedStep, env, workingDir, e.Output)
+	result.Output = stdout
+	result.ExitCode = exitCode
 
 	endTime := time.Now()
 	result.EndTime = &endTime
 	result.Duration = endTime.Sub(result.StartTime)
 
 	// Capture any HYVE_VAR=value lines printed by the step so lifecycle-hook
-	// handlers (e.g. resolveHookEnvVars) can read them after the workflow ends.
-	captureHookOutputVars(string(output))
+	// handlers can read them after the workflow ends (see HookOutputVars).
+	e.recordHookOutputVars(captureHookOutputVars(stdout))
 
-	if err != nil {
+	if runErr != nil {
 		result.Status = JobStatusFailed
-		result.Error = err.Error()
-
-		// Try to get exit code
-		if exitError, ok := err.(*exec.ExitError); ok {
-			if status, ok := exitError.Sys().(syscall.WaitStatus); ok {
-				result.ExitCode = status.ExitStatus()
-			}
-		}
-
-		return result, err
+		result.Error = runErr.Error()
+		return result, runErr
 	}
 
 	result.Status = JobStatusCompleted
-	result.ExitCode = 0
 	return result, nil
+}
+
+// buildStepEnv layers workflow/job/step-level env vars onto the inherited
+// process environment plus this Executor's own e.variables (definition/
+// injected vars, KUBECONFIG, captured hook outputs — see
+// exportDefinitionEnvironmentVariables, applyInjectedVars,
+// recordHookOutputVars), add-if-absent (e.variables always wins over
+// workflow/job/step spec.env; those are fallback defaults for a variable
+// that isn't otherwise present, not overrides). e.variables is layered
+// explicitly here, not via os.Environ(), specifically so two clusters'
+// Executors running concurrently (see MaxConcurrentReconciles) never share
+// mutable env state — each Executor only ever contributes its own
+// variables to its own steps' subprocess env. A duplicate KEY= entry later
+// in the slice silently blanks out an earlier real value (confirmed: the
+// shell resolves duplicate env entries to the last one), so a workflow
+// declaring e.g. `PANGOLIN_ENDPOINT: ""` purely to self-document an
+// expected external input would otherwise wipe out the real value a caller
+// had already exported. Extracted from executeStep's prior inline
+// cmd.Env-building so it's identical regardless of which StepRunner
+// ultimately consumes it.
+func (e *Executor) buildStepEnv(workflow *Workflow, job *WorkflowJob, step *WorkflowStep) []string {
+	env := os.Environ()
+	envPresent := make(map[string]bool, len(env)+len(e.variables))
+	for _, kv := range env {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			envPresent[kv[:idx]] = true
+		}
+	}
+	for k, v := range e.variables {
+		env = append(env, k+"="+v)
+		envPresent[k] = true
+	}
+	addDefaultEnv := func(key, value string) {
+		if envPresent[key] {
+			return
+		}
+		env = append(env, fmt.Sprintf("%s=%s", key, e.expandVariables(value)))
+		envPresent[key] = true
+	}
+
+	for key, value := range workflow.Spec.Env {
+		addDefaultEnv(key, value)
+	}
+	for key, value := range job.Env {
+		addDefaultEnv(key, value)
+	}
+	for key, value := range step.Env {
+		addDefaultEnv(key, value)
+	}
+	return env
 }
 
 // executeAction executes a predefined action
@@ -364,10 +372,12 @@ func getShellCommand() (string, string) {
 }
 
 // captureHookOutputVars scans step output for lines of the form HYVE_VAR=value
-// and exports them to the process environment. This lets beforeCreate workflow
-// steps communicate resource IDs (VPC ID, role names, etc.) to the reconciler's
-// resolveHookEnvVars call that runs after all beforeCreate workflows complete.
-func captureHookOutputVars(output string) {
+// and returns them. This lets beforeCreate workflow steps communicate
+// resource IDs (VPC ID, role names, etc.) to later steps in the same
+// Executor and, via HookOutputVars, to the reconciler once the workflow
+// completes — see recordHookOutputVars.
+func captureHookOutputVars(output string) map[string]string {
+	vars := map[string]string{}
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "HYVE_") {
@@ -379,6 +389,7 @@ func captureHookOutputVars(output string) {
 		}
 		key := line[:idx]
 		value := strings.TrimSpace(line[idx+1:])
-		os.Setenv(key, value)
+		vars[key] = value
 	}
+	return vars
 }

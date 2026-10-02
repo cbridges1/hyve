@@ -18,17 +18,22 @@ import (
 
 var createCmd = &cobra.Command{
 	Use:   "create [cluster-name]",
-	Short: "Create a cluster from a template",
-	Args:  cobra.ExactArgs(1),
+	Short: "Create a cluster from a template (local mode) or a file (cluster mode)",
+	Long: `Local mode (no 'hyve context login' session active): creates from a template via
+--template, or from an already-fully-specified file via --file.
+
+Cluster mode (a valid 'hyve context login' session exists): same choice — --template
+renders the named Template CR server-side (via the same rendering function
+local mode uses), or --file points at an already-fully-specified cluster
+definition (the same apiVersion/kind/metadata/spec YAML shape a local
+clusters/<name>.yaml already uses).`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterName := args[0]
 		templateName, _ := cmd.Flags().GetString("template")
 		region, _ := cmd.Flags().GetString("region")
 		setVals, _ := cmd.Flags().GetStringArray("set")
-
-		if templateName == "" {
-			log.Fatal("--template is required")
-		}
+		file, _ := cmd.Flags().GetString("file")
 
 		overrides := map[string]string{}
 		for _, kv := range setVals {
@@ -39,19 +44,36 @@ var createCmd = &cobra.Command{
 			overrides[parts[0]] = parts[1]
 		}
 
+		if sess, ok := shared.UseClusterMode(); ok {
+			client := shared.NewAPIClient(sess)
+			if file != "" {
+				createClusterFromFileAPI(client, file)
+				return
+			}
+			if templateName == "" {
+				log.Fatal("--file or --template is required in cluster mode")
+			}
+			createClusterFromTemplateAPI(client, clusterName, templateName, region, overrides)
+			return
+		}
+
+		if templateName == "" {
+			log.Fatal("--template is required")
+		}
+
 		createClusterFromTemplate(templateName, clusterName, region, overrides)
 	},
 }
 
 func init() {
-	createCmd.Flags().StringP("template", "t", "", "Template to create the cluster from (required)")
-	createCmd.Flags().StringP("region", "r", "", "Override the template's default region")
-	createCmd.Flags().StringArray("set", nil, "Override driver params (repeatable): KEY=VALUE")
+	createCmd.Flags().StringP("template", "t", "", "Template to create the cluster from (local mode; required unless --file is given)")
+	createCmd.Flags().StringP("region", "r", "", "Override the template's default region (local mode)")
+	createCmd.Flags().StringArray("set", nil, "Override driver params (repeatable): KEY=VALUE (local mode)")
+	createCmd.Flags().StringP("file", "f", "", "Path to a cluster definition YAML file (cluster mode; required instead of --template)")
 }
 
 func createClusterFromTemplate(templateName, clusterName, region string, overrides map[string]string) {
 	ctx := context.Background()
-	shared.SyncRepoState(ctx)
 
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -65,16 +87,7 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 		return
 	}
 
-	authUsername, authToken := shared.GetAuthCredentials(currentRepo)
-
-	gitBacked := true
-	stateMgr, stateMgrErr := state.NewManager(currentRepo.RepoURL, currentRepo.LocalPath, authUsername, authToken)
-	if stateMgrErr != nil {
-		log.Printf("⚠️  Warning: Failed to create git-backed state manager: %v", stateMgrErr)
-		log.Println("💡 Cluster definition will be saved locally but not pushed to git")
-		stateMgr = state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
-		gitBacked = false
-	}
+	stateMgr := state.NewManagerFromPath(filepath.Join(currentRepo.LocalPath, "clusters"))
 
 	templateMgr := template.NewManager(currentRepo.LocalPath)
 
@@ -86,7 +99,7 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 	}
 
 	if tmpl.Spec.Schedule != "" {
-		next, err := shared.CronNextOccurrence(tmpl.Spec.Schedule, time.Now())
+		next, err := template.CronNextOccurrence(tmpl.Spec.Schedule, time.Now())
 		if err != nil {
 			log.Fatalf("Failed to evaluate schedule %q: %v", tmpl.Spec.Schedule, err)
 		}
@@ -121,9 +134,7 @@ func createClusterFromTemplate(templateName, clusterName, region string, overrid
 
 	log.Printf("\n✅ Cluster definition created: %s", filepath.Join(currentRepo.LocalPath, "clusters", clusterName+".yaml"))
 
-	if gitBacked {
-		shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
-	}
+	shared.CommitStateChanges(ctx, stateMgr, fmt.Sprintf("Create cluster %s from template %s", clusterName, templateName))
 
 	log.Println("\n1️⃣ Reconciling cluster...")
 	shared.RunReconciliation("", false)

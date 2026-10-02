@@ -1,0 +1,16 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Honeycomb logo centered and scaled for favicon -->
+  <g transform="translate(1, 1.5) scale(0.24)">
+    <!-- Block 1 -->
+    <rect x="20" y="0" width="60" height="16" fill="#09090B" rx="2"/>
+
+    <!-- Block 2 -->
+    <rect x="10" y="24" width="80" height="16" fill="#09090B" rx="2"/>
+
+    <!-- Block 3 -->
+    <rect x="20" y="48" width="60" height="16" fill="#09090B" rx="2"/>
+
+    <!-- Block 4 -->
+    <rect x="35" y="72" width="30" height="16" fill="#09090B" rx="2"/>
+  </g>
+</svg>

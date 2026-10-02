@@ -8,8 +8,8 @@ import "fmt"
 func Validate(wf *Workflow) (errors, warnings []string) {
 	if wf.APIVersion == "" {
 		errors = append(errors, "Missing apiVersion")
-	} else if wf.APIVersion != "v1" {
-		warnings = append(warnings, fmt.Sprintf("Unexpected apiVersion '%s', expected 'v1'", wf.APIVersion))
+	} else if wf.APIVersion != WorkflowAPIVersion {
+		warnings = append(warnings, fmt.Sprintf("Unexpected apiVersion '%s', expected '%s'", wf.APIVersion, WorkflowAPIVersion))
 	}
 
 	if wf.Kind == "" {
@@ -93,6 +93,19 @@ func Validate(wf *Workflow) (errors, warnings []string) {
 
 	if hasCircularDependencies(wf.Spec.Jobs) {
 		errors = append(errors, "Circular dependency detected in job dependencies")
+	}
+
+	if wf.Spec.Runtime == RuntimeClient {
+		for _, job := range wf.Spec.Jobs {
+			if job.Container != "" {
+				warnings = append(warnings, fmt.Sprintf("Job '%s': container has no effect on this runtime: client workflow", job.Name))
+			}
+			for _, step := range job.Steps {
+				if step.Container != "" {
+					warnings = append(warnings, fmt.Sprintf("Job '%s', step '%s': container has no effect on this runtime: client workflow", job.Name, step.Name))
+				}
+			}
+		}
 	}
 
 	return errors, warnings

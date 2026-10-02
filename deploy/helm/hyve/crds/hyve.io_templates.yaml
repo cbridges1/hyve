@@ -1,0 +1,373 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: templates.hyve.io
+spec:
+  group: hyve.io
+  names:
+    kind: Template
+    listKind: TemplateList
+    plural: templates
+    shortNames:
+    - tpl
+    singular: template
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.driver.source
+      name: Driver
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Template is the Schema for the templates API — a reusable
+          ClusterDefinition scaffold. No status: purely declarative config, read
+          on demand when rendering a cluster, never itself reconciled.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TemplateSpec is what a ClusterDefinition looks like before its
+              name/params/region are filled in — see RenderClusterDefinitionSpec, which
+              both local mode (`hyve cluster create --template`) and cluster mode
+              (POST /api/templates/{name}/render, POST /api/clusters with a template
+              field) call to turn one of these into a real ClusterDefinitionSpec.
+              Mirrors internal/template.TemplateSpec; Description moved off ObjectMeta
+              onto Spec, the same pattern ClusterDefinitionSpec.Region already uses —
+              a real Kubernetes object's metadata can only hold standard ObjectMeta
+              fields, not arbitrary custom ones.
+            properties:
+              access:
+                description: |-
+                  Access mirrors ClusterDefinitionSpec.Access — copied verbatim by
+                  RenderClusterDefinitionSpec into every cluster created from this
+                  template. Cluster-mode only, like the rest of AccessSpec (a
+                  local-mode-rendered cluster has no live API for Agent to mean
+                  anything against); internal/template.TemplateSpec
+                  (local mode's own template type, converted into this one before
+                  rendering) has no equivalent field, so a local-mode template
+                  always renders a zero-value Access here. Found missing live,
+                  confirmed by a real Template CRD silently dropping a hand-written
+                  spec.access.agent block at the API server's own schema-validation
+                  layer — the CRD simply had no such property to preserve, regardless
+                  of how the Template was created (--set, -f a file, or a direct
+                  kubectl apply all hit the same gap).
+                properties:
+                  agent:
+                    description: |-
+                      Agent configures hyve-agent for this cluster — see
+                      docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md. Orthogonal to Method
+                      above — a cluster can use both at once, or either alone.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled installs/keeps hyve-agent running on this cluster, reporting
+                          connection status (ClusterDefinitionStatus.Agent) back to the control
+                          plane. Proxy below requires this to also be true; flipping Enabled
+                          back to false uninstalls the agent (and, transitively, disables
+                          Proxy).
+                        type: boolean
+                      proxy:
+                        description: |-
+                          Proxy additionally lets the control plane route kubectl/API traffic
+                          to this cluster through its agent's own tunnel — see "Proxy
+                          authorization model" in the architecture proposal for the
+                          impersonation-based authorization this relies on. Independently
+                          toggleable from Enabled so a cluster can report live status without
+                          ever accepting proxied traffic.
+                        type: boolean
+                    type: object
+                  method:
+                    type: string
+                type: object
+              description:
+                type: string
+              driver:
+                description: |-
+                  DriverRef identifies the module (driver) that manages a cluster. Mirrors
+                  internal/types.DriverRef.
+                properties:
+                  source:
+                    type: string
+                  version:
+                    type: string
+                type: object
+              lockParams:
+                description: |-
+                  LockParams prevents overriding default param values when creating a
+                  cluster from this template — the --set flag (local mode) or a
+                  render request's params (cluster mode) are rejected rather than
+                  silently ignored. Intended for admins enforcing standard
+                  configurations.
+                type: boolean
+              params:
+                additionalProperties:
+                  type: string
+                type: object
+              region:
+                type: string
+              resources:
+                items:
+                  description: |-
+                    ResourceRef declares one Kubernetes resource hyve should own, drift-check,
+                    and re-apply on every reconcile cycle. Mirrors internal/types.ResourceRef.
+                    Exactly one of Source, Helm, or Secret must be set.
+                  properties:
+                    delete:
+                      type: boolean
+                    helm:
+                      description: |-
+                        HelmSpec declares a Helm chart release to install/upgrade and drift-check.
+                        Mirrors internal/types.HelmSpec.
+                      properties:
+                        chart:
+                          type: string
+                        namespace:
+                          type: string
+                        repo:
+                          type: string
+                        values:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        version:
+                          type: string
+                      type: object
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    secret:
+                      description: |-
+                        SecretSpec declares a Kubernetes v1/Secret rendered from the controller's
+                        own process environment at reconcile time. Mirrors internal/types.SecretSpec.
+                      properties:
+                        keys:
+                          items:
+                            description: |-
+                              SecretKeyRef is one entry in SecretSpec.Keys — always the structured form
+                              in the CRD (mirrors internal/types.SecretKeyRef's {env, key} mapping; that
+                              type's bare-scalar shorthand is a YAML-only convenience, same caveat as
+                              WorkflowRef above).
+                            properties:
+                              env:
+                                type: string
+                              key:
+                                type: string
+                            required:
+                            - env
+                            type: object
+                          type: array
+                        namespace:
+                          type: string
+                        type:
+                          type: string
+                      required:
+                      - keys
+                      type: object
+                    source:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              runner:
+                description: |-
+                  RunnerSpec configures how a Template's driver module should be executed
+                  when a cluster is created from it. Mirrors internal/template.TemplateRunnerConfig.
+                properties:
+                  image:
+                    type: string
+                type: object
+              schedule:
+                description: |-
+                  Schedule is a 5-field cron expression (e.g. "0 20 * * 5"). When a
+                  cluster is created from this template, the next occurrence is
+                  calculated and written to the generated cluster's spec.expiresAt.
+                type: string
+              workflows:
+                description: |-
+                  WorkflowsSpec defines workflows to run on cluster lifecycle events.
+                  Mirrors internal/types.WorkflowsSpec (minus the deprecated onDestroy
+                  migration, which is a file-format compatibility concern that doesn't
+                  apply to a CRD with no prior YAML history).
+                properties:
+                  afterCreate:
+                    items:
+                      description: |-
+                        WorkflowRef identifies one workflow to run for a lifecycle hook.
+                        Structured-only in the CRD form (unlike internal/types.WorkflowRef, which
+                        also accepts a bare YAML scalar as shorthand for {name: "..."} in file
+                        mode) — a CRD's spec goes through the Kubernetes API's standard JSON
+                        decoding, which has no equivalent to that YAML-level custom-unmarshal
+                        trick, so the local-name form must always be spelled out as {name: "..."}
+                        here. Set exactly one of Name or Source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a local workflow name (workflows/<name>.yaml in the baked-in
+                            modules dir). Mutually exclusive with Source.
+                          type: string
+                        path:
+                          type: string
+                        source:
+                          description: |-
+                            Source is a remote workflow ref ("github.com/org/repo//path@version").
+                            Mutually exclusive with Name.
+                          type: string
+                      type: object
+                    type: array
+                  afterDelete:
+                    items:
+                      description: |-
+                        WorkflowRef identifies one workflow to run for a lifecycle hook.
+                        Structured-only in the CRD form (unlike internal/types.WorkflowRef, which
+                        also accepts a bare YAML scalar as shorthand for {name: "..."} in file
+                        mode) — a CRD's spec goes through the Kubernetes API's standard JSON
+                        decoding, which has no equivalent to that YAML-level custom-unmarshal
+                        trick, so the local-name form must always be spelled out as {name: "..."}
+                        here. Set exactly one of Name or Source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a local workflow name (workflows/<name>.yaml in the baked-in
+                            modules dir). Mutually exclusive with Source.
+                          type: string
+                        path:
+                          type: string
+                        source:
+                          description: |-
+                            Source is a remote workflow ref ("github.com/org/repo//path@version").
+                            Mutually exclusive with Name.
+                          type: string
+                      type: object
+                    type: array
+                  beforeCreate:
+                    items:
+                      description: |-
+                        WorkflowRef identifies one workflow to run for a lifecycle hook.
+                        Structured-only in the CRD form (unlike internal/types.WorkflowRef, which
+                        also accepts a bare YAML scalar as shorthand for {name: "..."} in file
+                        mode) — a CRD's spec goes through the Kubernetes API's standard JSON
+                        decoding, which has no equivalent to that YAML-level custom-unmarshal
+                        trick, so the local-name form must always be spelled out as {name: "..."}
+                        here. Set exactly one of Name or Source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a local workflow name (workflows/<name>.yaml in the baked-in
+                            modules dir). Mutually exclusive with Source.
+                          type: string
+                        path:
+                          type: string
+                        source:
+                          description: |-
+                            Source is a remote workflow ref ("github.com/org/repo//path@version").
+                            Mutually exclusive with Name.
+                          type: string
+                      type: object
+                    type: array
+                  onCreate:
+                    items:
+                      description: |-
+                        WorkflowRef identifies one workflow to run for a lifecycle hook.
+                        Structured-only in the CRD form (unlike internal/types.WorkflowRef, which
+                        also accepts a bare YAML scalar as shorthand for {name: "..."} in file
+                        mode) — a CRD's spec goes through the Kubernetes API's standard JSON
+                        decoding, which has no equivalent to that YAML-level custom-unmarshal
+                        trick, so the local-name form must always be spelled out as {name: "..."}
+                        here. Set exactly one of Name or Source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a local workflow name (workflows/<name>.yaml in the baked-in
+                            modules dir). Mutually exclusive with Source.
+                          type: string
+                        path:
+                          type: string
+                        source:
+                          description: |-
+                            Source is a remote workflow ref ("github.com/org/repo//path@version").
+                            Mutually exclusive with Name.
+                          type: string
+                      type: object
+                    type: array
+                  onDelete:
+                    items:
+                      description: |-
+                        WorkflowRef identifies one workflow to run for a lifecycle hook.
+                        Structured-only in the CRD form (unlike internal/types.WorkflowRef, which
+                        also accepts a bare YAML scalar as shorthand for {name: "..."} in file
+                        mode) — a CRD's spec goes through the Kubernetes API's standard JSON
+                        decoding, which has no equivalent to that YAML-level custom-unmarshal
+                        trick, so the local-name form must always be spelled out as {name: "..."}
+                        here. Set exactly one of Name or Source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a local workflow name (workflows/<name>.yaml in the baked-in
+                            modules dir). Mutually exclusive with Source.
+                          type: string
+                        path:
+                          type: string
+                        source:
+                          description: |-
+                            Source is a remote workflow ref ("github.com/org/repo//path@version").
+                            Mutually exclusive with Name.
+                          type: string
+                      type: object
+                    type: array
+                  preReconcile:
+                    items:
+                      description: |-
+                        WorkflowRef identifies one workflow to run for a lifecycle hook.
+                        Structured-only in the CRD form (unlike internal/types.WorkflowRef, which
+                        also accepts a bare YAML scalar as shorthand for {name: "..."} in file
+                        mode) — a CRD's spec goes through the Kubernetes API's standard JSON
+                        decoding, which has no equivalent to that YAML-level custom-unmarshal
+                        trick, so the local-name form must always be spelled out as {name: "..."}
+                        here. Set exactly one of Name or Source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a local workflow name (workflows/<name>.yaml in the baked-in
+                            modules dir). Mutually exclusive with Source.
+                          type: string
+                        path:
+                          type: string
+                        source:
+                          description: |-
+                            Source is a remote workflow ref ("github.com/org/repo//path@version").
+                            Mutually exclusive with Name.
+                          type: string
+                      type: object
+                    type: array
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

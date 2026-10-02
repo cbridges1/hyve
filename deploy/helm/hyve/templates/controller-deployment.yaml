@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hyve-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hyve-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hyve-controller
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
+      # Seeds the PVC (mounted at /data below) from whatever
+      # deploy/Dockerfile.controller baked into /opt/hyve-seed at build time
+      # — only if /data is still empty, so upgrading the controller image
+      # never clobbers modules it already resolved at runtime onto the PVC.
+      # Gracefully does nothing if the image baked in no seed at all (e.g.
+      # deploy/Dockerfile.dev, which bakes in none by design).
+      initContainers:
+        - name: seed-modules
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /data/state /data/.hyve/module-cache
+              if [ -d /opt/hyve-seed/state ] && [ -z "$(ls -A /data/state 2>/dev/null)" ]; then
+                echo "Seeding /data/state from /opt/hyve-seed/state"
+                cp -a /opt/hyve-seed/state/. /data/state/
+              fi
+              if [ -d /opt/hyve-seed/module-cache ] && [ -z "$(ls -A /data/.hyve/module-cache 2>/dev/null)" ]; then
+                echo "Seeding /data/.hyve/module-cache from /opt/hyve-seed/module-cache"
+                cp -a /opt/hyve-seed/module-cache/. /data/.hyve/module-cache/
+              fi
+          volumeMounts:
+            - name: modules
+              mountPath: /data
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # command+args are set explicitly (rather than relying on
+          # deploy/Dockerfile.controller's own fixed
+          # ENTRYPOINT ["hyve", "cluster-config", "controller", "run"]) so
+          # this chart also works unchanged against deploy/Dockerfile.dev's
+          # image, whose ENTRYPOINT is just ["hyve"] — see that Dockerfile's
+          # header comment. Kubernetes' command+args fully override whatever
+          # ENTRYPOINT/CMD either image sets, so this is safe either way.
+          command: ["hyve"]
+          args:
+            - cluster-config
+            - controller
+            - run
+            - --namespace={{ .Values.namespace }}
+            - --config-name={{ .Values.controller.configName }}
+            - --modules-dir=/data/state
+            - --metrics-bind-address={{ .Values.controller.metricsBindAddress }}
+            - --health-probe-bind-address={{ .Values.controller.healthProbeBindAddress }}
+            {{- if .Values.controller.leaderElection }}
+            - --leader-elect
+            {{- end }}
+            {{- if .Values.controller.agent.controlPlaneURL }}
+            - --agent-control-plane-url={{ .Values.controller.agent.controlPlaneURL }}
+            {{- end }}
+            {{- if .Values.controller.agent.tunnelAddress }}
+            - --agent-tunnel-address={{ .Values.controller.agent.tunnelAddress }}
+            {{- end }}
+            {{- if .Values.controller.agent.caBundle.configMapName }}
+            - --agent-ca-path=/etc/hyve/agent-ca/{{ .Values.controller.agent.caBundle.key }}
+            {{- end }}
+            {{- if .Values.api.hostServiceAccount }}
+            - --host-service-account={{ .Values.api.hostServiceAccount }}
+            {{- end }}
+          # HOME=/data redirects module.CacheDir()'s hardcoded
+          # $HOME/.hyve/module-cache (internal/module/cache.go — it doesn't
+          # respect --home/HYVE_HOME) onto the same PVC --modules-dir lives
+          # on, so a module resolved at runtime (see
+          # internal/controller/reconciler.go's resolveModuleIfNeeded)
+          # actually persists across pod restarts instead of just within
+          # one pod's lifetime.
+          env:
+            - name: HOME
+              value: /data
+          volumeMounts:
+            - name: modules
+              mountPath: /data
+            {{- if .Values.controller.agent.caBundle.configMapName }}
+            - name: agent-ca
+              mountPath: /etc/hyve/agent-ca
+              readOnly: true
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: probes
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+      volumes:
+        - name: modules
+          persistentVolumeClaim:
+            claimName: hyve-controller-modules
+      {{- if .Values.controller.agent.caBundle.configMapName }}
+        - name: agent-ca
+          configMap:
+            name: {{ .Values.controller.agent.caBundle.configMapName }}
+      {{- end }}

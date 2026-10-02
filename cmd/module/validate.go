@@ -17,13 +17,25 @@ var validateCmd = &cobra.Command{
 	Short: "Validate that a locked module has the expected structure",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve module validate` is local-mode only — it checks a locked module's structure against your local hyve.lock, which has no equivalent in cluster mode.")
+		}
 		source := args[0]
 		version := args[1]
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
 
-		errors, err := mod.ValidateModule(repoPath, source, version)
+		defs, defsErr := stateMgr.LoadClusterDefinitions()
+		if defsErr != nil {
+			log.Fatalf("Failed to load cluster definitions: %v", defsErr)
+		}
+		existingClusterNames := make([]string, len(defs))
+		for i, d := range defs {
+			existingClusterNames[i] = d.Metadata.Name
+		}
+
+		errors, err := mod.ValidateModule(repoPath, source, version, existingClusterNames)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

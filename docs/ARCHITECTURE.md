@@ -1,0 +1,334 @@
+# Architecture
+
+This document explains how hyve's codebase fits together: the two deployment
+modes it supports, the packages under `internal/`, and how a `ClusterDefinition`
+actually gets provisioned. It's aimed at people modifying hyve itself, not at
+module authors or end users — see the [module system](../README.md#module-system)
+section of the README for that.
+
+## Two modes, one engine
+
+Hyve runs the same reconcile logic from two different entry points:
+
+- **Local (CLI) mode** — `hyve reconcile` reads `ClusterDefinition`/`Template`/
+  `Workflow` YAML files from a local directory (a "context," see `hyve context`)
+  and drives everything from the invoking machine or CI runner.
+- **Cluster mode** — `deploy/helm/hyve` installs two long-running components,
+  a controller and an API, onto a Kubernetes cluster. The same resources exist
+  as real CRDs (`ClusterDefinition`, `Template`, `Workflow`, `HyveConfig`,
+  `HyveSession`, `HyveAccessBinding`) rather than files, and the controller
+  reconciles them continuously instead of on a CLI invocation.
+
+Both modes funnel through the exact same `internal/reconcile.Reconciler` —
+"same engine, different source of truth," not two implementations of hyve's
+logic. What differs between modes is only:
+
+1. **Where desired state comes from** — `internal/state` (files) vs.
+   `internal/controller.CRDStateProvider` (live CRDs), both satisfying
+   `internal/reconcile.StateProvider`.
+2. **How module/workflow operations execute** — inline `os/exec` child
+   processes locally, vs. dispatched to fresh, single-use Kubernetes `Job`s
+   in cluster mode (see [Module and workflow execution](#module-and-workflow-execution)).
+
+`Reconciler`'s `StepRunner`/`ModuleRunner` fields are `nil` unless explicitly
+set — the CLI never sets them, so local mode is architecturally incapable of
+depending on anything cluster-specific. `cmd/controller/run.go` is the only
+caller that wires them to their cluster-mode implementations.
+
+## Package map (`internal/`)
+
+| Package | Responsibility |
+|---|---|
+| `types` | Shared in-memory shapes (`ClusterDefinition`, `Template`, `Workflow`, ...) that both file-based and CRD-based state ultimately produce. |
+| `apis/hyve/v1alpha1` | The real Kubernetes CRD Go types (`ClusterDefinition`, `HyveConfig`, `HyveSession`, `HyveAccessBinding`, ...) — `+kubebuilder` markers here generate `deploy/helm/hyve/crds/*.yaml` via `controller-gen`. |
+| `crdconv` | Converts between `apis/hyve/v1alpha1`'s CRD types and `types`' shared shapes. Sits below both in the import graph so neither `controller` nor `state` has to hand-roll its own conversion. |
+| `state` | Local-file `StateProvider`: reads/writes `clusters/`, `templates/`, `workflows/` YAML under an environment's directory. |
+| `controller` | The controller-runtime reconcile loop (`ClusterDefinitionReconciler`) — owns finalizers, status/conditions, and CRD-specific plumbing that the source-of-truth-agnostic `StateProvider` deliberately doesn't know about. Wraps `CRDStateProvider` (a `StateProvider` backed by live CRDs) around the shared `reconcile.Reconciler`. |
+| `reconcile` | The engine itself: given a `StateProvider`, drives cluster create/update/delete, runs lifecycle-hook workflows at the right points, and persists `driverOutputs` back. Mode-agnostic — knows nothing about files or CRDs directly. |
+| `module` | Resolves (`git clone`/cache, per `hyve.lock`), validates, and executes module operations (`status`/`create`/`delete`/`auth`/`scale`). `Executor.Runner`, when set, dispatches to `JobRunner` instead of running inline. |
+| `workflow` | Resolves and executes lifecycle-hook and standalone workflows. `KubernetesJobStepRunner` is workflow's equivalent of `module.JobRunner`. |
+| `k8sjob` | The one-shot `batch/v1.Job` lifecycle primitive shared by `module.JobRunner` and `workflow.KubernetesJobStepRunner` — create a Job with a given image/script/env, wait, capture combined stdout+stderr, report exit code, delete regardless of outcome. Extracted once because both callers need the identical operation. |
+| `repository` | The environment registry (`hyve context`) — named entries of `{ID, Name, RepoURL, LocalPath, APIURL, IsCurrent, ...}`. `LocalPath` and `APIURL` are independent, optionally-both-set fields: a local directory, a cluster API URL to `hyve context login` against later, or both. Stores no credential of any kind — `APIURL` is only ever a remembered target, never proof of authentication. |
+| `session` | The CLI's single, machine-wide cluster-mode login (`hyve context login`/`hyve context whoami`/`hyve context logout`) — deliberately independent of `repository`. See [Session and auth model](#session-and-auth-model). |
+| `database` | SQLite-backed storage underneath `repository` and `session` (two separate tables; `repositories` and a singleton `session` row), local to the machine running the CLI — never touched by cluster mode's controller/API. |
+| `api` | The HTTP API + auth layer cluster mode exposes (`cmd/api`) — a thin, authorized front door onto the CRDs the controller already reconciles, not a second implementation of hyve's logic. Plain `kubectl` against the CRDs always works without it. |
+| `secretsfrom` | Resolves a workflow's or module operation's `spec.secretsFrom` references (a Kubernetes Secret on some already-managed cluster) into env vars. Deliberately has no dependency on `module` or `workflow`, so both can share it without creating an import cycle. |
+| `kubeconfig` | Per-cluster kubeconfig file path/write helpers used by `module.Executor`'s `auth` handling, in both modes. |
+| `resourceref`, `workflowref` | Small reference-resolution helpers (`spec.resources`, workflow name lookups) shared across packages. |
+| `template` | `Template` CR rendering — expands a Template + params into a concrete `ClusterDefinition`. |
+
+## `cmd/` layout
+
+- Top-level one-shot commands (`reconcile`, `apply`, `migrate`) plus
+  resource-group subcommands (`cluster`, `template`, `workflow`, `module`,
+  `context`, `environment`) — the everyday CLI surface, listed at `hyve
+  --help`. Login/identity (`login`/`logout`/`whoami`) live under `context`
+  (`hyve context login`/`logout`/`whoami`) rather than at the top level —
+  reachable from the same command group as context selection, even though
+  the underlying session is still independent of which context is current
+  (see "Session and auth model" below). `context` (this machine's pointer
+  at a local directory or hyve-api server) and `environment` (an
+  organization's server-side scope, selected per context and sent as
+  `?env=`) are deliberately different names for different things.
+- `cmd/clusterconfig` groups the two long-running, Helm-deployed processes
+  (`cmd/api`, `cmd/controller`) under `hyve cluster-config ...` — a different
+  kind of command (a server that runs inside a pod) from everything else,
+  kept out of the everyday `--help` surface.
+- `cmd/shared` holds cross-cutting CLI concerns: the API client
+  (`apiclient.go`), the local/cluster mode branch every resource command
+  makes (`UseClusterMode`), session loading + silent refresh (`session.go`),
+  and `hyve context secrets` loading (`envsecrets.go`).
+
+## Session and auth model
+
+Cluster-mode login is modeled after [better-auth](https://www.better-auth.com/)'s
+approach rather than classic independent OAuth2 access+refresh tokens: **one
+stateful, revocable session is the source of truth**, with a short-lived
+signed token as a fast-path cache in front of it — not two independent
+credentials.
+
+- **Access token** — 30 minutes (`api.AccessTokenTTL`), stateless, HMAC-signed
+  (a custom non-JWT format — deliberately, to avoid a JWT library dependency
+  for a case this simple), verified locally by the API with no Kubernetes
+  round trip on the hot path.
+- **Session token** — 30 days (`api.SessionTTL`), the credential presented to
+  `POST /auth/refresh` to silently mint a new access token, no password
+  needed. Shape: `"<Session id>.<raw secret>"`. Backed by a row in
+  hyve-api's own datastore (`internal/orgdb.Session`, Postgres or SQLite —
+  see below, and `HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`'s
+  Milestone 10 Part D, nexus-config/docs). Only `hex(SHA-256(secret))` is
+  stored on the row (`token_hash`); the raw secret itself is never
+  persisted, so read access to the row alone can never reconstruct a
+  working credential. Not rotated on refresh — it stays valid until its
+  own expiry or an explicit `hyve context logout` (which deletes the row,
+  revoking it immediately; the still-cached access token keeps working
+  for at most its own short TTL after that).
+
+Sessions, RBAC bindings, organizations/environments, and registered
+reconciling-cluster kubeconfigs (see "Multi-tenant installs" below) all
+live in this same `internal/orgdb` datastore, not as Kubernetes objects —
+a deliberate design point, not the original one: earlier phases of this
+codebase (still referenced in some historical docs/comments) stored
+equivalent state as Kubernetes CRDs, following the precedent Dex's
+`--storage kubernetes` backend and Rancher's own
+`management.cattle.io/v3` `Token` resource both set. That stopped working
+once Milestone 10 (`HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`,
+nexus-config/docs) made hyve-api deployable with *no* Kubernetes cluster
+of its own at all — a CRD needs a cluster to live on; a Postgres/SQLite
+row doesn't. See `HYVE-ORGANIZATION-MODEL-PROPOSAL.md`'s own "Deployment
+strategy" section for the SQLite-vs-Postgres tradeoff, and
+`docs/HYVE-ORGANIZATION-MODEL-MIGRATION-GUIDE.md` if you're upgrading an
+install old enough to still have the CRDs this replaced.
+
+`cmd/shared.EnsureValidSession` is the one place every CLI command goes
+through: if the cached access token is still valid, use it; if it's expired
+but the session isn't, silently refresh; if the session itself has expired,
+return an error the caller decides how to handle (`UseClusterMode` treats it
+as fatal — refusing to silently fall back to local file operations against a
+cluster-mode environment — while `LoadEnvironmentSecrets` treats it as safely
+ignorable, since background secret-loading must never abort a command).
+
+Contexts (`hyve context`) and this session are stored, and selected,
+completely independently — see the README's
+[Contexts](../README.md#contexts-local-state-vs-a-live-cluster)
+section for why that separation matters. A context's `APIURL` (when
+set) is purely a remembered target for `hyve context login --api-url` to default
+from — registering a cluster environment and authenticating against it are
+deliberately two separate, independently-timed actions, not one combined
+step the way the original (pre-fix) design conflated them.
+
+`cmd.ensureClusterEnvironmentRegistered` (`cmd/login.go`) auto-registers an
+environment for `apiURL` after a successful login if no existing one
+already has it — matching on `APIURL` across the registry first, so
+logging in twice against the same URL never creates a duplicate. It only
+writes the URL, the same as an explicit `hyve context create --api-url` would —
+never touches `internal/session`'s storage, and only changes which
+environment is *current* when the registry was completely empty beforehand
+(first-ever login on a fresh machine); an existing active local directory
+is left alone. This is what makes `hyve context list` reflect every cluster
+you've ever logged into without a separate registration step, while still
+keeping the credential itself (which environment is a URL vs. who's
+authenticated to it) in two independent places.
+
+## Cluster access paths (getting a kubeconfig)
+
+`hyve cluster auth <name>` — and, in cluster mode, `GET /api/kubeconfig`
+underneath it — resolves to one of several code paths depending on a
+target `ClusterDefinition`'s `spec.access` configuration:
+
+| Path | Where the driver's `auth` op runs | What you get |
+|---|---|---|
+| Default (`spec.access.method` unset, or `primary` WITH a real `spec.driver`) | The caller's own machine | A kubeconfig, written locally — `GET /clusters/{name}/auth-context` delivers the resolved `auth.yaml` content, the caller's own tools run it |
+| `access.method: primary`, no `spec.driver` | N/A — no module at all | A kubeconfig minted server-side against a dedicated `hyve-host-admin` ServiceAccount, `server:` pointing at hyve-api's own `/proxy` path (`internal/api/access.go`'s `HostProvider`, superadmin-only) — the zero-config default for the cluster hyve-controller/hyve-api themselves run on, since it's already reachable in-cluster with no tunnel of any kind needed. See `docs/HYVE-AGENT-MIGRATION-GUIDE.md`'s "Host cluster access" section |
+| `access.method: module-auth` | Server-side, inline in the API pod | A kubeconfig, fetched via `GET /api/kubeconfig` (`internal/api/access.go`'s `ModuleAuthProvider`) |
+| `spec.access.agent` (`enabled`/`proxy`) | N/A — hyve-agent dials out from the managed cluster and stays connected | Either a live connection status only (`enabled`), or (`proxy: true`) a kubeconfig whose `server:` points back at this API's own `/api/agent-proxy/<name>` path, relaying real kubectl traffic over the tunnel — see `docs/HYVE-AGENT-ARCHITECTURE-PROPOSAL.md` |
+
+`access.method: primary` always means "this is the cluster
+hyve-controller/hyve-api themselves run on" — consumed by `hyve migrate
+cluster`'s own host-resolution (`cmd/migrate_resolve.go`) regardless of
+which row above actually serves it. Whether it dispatches to `HostProvider`
+or falls through to the ordinary default path depends entirely on whether
+a real `spec.driver` is set: no driver is the common, zero-config case;
+a real driver is an admin's deliberate opt-out of the automatic path. The
+`AccessMethod` CRD (`spec.access.accessMethodRef`, an external identity
+service like Rancher/Teleport minting on hyve's behalf) has been removed
+outright, not merely deprecated — see `docs/HYVE-AGENT-MIGRATION-GUIDE.md`
+for the (now-historical) migration steps off it.
+
+**The agent-proxy connection registry's identity is (namespace,
+clusterName) — two fields, deliberately, even for an organization with
+several environments** (`internal/api/agentregistry.go`'s
+`AgentConnectionKey`; see Milestone 9,
+`HYVE-ORGANIZATION-MODEL-IMPLEMENTATION-PLAN.md`, nexus-config/docs, for
+the investigation this note summarizes). `clusterName` is always the real
+Kubernetes `ClusterDefinition` object name, not a short display name — and
+that object name is already environment-addressed at creation time
+(Milestone 3's own convention: a "web" cluster in the `dev` and `staging`
+environments of one organization is really named `dev-web`/`staging-web`).
+`AgentProvider.Kubeconfig` mints its `/api/agent-proxy/<name>` URL from
+this same `cd.Name`, and `handleAgentProxy`/`writeAgentStatus` both
+resolve the same value straight through to `AgentConnectionKey` — so two
+same-short-named clusters in different environments already have distinct
+registry entries with no risk of collision, and no separate environment
+field is needed in the key itself. What *does* need to resolve
+per-organization is which cluster a caller's `ClusterDefinition` Get
+actually reaches: both handlers go through `resourceClient`
+(`internal/api/reconcilingclusters.go`), the same Milestone 6/10 routing
+every other resource-type handler uses, so an organization whose
+`ClusterDefinition`s live on a registered reconciling cluster (not this
+control plane's own home cluster) still resolves correctly.
+
+## Multi-tenant installs
+
+Two isolation models, and they compose — see the README's
+[Multi-tenant installs](../README.md#multi-tenant-installs) section for the
+operator-facing walkthrough, and `HYVE-ORGANIZATION-MODEL-PROPOSAL.md`
+(nexus-config/docs) for the full design.
+
+**Organizations — one shared install, many tenants (the common case).**
+An `internal/orgdb.Organization` row is the real isolation unit: name,
+plan/metadata, and the id ↔ Kubernetes-Namespace mapping. `Binding`
+(`internal/orgdb`, not a CRD as of Milestone 4/10 — see "Session and auth
+model" above) is always scoped by `Namespace`, the actual isolation
+boundary that never depends on whether a Namespace even has a matching
+Organization row — `FindBindingBySubject`/every resource handler resolve
+through this the same way regardless. A tenant can additionally be
+assigned its own **reconciling cluster** (Milestone 6) — a separate,
+registered Kubernetes cluster hyve-controller reconciles that
+organization's `ClusterDefinition`/`Template`/`Workflow`/`Resource`
+objects against — giving real workload isolation between tenants sharing
+one control plane, not just namespace isolation on one shared cluster.
+`internal/api/reconcilingclusters.go`'s `resourceClient`/`resourceClientset`
+are the one place every such handler resolves *which* cluster to talk to;
+see that file's own doc comments for the full routing logic, including
+the control plane's own namespace resolving through the identical path as
+of Milestone 10 Part A/B.
+
+By default an organization with no reconciling cluster assigned lands on
+the control plane's own home cluster — `Server.RequireReconcilingCluster`
+(`--require-reconciling-cluster`, `api.requireReconcilingCluster` in the
+chart) turns that off: no organization other than the control plane's own
+may land on, or migrate back to, the home cluster once set, enforced in
+`handleCreateOrganization`/`handlePatchOrganization`
+(`internal/api/organizations.go`) and checked again at startup (refuses to
+start if any existing tenant organization is still on the home cluster).
+The operator intent: a self-hosted install that wants a hard guarantee
+tenants can never touch the cluster hyve-controller/hyve-api themselves
+run on, or a hosted/managed offering where end users must never reach the
+operator's own shared infrastructure at all.
+
+**Separate installs — one Helm release per tenant namespace (the older,
+still-supported alternative).** Multiple hyve installs (controller + API
+pairs) can share one cluster, each scoped to its own namespace. Two things
+make this actually safe rather than just namespace-flavored:
+
+- Every `hyve.io` CRD is namespaced (not cluster-scoped) — the backing
+  RBAC is a `Role`, not a `ClusterRole`
+  (`deploy/helm/hyve/templates/api-rbac.yaml`), so one install can never
+  see or modify another install's objects.
+- The default `admin`/`read-only` roles bind to the built-in
+  `cluster-admin`/`view` `ClusterRole`s via a namespaced `RoleBinding`, not a
+  `ClusterRoleBinding` (`api.accessRoles.clusterScoped: false`, the chart
+  default) — so a kubeconfig minted through `PrimaryClusterProvider`
+  (`internal/api/access.go`, served via `/proxy`) only grants admin/view over
+  that install's own namespace, never the whole shared cluster.
+
+**CRDs are cluster-global, shared by every install on the cluster
+(both models above).** `helm install` only applies
+`deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm
+upgrade` never touches them (standard Helm behavior). So only the very
+first install actually creates them; a later CRD schema change needs a
+manual `kubectl apply -f deploy/helm/hyve/crds/` before any install runs
+`helm upgrade`, or that upgrade will run against a stale schema.
+
+**Upgrading an install old enough to still have `HyveEnvironment`/
+`HyveAccessBinding`/`HyveSession` objects, or Kubernetes-Secret-backed
+credentials?** See `docs/HYVE-ORGANIZATION-MODEL-MIGRATION-GUIDE.md` for
+the concrete export/recreate steps — every one of those was retired
+outright (no coexisting fallback), matching this plan's own explicit,
+accepted-breaking-change precedent throughout.
+
+## Module and workflow execution
+
+Both module operations (`create`/`status`/`delete`/`auth`/`scale`) and
+lifecycle-hook/standalone workflow steps follow the identical dispatch
+pattern:
+
+- **Local mode**: run inline as an `os/exec` child process on the machine
+  running `hyve reconcile`, inheriting its environment and whatever cloud
+  CLIs are on `PATH`.
+- **Cluster mode**: dispatched to a fresh, single-use `batch/v1.Job` via
+  `internal/k8sjob.Run` — build the Job with the resolved image/script/env,
+  wait for completion, capture combined stdout+stderr, report the exit code,
+  delete the Job regardless of outcome. The controller pod itself never
+  needs cloud CLIs installed.
+
+Image resolution is a two-tier fallback in both `module.Executor` and
+`workflow.Executor`: an explicit per-cluster/per-step image first (e.g.
+`ClusterDefinition.spec.runner.image`, inherited from a Template at creation
+time), falling back to `HyveConfig.spec.defaultModuleImage` /
+`defaultWorkflowImage` read once at controller startup. A module's own
+`module.yaml` can *recommend* an image (`spec.runner.image`, resolved and
+locked into `hyve.lock`) but doesn't get to unilaterally choose one — the
+same module may need different images across different deployments.
+
+`auth.sh`/`auth.yaml` has one contract regardless of mode: it prints
+`HYVE_KUBECONFIG_B64=<base64 kubeconfig>` to stdout rather than writing a
+kubeconfig file directly. `Executor` decodes and writes it locally — this is
+what makes the same script work whether it ran inline (same filesystem) or
+inside an ephemeral Job pod (no shared filesystem with the caller at all).
+
+`hyve context secrets` values (cluster mode) are stored in a single shared
+`hyve-cli-secrets` Kubernetes Secret and fetched live, once per reconcile —
+never cached in the controller's process environment — so a changed or
+newly-set secret takes effect on the very next reconcile, no controller
+restart required. This reaches both module-Job env and workflow-Job env
+through the same `env []string` already threaded through
+`reconcile.Reconciler`; `GITHUB_TOKEN` specifically is passed as an explicit
+function parameter through module resolution (`resolveGit`/`ResolveRef`)
+rather than `os.Setenv`, since concurrent reconciles of different clusters
+share one process and a mutated global env var would race.
+
+## A reconcile, end to end (cluster mode)
+
+1. `ClusterDefinitionReconciler.Reconcile` fires (a CR changed, or the
+   5-minute `resyncInterval` elapsed).
+2. `CRDStateProvider` fetches the `ClusterDefinition` and related `Template`/
+   `Workflow` CRs via the controller-runtime client; `crdconv` converts them
+   to `internal/types` shapes.
+3. `fetchCLISecrets` does a live, uncached read of `hyve-cli-secrets`
+   (`mgr.GetAPIReader()` — see the RBAC note in
+   `deploy/helm/hyve/templates/controller-rbac.yaml` on why this read is
+   deliberately uncached).
+4. `reconcile.Reconciler` runs the module's `status` operation to check
+   current state, then `create`/`delete`/no-op as needed, running
+   `beforeCreate`/`onCreate`/`afterCreate`/`onDelete`/`afterDelete` workflows
+   at the appropriate points — each module/workflow execution dispatched as
+   its own `k8sjob.Run`-backed Job.
+5. Outputs (`HYVE_KEY=value` lines from module stdout) and workflow outputs
+   are written back to `spec.driverOutputs`/status; finalizer bookkeeping
+   and conditions are updated by the `controller` package layer.
+
+The exact same steps 2–5 happen for `hyve reconcile` in local mode, with
+`state.LocalStateProvider` and inline `os/exec` in place of steps 2 and 4's
+CRD/Job-specific mechanics.

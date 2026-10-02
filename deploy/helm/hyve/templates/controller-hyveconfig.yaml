@@ -1,0 +1,24 @@
+{{- if .Values.controller.hyveConfig.create }}
+apiVersion: hyve.io/v1alpha1
+kind: HyveConfig
+metadata:
+  name: {{ .Values.controller.configName }}
+  namespace: {{ .Values.namespace }}
+spec:
+  strictResourceDelete: {{ .Values.controller.hyveConfig.strictResourceDelete }}
+  {{- if .Values.controller.hyveConfig.defaultWorkflowImage }}
+  defaultWorkflowImage: {{ .Values.controller.hyveConfig.defaultWorkflowImage }}
+  {{- end }}
+  {{- if .Values.controller.hyveConfig.defaultModuleImage }}
+  defaultModuleImage: {{ .Values.controller.hyveConfig.defaultModuleImage }}
+  {{- end }}
+  {{- if .Values.controller.hyveConfig.defaultAgentImage }}
+  defaultAgentImage: {{ .Values.controller.hyveConfig.defaultAgentImage }}
+  {{- end }}
+  {{- if .Values.controller.hyveConfig.imagePullSecrets }}
+  imagePullSecrets:
+    {{- range .Values.controller.hyveConfig.imagePullSecrets }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
+{{- end }}

@@ -14,6 +14,9 @@ var workflowInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Resolve all remote workflow references found in templates and clusters into hyve.lock",
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, ok := shared.UseClusterMode(); ok {
+			log.Fatal("`hyve workflow install` is a local-checkout-only command — there's no local hyve.lock for a cluster-mode CLI session to write to. The controller itself already resolves remote workflow refs live, per-reconcile (see internal/controller/reconciler.go's resolveWorkflowIfNeeded), so no separate install step is needed in cluster mode at all.")
+		}
 		ctx := context.Background()
 		stateMgr, _ := shared.CreateStateManager(ctx)
 		repoPath := stateMgr.LocalPath()
@@ -26,7 +29,7 @@ var workflowInstallCmd = &cobra.Command{
 			log.Printf("Resolving %s ...", ref.String())
 		}
 
-		locked, collisions, resolveErrors, changed, err := workflowref.Install(repoPath, refs)
+		locked, collisions, resolveErrors, _, changed, err := workflowref.Install(repoPath, refs, "")
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

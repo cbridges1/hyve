@@ -10,7 +10,17 @@ import (
 	"github.com/cbridges1/hyve/internal/types"
 )
 
+// showCluster, listClusters, and markClusterForDeletion each start with the
+// same dispatch: a valid local Session (see shared.UseClusterMode) means
+// cluster mode — talk to the API — otherwise fall through to today's
+// local-file behavior, unchanged. Session presence deliberately wins with
+// no separate flag; `hyve context logout` cleanly reverts to local mode.
 func showCluster(clusterName string) {
+	if sess, ok := shared.UseClusterMode(); ok {
+		showClusterAPI(shared.NewAPIClient(sess), clusterName)
+		return
+	}
+
 	ctx := gocontext.Background()
 	stateMgr, _ := shared.CreateStateManager(ctx)
 
@@ -58,6 +68,11 @@ func showCluster(clusterName string) {
 }
 
 func listClusters() {
+	if sess, ok := shared.UseClusterMode(); ok {
+		listClustersAPI(shared.NewAPIClient(sess))
+		return
+	}
+
 	ctx := gocontext.Background()
 	stateMgr, _ := shared.CreateStateManager(ctx)
 
@@ -68,7 +83,7 @@ func listClusters() {
 
 	var clusters []types.ClusterDefinition
 	for _, clusterDef := range defs {
-		if clusterDef.Kind == "Cluster" && !clusterDef.Spec.Delete {
+		if clusterDef.Kind == "ClusterDefinition" && !clusterDef.Spec.Delete {
 			clusters = append(clusters, clusterDef)
 		}
 	}
@@ -105,6 +120,11 @@ func listClusters() {
 // markClusterForDeletion sets the cluster's spec.delete flag and commits the
 // change. The reconciler picks this up on its next run.
 func markClusterForDeletion(clusterName string) {
+	if sess, ok := shared.UseClusterMode(); ok {
+		deleteClusterAPI(shared.NewAPIClient(sess), clusterName)
+		return
+	}
+
 	ctx := gocontext.Background()
 	stateMgr, _ := shared.CreateStateManager(ctx)
 
