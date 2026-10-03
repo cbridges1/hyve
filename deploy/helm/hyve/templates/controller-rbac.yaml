@@ -16,11 +16,19 @@ metadata:
 # comment for why) — removing that reconciler dropped this controller's
 # access back down to just this one namespaced Role, a real reduction in
 # what it can touch, not just a code cleanup.
+#
+# The exception is a multi-tenant install on Postgres
+# (hyve.controller.watchHomeOrganizations): the controller then also
+# reconciles every organization's namespace on this cluster, so the same
+# rules become a ClusterRole, as api-rbac.yaml's do under
+# api.multiTenant.enabled.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: {{ if include "hyve.controller.watchHomeOrganizations" . }}ClusterRole{{ else }}Role{{ end }}
 metadata:
   name: hyve-controller
+  {{- if not (include "hyve.controller.watchHomeOrganizations" .) }}
   namespace: {{ .Values.namespace }}
+  {{- end }}
 rules:
   - apiGroups: ["hyve.io"]
     resources: ["clusterdefinitions"]
@@ -143,15 +151,17 @@ rules:
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: {{ if include "hyve.controller.watchHomeOrganizations" . }}ClusterRoleBinding{{ else }}RoleBinding{{ end }}
 metadata:
   name: hyve-controller
+  {{- if not (include "hyve.controller.watchHomeOrganizations" .) }}
   namespace: {{ .Values.namespace }}
+  {{- end }}
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.controller.serviceAccount.name | default "hyve-controller" }}
     namespace: {{ .Values.namespace }}
 roleRef:
-  kind: Role
+  kind: {{ if include "hyve.controller.watchHomeOrganizations" . }}ClusterRole{{ else }}Role{{ end }}
   name: hyve-controller
   apiGroup: rbac.authorization.k8s.io

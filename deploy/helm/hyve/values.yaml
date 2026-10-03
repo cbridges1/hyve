@@ -350,8 +350,11 @@ api:
   # "Phase 2") switches hyve-api's own RBAC (api-rbac.yaml) from a
   # namespaced Role bound to just .Values.namespace to a ClusterRole,
   # needed once a single install serves many tenant namespaces resolved
-  # per-login instead of one install per tenant. Leave false for Phase 1's
-  # one-install-per-tenant model (the default, least-privilege choice).
+  # per-login instead of one install per tenant. With db.driver: postgres it
+  # also makes hyve-controller reconcile every organization still on this
+  # (home) cluster — a ClusterRole, plus the same DSN Secret — not just
+  # .Values.namespace. Leave false for Phase 1's one-install-per-tenant
+  # model (the default, least-privilege choice).
   multiTenant:
     enabled: false
 

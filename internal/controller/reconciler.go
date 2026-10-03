@@ -712,7 +712,10 @@ func (r *ClusterDefinitionReconciler) upsertResourceRefStatusCR(ctx context.Cont
 	}
 }
 
-// SetupWithManager wires this reconciler into mgr, watching ClusterDefinition.
+// SetupWithManager wires this reconciler into mgr, watching ClusterDefinition
+// under its default controller name. Filtered to r.Namespace when set: the
+// manager's cache can span several namespaces (--watch-home-organizations)
+// even when this, the control namespace's instance, keeps the plain name.
 func (r *ClusterDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	maxConcurrent := r.MaxConcurrentReconciles
 	if maxConcurrent <= 0 {
@@ -721,8 +724,12 @@ func (r *ClusterDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor("hyve-controller")
 	}
+	var opts []builder.ForOption
+	if r.Namespace != "" {
+		opts = append(opts, builder.WithPredicates(namespacePredicate(r.Namespace)))
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&hyvev1alpha1.ClusterDefinition{}).
+		For(&hyvev1alpha1.ClusterDefinition{}, opts...).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
 }
