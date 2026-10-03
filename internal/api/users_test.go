@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
@@ -160,4 +162,27 @@ func TestDeleteAccount_RemovesMembershipThenUser(t *testing.T) {
 	_, err = s.OrgStore.GetUserByUsername(t.Context(), "alice")
 	assert.ErrorIs(t, err, orgdb.ErrNotFound, "no memberships left: the user goes too")
 	assert.Equal(t, http.StatusUnauthorized, doLogin(s, "alice", "alice-pw").Code)
+}
+
+func TestOrganizationFromAgentProxyPath(t *testing.T) {
+	var gotPath, gotOrg string
+	h := organizationFromAgentProxyPath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotOrg = r.URL.Path, r.Header.Get(organizationHeader)
+	}))
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/agent-proxy/org/branlen/default-branclust/api/v1/pods", nil))
+	assert.Equal(t, "/agent-proxy/default-branclust/api/v1/pods", gotPath)
+	assert.Equal(t, "branlen", gotOrg)
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/agent-proxy/web/api/v1/pods", nil))
+	assert.Equal(t, "/agent-proxy/web/api/v1/pods", gotPath, "the old form passes through")
+	assert.Empty(t, gotOrg)
+}
+
+func TestAgentProviderKubeconfig_NamesTheOrganization(t *testing.T) {
+	p := &AgentProvider{PublicBaseURL: "https://hyve.example.com/"}
+	ctx := context.WithValue(t.Context(), contextKeyToken, "tok")
+	kc, err := p.Kubeconfig(ctx, &hyvev1alpha1.ClusterDefinition{ObjectMeta: metav1.ObjectMeta{Name: "default-branclust", Namespace: "branlen"}})
+	require.NoError(t, err)
+	assert.Contains(t, string(kc), "server: https://hyve.example.com/api/agent-proxy/org/branlen/default-branclust")
 }

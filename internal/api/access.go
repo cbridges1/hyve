@@ -80,7 +80,10 @@ func (p *AgentProvider) Kubeconfig(ctx context.Context, cd *hyvev1alpha1.Cluster
 	if !ok {
 		return nil, fmt.Errorf("no session token available for this caller")
 	}
-	server := strings.TrimRight(p.PublicBaseURL, "/") + "/api/agent-proxy/" + cd.Name
+	// The organization goes in the path: the token names none (a login
+	// reaches every organization), and kubectl can't send
+	// X-Hyve-Organization — see organizationFromAgentProxyPath.
+	server := strings.TrimRight(p.PublicBaseURL, "/") + agentProxyOrgPrefix + cd.Namespace + "/" + cd.Name
 	return buildKubeconfig(server, p.PublicCA, token)
 }
 

@@ -232,7 +232,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerAgentProxyRoutes(apiMux)
 	s.registerEmailSettingsRoutes(apiMux)
 
-	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
+	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(organizationFromAgentProxyPath(s.requireRole(apiMux)))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
 	mux.Handle("/", http.FileServer(http.FS(webui.FS())))
 	return corsMiddleware(mux)
@@ -347,6 +347,34 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, contextKeyNamespace, namespace)
 		ctx = context.WithValue(ctx, contextKeyToken, token)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// agentProxyOrgPrefix is the agent-proxy URL form that names the
+// organization: /api/agent-proxy/org/<namespace>/<cluster>/... — what
+// AgentProvider.Kubeconfig mints.
+const agentProxyOrgPrefix = "/api/agent-proxy/org/"
+
+// organizationFromAgentProxyPath turns /agent-proxy/org/<org>/<rest> (the
+// path under /api) into /agent-proxy/<rest> with <org> as the request's
+// organizationHeader, ahead of requireRole. A kubeconfig can carry a URL
+// but not custom headers, and its token names no organization, so this is
+// how kubectl through an agent reaches a cluster outside the caller's
+// default organization. Access is still checked by requireRole.
+func organizationFromAgentProxyPath(next http.Handler) http.Handler {
+	const prefix = "/agent-proxy/org/"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.Path, prefix); ok {
+			if org, path, ok := strings.Cut(rest, "/"); ok && org != "" {
+				r2 := r.Clone(r.Context())
+				r2.Header.Set(organizationHeader, org)
+				r2.URL.Path = "/agent-proxy/" + path
+				r2.URL.RawPath = ""
+				next.ServeHTTP(w, r2)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
