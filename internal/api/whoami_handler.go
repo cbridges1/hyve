@@ -3,7 +3,9 @@ package api
 import (
 	"log"
 	"net/http"
+	"sort"
 
+	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
@@ -37,6 +39,19 @@ type whoamiResponse struct {
 	// package already uses.
 	ReconcilingCluster string `json:"reconcilingCluster,omitempty"`
 	Migrating          bool   `json:"migrating,omitempty"`
+
+	// Organizations is every organization this login can act in, by name
+	// — the caller's memberships, or for a superadmin every organization —
+	// with the caller's role in each. Namespace/Organization above is the
+	// one this request acted in (see resolveAccess); pick another with the
+	// X-Hyve-Organization header.
+	Organizations []whoamiOrganization `json:"organizations"`
+}
+
+type whoamiOrganization struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Role      string `json:"role"`
 }
 
 // registerWhoamiRoute wires GET /whoami — mounted under /api/ (behind
@@ -63,5 +78,53 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			log.Printf("api: failed to resolve organization for whoami namespace %q: %v", namespace, err)
 		}
 	}
+	resp.Organizations = s.accessibleOrganizations(r, username)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// accessibleOrganizations lists the organizations username can act in, by
+// name: each membership's organization (a namespace with no registered
+// organization is listed under its namespace), plus — for a superadmin —
+// every organization, as superadmin (which outranks any membership).
+func (s *Server) accessibleOrganizations(r *http.Request, username string) []whoamiOrganization {
+	out := []whoamiOrganization{}
+	if s.OrgStore == nil {
+		return out
+	}
+	ctx := r.Context()
+	memberships, err := s.OrgStore.ListBindingsForIdentity(ctx, orgdb.SubjectTypeLocal, username)
+	if err != nil {
+		log.Printf("api: failed to list memberships for %q: %v", username, err)
+		return out
+	}
+	byNamespace := map[string]string{}
+	superadmin := false
+	for _, b := range memberships {
+		if roleRank(b.Role) > roleRank(byNamespace[b.Namespace]) {
+			byNamespace[b.Namespace] = b.Role
+		}
+		if b.Namespace == s.Namespace && b.Role == hyvev1alpha1.RoleSuperadmin {
+			superadmin = true
+		}
+	}
+	orgs, err := s.OrgStore.ListOrganizations(ctx)
+	if err != nil {
+		log.Printf("api: failed to list organizations: %v", err)
+	}
+	names := map[string]string{}
+	for _, org := range orgs {
+		names[org.Namespace] = org.Name
+		if superadmin {
+			byNamespace[org.Namespace] = hyvev1alpha1.RoleSuperadmin
+		}
+	}
+	for ns, role := range byNamespace {
+		name := names[ns]
+		if name == "" {
+			name = ns
+		}
+		out = append(out, whoamiOrganization{Name: name, Namespace: ns, Role: role})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

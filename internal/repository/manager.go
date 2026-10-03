@@ -44,13 +44,18 @@ type Repository struct {
 	// this context is active — set by 'hyve environment use'. Empty lets
 	// the server resolve its own default (an organization with exactly one
 	// environment).
-	ServerEnvironment string    `json:"server_environment,omitempty"`
-	IsCurrent         bool      `json:"is_current"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ServerEnvironment string `json:"server_environment,omitempty"`
+	// ServerOrganization is the organization cluster-mode commands act in
+	// ('hyve organization use'), sent as hyve-api's X-Hyve-Organization
+	// header. Empty lets the server pick (the user's only organization, or
+	// the control plane for a superadmin).
+	ServerOrganization string    `json:"server_organization,omitempty"`
+	IsCurrent          bool      `json:"is_current"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, api_ca_cert, server_environment, created_at, updated_at`
+const repositoryColumns = `id, name, repo_url, local_path, is_current, api_url, api_ca_cert, server_environment, server_organization, created_at, updated_at`
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -61,15 +66,16 @@ type scanner interface {
 func scanRepository(s scanner) (*Repository, error) {
 	repo := &Repository{}
 	var createdAt, updatedAt string
-	var apiURL, apiCACert, serverEnv sql.NullString
+	var apiURL, apiCACert, serverEnv, serverOrg sql.NullString
 
 	if err := s.Scan(&repo.ID, &repo.Name, &repo.RepoURL, &repo.LocalPath, &repo.IsCurrent,
-		&apiURL, &apiCACert, &serverEnv, &createdAt, &updatedAt); err != nil {
+		&apiURL, &apiCACert, &serverEnv, &serverOrg, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	repo.APIURL = apiURL.String
 	repo.APICACert = apiCACert.String
 	repo.ServerEnvironment = serverEnv.String
+	repo.ServerOrganization = serverOrg.String
 
 	var err error
 	if repo.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt); err != nil {
@@ -277,6 +283,25 @@ func (m *Manager) SetAPICACert(name, caCertPEM string) error {
 		nullableString(caCertPEM), name)
 	if err != nil {
 		return fmt.Errorf("failed to set api_ca_cert: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("repository '%s' not found", name)
+	}
+	return nil
+}
+
+// SetServerOrganization records org ("" to clear) as the named context's
+// selected organization — see Repository.ServerOrganization. Changing it
+// clears the selected environment, which belongs to an organization.
+func (m *Manager) SetServerOrganization(name, org string) error {
+	result, err := m.db.Conn().Exec(`UPDATE repositories SET server_organization = ?, server_environment = NULL, updated_at = CURRENT_TIMESTAMP WHERE name = ?`,
+		nullableString(org), name)
+	if err != nil {
+		return fmt.Errorf("failed to set server_organization: %w", err)
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -41,8 +43,10 @@ type accountDTO struct {
 	Email    *string `json:"email,omitempty"`
 }
 
-func toAccountDTO(b orgdb.Binding) accountDTO {
-	return accountDTO{Username: b.Identity, Role: b.Role, Email: b.Email}
+// toAccountDTO describes membership b — its role, plus its user's email,
+// which is shared by every organization they belong to.
+func (s *Server) toAccountDTO(ctx context.Context, b orgdb.Binding) accountDTO {
+	return accountDTO{Username: b.Identity, Role: b.Role, Email: s.userEmail(ctx, b.Identity)}
 }
 
 // registerAccountRoutes wires /accounts — mounted under /api/ (behind
@@ -80,18 +84,17 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toAccountDTO(binding))
+	writeJSON(w, http.StatusOK, s.toAccountDTO(r.Context(), binding))
 }
 
 // validateAndCheckEmail is the shared email-handling logic between account
 // creation and update: light syntactic validation (this isn't the
 // platform's verification step, just enough to catch an obvious typo) plus
-// the per-namespace uniqueness check (see
-// migrations/*/0003_binding_email.sql). email == "" means "no email" and
-// always passes through as nil with no lookup. excludeBindingID skips that
-// one row's own match (an update finding only itself isn't a conflict);
-// pass "" from account creation, which has no existing row to exclude.
-func (s *Server) validateAndCheckEmail(w http.ResponseWriter, r *http.Request, namespace, email, excludeBindingID string) (*string, bool) {
+// the install-wide uniqueness check (see migrations/*/0007_users.sql).
+// email == "" means "no email" and always passes through as nil with no
+// lookup. excludeUserID skips that user's own match (an update finding
+// only itself isn't a conflict); pass "" when creating a user.
+func (s *Server) validateAndCheckEmail(w http.ResponseWriter, r *http.Request, email, excludeUserID string) (*string, bool) {
 	email = strings.TrimSpace(email)
 	if email == "" {
 		return nil, true
@@ -100,8 +103,8 @@ func (s *Server) validateAndCheckEmail(w http.ResponseWriter, r *http.Request, n
 		writeError(w, http.StatusBadRequest, "invalid email address")
 		return nil, false
 	}
-	existing, err := s.OrgStore.FindBindingByEmail(r.Context(), namespace, email)
-	if err == nil && existing.ID != excludeBindingID {
+	existing, err := s.OrgStore.GetUserByEmail(r.Context(), email)
+	if err == nil && existing.ID != excludeUserID {
 		writeError(w, http.StatusConflict, "an account with this email already exists")
 		return nil, false
 	}
@@ -138,7 +141,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		if b.Role == hyvev1alpha1.RoleSuperadmin && callerRole != hyvev1alpha1.RoleSuperadmin {
 			continue
 		}
-		dtos = append(dtos, toAccountDTO(b))
+		dtos = append(dtos, s.toAccountDTO(r.Context(), b))
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
@@ -148,10 +151,11 @@ type createAccountRequest struct {
 	Password string `json:"password"`
 	Role     string `json:"role"`
 
-	// Email is required at creation — the new user is told about their
-	// account there (TemplateAccountCreated). PATCH can still clear it
-	// later; see validateAndCheckEmail and orgdb.Binding.Email's own doc
-	// comment.
+	// Password and Email are required for a new user — they're told about
+	// their account there (TemplateAccountCreated). For a username that
+	// already exists (a user of another organization) both are ignored:
+	// the request just adds that user to this organization, keeping their
+	// own password and email.
 	Email string `json:"email,omitempty"`
 
 	// Namespace lets a superadmin caller target a tenant namespace other
@@ -190,12 +194,8 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Username == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username and password are required")
-		return
-	}
-	if strings.TrimSpace(req.Email) == "" {
-		writeError(w, http.StatusBadRequest, "email is required")
+	if req.Username == "" {
+		writeError(w, http.StatusBadRequest, "username is required")
 		return
 	}
 
@@ -264,7 +264,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := s.findBindingBySubject(ctx, secretNamespace, orgdb.SubjectTypeLocal, req.Username); err == nil {
-		writeError(w, http.StatusConflict, "an account with this username already exists")
+		writeError(w, http.StatusConflict, "this user is already a member of this organization")
 		return
 	} else if err != orgdb.ErrNotFound {
 		log.Printf("api: failed to check existing account %q: %v", req.Username, err)
@@ -272,16 +272,40 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := HashPassword(req.Password)
-	if err != nil {
-		log.Printf("api: failed to hash password for new account %q: %v", req.Username, err)
+	// An existing user (from another organization) is just added here; a
+	// new one needs a password and an email.
+	user, err := s.OrgStore.GetUserByUsername(ctx, req.Username)
+	existingUser := err == nil
+	if err != nil && err != orgdb.ErrNotFound {
+		log.Printf("api: failed to check existing user %q: %v", req.Username, err)
 		writeError(w, http.StatusInternalServerError, "failed to create account")
 		return
 	}
-
-	accountEmail, ok := s.validateAndCheckEmail(w, r, secretNamespace, req.Email, "")
-	if !ok {
-		return
+	if !existingUser {
+		if req.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for a new user")
+			return
+		}
+		if strings.TrimSpace(req.Email) == "" {
+			writeError(w, http.StatusBadRequest, "email is required for a new user")
+			return
+		}
+		accountEmail, ok := s.validateAndCheckEmail(w, r, req.Email, "")
+		if !ok {
+			return
+		}
+		hash, err := HashPassword(req.Password)
+		if err != nil {
+			log.Printf("api: failed to hash password for new account %q: %v", req.Username, err)
+			writeError(w, http.StatusInternalServerError, "failed to create account")
+			return
+		}
+		user, err = s.OrgStore.CreateUser(ctx, orgdb.User{Username: req.Username, Email: accountEmail, PasswordHash: &hash})
+		if err != nil {
+			log.Printf("api: failed to create user %q: %v", req.Username, err)
+			writeError(w, http.StatusInternalServerError, "failed to create account")
+			return
+		}
 	}
 
 	binding, err := s.OrgStore.CreateBinding(ctx, orgdb.Binding{
@@ -291,10 +315,8 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		SubjectType:             orgdb.SubjectTypeLocal,
 		Identity:                req.Username,
 		Role:                    req.Role,
-		Email:                   accountEmail,
 		ServiceAccountName:      serviceAccount,
 		ServiceAccountNamespace: secretNamespace,
-		PasswordHash:            &hash,
 	})
 	if err != nil {
 		log.Printf("api: failed to create access binding for %q: %v", req.Username, err)
@@ -302,21 +324,27 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sent := sendAccountNotification(s, r, *binding.Email, email.TemplateAccountCreated, email.AccountCreatedData{
-		Username: binding.Identity,
-		Role:     binding.Role,
-	})
+	sent := false
+	if !existingUser {
+		sent = sendAccountNotification(s, r, *user.Email, email.TemplateAccountCreated, email.AccountCreatedData{
+			Username: binding.Identity,
+			Role:     binding.Role,
+		})
+	}
 
-	writeJSON(w, http.StatusCreated, createAccountResponse{accountDTO: toAccountDTO(binding), EmailSent: sent})
+	writeJSON(w, http.StatusCreated, createAccountResponse{accountDTO: s.toAccountDTO(ctx, binding), EmailSent: sent, ExistingUser: existingUser})
 }
 
 // createAccountResponse is accountDTO plus whether the account-created
 // email actually went out — false when SMTP isn't configured or the send
 // failed (the account exists either way; see sendAccountNotification), so
-// the console can tell the admin the new user wasn't notified.
+// the console can tell the admin the new user wasn't notified — and
+// whether this added an existing user (no email is sent for that) rather
+// than creating one.
 type createAccountResponse struct {
 	accountDTO
-	EmailSent bool `json:"emailSent"`
+	EmailSent    bool `json:"emailSent"`
+	ExistingUser bool `json:"existingUser"`
 }
 
 // updateAccountRequest's Role/Email are both nil-means-"leave unchanged" —
@@ -395,7 +423,13 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	oldRole := binding.Role
-	oldEmail := binding.Email
+	user, err := s.OrgStore.GetUserByUsername(ctx, username)
+	if err != nil {
+		log.Printf("api: failed to load user %q: %v", username, err)
+		writeError(w, http.StatusInternalServerError, "failed to update account")
+		return
+	}
+	oldEmail := user.Email
 
 	if req.Role != nil {
 		if caller, ok := UsernameFromContext(ctx); ok && caller == username {
@@ -471,12 +505,16 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		binding.EnvironmentID = environmentID
 	}
 
+	newEmail := oldEmail
 	if req.Email != nil {
-		email, ok := s.validateAndCheckEmail(w, r, binding.Namespace, *req.Email, binding.ID)
+		if ok := s.requireSoleOrganization(w, r, username, binding.Namespace, "email"); !ok {
+			return
+		}
+		email, ok := s.validateAndCheckEmail(w, r, *req.Email, user.ID)
 		if !ok {
 			return
 		}
-		binding.Email = email
+		newEmail = email
 	}
 
 	updated, err := s.OrgStore.UpdateBinding(ctx, binding)
@@ -485,13 +523,20 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update account")
 		return
 	}
+	if req.Email != nil {
+		if err := s.OrgStore.SetUserEmail(ctx, user.ID, newEmail); err != nil {
+			log.Printf("api: failed to update email for %q: %v", username, err)
+			writeError(w, http.StatusInternalServerError, "failed to update account")
+			return
+		}
+	}
 
 	// Notify the affected account's own holder, not the caller — they're
 	// who needs to know their access or contact address just changed
 	// (see sendAccountNotification's own doc comment for the fire-and-
 	// forget stance every one of these takes).
-	if updated.Role != oldRole && updated.Email != nil {
-		sendAccountNotification(s, r, *updated.Email, email.TemplateRoleChanged, email.RoleChangedData{
+	if updated.Role != oldRole && newEmail != nil {
+		sendAccountNotification(s, r, *newEmail, email.TemplateRoleChanged, email.RoleChangedData{
 			Username: updated.Identity,
 			OldRole:  oldRole,
 			NewRole:  updated.Role,
@@ -502,14 +547,14 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	// change, at an address that can no longer silently redirect future
 	// resets. Nothing to send if there was no old address (first time
 	// setting one — nothing to protect yet).
-	if oldEmail != nil && (updated.Email == nil || *updated.Email != *oldEmail) {
+	if oldEmail != nil && (newEmail == nil || *newEmail != *oldEmail) {
 		sendAccountNotification(s, r, *oldEmail, email.TemplateEmailChanged, email.EmailChangedData{
 			Username: updated.Identity,
-			NewEmail: derefOrEmpty(updated.Email),
+			NewEmail: derefOrEmpty(newEmail),
 		})
 	}
 
-	writeJSON(w, http.StatusOK, toAccountDTO(updated))
+	writeJSON(w, http.StatusOK, s.toAccountDTO(ctx, updated))
 }
 
 // derefOrEmpty is EmailChangedData.NewEmail's own "cleared, not replaced"
@@ -554,10 +599,37 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	if err := s.OrgStore.DeleteBinding(r.Context(), binding.ID); err != nil {
-		log.Printf("api: failed to delete access binding for %q: %v", username, err)
+	// Removes the user from this organization (every environment-scoped
+	// membership they have here). Only once they belong nowhere else does
+	// the user itself — login, sessions — go too.
+	ctx := r.Context()
+	scope, err := s.OrgStore.ListBindingsForScope(ctx, binding.Namespace)
+	if err != nil {
+		log.Printf("api: failed to list access bindings for %q: %v", username, err)
 		writeError(w, http.StatusInternalServerError, "failed to delete account")
 		return
+	}
+	for _, b := range scope {
+		if b.SubjectType != orgdb.SubjectTypeLocal || b.Identity != username {
+			continue
+		}
+		if err := s.OrgStore.DeleteBinding(ctx, b.ID); err != nil {
+			log.Printf("api: failed to delete access binding for %q: %v", username, err)
+			writeError(w, http.StatusInternalServerError, "failed to delete account")
+			return
+		}
+	}
+	if left, err := s.OrgStore.ListBindingsForIdentity(ctx, orgdb.SubjectTypeLocal, username); err != nil {
+		log.Printf("api: failed to check remaining memberships for %q: %v", username, err)
+	} else if len(left) == 0 {
+		if err := s.OrgStore.DeleteSessionsBySubject(ctx, username); err != nil {
+			log.Printf("api: failed to revoke sessions for deleted user %q: %v", username, err)
+		}
+		if user, err := s.OrgStore.GetUserByUsername(ctx, username); err == nil {
+			if err := s.OrgStore.DeleteUser(ctx, user.ID); err != nil {
+				log.Printf("api: failed to delete user %q: %v", username, err)
+			}
+		}
 	}
 
 	// The password hash lived on the binding row itself (password_hash,
@@ -641,12 +713,22 @@ func (s *Server) handleUpdateAccountPassword(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if !isSelf {
+		if ok := s.requireSoleOrganization(w, r, username, binding.Namespace, "password"); !ok {
+			return
+		}
+	}
+	user, err := s.OrgStore.GetUserByUsername(ctx, username)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
 	if isSelf {
 		// 400, not 401: apiFetch (web/src/lib/api/client.ts) treats any 401
 		// from the server as "this session itself is invalid" and force-logs-
 		// out the caller globally — exactly the wrong reaction to a merely
 		// mistyped current password in an otherwise-valid session.
-		if binding.PasswordHash == nil || !VerifyPassword(*binding.PasswordHash, req.CurrentPassword) {
+		if user.PasswordHash == nil || !VerifyPassword(*user.PasswordHash, req.CurrentPassword) {
 			writeError(w, http.StatusBadRequest, "current password is incorrect")
 			return
 		}
@@ -658,7 +740,7 @@ func (s *Server) handleUpdateAccountPassword(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to update password")
 		return
 	}
-	if err := s.OrgStore.SetBindingPassword(ctx, binding.ID, hash); err != nil {
+	if err := s.OrgStore.SetUserPassword(ctx, user.ID, hash); err != nil {
 		log.Printf("api: failed to update password for %q: %v", username, err)
 		writeError(w, http.StatusInternalServerError, "failed to update password")
 		return
@@ -668,9 +750,31 @@ func (s *Server) handleUpdateAccountPassword(w http.ResponseWriter, r *http.Requ
 	// admin-driven — unlike Pangolin's own NotifyResetPassword, which
 	// only has the one (forgot-password) reset path to notify from (see
 	// HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 2 template table).
-	if binding.Email != nil {
-		sendAccountNotification(s, r, *binding.Email, email.TemplatePasswordChanged, email.PasswordChangedData{Username: binding.Identity})
+	if user.Email != nil {
+		sendAccountNotification(s, r, *user.Email, email.TemplatePasswordChanged, email.PasswordChangedData{Username: binding.Identity})
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requireSoleOrganization 403s unless the caller may change username's
+// shared credential (what: "email" or "password") from organization
+// namespace: a superadmin always may; an admin only for a user who belongs
+// to no other organization (see memberElsewhere). Reports whether to
+// continue.
+func (s *Server) requireSoleOrganization(w http.ResponseWriter, r *http.Request, username, namespace, what string) bool {
+	if role, _ := RoleFromContext(r.Context()); role == hyvev1alpha1.RoleSuperadmin {
+		return true
+	}
+	elsewhere, err := s.memberElsewhere(r.Context(), username, namespace)
+	if err != nil {
+		log.Printf("api: failed to check memberships for %q: %v", username, err)
+		writeError(w, http.StatusInternalServerError, "failed to update account")
+		return false
+	}
+	if elsewhere {
+		writeError(w, http.StatusForbidden, fmt.Sprintf("%s also belongs to other organizations — only they (or a superadmin) can change their %s", username, what))
+		return false
+	}
+	return true
 }

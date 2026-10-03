@@ -22,7 +22,7 @@ func newTestServerWithUser(t *testing.T, username, password, role string) *Serve
 	require.NoError(t, err)
 
 	store := newTestOrgStore(t)
-	_, err = store.CreateBinding(context.Background(), orgdb.Binding{
+	_, err = createAccount(context.Background(), store, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: username, Role: role,
 		ServiceAccountName: orgdb.ServiceAccountNameForRole(role), ServiceAccountNamespace: testNamespace,
 		PasswordHash: &hash,
@@ -64,7 +64,7 @@ func TestHandleLogin_ResolvesRenamedOrganizationName(t *testing.T) {
 	store := newTestOrgStore(t)
 	_, _, err = store.CreateOrganizationWithDefaults(t.Context(), orgdb.Organization{Name: "acme", Namespace: "acme"}, "", "")
 	require.NoError(t, err)
-	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+	_, err = createAccount(t.Context(), store, orgdb.Binding{
 		Namespace: "acme", SubjectType: orgdb.SubjectTypeLocal, Identity: "alice", Role: hyvev1alpha1.RoleAdmin,
 		ServiceAccountName: orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleAdmin), ServiceAccountNamespace: "acme",
 		PasswordHash: &hash,
@@ -139,7 +139,7 @@ func TestHandleLogin_ByEmail(t *testing.T) {
 	require.NoError(t, err)
 	store := newTestOrgStore(t)
 	email := "cedric@example.com"
-	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+	_, err = createAccount(t.Context(), store, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
 		ServiceAccountName: orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleAdmin), ServiceAccountNamespace: testNamespace,
 		PasswordHash: &hash, Email: &email,
@@ -164,7 +164,7 @@ func TestHandleLogin_ByEmail_WrongPassword(t *testing.T) {
 	require.NoError(t, err)
 	store := newTestOrgStore(t)
 	email := "cedric@example.com"
-	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+	_, err = createAccount(t.Context(), store, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
 		ServiceAccountName: orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleAdmin), ServiceAccountNamespace: testNamespace,
 		PasswordHash: &hash, Email: &email,

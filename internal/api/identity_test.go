@@ -19,7 +19,7 @@ func newTestBinding(t *testing.T, store *orgdb.Store, orgName, identity, role st
 	require.NoError(t, err)
 	env, err := store.GetEnvironmentByName(t.Context(), org.ID, orgdb.DefaultEnvironmentName)
 	require.NoError(t, err)
-	_, err = store.CreateBinding(t.Context(), orgdb.Binding{
+	_, err = createAccount(t.Context(), store, orgdb.Binding{
 		Namespace: orgName, OrganizationID: &org.ID, EnvironmentID: &env.ID, SubjectType: orgdb.SubjectTypeLocal,
 		Identity: identity, Role: role, ServiceAccountName: orgdb.ServiceAccountNameForRole(role), ServiceAccountNamespace: orgName,
 	})
@@ -60,7 +60,7 @@ func TestFindBindingBySubject_TypeMustAlsoMatch(t *testing.T) {
 	org, envs := newOrgWithEnvironments(t, store, testNamespace, orgdb.DefaultEnvironmentName)
 	env := envs[orgdb.DefaultEnvironmentName]
 	// Same identity value, different SubjectType — must not match a local lookup.
-	_, err := store.CreateBinding(t.Context(), orgdb.Binding{
+	_, err := createAccount(t.Context(), store, orgdb.Binding{
 		Namespace: testNamespace, OrganizationID: &org.ID, EnvironmentID: &env.ID, SubjectType: orgdb.SubjectTypeOIDC,
 		Identity: "cedric", Role: hyvev1alpha1.RoleAdmin, ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
 	})
@@ -84,7 +84,7 @@ func TestFindBindingBySubject_MultipleEnvironments_HighestRoleWins(t *testing.T)
 	org, envs := newOrgWithEnvironments(t, store, testNamespace, "dev", "staging")
 	for env, role := range map[string]string{"dev": hyvev1alpha1.RoleReadOnly, "staging": hyvev1alpha1.RoleAdmin} {
 		e := envs[env]
-		_, err := store.CreateBinding(t.Context(), orgdb.Binding{
+		_, err := createAccount(t.Context(), store, orgdb.Binding{
 			Namespace: testNamespace, OrganizationID: &org.ID, EnvironmentID: &e.ID, SubjectType: orgdb.SubjectTypeLocal,
 			Identity: "cedric", Role: role, ServiceAccountName: orgdb.ServiceAccountNameForRole(role), ServiceAccountNamespace: testNamespace,
 		})
@@ -117,7 +117,7 @@ func TestFindBindingBySubject_OtherOrganizationIsInvisible(t *testing.T) {
 // own value (which validateOrganizationName already forbids creating).
 func TestFindBindingBySubject_ControlPlaneScope(t *testing.T) {
 	store := newTestOrgStore(t)
-	_, err := store.CreateBinding(t.Context(), orgdb.Binding{
+	_, err := createAccount(t.Context(), store, orgdb.Binding{
 		Namespace: "hyve-control-plane", SubjectType: orgdb.SubjectTypeLocal, Identity: "root", Role: hyvev1alpha1.RoleSuperadmin,
 		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: "hyve-control-plane",
 	})

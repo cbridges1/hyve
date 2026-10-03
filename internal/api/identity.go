@@ -6,15 +6,11 @@ import (
 	"github.com/cbridges1/hyve/internal/orgdb"
 )
 
-// findBindingBySubject looks up (subjectType, identity)'s binding within
+// findBindingBySubject looks up (subjectType, identity)'s membership within
 // namespace — the actual isolation boundary (see orgdb.Binding's own doc
-// comment) — the Server-method replacement for the retired CRD-based
-// package-level FindBindingBySubject(ctx, client.Client, namespace, ...),
-// now with an identical namespace-scoped signature. Used at login time (to
-// find the paired password hash — see Binding.PasswordHash) and by the
-// authz middleware (to resolve a role per-request — see server.go's
-// requireRole), so a role change on a binding takes effect on the very
-// next request, not just the next login, exactly as before.
+// comment). A user's role is per membership, so a role change takes effect
+// on the very next request, not just the next login. Credentials live on
+// the user, not here — see findUserForLogin.
 //
 // A nil s.OrgStore (a Server built before this field existed, including
 // any test not exercising binding lookups at all) fails closed with
@@ -26,12 +22,47 @@ func (s *Server) findBindingBySubject(ctx context.Context, namespace, subjectTyp
 	return s.OrgStore.FindBindingBySubject(ctx, namespace, subjectType, identity)
 }
 
-// findBindingByEmail is findBindingBySubject's email-lookup counterpart —
-// same nil-OrgStore fail-closed behavior, used by handleLogin's
-// email-as-identifier fallback.
-func (s *Server) findBindingByEmail(ctx context.Context, namespace, email string) (orgdb.Binding, error) {
+// findUserForLogin finds the user a login (or password reset) identifier
+// names: a username first, then an email address — both unique across the
+// install. Same nil-OrgStore fail-closed behavior as findBindingBySubject.
+func (s *Server) findUserForLogin(ctx context.Context, identifier string) (orgdb.User, error) {
 	if s.OrgStore == nil {
-		return orgdb.Binding{}, orgdb.ErrNotFound
+		return orgdb.User{}, orgdb.ErrNotFound
 	}
-	return s.OrgStore.FindBindingByEmail(ctx, namespace, email)
+	u, err := s.OrgStore.GetUserByUsername(ctx, identifier)
+	if err == nil {
+		return u, nil
+	}
+	return s.OrgStore.GetUserByEmail(ctx, identifier)
+}
+
+// userEmail returns username's email, nil when they have none (or no user
+// row at all).
+func (s *Server) userEmail(ctx context.Context, username string) *string {
+	if s.OrgStore == nil {
+		return nil
+	}
+	u, err := s.OrgStore.GetUserByUsername(ctx, username)
+	if err != nil {
+		return nil
+	}
+	return u.Email
+}
+
+// memberElsewhere reports whether username belongs to any namespace other
+// than namespace. A user's email and password are shared by all their
+// organizations, so an admin of one organization may only change them for
+// a user who belongs to that organization alone — otherwise they could,
+// say, redirect a password reset for someone else's account.
+func (s *Server) memberElsewhere(ctx context.Context, username, namespace string) (bool, error) {
+	memberships, err := s.OrgStore.ListBindingsForIdentity(ctx, orgdb.SubjectTypeLocal, username)
+	if err != nil {
+		return false, err
+	}
+	for _, b := range memberships {
+		if b.Namespace != namespace {
+			return true, nil
+		}
+	}
+	return false, nil
 }

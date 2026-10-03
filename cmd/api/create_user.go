@@ -132,7 +132,6 @@ func writeBindingToStore(username, role, namespace, serviceAccountName, password
 		Role:                    role,
 		ServiceAccountName:      serviceAccountName,
 		ServiceAccountNamespace: createUserServiceAccountNS,
-		PasswordHash:            &passwordHash,
 	}
 
 	if role != hyvev1alpha1.RoleSuperadmin {
@@ -177,6 +176,12 @@ func writeBindingToStore(username, role, namespace, serviceAccountName, password
 		log.Fatalf("Failed to check existing binding for %q: %v", username, findErr)
 	}
 
+	// The password belongs to the user, shared by every organization
+	// they're a member of — creating the user, or rotating an existing
+	// one's password.
+	if _, _, err := store.EnsureUser(ctx, username, &passwordHash, nil); err != nil {
+		log.Fatalf("Failed to write user %q: %v", username, err)
+	}
 	if _, err := store.CreateBinding(ctx, b); err != nil {
 		log.Fatalf("Failed to write binding for %q: %v", username, err)
 	}

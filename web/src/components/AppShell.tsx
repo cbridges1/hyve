@@ -1,14 +1,11 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { accountsApi } from '../lib/api/accounts'
-import { organizationsApi } from '../lib/api/organizations'
 import { ApiError } from '../lib/api/client'
-import { logout, RoleAdmin, RoleSuperadmin } from '../lib/api/auth'
+import { logout, RoleAdmin, RoleSuperadmin, type Whoami } from '../lib/api/auth'
 import { useActAs } from '../lib/useActAs'
-import { useApi } from '../lib/useApi'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
-import { getOrganizationsVersion, subscribe as subscribeOrganizations } from '../lib/organizationsStore'
 import { Logo } from './Logo'
 import { Modal } from './Modal'
 import { ThemeToggle } from './ThemeToggle'
@@ -63,52 +60,43 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 const groupHeaderClass = 'px-3 pt-4 pb-1 text-[11px] font-semibold tracking-wider text-neutral-400 uppercase dark:text-neutral-600'
 
 // Sits at the very top of the sidebar, the same position a Pangolin-style
-// dashboard gives its org switcher — replaces the old placement directly
-// under the logo now that the logo itself lives in the header instead.
-// Lets a superadmin view/act within a chosen tenant without a separate
-// HyveAccessBinding of their own there — see Server.TenantNamespace's own
-// doc comment for why the header this drives is the actual mechanism.
-// Independent of, and never changes, the real session identity shown in
-// the header's own user menu (that's who's actually logged in; this is
-// which tenant's data every /api/* request currently resolves against).
-function OrganizationSwitcher() {
+// dashboard gives its org switcher. Lists the organizations this login can
+// act in (whoami's organizations — every organization for a superadmin, who
+// also gets "Control plane"); the choice rides on every /api/* request as
+// X-Hyve-Organization (see apiFetch) and is checked server-side against
+// the caller's memberships. Independent of, and never changes, the session
+// identity shown in the header's user menu. A user with exactly one
+// organization gets a plain label instead — there's nothing to pick.
+function OrganizationSwitcher({ who }: { who: Whoami }) {
   const [actAs, setActAs] = useActAs()
-  const orgsVersion = useSyncExternalStore(subscribeOrganizations, getOrganizationsVersion)
-  const { data: organizations } = useApi(() => organizationsApi.list(), [orgsVersion])
+  const superadmin = who.organizations.some((o) => o.role === RoleSuperadmin)
 
-  // Self-heal a stale "Viewing" selection — e.g. localStorage still
-  // pointing at an organization's namespace that's since been deleted
-  // (or, in local dev, an orgdb wiped and recreated from scratch).
-  // Without this, a plain <select> silently falls back to displaying its
-  // first option ("Control plane") whenever its bound value matches no
-  // <option>, while actAs itself stays stuck at the stale namespace
-  // underneath — every /api/* request keeps carrying
-  // X-Hyve-Act-As-Namespace for a namespace that no longer exists (see
-  // apiFetch), and the Organizations link (gated on actAs === null)
-  // silently vanishes with no error explaining why. Confirmed live. Only
-  // acts once organizations
-  // has actually loaded (undefined means "still loading," not "empty" —
-  // an empty real list is `[]`), so a page reload doesn't race a
-  // momentary false positive before the list arrives.
+  // Self-heal a stale selection — e.g. localStorage still pointing at an
+  // organization that's since been deleted, or that this user was removed
+  // from. A plain <select> would silently display its first option while
+  // every request kept carrying the stale header. Confirmed live.
   useEffect(() => {
-    if (actAs !== null && organizations && !organizations.some((org) => org.namespace === actAs)) {
+    if (actAs !== null && !who.organizations.some((org) => org.namespace === actAs)) {
       setActAs(null)
     }
-  }, [actAs, organizations, setActAs])
+  }, [actAs, who.organizations, setActAs])
 
+  if (!superadmin && who.organizations.length <= 1) {
+    return <OrganizationLabel name={who.organization ?? who.namespace} />
+  }
   return (
     <div className="border-b border-neutral-200 px-2.5 pt-3 pb-3 dark:border-neutral-800">
       <label className="mb-1 block px-0.5 text-[11px] font-semibold tracking-wider text-neutral-400 uppercase dark:text-neutral-600">
         Viewing
       </label>
       <select
-        value={actAs ?? ''}
+        value={actAs ?? (superadmin ? '' : who.namespace)}
         onChange={(e) => setActAs(e.target.value || null)}
         className="w-full rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
       >
-        <option value="">Control plane</option>
-        {organizations?.map((org) => (
-          <option key={org.name} value={org.namespace}>
+        {superadmin && <option value="">Control plane</option>}
+        {who.organizations.map((org) => (
+          <option key={org.namespace} value={org.namespace}>
             {org.name}
           </option>
         ))}
@@ -117,17 +105,13 @@ function OrganizationSwitcher() {
   )
 }
 
-// Non-superadmin counterpart to OrganizationSwitcher above — there's nothing
-// to switch (one binding, one namespace), but still gives every role the
-// same permanent "which org am I looking at" orientation the switcher gives
-// a superadmin, addressed at a fixed spot rather than folded into a menu.
-function OrganizationLabel({ namespace }: { namespace: string }) {
+function OrganizationLabel({ name }: { name: string }) {
   return (
     <div className="border-b border-neutral-200 px-2.5 pt-3 pb-3 dark:border-neutral-800">
       <div className="px-0.5 text-[11px] font-semibold tracking-wider text-neutral-400 uppercase dark:text-neutral-600">
         Organization
       </div>
-      <div className="mt-1 truncate px-0.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">{namespace}</div>
+      <div className="mt-1 truncate px-0.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">{name}</div>
     </div>
   )
 }
@@ -138,11 +122,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full w-full flex-col">
-      {who?.role === RoleSuperadmin ? (
-        <OrganizationSwitcher />
-      ) : (
-        who && <OrganizationLabel namespace={who.namespace} />
-      )}
+      {who && <OrganizationSwitcher who={who} />}
       <nav className="flex-1 space-y-3 overflow-y-auto px-2.5 pb-3">
         {navGroups.map((group) => (
           <div key={group.label}>
@@ -320,7 +300,8 @@ function ChangePasswordForm({ username, onClose }: { username: string; onClose: 
 // sit pinned to the sidebar's own footer (username/role/sign out) — moved
 // into the header, the same place a Pangolin-style dashboard puts its own
 // account menu, so the sidebar stays pure navigation.
-function UserMenu({ who }: { who: { username: string; role: string; namespace: string } }) {
+function UserMenu({ who }: { who: { username: string; role: string; namespace: string; organization?: string } }) {
+  const [actAs] = useActAs()
   const [open, setOpen] = useState(false)
   const [changingPassword, setChangingPassword] = useState(false)
 
@@ -363,7 +344,7 @@ function UserMenu({ who }: { who: { username: string; role: string; namespace: s
                 recognize as "their org" — label it distinctly rather than
                 implying they're scoped to one tenant among many. */}
             <span className="mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-500">
-              {who.role === RoleSuperadmin ? 'Control plane' : who.namespace}
+              {who.role === RoleSuperadmin && actAs === null ? 'Control plane' : (who.organization ?? who.namespace)}
             </span>
             {/* md+ already has this in the header itself (Header component)
                 — shown here only below md, where it's been relocated to

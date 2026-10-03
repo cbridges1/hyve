@@ -1,11 +1,15 @@
 import { apiDelete, apiFetch } from './client'
 
 export type Account = { username: string; role: string; email?: string }
-export type CreateAccountRequest = { username: string; password: string; role: string; email: string }
+// password/email: required for a new user, omitted to add an existing one
+// (a member of another organization), who keeps their own.
+export type CreateAccountRequest = { username: string; role: string; password?: string; email?: string }
 // emailSent: whether the new user's account-created email actually went out
 // (false when SMTP isn't configured or the send failed — the account exists
 // either way).
-export type CreatedAccount = Account & { emailSent: boolean }
+// existingUser: the username already had a login, so this only added them
+// here (and sent no email).
+export type CreatedAccount = Account & { emailSent: boolean; existingUser: boolean }
 export type UpdateAccountPasswordRequest = { currentPassword?: string; newPassword: string }
 
 // Role/email are undefined ("leave unchanged") vs "" (role: invalid, not

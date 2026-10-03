@@ -22,8 +22,6 @@ import (
 	"github.com/cbridges1/hyve/internal/repository"
 )
 
-var orgFlag string
-
 // Cmd is the environment command.
 var Cmd = &cobra.Command{
 	Use:     "environment",
@@ -106,9 +104,6 @@ var currentCmd = &cobra.Command{
 }
 
 func init() {
-	for _, c := range []*cobra.Command{listCmd, createCmd, deleteCmd, useCmd} {
-		c.Flags().StringVar(&orgFlag, "org", "", "Organization to act on (default: your own; superadmin only for any other)")
-	}
 	Cmd.AddCommand(listCmd, createCmd, deleteCmd, useCmd, unsetCmd, currentCmd)
 }
 
@@ -118,7 +113,7 @@ func clientAndOrg() (*shared.APIClient, string) {
 		log.Fatal("This command requires cluster mode — run 'hyve context login' against a hyve-api server first.")
 	}
 	c := shared.NewAPIClient(sess)
-	org, err := c.CurrentOrganization(orgFlag)
+	org, err := c.CurrentOrganization("")
 	if err != nil {
 		log.Fatalf("Failed to resolve organization: %v", err)
 	}

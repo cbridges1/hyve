@@ -55,12 +55,13 @@ helm install hyve oci://ghcr.io/cbridges1/charts/hyve --version <version> \
   --set api.bootstrapAdmin.username=admin \
   --set api.bootstrapAdmin.passwordSecret.name=hyve-admin   # Secret with a "password" key
 
-hyve context login --api-url https://hyve.example.com              # superadmin (control plane)
-hyve context login --api-url https://hyve.example.com --org acme   # a user in organization "acme"
-hyve context whoami
+hyve context login --api-url https://hyve.example.com   # username or email + password
+hyve organization list                                 # the organizations you can access
+hyve organization use acme                             # act in acme from now on
+hyve cluster list --org widget                         # or pick one for a single command
 ```
 
-Login prompts for username and password; pass `--username` to skip the first prompt.
+One login reaches every organization you're a member of; you never name one to log in. With nothing selected, the server picks your only organization (or the control plane, for a superadmin). In the console, the same choice is the "Viewing" picker.
 
 - The chart creates a `hyve-api` ClusterIP Service and no Ingress. Expose it with TLS your own way.
 - `api.db.*` picks SQLite (default, one replica) or Postgres (required for scaling or reconciling clusters). `api.smtp.*` seeds outbound email. See `deploy/helm/hyve/values.yaml`.
@@ -70,7 +71,7 @@ Login prompts for username and password; pass `--username` to skip the first pro
 
 **Environments** (`hyve environment create/use`) are named scopes within an organization, such as `default` or `staging`. Override one per command with `--env`.
 
-**Multi-tenancy:** one install serves many `Organization`s (`hyve organization create`). Each can run on its own **reconciling cluster** (`hyve reconciling-cluster add/use`). Enable `api.requireReconcilingCluster` to keep tenants off the home cluster. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Multi-tenancy:** one install serves many `Organization`s (`hyve organization create`). A user is one account with a membership (and role) in each organization they belong to; add an existing user to another organization from the console's Users page. Each organization can run on its own **reconciling cluster** (`hyve reconciling-cluster add/use`). Enable `api.requireReconcilingCluster` to keep tenants off the home cluster. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 To move local state into a cluster, run `hyve migrate <dir> --write`. Leaving off `--write` gives a dry run.
 

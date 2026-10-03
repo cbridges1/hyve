@@ -55,6 +55,7 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&shared.HomeFlagValue, "home", "", "Hyve home directory (default: ~/.hyve). Also read from HYVE_HOME env var.")
+	rootCmd.PersistentFlags().StringVar(&shared.ServerOrgFlagValue, "org", "", "Organization to act in for this command, overriding 'hyve organization use' (cluster mode only)")
 	rootCmd.PersistentFlags().StringVar(&shared.ServerEnvFlagValue, "env", "", "hyve-api environment to target for this command, overriding 'hyve environment use' (cluster mode only)")
 
 	// Verbs that do something, first (apply/migrate self-register via

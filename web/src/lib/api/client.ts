@@ -2,14 +2,14 @@ import { getActAsNamespace } from '../actAsStore'
 import { ensureValidAccessToken, setSession } from '../authStore'
 
 // Read directly from the store (not the useActAs hook — this file has no
-// component to re-render) so every request picks up the superadmin's
-// currently-selected environment without threading it through every call
-// site. Ignored server-side for anyone but a superadmin (see
-// Server.TenantNamespace) — sending it is harmless for an ordinary admin,
-// just inert.
+// component to re-render) so every request acts in the organization picked
+// in "Viewing" without threading it through every call site. The server
+// checks it against the caller's memberships (any organization, for a
+// superadmin — see internal/api's resolveAccess); nothing selected lets it
+// pick.
 function actAsHeaders(): Record<string, string> {
   const ns = getActAsNamespace()
-  return ns ? { 'X-Hyve-Act-As-Namespace': ns } : {}
+  return ns ? { 'X-Hyve-Organization': ns } : {}
 }
 
 export class ApiError extends Error {

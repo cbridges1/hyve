@@ -3,6 +3,7 @@ package contextcmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -58,6 +59,13 @@ func runWhoami() {
 	fmt.Printf("✅ Logged in as %s (role: %s) against %s\n", who.Username, who.Role, sess.APIURL)
 	if who.Organization != "" {
 		fmt.Printf("   Organization: %s\n", who.Organization)
+	}
+	if len(who.Organizations) > 1 {
+		names := make([]string, len(who.Organizations))
+		for i, o := range who.Organizations {
+			names[i] = o.Name
+		}
+		fmt.Printf("   Can access: %s ('hyve organization use <name>' to switch)\n", strings.Join(names, ", "))
 	}
 	if client.Env != "" {
 		fmt.Printf("   Environment: %s\n", client.Env)

@@ -44,6 +44,11 @@ func SeedBootstrapAdmin(ctx context.Context, store *orgdb.Store, namespace, user
 	if err != nil {
 		return false, fmt.Errorf("hash bootstrap admin password: %w", err)
 	}
+	// A user of that name may already exist (a member of some
+	// organization); they become the superadmin with this password.
+	if _, _, err := store.EnsureUser(ctx, username, &hash, nil); err != nil {
+		return false, fmt.Errorf("create bootstrap admin user: %w", err)
+	}
 	if _, err := store.CreateBinding(ctx, orgdb.Binding{
 		Namespace:               namespace,
 		SubjectType:             orgdb.SubjectTypeLocal,
@@ -51,7 +56,6 @@ func SeedBootstrapAdmin(ctx context.Context, store *orgdb.Store, namespace, user
 		Role:                    hyvev1alpha1.RoleSuperadmin,
 		ServiceAccountName:      orgdb.ServiceAccountNameForRole(hyvev1alpha1.RoleSuperadmin),
 		ServiceAccountNamespace: namespace,
-		PasswordHash:            &hash,
 	}); err != nil {
 		return false, fmt.Errorf("create bootstrap admin: %w", err)
 	}

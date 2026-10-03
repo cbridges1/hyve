@@ -166,6 +166,14 @@ func runAPI() {
 		log.Printf("⚠️  Failed to seed email settings from --smtp-* flags: %v — configure SMTP through the console instead", seedErr)
 	}
 
+	// Per-organization accounts (credentials on each binding) become one
+	// user per username, once — see orgdb.Store.EnsureUsersFromBindings.
+	if n, err := orgStore.EnsureUsersFromBindings(context.Background()); err != nil {
+		log.Fatalf("❌ Failed to create users from existing accounts: %v", err)
+	} else if n > 0 {
+		log.Printf("ℹ️  Created %d user(s) from existing per-organization accounts", n)
+	}
+
 	// Unlike SMTP above, a bootstrap admin that should exist but can't be
 	// created is fatal: on a fresh install it's the only way in. Reading the
 	// file is soft — once a superadmin exists, SeedBootstrapAdmin never needs

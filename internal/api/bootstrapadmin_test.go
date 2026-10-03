@@ -27,8 +27,8 @@ func TestSeedBootstrapAdmin(t *testing.T) {
 	b, err := store.FindBindingBySubject(ctx, testNamespace, orgdb.SubjectTypeLocal, "admin")
 	require.NoError(t, err)
 	assert.Equal(t, hyvev1alpha1.RoleSuperadmin, b.Role)
-	require.NotNil(t, b.PasswordHash)
-	assert.True(t, VerifyPassword(*b.PasswordHash, "first-pw"))
+	require.NotNil(t, passwordHashOf(t, store, b.Identity))
+	assert.True(t, VerifyPassword(*passwordHashOf(t, store, b.Identity), "first-pw"))
 
 	// A restart with different values never touches the existing superadmin.
 	created, err = SeedBootstrapAdmin(ctx, store, testNamespace, "someone-else", "second-pw")
@@ -36,7 +36,7 @@ func TestSeedBootstrapAdmin(t *testing.T) {
 	assert.False(t, created)
 	b, err = store.FindBindingBySubject(ctx, testNamespace, orgdb.SubjectTypeLocal, "admin")
 	require.NoError(t, err)
-	assert.True(t, VerifyPassword(*b.PasswordHash, "first-pw"), "password must not be reset on restart")
+	assert.True(t, VerifyPassword(*passwordHashOf(t, store, b.Identity), "first-pw"), "password must not be reset on restart")
 	_, err = store.FindBindingBySubject(ctx, testNamespace, orgdb.SubjectTypeLocal, "someone-else")
 	assert.ErrorIs(t, err, orgdb.ErrNotFound)
 

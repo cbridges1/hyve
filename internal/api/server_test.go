@@ -91,7 +91,7 @@ func TestRequireRole_UnboundIdentity_401(t *testing.T) {
 
 func TestRequireRole_BoundIdentity_PassesRoleToContext(t *testing.T) {
 	store := newTestOrgStore(t)
-	_, err := store.CreateBinding(context.Background(), orgdb.Binding{
+	_, err := createAccount(context.Background(), store, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "cedric", Role: hyvev1alpha1.RoleAdmin,
 		ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: testNamespace,
 	})
@@ -158,31 +158,71 @@ func TestRequireRole_DistinguishesAdminFromReadOnly(t *testing.T) {
 	}
 }
 
-func TestTenantNamespace_SuperadminActAsHeader_Honored(t *testing.T) {
-	s := &Server{Namespace: testNamespace}
-	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
-	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin))
-	req.Header.Set(actAsNamespaceHeader, "acme")
+// TestResolveAccess covers how requireRole picks the organization a
+// request acts in: from the caller's memberships, a selection header, or
+// a superadmin's reach into any organization.
+func TestResolveAccess(t *testing.T) {
+	s := newTestServer(t)
+	ctx := t.Context()
+	_, err := s.OrgStore.CreateOrganization(ctx, orgdb.Organization{Name: "acme-co", Namespace: "acme"}) // renamed
+	require.NoError(t, err)
+	member := func(ns, identity, role string) {
+		_, err := createAccount(ctx, s.OrgStore, orgdb.Binding{
+			Namespace: ns, SubjectType: orgdb.SubjectTypeLocal, Identity: identity, Role: role,
+			ServiceAccountName: orgdb.ServiceAccountNameForRole(role), ServiceAccountNamespace: ns,
+		})
+		require.NoError(t, err)
+	}
+	member(testNamespace, "root", hyvev1alpha1.RoleSuperadmin)
+	member("acme", "alice", hyvev1alpha1.RoleAdmin)
+	member("widget", "alice", hyvev1alpha1.RoleReadOnly)
+	member("widget", "bob", hyvev1alpha1.RoleAdmin)
+	member("widget", "root", hyvev1alpha1.RoleReadOnly) // a superadmin's own membership never lowers them
 
-	require.Equal(t, "acme", s.TenantNamespace(req))
+	for _, tc := range []struct {
+		name, user, header, value string
+		wantNS, wantRole          string
+		wantStatus                int
+	}{
+		{name: "member of several, nothing selected: first by namespace", user: "alice", wantNS: "acme", wantRole: hyvev1alpha1.RoleAdmin},
+		{name: "selected by organization name", user: "alice", header: organizationHeader, value: "acme-co", wantNS: "acme", wantRole: hyvev1alpha1.RoleAdmin},
+		{name: "selected by namespace", user: "alice", header: organizationHeader, value: "widget", wantNS: "widget", wantRole: hyvev1alpha1.RoleReadOnly},
+		{name: "not a member", user: "bob", header: organizationHeader, value: "acme-co", wantStatus: http.StatusForbidden},
+		{name: "only organization", user: "bob", wantNS: "widget", wantRole: hyvev1alpha1.RoleAdmin},
+		{name: "legacy act-as is superadmin-only", user: "bob", header: actAsNamespaceHeader, value: "acme", wantNS: "widget", wantRole: hyvev1alpha1.RoleAdmin},
+		{name: "superadmin defaults to the control plane", user: "root", wantNS: testNamespace, wantRole: hyvev1alpha1.RoleSuperadmin},
+		{name: "superadmin reaches any organization", user: "root", header: organizationHeader, value: "acme-co", wantNS: "acme", wantRole: hyvev1alpha1.RoleSuperadmin},
+		{name: "superadmin legacy act-as", user: "root", header: actAsNamespaceHeader, value: "widget", wantNS: "widget", wantRole: hyvev1alpha1.RoleSuperadmin},
+		{name: "no memberships at all", user: "ghost", wantStatus: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
+			if tc.header != "" {
+				req.Header.Set(tc.header, tc.value)
+			}
+			ns, role, status, _ := s.resolveAccess(req, tc.user)
+			assert.Equal(t, tc.wantStatus, status)
+			assert.Equal(t, tc.wantNS, ns)
+			assert.Equal(t, tc.wantRole, role)
+		})
+	}
+
+	t.Run("a pre-redesign session's own namespace still selects it", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
+		req = req.WithContext(contextWithNamespace(req.Context(), "widget"))
+		ns, role, status, _ := s.resolveAccess(req, "alice")
+		assert.Zero(t, status)
+		assert.Equal(t, "widget", ns)
+		assert.Equal(t, hyvev1alpha1.RoleReadOnly, role)
+	})
 }
 
-func TestTenantNamespace_SuperadminNoHeader_FallsBackToControlPlane(t *testing.T) {
+func TestTenantNamespace_FallsBackToControlPlane(t *testing.T) {
 	s := &Server{Namespace: testNamespace}
 	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
-	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleSuperadmin))
-
 	require.Equal(t, testNamespace, s.TenantNamespace(req))
-}
-
-func TestTenantNamespace_OrdinaryAdminActAsHeader_NeverHonored(t *testing.T) {
-	s := &Server{Namespace: testNamespace}
-	req := httptest.NewRequest(http.MethodGet, "/api/clusters", nil)
-	req = req.WithContext(contextWithRole(req.Context(), hyvev1alpha1.RoleAdmin))
-	req = req.WithContext(contextWithNamespace(req.Context(), "own-tenant"))
-	req.Header.Set(actAsNamespaceHeader, "acme")
-
-	require.Equal(t, "own-tenant", s.TenantNamespace(req), "an ordinary admin's own session namespace must win, never the header")
+	req = req.WithContext(contextWithNamespace(req.Context(), "acme"))
+	require.Equal(t, "acme", s.TenantNamespace(req))
 }
 
 func TestEmitClusterEvent_NilClientset_NoOp(t *testing.T) {

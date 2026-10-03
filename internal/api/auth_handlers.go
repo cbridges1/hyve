@@ -33,18 +33,11 @@ type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 
-	// Namespace is which tenant to log into — empty means the install's
-	// own control-plane namespace (s.Namespace), the superadmin tier's
-	// home. The CLI's --org flag passes this straight through unresolved
-	// (see cmd/shared.ResolveOrgToNamespace's own doc comment) — despite
-	// the field's name, a non-empty value here is resolved server-side
-	// (see resolveLoginNamespace) as an organization's current Name first,
-	// falling back to treating it as a literal Kubernetes namespace only
-	// when no organization is registered under that name. That fallback is
-	// what keeps this working unchanged for every organization that's
-	// never been renamed (Name and Namespace start out equal at creation
-	// and this is the only path that can make them diverge), and for
-	// installs with no Organization rows registered at all.
+	// Namespace optionally pre-selects an organization for the session
+	// (by name, or namespace — see resolveLoginNamespace) — never needed:
+	// a login reaches every organization its user belongs to, and each
+	// request can pick one (organizationHeader). Kept for older CLIs'
+	// --org; it must name an organization the user can access.
 	Namespace string `json:"namespace,omitempty"`
 }
 
@@ -64,9 +57,10 @@ type loginResponse struct {
 	SessionExpiresAt     string `json:"sessionExpiresAt"`
 }
 
-// handleLogin authenticates a local (username/password) identity, creates
-// a Session row recording the login, and issues both halves of
-// loginResponse. OIDC login (a browser redirect flow) is not implemented —
+// handleLogin authenticates a local user (username or email, and
+// password), creates a Session row recording the login, and issues both
+// halves of loginResponse. The session isn't tied to an organization — see
+// resolveAccess. OIDC login (a browser redirect flow) is not implemented —
 // see orgdb.SubjectTypeOIDC's doc comment, reserved for later — local auth
 // is the only login path today.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -80,58 +74,28 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolvedNamespace := req.Namespace
-	if resolvedNamespace != "" {
-		resolvedNamespace = s.resolveLoginNamespace(r.Context(), resolvedNamespace)
-	}
-	ns := resolvedNamespace
-	if ns == "" {
-		ns = s.Namespace
-	}
-
-	// Username first (the common case, and unambiguous — see
-	// bindings_namespace_env_identity), falling back to Email (unique
-	// per-namespace — see bindings_namespace_email) only when that fails.
-	// Either way the actual identity (binding.Identity) is what carries
-	// forward into the session below, never the raw value the caller
-	// typed — see issueSession's own call site for why that matters.
-	binding, err := s.findBindingBySubject(r.Context(), ns, orgdb.SubjectTypeLocal, req.Username)
-	if err != nil {
-		binding, err = s.findBindingByEmail(r.Context(), ns, req.Username)
-	}
-	if err != nil {
-		// Deliberately the same error as a wrong password below — a login
-		// endpoint shouldn't reveal which usernames/emails exist.
+	// A username or an email (both unique across the install). Every
+	// failure below gets the same response as a wrong password — a login
+	// endpoint shouldn't reveal which usernames/emails exist.
+	user, err := s.findUserForLogin(r.Context(), req.Username)
+	if err != nil || user.PasswordHash == nil || !VerifyPassword(*user.PasswordHash, req.Password) {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	if binding.SubjectType != orgdb.SubjectTypeLocal {
+	memberships, err := s.OrgStore.ListBindingsForIdentity(r.Context(), orgdb.SubjectTypeLocal, user.Username)
+	if err != nil || len(memberships) == 0 {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
 
-	// PasswordHash lives on the binding row itself (Milestone 10 Part C) —
-	// nil here means either a pre-Part-C binding that was never migrated,
-	// or (in principle) an OIDC binding, though findBindingBySubject above
-	// already filtered to SubjectTypeLocal, so only the former is actually
-	// reachable — either way, "no password set" and "wrong password" get
-	// the identical response, same reasoning as the unknown-username case
-	// above.
-	if binding.PasswordHash == nil || !VerifyPassword(*binding.PasswordHash, req.Password) {
-		writeError(w, http.StatusUnauthorized, "invalid username or password")
-		return
+	// The real (immutable) namespace, never an organization's renamable
+	// Name, so a later rename can't point an issued session elsewhere.
+	// Empty — the normal case — selects nothing; see resolveAccess.
+	resolvedNamespace := ""
+	if req.Namespace != "" {
+		resolvedNamespace = s.resolveLoginNamespace(r.Context(), req.Namespace)
 	}
-
-	// resolvedNamespace (possibly empty), not raw req.Namespace — the
-	// session/access-token namespace must always be the real, immutable
-	// Kubernetes namespace this binding actually resolved against, never
-	// an organization's current (renamable) display Name, or a later
-	// rename would silently point an already-issued session at the wrong
-	// place. Empty stays empty rather than baking in today's s.Namespace
-	// value — issueSession re-derives "empty means control-plane
-	// namespace" itself on every use, so this stays correct even if
-	// s.Namespace itself is ever reconfigured.
-	resp, err := s.issueSession(r.Context(), binding.Identity, resolvedNamespace)
+	resp, err := s.issueSession(r.Context(), user.Username, resolvedNamespace)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -344,13 +308,11 @@ func randomEnumerationDelay(ctx context.Context) {
 }
 
 type requestPasswordResetRequest struct {
-	// Identifier accepts either a binding's Identity (username) or its
-	// Email, same dual lookup handleLogin already established.
+	// Identifier accepts either a username or an email, same dual lookup
+	// handleLogin uses.
 	Identifier string `json:"identifier"`
-	// Namespace selects which tenant to look the identifier up in — same
-	// field, same resolution (resolveLoginNamespace), same "despite the
-	// name" caveat as loginRequest.Namespace. Empty means the
-	// control-plane namespace.
+	// Namespace is ignored — users aren't per-organization any more. Kept
+	// so older consoles' requests still decode.
 	Namespace string `json:"namespace,omitempty"`
 }
 
@@ -380,25 +342,11 @@ func (s *Server) handleRequestPasswordReset(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := r.Context()
-	resolvedNamespace := req.Namespace
-	if resolvedNamespace != "" {
-		resolvedNamespace = s.resolveLoginNamespace(ctx, resolvedNamespace)
-	}
-	ns := resolvedNamespace
-	if ns == "" {
-		ns = s.Namespace
-	}
-
-	binding, err := s.findBindingBySubject(ctx, ns, orgdb.SubjectTypeLocal, req.Identifier)
-	if err != nil {
-		binding, err = s.findBindingByEmail(ctx, ns, req.Identifier)
-	}
-	// No match, wrong subject type, or no email on file to send to —
-	// every one of these gets the identical generic response. A binding
-	// with no email isn't an error state (every account created before
-	// this feature shipped has none), just nothing this endpoint can act
-	// on.
-	if err != nil || binding.SubjectType != orgdb.SubjectTypeLocal || binding.Email == nil {
+	user, err := s.findUserForLogin(ctx, req.Identifier)
+	// No match, or no email on file to send to — both get the identical
+	// generic response. A user with no email isn't an error state, just
+	// nothing this endpoint can act on.
+	if err != nil || user.Email == nil {
 		randomEnumerationDelay(ctx)
 		writeJSON(w, http.StatusOK, requestPasswordResetResponse{Sent: true})
 		return
@@ -417,18 +365,18 @@ func (s *Server) handleRequestPasswordReset(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if _, err := s.OrgStore.CreatePasswordResetToken(ctx, orgdb.PasswordResetToken{
-		BindingID: binding.ID,
+		UserID:    user.ID,
 		TokenHash: tokenHash,
 		ExpiresAt: time.Now().Add(passwordResetTokenTTL),
 	}); err != nil {
-		log.Printf("api: failed to store password reset token for %q: %v", binding.Identity, err)
+		log.Printf("api: failed to store password reset token for %q: %v", user.Username, err)
 		writeError(w, http.StatusInternalServerError, "failed to process password reset request")
 		return
 	}
 
-	link := s.buildPasswordResetLink(*binding.Email, token, resolvedNamespace)
-	sendErr := email.Send(ctx, s.OrgStore, *binding.Email, email.TemplatePasswordResetCode, email.PasswordResetCodeData{
-		Username: binding.Identity,
+	link := s.buildPasswordResetLink(*user.Email, token)
+	sendErr := email.Send(ctx, s.OrgStore, *user.Email, email.TemplatePasswordResetCode, email.PasswordResetCodeData{
+		Username: user.Username,
 		Code:     token,
 		Link:     link,
 	})
@@ -441,9 +389,9 @@ func (s *Server) handleRequestPasswordReset(w http.ResponseWriter, r *http.Reque
 		// case is expected to be common for hyve specifically (a
 		// single-superadmin self-hosted install is the normal starting
 		// point, not the exception), not a degraded/error state.
-		log.Printf("ℹ️  password reset requested for %q (namespace %q) — no SMTP configured, token: %s", binding.Identity, ns, token)
+		log.Printf("ℹ️  password reset requested for %q — no SMTP configured, token: %s", user.Username, token)
 	} else if sendErr != nil {
-		log.Printf("api: failed to send password reset email to %q: %v", *binding.Email, sendErr)
+		log.Printf("api: failed to send password reset email to %q: %v", *user.Email, sendErr)
 	}
 
 	writeJSON(w, http.StatusOK, requestPasswordResetResponse{Sent: true})
@@ -452,32 +400,19 @@ func (s *Server) handleRequestPasswordReset(w http.ResponseWriter, r *http.Reque
 // buildPasswordResetLink builds the URL a password-reset email's button
 // points at — the web console is served from the same origin as this API
 // (see Routes' own doc comment), so PublicBaseURL + the console's own
-// hash-router path is a real, clickable link. namespace is carried
-// through as a query parameter and round-tripped back by
-// handleResetPassword — bindings.email is only unique *within* a
-// namespace (see migrations/*/0003_binding_email.sql), so the same email
-// address could in principle belong to a different account in a
-// different tenant; carrying the exact namespace this token was actually
-// minted for avoids re-deriving (and potentially mismatching) it from
-// email alone at consume time. email/token/namespace are query
-// parameters, not path segments, so url.QueryEscape (not raw
-// concatenation) is what keeps a "+"-containing email address or similar
-// from corrupting the URL.
-func (s *Server) buildPasswordResetLink(email, token, namespace string) string {
+// hash-router path is a real, clickable link. Query parameters, escaped,
+// so a "+"-containing email address can't corrupt the URL.
+func (s *Server) buildPasswordResetLink(email, token string) string {
 	base := strings.TrimRight(s.PublicBaseURL, "/")
-	return base + "/#/reset-password?email=" + url.QueryEscape(email) + "&token=" + url.QueryEscape(token) + "&namespace=" + url.QueryEscape(namespace)
+	return base + "/#/reset-password?email=" + url.QueryEscape(email) + "&token=" + url.QueryEscape(token)
 }
 
 type resetPasswordRequest struct {
 	Email       string `json:"email"`
 	Token       string `json:"token"`
 	NewPassword string `json:"newPassword"`
-	// Namespace is the exact (already-resolved) namespace
-	// handleRequestPasswordReset minted this token against — round-
-	// tripped from buildPasswordResetLink's own query parameter, not
-	// re-resolved from Email (see that function's own doc comment for
-	// why). Empty means the control-plane namespace, same convention as
-	// loginRequest.Namespace/requestPasswordResetRequest.Namespace.
+	// Namespace is ignored — emails are unique across the install now.
+	// Kept so older reset links still decode.
 	Namespace string `json:"namespace,omitempty"`
 }
 
@@ -505,17 +440,13 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	ns := req.Namespace
-	if ns == "" {
-		ns = s.Namespace
-	}
-	binding, err := s.findBindingByEmail(ctx, ns, req.Email)
+	user, err := s.OrgStore.GetUserByEmail(ctx, req.Email)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid or expired reset token")
 		return
 	}
 
-	token, err := s.OrgStore.GetPasswordResetTokenByBindingID(ctx, binding.ID)
+	token, err := s.OrgStore.GetPasswordResetTokenByUserID(ctx, user.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid or expired reset token")
 		return
@@ -531,30 +462,30 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := HashPassword(req.NewPassword)
 	if err != nil {
-		log.Printf("api: failed to hash new password for %q: %v", binding.Identity, err)
+		log.Printf("api: failed to hash new password for %q: %v", user.Username, err)
 		writeError(w, http.StatusInternalServerError, "failed to reset password")
 		return
 	}
-	if err := s.OrgStore.SetBindingPassword(ctx, binding.ID, hash); err != nil {
-		log.Printf("api: failed to set new password for %q: %v", binding.Identity, err)
+	if err := s.OrgStore.SetUserPassword(ctx, user.ID, hash); err != nil {
+		log.Printf("api: failed to set new password for %q: %v", user.Username, err)
 		writeError(w, http.StatusInternalServerError, "failed to reset password")
 		return
 	}
 	// Single-use: the token is consumed the moment it's successfully
 	// applied, whether or not everything below it (session revocation,
 	// the notification email) also succeeds.
-	if err := s.OrgStore.DeletePasswordResetTokensForBinding(ctx, binding.ID); err != nil {
-		log.Printf("api: failed to delete used password reset token for %q: %v", binding.Identity, err)
+	if err := s.OrgStore.DeletePasswordResetTokensForUser(ctx, user.ID); err != nil {
+		log.Printf("api: failed to delete used password reset token for %q: %v", user.Username, err)
 	}
-	// Kill every other still-active session — same security posture as
-	// Pangolin's own resetPassword.ts (invalidateAllSessions). Logged,
-	// not fatal to the request: the password itself already changed
-	// successfully, which is what the caller actually asked for.
-	if err := s.OrgStore.DeleteSessionsBySubject(ctx, binding.Identity, binding.Namespace); err != nil {
-		log.Printf("api: failed to revoke sessions for %q after password reset: %v", binding.Identity, err)
+	// Kill every other still-active session, in every organization — same
+	// security posture as Pangolin's own resetPassword.ts
+	// (invalidateAllSessions). Logged, not fatal: the password itself
+	// already changed, which is what the caller actually asked for.
+	if err := s.OrgStore.DeleteSessionsBySubject(ctx, user.Username); err != nil {
+		log.Printf("api: failed to revoke sessions for %q after password reset: %v", user.Username, err)
 	}
 
-	if sendErr := email.Send(ctx, s.OrgStore, req.Email, email.TemplatePasswordChanged, email.PasswordChangedData{Username: binding.Identity}); sendErr != nil && !errors.Is(sendErr, email.ErrNotConfigured) {
+	if sendErr := email.Send(ctx, s.OrgStore, req.Email, email.TemplatePasswordChanged, email.PasswordChangedData{Username: user.Username}); sendErr != nil && !errors.Is(sendErr, email.ErrNotConfigured) {
 		log.Printf("api: failed to send password-changed notification to %q: %v", req.Email, sendErr)
 	}
 
