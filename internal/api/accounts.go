@@ -19,11 +19,15 @@ import (
 // response — see HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 5 for why
 // every one of these call sites takes this same stance. ErrNotConfigured
 // (no SMTP set up) isn't even worth logging — it's the expected, common
-// state for a fresh self-hosted install, not a failure.
-func sendAccountNotification(s *Server, r *http.Request, to string, tmpl email.Template, data any) {
-	if err := email.Send(r.Context(), s.OrgStore, to, tmpl, data); err != nil && !errors.Is(err, email.ErrNotConfigured) {
+// state for a fresh self-hosted install, not a failure. Reports whether
+// the message actually went out, for a caller that surfaces that (account
+// creation's emailSent); the others ignore it.
+func sendAccountNotification(s *Server, r *http.Request, to string, tmpl email.Template, data any) bool {
+	err := email.Send(r.Context(), s.OrgStore, to, tmpl, data)
+	if err != nil && !errors.Is(err, email.ErrNotConfigured) {
 		log.Printf("api: failed to send %q notification to %q: %v", tmpl, to, err)
 	}
+	return err == nil
 }
 
 // accountDTO is the response shape for GET /api/accounts — deliberately
@@ -144,8 +148,10 @@ type createAccountRequest struct {
 	Password string `json:"password"`
 	Role     string `json:"role"`
 
-	// Email is optional at creation, same as it is on PATCH — see
-	// validateAndCheckEmail and orgdb.Binding.Email's own doc comment.
+	// Email is required at creation — the new user is told about their
+	// account there (TemplateAccountCreated). PATCH can still clear it
+	// later; see validateAndCheckEmail and orgdb.Binding.Email's own doc
+	// comment.
 	Email string `json:"email,omitempty"`
 
 	// Namespace lets a superadmin caller target a tenant namespace other
@@ -186,6 +192,10 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Username == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "username and password are required")
+		return
+	}
+	if strings.TrimSpace(req.Email) == "" {
+		writeError(w, http.StatusBadRequest, "email is required")
 		return
 	}
 
@@ -292,14 +302,21 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if binding.Email != nil {
-		sendAccountNotification(s, r, *binding.Email, email.TemplateAccountCreated, email.AccountCreatedData{
-			Username: binding.Identity,
-			Role:     binding.Role,
-		})
-	}
+	sent := sendAccountNotification(s, r, *binding.Email, email.TemplateAccountCreated, email.AccountCreatedData{
+		Username: binding.Identity,
+		Role:     binding.Role,
+	})
 
-	writeJSON(w, http.StatusCreated, toAccountDTO(binding))
+	writeJSON(w, http.StatusCreated, createAccountResponse{accountDTO: toAccountDTO(binding), EmailSent: sent})
+}
+
+// createAccountResponse is accountDTO plus whether the account-created
+// email actually went out — false when SMTP isn't configured or the send
+// failed (the account exists either way; see sendAccountNotification), so
+// the console can tell the admin the new user wasn't notified.
+type createAccountResponse struct {
+	accountDTO
+	EmailSent bool `json:"emailSent"`
 }
 
 // updateAccountRequest's Role/Email are both nil-means-"leave unchanged" —

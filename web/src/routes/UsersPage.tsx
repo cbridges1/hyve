@@ -2,14 +2,14 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { roleLabel, RoleAdmin, RoleReadOnly, RoleSuperadmin } from '../lib/api/auth'
 import { Modal } from '../components/Modal'
-import { accountsApi } from '../lib/api/accounts'
+import { accountsApi, type CreatedAccount } from '../lib/api/accounts'
 import { ApiError } from '../lib/api/client'
 import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
 
-function NewUserForm({ onCreated }: { onCreated: () => void }) {
+function NewUserForm({ onCreated }: { onCreated: (account: CreatedAccount) => void }) {
   const who = useWhoami().data
   const [open, setOpen] = useState(false)
   const [username, setUsername] = useState('')
@@ -35,13 +35,13 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
     setError(null)
     setSubmitting(true)
     try {
-      await accountsApi.create({ username, password, role, email: email || undefined })
+      const created = await accountsApi.create({ username, password, role, email: email.trim() })
       setOpen(false)
       setUsername('')
       setEmail('')
       setPassword('')
       setRole(RoleReadOnly)
-      onCreated()
+      onCreated(created)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to create user')
     } finally {
@@ -62,7 +62,7 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
           />
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Email (optional)</span>
+          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Email</span>
           <input
             type="email"
             value={email}
@@ -100,6 +100,9 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
           tenant of their own.
         </p>
       )}
+      <p className="mb-3 text-xs text-neutral-500">
+        They'll get an email saying their account was created. Send them the password separately.
+      </p>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex justify-end gap-2">
         <button
@@ -111,7 +114,7 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
         </button>
         <button
           type="button"
-          disabled={!username || !password || submitting}
+          disabled={!username || !email.trim() || !password || submitting}
           onClick={submit}
           className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
@@ -130,6 +133,12 @@ export function UsersPage() {
   const session = useSession()
   const confirm = useConfirm()
   const { data: users, loading, error, reload } = useApi(() => accountsApi.list())
+  const [created, setCreated] = useState<CreatedAccount | null>(null)
+
+  function onCreated(account: CreatedAccount) {
+    setCreated(account)
+    reload()
+  }
 
   async function onDelete(username: string) {
     const ok = await confirm({
@@ -147,8 +156,20 @@ export function UsersPage() {
     <div>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Users</h1>
-        <NewUserForm onCreated={reload} />
+        <NewUserForm onCreated={onCreated} />
       </div>
+
+      {created &&
+        (created.emailSent ? (
+          <p className="mb-4 text-sm text-green-700 dark:text-green-400">
+            Created {created.username} — a notification was emailed to {created.email}.
+          </p>
+        ) : (
+          <p className="mb-4 text-sm text-amber-700 dark:text-amber-400">
+            Created {created.username}, but the notification email to {created.email} couldn't be sent — check the SMTP
+            settings under Control plane → Settings.
+          </p>
+        ))}
 
       {loading && <p className="text-sm text-neutral-500">Loading…</p>}
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}

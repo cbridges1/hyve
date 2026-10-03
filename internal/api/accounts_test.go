@@ -106,7 +106,7 @@ func TestHandleListAccounts_ExcludesOtherOrganizations(t *testing.T) {
 func TestHandleCreateAccount_ReadOnlyForbidden(t *testing.T) {
 	s := newTestServer(t)
 	rec := doAccountRequest(t, s, "someone", hyvev1alpha1.RoleReadOnly, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "new-user", Password: "pw", Role: hyvev1alpha1.RoleAdmin})
+		createAccountRequest{Username: "new-user", Password: "pw", Role: hyvev1alpha1.RoleAdmin, Email: "new-user@example.com"})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
@@ -118,7 +118,7 @@ func TestHandleCreateAccount_CreatesBindingWithPasswordHash(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly})
+		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "new-user@example.com"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	var dto accountDTO
@@ -147,7 +147,7 @@ func TestHandleCreateAccount_WithRealOrganization_ScopesBinding(t *testing.T) {
 	s.Namespace = "hyve-control-plane" // so "acme" != s.Namespace and resolves as a real organization
 
 	rec := doAccountRequestAs(t, s, "acme", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "acme-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly})
+		createAccountRequest{Username: "acme-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "acme-user@example.com"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	binding, err := s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "acme-user")
@@ -169,7 +169,7 @@ func TestHandleCreateAccount_DuplicateUsername_Conflict(t *testing.T) {
 	require.NoError(t, err)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "existing", Password: "pw", Role: hyvev1alpha1.RoleReadOnly})
+		createAccountRequest{Username: "existing", Password: "pw", Role: hyvev1alpha1.RoleReadOnly, Email: "existing@example.com"})
 	assert.Equal(t, http.StatusConflict, rec.Code)
 }
 
@@ -177,7 +177,7 @@ func TestHandleCreateAccount_InvalidRole_400(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "new-user", Password: "pw", Role: "custom"})
+		createAccountRequest{Username: "new-user", Password: "pw", Role: "custom", Email: "new-user@example.com"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
@@ -185,7 +185,7 @@ func TestHandleCreateAccount_MissingFields_400(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "new-user", Role: hyvev1alpha1.RoleAdmin})
+		createAccountRequest{Username: "new-user", Role: hyvev1alpha1.RoleAdmin, Email: "new-user@example.com"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
@@ -268,7 +268,7 @@ func TestHandleCreateAccount_SuperadminExplicitNamespace(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "acme-admin", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "acme"})
+		createAccountRequest{Username: "acme-admin", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "acme", Email: "acme-admin@example.com"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	binding, err := s.findBindingBySubject(t.Context(), "acme", orgdb.SubjectTypeLocal, "acme-admin")
@@ -286,7 +286,7 @@ func TestHandleCreateAccount_OrdinaryAdminCannotTargetOtherNamespace(t *testing.
 	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "tenant-a", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "sneaky", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "tenant-b"})
+		createAccountRequest{Username: "sneaky", Password: "s3cret", Role: hyvev1alpha1.RoleAdmin, Namespace: "tenant-b", Email: "sneaky@example.com"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	_, err := s.findBindingBySubject(t.Context(), "tenant-a", orgdb.SubjectTypeLocal, "sneaky")
@@ -303,7 +303,7 @@ func TestHandleCreateAccount_SuperadminCanCreateSuperadmin(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "second-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin})
+		createAccountRequest{Username: "second-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin, Email: "second-super@example.com"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	binding, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "second-super")
@@ -319,7 +319,7 @@ func TestHandleCreateAccount_OrdinaryAdminCannotCreateSuperadmin(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "sneaky-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin})
+		createAccountRequest{Username: "sneaky-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin, Email: "sneaky-super@example.com"})
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 
 	_, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "sneaky-super")
@@ -336,7 +336,7 @@ func TestHandleCreateAccount_SuperadminCreation_IgnoresActAsNamespace(t *testing
 	s := newTestServer(t)
 
 	rec := doAccountRequestAs(t, s, "acme", hyvev1alpha1.RoleSuperadmin, http.MethodPost, "/accounts",
-		createAccountRequest{Username: "third-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin, Namespace: "acme"})
+		createAccountRequest{Username: "third-super", Password: "s3cret", Role: hyvev1alpha1.RoleSuperadmin, Namespace: "acme", Email: "third-super@example.com"})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
 	_, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "third-super")
@@ -862,4 +862,16 @@ func TestHandleCreateAccount_NotificationFailureDoesNotFailRequest(t *testing.T)
 	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
 		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "new-user@example.com"})
 	assert.Equal(t, http.StatusCreated, rec.Code, "a real notification-send failure must not fail the underlying account creation")
+
+	var resp createAccountResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.False(t, resp.EmailSent, "the console must learn the new user wasn't notified")
+}
+
+func TestHandleCreateAccount_MissingEmail_400(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAccountRequest(t, s, "admin-caller", hyvev1alpha1.RoleAdmin, http.MethodPost, "/accounts",
+		createAccountRequest{Username: "new-user", Password: "s3cret", Role: hyvev1alpha1.RoleReadOnly, Email: "  "})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "email is required")
 }

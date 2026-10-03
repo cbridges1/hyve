@@ -1,7 +1,11 @@
 import { apiDelete, apiFetch } from './client'
 
 export type Account = { username: string; role: string; email?: string }
-export type CreateAccountRequest = { username: string; password: string; role: string; email?: string }
+export type CreateAccountRequest = { username: string; password: string; role: string; email: string }
+// emailSent: whether the new user's account-created email actually went out
+// (false when SMTP isn't configured or the send failed — the account exists
+// either way).
+export type CreatedAccount = Account & { emailSent: boolean }
 export type UpdateAccountPasswordRequest = { currentPassword?: string; newPassword: string }
 
 // Role/email are undefined ("leave unchanged") vs "" (role: invalid, not
@@ -22,7 +26,7 @@ export const accountsApi = {
   list: () => apiFetch<Account[]>('/accounts'),
   get: (username: string) => apiFetch<Account>(`/accounts/${encodeURIComponent(username)}`),
   create: (body: CreateAccountRequest) =>
-    apiFetch<Account>('/accounts', { method: 'POST', body: JSON.stringify(body) }),
+    apiFetch<CreatedAccount>('/accounts', { method: 'POST', body: JSON.stringify(body) }),
   update: (username: string, body: UpdateAccountRequest) =>
     apiFetch<Account>(`/accounts/${encodeURIComponent(username)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: (username: string) => apiDelete(`/accounts/${encodeURIComponent(username)}`),
