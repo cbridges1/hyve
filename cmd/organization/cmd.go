@@ -82,6 +82,11 @@ var currentCmd = &cobra.Command{
 		if name == "" {
 			name = who.Namespace
 		}
+		for _, org := range who.Organizations {
+			if org.Namespace == who.Namespace {
+				name = org.DisplayName()
+			}
+		}
 		fmt.Printf("%s (%s)\n", name, who.Role)
 	},
 }
@@ -227,7 +232,7 @@ func listOrganizations() {
 		if org.Namespace == who.Namespace {
 			marker = " ← current"
 		}
-		log.Printf("  %s (%s)%s", org.Name, org.Role, marker)
+		log.Printf("  %s (%s)%s", org.DisplayName(), org.Role, marker)
 	}
 	if len(who.Organizations) > 1 {
 		log.Println("\n💡 Switch with 'hyve organization use <name>', or --org for one command")
@@ -242,9 +247,9 @@ func useOrganization(name string) {
 		log.Fatalf("Failed to list organizations: %v", err)
 	}
 	for _, org := range who.Organizations {
-		if org.Name == name || org.Namespace == name {
+		if org.Name == name || org.Namespace == name || (org.ControlPlane && name == "control-plane") {
 			setSelectedOrganization(org.Name)
-			log.Printf("✅ Now acting in organization %s (%s)", org.Name, org.Role)
+			log.Printf("✅ Now acting in %s (%s)", org.DisplayName(), org.Role)
 			return
 		}
 	}

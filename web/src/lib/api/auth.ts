@@ -105,7 +105,9 @@ export type Whoami = {
   organizations: WhoamiOrganization[]
 }
 
-export type WhoamiOrganization = { name: string; namespace: string; role: string }
+// controlPlane marks the install's own organization — shown as "Control
+// plane", not by its namespace.
+export type WhoamiOrganization = { name: string; namespace: string; role: string; controlPlane?: boolean }
 
 export const whoami = () => apiFetch<Whoami>('/whoami')
 

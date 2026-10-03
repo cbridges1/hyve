@@ -20,9 +20,15 @@ spec:
     - jsonPath: .spec.driver.source
       name: Driver
       type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.agent.connected
+      name: Agent
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -510,10 +516,11 @@ spec:
               conditions:
                 description: |-
                   Conditions follow the standard Kubernetes Condition[] convention.
-                  hyve sets "Ready" (True once the module reports ACTIVE),
-                  "Reconciling" (True while a reconcile is in progress for this
-                  generation), and "Error" (True with Message set when the last
-                  reconcile attempt failed).
+                  hyve sets "Ready" (True only when Phase is ACTIVE and the last
+                  reconcile succeeded; otherwise False with the phase or the failure
+                  as its reason) and "Error" (True with Message set when the last
+                  reconcile attempt failed). hyve-agent's state is separate — see
+                  Agent.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -602,6 +609,13 @@ spec:
                   tell whether status reflects the most recent spec change.
                 format: int64
                 type: integer
+              phase:
+                description: |-
+                  Phase is the cluster's own state as of the last reconcile — the
+                  driver's status (NOT_FOUND, CREATING, ACTIVE, UPDATING, DELETING,
+                  FAILED; ACTIVE for a driverless host cluster). Unlike Ready, it
+                  says nothing about whether reconciling succeeded.
+                type: string
             type: object
         type: object
     served: true

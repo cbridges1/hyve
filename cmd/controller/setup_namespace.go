@@ -224,6 +224,7 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 	hyveReconciler.DefaultAgentImage = defaultAgentImage
 	hyveReconciler.AgentTokenIssuer = &agentpki.TokenIssuer{Clientset: deps.clientset, ControlPlaneNamespace: deps.controlNamespace}
 	hyveReconciler.AgentControlPlaneNamespace = deps.controlNamespace
+	hyveReconciler.ClusterNamespace = targetNamespace
 	hyveReconciler.AgentControlPlaneURL = deps.agentControlPlaneURL
 	hyveReconciler.AgentTunnelAddress = deps.agentTunnelAddress
 	hyveReconciler.AgentCACertPEM = deps.agentCACertPEM

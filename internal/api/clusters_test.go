@@ -489,3 +489,24 @@ func TestHandleGetClusterEvents_TotalCappedAtMaxTracked(t *testing.T) {
 	require.NotEmpty(t, dto.Events)
 	assert.Equal(t, fmt.Sprintf("Reason%d", maxTrackedClusterEvents+49), dto.Events[0].Reason)
 }
+
+func TestAgentState(t *testing.T) {
+	cd := func(enabled bool, phase string, applied bool, connected bool, lastConnected string) *hyvev1alpha1.ClusterDefinition {
+		c := &hyvev1alpha1.ClusterDefinition{}
+		if enabled {
+			c.Spec.Access.Agent = &hyvev1alpha1.AgentSpec{Enabled: true}
+		}
+		c.Status.Phase = phase
+		if applied {
+			c.Status.AppliedAgent = &hyvev1alpha1.AppliedAgent{ConfigHash: "h"}
+		}
+		c.Status.Agent = hyvev1alpha1.AgentStatus{Connected: connected, LastConnectedAt: lastConnected}
+		return c
+	}
+	assert.Equal(t, "", agentState(cd(false, "ACTIVE", false, false, "")))
+	assert.Equal(t, "waiting", agentState(cd(true, "CREATING", false, false, "")), "the cluster isn't up yet")
+	assert.Equal(t, "installing", agentState(cd(true, "ACTIVE", false, false, "")))
+	assert.Equal(t, "installing", agentState(cd(true, "ACTIVE", true, false, "")), "applied, not connected yet")
+	assert.Equal(t, "connected", agentState(cd(true, "ACTIVE", true, true, "t")))
+	assert.Equal(t, "disconnected", agentState(cd(true, "ACTIVE", true, false, "t")))
+}

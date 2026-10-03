@@ -75,14 +75,18 @@ function OrganizationSwitcher({ who }: { who: Whoami }) {
   // organization that's since been deleted, or that this user was removed
   // from. A plain <select> would silently display its first option while
   // every request kept carrying the stale header. Confirmed live.
+  // The control plane is "nothing selected" for a superadmin, so a stored
+  // selection of its namespace collapses to that too.
   useEffect(() => {
-    if (actAs !== null && !who.organizations.some((org) => org.namespace === actAs)) {
+    const org = who.organizations.find((o) => o.namespace === actAs)
+    if (actAs !== null && (!org || (superadmin && org.controlPlane))) {
       setActAs(null)
     }
-  }, [actAs, who.organizations, setActAs])
+  }, [actAs, who.organizations, setActAs, superadmin])
 
   if (!superadmin && who.organizations.length <= 1) {
-    return <OrganizationLabel name={who.organization ?? who.namespace} />
+    const only = who.organizations[0]
+    return <OrganizationLabel name={only?.controlPlane ? 'Control plane' : (who.organization ?? who.namespace)} />
   }
   return (
     <div className="border-b border-neutral-200 px-2.5 pt-3 pb-3 dark:border-neutral-800">
@@ -94,10 +98,9 @@ function OrganizationSwitcher({ who }: { who: Whoami }) {
         onChange={(e) => setActAs(e.target.value || null)}
         className="w-full rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
       >
-        {superadmin && <option value="">Control plane</option>}
         {who.organizations.map((org) => (
-          <option key={org.namespace} value={org.namespace}>
-            {org.name}
+          <option key={org.namespace} value={superadmin && org.controlPlane ? '' : org.namespace}>
+            {org.controlPlane ? 'Control plane' : org.name}
           </option>
         ))}
       </select>

@@ -63,7 +63,7 @@ func runWhoami() {
 	if len(who.Organizations) > 1 {
 		names := make([]string, len(who.Organizations))
 		for i, o := range who.Organizations {
-			names[i] = o.Name
+			names[i] = o.DisplayName()
 		}
 		fmt.Printf("   Can access: %s ('hyve organization use <name>' to switch)\n", strings.Join(names, ", "))
 	}

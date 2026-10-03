@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { BackLink, Card, EmptyState } from '../components/Card'
-import { ReadyBadge } from '../components/ConditionBadge'
+import { AgentBadge, ClusterStatusBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
 import { SpecEditor } from '../components/SpecEditor'
 import { clustersApi } from '../lib/api/clusters'
@@ -145,7 +145,7 @@ export function ClusterDetailPage() {
           <p className="text-sm text-neutral-500">{cluster.driver}</p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <ReadyBadge conditions={cluster.conditions} />
+          <ClusterStatusBadge cluster={cluster} />
           <AdminOnly>
             <button
               type="button"
@@ -188,16 +188,7 @@ export function ClusterDetailPage() {
       <Card title="Recent activity">
         {cluster.agent?.enabled && (
           <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 pb-3 mb-1 dark:border-neutral-800/70">
-            <span
-              className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${
-                cluster.agentStatus?.connected
-                  ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                  : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${cluster.agentStatus?.connected ? 'bg-green-600 dark:bg-green-400' : 'bg-neutral-400'}`} />
-              Agent {cluster.agentStatus?.connected ? 'connected' : 'disconnected'}
-            </span>
+            <AgentBadge state={cluster.agentState} />
             {cluster.agent?.proxy && (
               <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
                 Proxy enabled

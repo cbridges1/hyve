@@ -83,6 +83,15 @@ type clusterDTO struct {
 	// field's own doc comment on why it deliberately has no omitempty).
 	AgentStatus hyvev1alpha1.AgentStatus `json:"agentStatus,omitempty"`
 
+	// Phase is the cluster's own state (status.phase: CREATING, ACTIVE,
+	// ...), separate from whether reconciling it succeeded (Conditions).
+	Phase string `json:"phase,omitempty"`
+
+	// AgentState says where hyve-agent is, so "the cluster isn't up yet"
+	// and "the agent hasn't connected" read differently — see agentState.
+	// Empty when the agent isn't enabled.
+	AgentState string `json:"agentState,omitempty"`
+
 	// PendingDeletion reflects metadata.deletionTimestamp != nil — DELETE
 	// /clusters/<name> only ever sets this (see handleDeleteCluster), it
 	// never removes the object outright: ClusterDefinitionFinalizer keeps
@@ -129,6 +138,29 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 		AccessMethod: cd.Spec.Access.Method,
 		Agent:        cd.Spec.Access.Agent,
 		AgentStatus:  cd.Status.Agent,
+		Phase:        cd.Status.Phase,
+		AgentState:   agentState(cd),
+	}
+}
+
+// agentState summarizes hyve-agent for a cluster with it enabled:
+// "connected"; "waiting" while the cluster itself isn't ACTIVE yet (the
+// agent is only installed once it is); "installing" once it's applied (or
+// about to be) but hasn't connected yet; "disconnected" when it was
+// connected before and isn't now. Empty when the agent isn't enabled.
+func agentState(cd *hyvev1alpha1.ClusterDefinition) string {
+	if cd.Spec.Access.Agent == nil || !cd.Spec.Access.Agent.Enabled {
+		return ""
+	}
+	switch {
+	case cd.Status.Agent.Connected:
+		return "connected"
+	case cd.Status.Phase != "ACTIVE":
+		return "waiting"
+	case cd.Status.AppliedAgent == nil || cd.Status.Agent.LastConnectedAt == "":
+		return "installing"
+	default:
+		return "disconnected"
 	}
 }
 

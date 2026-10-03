@@ -89,6 +89,19 @@ func agentCoreObjects() []types.AppliedObject {
 	}
 }
 
+// agentCertSecretName is the Secret hyve-agent saves its bootstrapped
+// identity in, in agentNamespace (internal/agent's certSecretName).
+const agentCertSecretName = "hyve-agent-cert"
+
+// agentIdentityNamespace is the namespace a cluster's hyve-agent is issued
+// its identity for — see Reconciler.ClusterNamespace.
+func (r *Reconciler) agentIdentityNamespace() string {
+	if r.ClusterNamespace != "" {
+		return r.ClusterNamespace
+	}
+	return r.AgentControlPlaneNamespace
+}
+
 func agentProxyObjects() []types.AppliedObject {
 	return []types.AppliedObject{
 		{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding", Name: agentProxyAdminBindingName},
@@ -109,8 +122,8 @@ func agentProxyObjects() []types.AppliedObject {
 // already-applied agent kept its stale, now-wrong HYVE_CONTROL_PLANE_URL
 // forever, since the "up to date, skip" check never noticed anything
 // changed. caCertPEM follows the identical reasoning.
-func agentConfigHash(proxy bool, image, controlPlaneURL, tunnelAddress, caCertPEM string) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("proxy=%v;image=%s;controlPlaneURL=%s;tunnelAddress=%s;caCertPEM=%s", proxy, image, controlPlaneURL, tunnelAddress, caCertPEM)))
+func agentConfigHash(proxy bool, image, controlPlaneURL, tunnelAddress, caCertPEM, identityNamespace string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("proxy=%v;image=%s;controlPlaneURL=%s;tunnelAddress=%s;caCertPEM=%s;identityNamespace=%s", proxy, image, controlPlaneURL, tunnelAddress, caCertPEM, identityNamespace)))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -149,7 +162,8 @@ func (r *Reconciler) reconcileAgent(ctx context.Context, cluster *types.ClusterD
 	}
 
 	image := r.resolveAgentImage()
-	configHash := agentConfigHash(spec.Proxy, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, r.AgentCACertPEM)
+	identityNamespace := r.agentIdentityNamespace()
+	configHash := agentConfigHash(spec.Proxy, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, r.AgentCACertPEM, identityNamespace)
 	if cluster.Spec.AppliedAgent != nil && cluster.Spec.AppliedAgent.ConfigHash == configHash {
 		log.Printf("[%s] hyve-agent: up to date", name)
 		return nil
@@ -168,7 +182,7 @@ func (r *Reconciler) reconcileAgent(ctx context.Context, cluster *types.ClusterD
 	// drift-triggered re-apply typically goes unused, which is harmless:
 	// single-use and short-lived (agentpki.BootstrapTokenTTL), exactly the
 	// same as any other bootstrap token nothing ever redeemed.
-	token, err := r.AgentTokenIssuer.IssueBootstrapToken(ctx, r.AgentControlPlaneNamespace, name)
+	token, err := r.AgentTokenIssuer.IssueBootstrapToken(ctx, identityNamespace, name)
 	if err != nil {
 		return fmt.Errorf("mint hyve-agent bootstrap token: %w", err)
 	}
@@ -183,6 +197,16 @@ func (r *Reconciler) reconcileAgent(ctx context.Context, cluster *types.ClusterD
 	})
 	if err != nil {
 		return fmt.Errorf("render hyve-agent manifest: %w", err)
+	}
+	// The agent prefers its saved identity over a bootstrap token, so drop
+	// it: the restarted pod then bootstraps with the token just minted —
+	// which also replaces an identity issued for the wrong namespace (before
+	// identityNamespace was per organization, every agent got the control
+	// plane's, and hyve-api couldn't find its cluster).
+	if err := kubectlDeleteObjects(ctx, repoRoot, env, []types.AppliedObject{
+		{APIVersion: "v1", Kind: "Secret", Namespace: agentNamespace, Name: agentCertSecretName},
+	}); err != nil {
+		return fmt.Errorf("clear hyve-agent's saved identity: %w", err)
 	}
 	if err := kubectlApply(ctx, repoRoot, env, coreManifest, ""); err != nil {
 		return fmt.Errorf("apply hyve-agent manifest: %w", err)

@@ -73,6 +73,9 @@ func (r *Reconciler) reconcileHostCluster(ctx context.Context, cluster types.Clu
 		return nil
 	}
 
+	// It's the cluster hyve runs on: up by definition.
+	hooks.clusterStatus("ACTIVE")
+
 	if r.HostKubeconfigIssuer == nil {
 		r.logf("[%s] Warning: no HostKubeconfigIssuer configured — skipping spec.resources reconciliation (local/file mode has no control-plane cluster concept)", name)
 		return nil

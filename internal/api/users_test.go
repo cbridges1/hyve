@@ -98,6 +98,9 @@ func TestSelectingAnotherUsersOrganization_403(t *testing.T) {
 	code, who := whoamiWith(t, s, "root", "root-pw", "acme")
 	require.Equal(t, http.StatusOK, code, "a superadmin reaches any organization")
 	assert.Equal(t, hyvev1alpha1.RoleSuperadmin, who.Role)
+	require.NotEmpty(t, who.Organizations)
+	assert.Equal(t, whoamiOrganization{Name: testNamespace, Namespace: testNamespace, Role: hyvev1alpha1.RoleSuperadmin, ControlPlane: true},
+		who.Organizations[0], "the control plane is one entry, listed first")
 }
 
 func TestCreateAccount_AddsExistingUser(t *testing.T) {

@@ -853,9 +853,19 @@ type WhoamiDTO struct {
 }
 
 type WhoamiOrganizationDTO struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Role      string `json:"role"`
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace"`
+	Role         string `json:"role"`
+	ControlPlane bool   `json:"controlPlane,omitempty"`
+}
+
+// DisplayName is how an organization is shown: "control plane" for the
+// install's own, else its name.
+func (o WhoamiOrganizationDTO) DisplayName() string {
+	if o.ControlPlane {
+		return "control plane (" + o.Name + ")"
+	}
+	return o.Name
 }
 
 func (c *APIClient) Whoami() (*WhoamiDTO, error) {

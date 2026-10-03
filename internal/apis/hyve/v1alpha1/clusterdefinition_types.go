@@ -176,11 +176,18 @@ type ClusterDefinitionStatus struct {
 	// means "not installed."
 	AppliedAgent *AppliedAgent `json:"appliedAgent,omitempty"`
 
+	// Phase is the cluster's own state as of the last reconcile — the
+	// driver's status (NOT_FOUND, CREATING, ACTIVE, UPDATING, DELETING,
+	// FAILED; ACTIVE for a driverless host cluster). Unlike Ready, it
+	// says nothing about whether reconciling succeeded.
+	Phase string `json:"phase,omitempty"`
+
 	// Conditions follow the standard Kubernetes Condition[] convention.
-	// hyve sets "Ready" (True once the module reports ACTIVE),
-	// "Reconciling" (True while a reconcile is in progress for this
-	// generation), and "Error" (True with Message set when the last
-	// reconcile attempt failed).
+	// hyve sets "Ready" (True only when Phase is ACTIVE and the last
+	// reconcile succeeded; otherwise False with the phase or the failure
+	// as its reason) and "Error" (True with Message set when the last
+	// reconcile attempt failed). hyve-agent's state is separate — see
+	// Agent.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +listType=map
@@ -266,7 +273,9 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=cd
 // +kubebuilder:printcolumn:name="Driver",type=string,JSONPath=`.spec.driver.source`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Agent",type=boolean,JSONPath=`.status.agent.connected`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ClusterDefinition is the Schema for the clusterdefinitions API — the

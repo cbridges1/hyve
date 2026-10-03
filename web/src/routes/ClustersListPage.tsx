@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { load as loadYaml } from 'js-yaml'
 import { AdminOnly } from '../components/RoleGate'
-import { ReadyBadge } from '../components/ConditionBadge'
+import { AgentBadge, ClusterStatusBadge } from '../components/ConditionBadge'
 import { EnvironmentBadge, EnvironmentFilterSelect, EnvironmentPickerField, useEnvironments } from '../components/Environment'
 import { Modal } from '../components/Modal'
 import { ModeTabs } from '../components/ModeTabs'
@@ -274,7 +274,8 @@ export function ClustersListPage() {
                     Pending deletion
                   </span>
                 )}
-                <ReadyBadge conditions={c.conditions} />
+                <AgentBadge state={c.agentState} />
+                <ClusterStatusBadge cluster={c} />
               </div>
             </div>
           ))}

@@ -52,6 +52,9 @@ type whoamiOrganization struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Role      string `json:"role"`
+	// ControlPlane marks the install's own organization (s.Namespace) — the
+	// "control plane", shown under that name rather than its namespace.
+	ControlPlane bool `json:"controlPlane,omitempty"`
 }
 
 // registerWhoamiRoute wires GET /whoami — mounted under /api/ (behind
@@ -123,8 +126,14 @@ func (s *Server) accessibleOrganizations(r *http.Request, username string) []who
 		if name == "" {
 			name = ns
 		}
-		out = append(out, whoamiOrganization{Name: name, Namespace: ns, Role: role})
+		out = append(out, whoamiOrganization{Name: name, Namespace: ns, Role: role, ControlPlane: ns == s.Namespace})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	// The control plane first, then by name.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ControlPlane != out[j].ControlPlane {
+			return out[i].ControlPlane
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out
 }

@@ -93,6 +93,14 @@ type Reconciler struct {
 	// change.
 	AgentControlPlaneNamespace string
 
+	// ClusterNamespace is the namespace this reconciler's clusters live in
+	// (an organization's — cmd/controller sets it per target namespace).
+	// A cluster's hyve-agent is issued its identity for this namespace,
+	// which is where hyve-api looks the cluster up when the agent
+	// connects. Empty (the CLI, local mode) falls back to
+	// AgentControlPlaneNamespace.
+	ClusterNamespace string
+
 	// AgentControlPlaneURL is hyve-api's own externally-reachable base URL
 	// for POST /agent/bootstrap — the value hyve-agent's own
 	// --control-plane-url flag needs (see cmd/agent/main.go). Left empty,
@@ -276,6 +284,21 @@ type ReconcileHooks struct {
 	// since k8sjob.Run always deletes its Job immediately after fetching
 	// logs, so nothing else survives to inspect after the fact.
 	OnOperationOutput func(op module.OperationType, output string)
+
+	// OnClusterStatus fires with the cluster's own state as of this pass —
+	// the driver's status op result (NOT_FOUND, CREATING, ACTIVE,
+	// UPDATING, DELETING, FAILED), CREATING right after a create op
+	// returns, DELETING once a delete starts, ACTIVE for a driverless host
+	// cluster. Cluster mode records it as status.phase and gates Ready on
+	// it: a reconcile that merely succeeded says nothing about whether the
+	// cluster is up.
+	OnClusterStatus func(status string)
+}
+
+func (h *ReconcileHooks) clusterStatus(status string) {
+	if h != nil && h.OnClusterStatus != nil {
+		h.OnClusterStatus(status)
+	}
 }
 
 func (h *ReconcileHooks) emitEvent(eventType, reason, message string) {
@@ -439,6 +462,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	status := effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
 	r.logf("[%s] status: %s", name, status)
 	hooks.emitEvent("Normal", "StatusChecked", fmt.Sprintf("Status: %s", status))
+	hooks.clusterStatus(status)
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
@@ -590,6 +614,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 
 	r.logf("[%s] ✅ Cluster created", name)
 	hooks.emitEvent("Normal", "Created", "Cluster created successfully")
+	hooks.clusterStatus("CREATING")
 
 	// Rebuild env so onCreate workflows see the new driverOutputs.
 	env = buildModuleEnv(cluster, secretsEnv)
@@ -634,6 +659,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Deleting cluster...", name)
+	hooks.clusterStatus("DELETING")
 	hooks.emitEvent("Normal", "Deleting", "Cluster delete operation starting")
 
 	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
