@@ -93,6 +93,9 @@ export type ClusterSummary = {
   // agentState says where hyve-agent is when it's enabled — "waiting" means
   // the cluster itself isn't up yet (see internal/api's agentState).
   agentState?: AgentState
+  // expiresAt is when the cluster is scheduled to be deleted (RFC 3339 —
+  // e.g. from its template's schedule); undefined when it never expires.
+  expiresAt?: string
 }
 
 export type AgentState = 'waiting' | 'installing' | 'connected' | 'disconnected'

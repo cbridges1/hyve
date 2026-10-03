@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"time"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 
@@ -42,8 +43,17 @@ func listClustersAPI(client *shared.APIClient) {
 		if c.AccessMethod != "" {
 			log.Printf("    Access: %s", c.AccessMethod)
 		}
+		if c.Phase != "" {
+			log.Printf("    Phase: %s", c.Phase)
+		}
 		for _, cond := range c.Conditions {
 			log.Printf("    %s: %s", cond.Type, cond.Status)
+		}
+		if c.AgentState != "" {
+			log.Printf("    Agent: %s", c.AgentState)
+		}
+		if c.ExpiresAt != "" {
+			log.Printf("    Expires: %s", shared.FormatExpiry(c.ExpiresAt, time.Now()))
 		}
 		log.Println()
 	}
@@ -61,12 +71,21 @@ func showClusterAPI(client *shared.APIClient, name string) {
 
 	log.Printf("Name:   %s", c.Name)
 	log.Printf("Driver: %s", c.Driver)
+	if c.Phase != "" {
+		log.Printf("Phase:  %s", c.Phase)
+	}
+	if c.ExpiresAt != "" {
+		log.Printf("Expires: %s", shared.FormatExpiry(c.ExpiresAt, time.Now()))
+	}
 	log.Printf("Observed generation: %d", c.ObservedGeneration)
 	if c.AccessMethod != "" {
 		log.Printf("Access method: %s", c.AccessMethod)
 	}
 	if c.Agent != nil && c.Agent.Enabled {
 		log.Printf("Agent: enabled (proxy: %v)", c.Agent.Proxy)
+		if c.AgentState != "" {
+			log.Printf("  State: %s", c.AgentState)
+		}
 		log.Printf("  Connected: %v", c.AgentStatus.Connected)
 		if c.AgentStatus.Version != "" {
 			log.Printf("  Version: %s", c.AgentStatus.Version)

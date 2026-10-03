@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { BackLink, Card, EmptyState } from '../components/Card'
-import { AgentBadge, ClusterStatusBadge } from '../components/ConditionBadge'
+import { AgentBadge, ClusterStatusBadge, ExpiryBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
 import { SpecEditor } from '../components/SpecEditor'
 import { clustersApi } from '../lib/api/clusters'
@@ -145,6 +145,7 @@ export function ClusterDetailPage() {
           <p className="text-sm text-neutral-500">{cluster.driver}</p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
+          <ExpiryBadge expiresAt={cluster.expiresAt} />
           <ClusterStatusBadge cluster={cluster} />
           <AdminOnly>
             <button

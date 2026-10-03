@@ -87,6 +87,11 @@ type clusterDTO struct {
 	// ...), separate from whether reconciling it succeeded (Conditions).
 	Phase string `json:"phase,omitempty"`
 
+	// ExpiresAt is when the cluster is scheduled to be deleted
+	// (spec.expiresAt, RFC 3339 — e.g. from its template's schedule);
+	// empty when it never expires.
+	ExpiresAt string `json:"expiresAt,omitempty"`
+
 	// AgentState says where hyve-agent is, so "the cluster isn't up yet"
 	// and "the agent hasn't connected" read differently — see agentState.
 	// Empty when the agent isn't enabled.
@@ -139,6 +144,7 @@ func toClusterDTO(cd *hyvev1alpha1.ClusterDefinition) clusterDTO {
 		Agent:        cd.Spec.Access.Agent,
 		AgentStatus:  cd.Status.Agent,
 		Phase:        cd.Status.Phase,
+		ExpiresAt:    cd.Spec.ExpiresAt,
 		AgentState:   agentState(cd),
 	}
 }

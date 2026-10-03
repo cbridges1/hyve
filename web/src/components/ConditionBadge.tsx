@@ -105,3 +105,22 @@ function Pill({ tone: t, title, label }: { tone: keyof typeof tone; title?: stri
     </span>
   )
 }
+
+/** When the cluster is scheduled to be deleted — "Expires in 3h 20m", the exact local time on hover. Nothing for a cluster that never expires. */
+export function ExpiryBadge({ expiresAt }: { expiresAt?: string }) {
+  if (!expiresAt) return null
+  const at = new Date(expiresAt)
+  if (Number.isNaN(at.getTime())) return null
+  const ms = at.getTime() - Date.now()
+  const title = `Scheduled for deletion at ${at.toLocaleString()}`
+  if (ms <= 0) return <Pill tone="busy" title={title} label="Expired — deleting" />
+  return <Pill tone="idle" title={title} label={`Expires in ${formatDuration(ms)}`} />
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.ceil(ms / 60_000)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m`
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}

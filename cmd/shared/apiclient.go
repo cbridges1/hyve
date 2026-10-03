@@ -266,6 +266,44 @@ type ClusterDTO struct {
 	// `hyve cluster show` (to display connectivity — cmd/cluster/api.go).
 	Agent       *hyvev1alpha1.AgentSpec  `json:"agent,omitempty"`
 	AgentStatus hyvev1alpha1.AgentStatus `json:"agentStatus,omitempty"`
+
+	// Phase, AgentState and ExpiresAt mirror internal/api's clusterDTO:
+	// the cluster's own state (CREATING, ACTIVE, ...), hyve-agent's
+	// (waiting, installing, connected, disconnected), and when it's
+	// scheduled to be deleted (RFC 3339; empty: never).
+	Phase      string `json:"phase,omitempty"`
+	AgentState string `json:"agentState,omitempty"`
+	ExpiresAt  string `json:"expiresAt,omitempty"`
+}
+
+// FormatExpiry renders an RFC 3339 expiresAt as local time plus how long
+// until then ("2026-10-04 12:00 CDT (in 3h20m)", or "(overdue — deleting
+// on the next reconcile)"); an unparseable value is returned as is.
+func FormatExpiry(expiresAt string, now time.Time) string {
+	t, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return expiresAt
+	}
+	local := t.Local().Format("2006-01-02 15:04 MST")
+	d := t.Sub(now)
+	if d <= 0 {
+		return local + " (overdue — deleting on the next reconcile)"
+	}
+	return local + " (in " + roundDuration(d) + ")"
+}
+
+// roundDuration shortens d for display: days and hours past a day, hours
+// and minutes past an hour, else minutes.
+func roundDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		days := int(d / (24 * time.Hour))
+		return fmt.Sprintf("%dd%dh", days, int((d-time.Duration(days)*24*time.Hour)/time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh%dm", int(d/time.Hour), int((d%time.Hour)/time.Minute))
+	default:
+		return fmt.Sprintf("%dm", int(d/time.Minute)+1)
+	}
 }
 
 // ConditionDTO mirrors metav1.Condition's JSON shape closely enough for
