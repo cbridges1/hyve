@@ -36,6 +36,7 @@ export function HyveConfigForm({
   error,
   onSave,
   onSaved,
+  controlPlane = false,
 }: {
   title: string
   description: ReactNode
@@ -44,6 +45,9 @@ export function HyveConfigForm({
   error: string | null
   onSave: (form: Omit<HyveConfig, 'exists'>) => Promise<unknown>
   onSaved?: () => void
+  // The control plane's own HyveConfig, which alone carries install-wide
+  // settings such as organizationsMayUseHostCluster.
+  controlPlane?: boolean
 }) {
   const [form, setForm] = useState<Omit<HyveConfig, 'exists'>>(emptyForm)
   const [saving, setSaving] = useState(false)
@@ -110,6 +114,25 @@ export function HyveConfigForm({
           Strict resource delete
           <span className="text-xs text-neutral-400">— auto-prune a removed spec.resources entry instead of just warning</span>
         </label>
+
+        {controlPlane && (
+          <label className="mt-3 flex items-start gap-2 text-sm text-neutral-800 dark:text-neutral-200">
+            <input
+              type="checkbox"
+              checked={form.organizationsMayUseHostCluster ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, organizationsMayUseHostCluster: e.target.checked }))}
+              className="mt-0.5 h-4 w-4 rounded border-neutral-300 dark:border-neutral-700"
+            />
+            <span>
+              Organizations may use the host cluster
+              <span className="block text-xs text-neutral-400">
+                Lets clusters in organizations on this cluster use it as their management cluster (a module's
+                mgmtCluster, e.g. for Cluster API). Their modules get cluster-admin on it, so only allow this when you
+                trust every organization.
+              </span>
+            </span>
+          </label>
+        )}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           <label className="text-sm">

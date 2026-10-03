@@ -102,6 +102,9 @@ func (s *Server) handleUpdateOrgConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Install-wide, superadmin-only: never stored on an organization's own
+	// HyveConfig, where it would mean nothing anyway.
+	req.OrganizationsMayUseHostCluster = false
 
 	ctx := r.Context()
 	targetClient, err := s.resourceClient(ctx, org.Namespace)

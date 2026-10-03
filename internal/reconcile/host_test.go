@@ -212,8 +212,8 @@ func TestValidateMgmtClusterRequirement_EnvironmentPrefixedName(t *testing.T) {
 	r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: []types.ClusterDefinition{
 		envDef("default", "unraid-k3s", types.ClusterSpec{AccessMethod: types.AccessMethodPrimary}),
 	}})
-	assert.NoError(t, r.validateMgmtClusterRequirement(envDef("default", "gke-1", types.ClusterSpec{}), "unraid-k3s"))
-	err := r.validateMgmtClusterRequirement(envDef("staging", "gke-1", types.ClusterSpec{}), "unraid-k3s")
+	assert.NoError(t, r.validateMgmtClusterRequirement(context.Background(), envDef("default", "gke-1", types.ClusterSpec{}), "unraid-k3s"))
+	err := r.validateMgmtClusterRequirement(context.Background(), envDef("staging", "gke-1", types.ClusterSpec{}), "unraid-k3s")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "doesn't exist")
 }
@@ -244,4 +244,58 @@ func TestUnmetDependency_EnvironmentPrefixedHost(t *testing.T) {
 	unmet, err := r.unmetDependency(context.Background(), envDef("default", "gke-1", types.ClusterSpec{DependsOn: []string{"unraid-k3s"}}), &module.LockFile{Version: 1}, nil)
 	require.NoError(t, err)
 	assert.Empty(t, unmet, "dependsOn by short name resolves to the environment's host cluster")
+}
+
+// TestMgmtCluster_HostFallback: a cluster in an organization on the home
+// cluster can name the control plane's host as its mgmtCluster only when
+// the install shares it; its own clusters still win.
+func TestMgmtCluster_HostFallback(t *testing.T) {
+	host := envDef("default", "unraid-k3s", types.ClusterSpec{AccessMethod: types.AccessMethodPrimary})
+	from := envDef("staging", "gke-1", types.ClusterSpec{})
+	newR := func(allowed bool, own ...types.ClusterDefinition) (*Reconciler, *fakeHostKubeconfigIssuer) {
+		r := NewReconciler(&fakeStateProvider{localPath: t.TempDir(), defs: own})
+		issuer := &fakeHostKubeconfigIssuer{kc: []byte("minted")}
+		r.HostKubeconfigIssuer = issuer
+		r.HostClusters = func(context.Context) ([]types.ClusterDefinition, bool, error) {
+			return []types.ClusterDefinition{host}, allowed, nil
+		}
+		return r, issuer
+	}
+
+	t.Run("shared: resolves by short name from any environment and mints", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		r, issuer := newR(true)
+		assert.NoError(t, r.validateMgmtClusterRequirement(context.Background(), from, "unraid-k3s"))
+		path, err := r.mgmtKubeconfigLocatorFor(from)(context.Background(), "unraid-k3s")
+		require.NoError(t, err)
+		assert.True(t, issuer.called)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "minted", string(data))
+	})
+
+	t.Run("not shared: says how to allow it, never mints", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		r, issuer := newR(false)
+		err := r.validateMgmtClusterRequirement(context.Background(), from, "unraid-k3s")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errHostClusterNotShared)
+		_, err = r.mgmtKubeconfigLocatorFor(from)(context.Background(), "unraid-k3s")
+		assert.ErrorIs(t, err, errHostClusterNotShared)
+		assert.False(t, issuer.called)
+	})
+
+	t.Run("the organization's own cluster of that name wins", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		r, issuer := newR(false, envDef("staging", "unraid-k3s", types.ClusterSpec{}))
+		assert.NoError(t, r.validateMgmtClusterRequirement(context.Background(), from, "unraid-k3s"))
+		assert.False(t, issuer.called)
+	})
+
+	t.Run("an unknown name is still not found", func(t *testing.T) {
+		r, _ := newR(true)
+		err := r.validateMgmtClusterRequirement(context.Background(), from, "nope")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "doesn't exist")
+	})
 }

@@ -342,6 +342,8 @@ export type ImageInstall = { image: string; install: string }
 export type HyveConfig = {
   exists: boolean
   strictResourceDelete: boolean
+  // Control plane only — see internal/apis/hyve/v1alpha1.HyveConfigSpec.
+  organizationsMayUseHostCluster?: boolean
   defaultWorkflowImage?: string
   defaultModuleImage?: string
   defaultAgentImage?: string

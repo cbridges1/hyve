@@ -21,6 +21,7 @@ export function SettingsPage() {
         error={error}
         onSave={(form) => configApi.update(form)}
         onSaved={reload}
+        controlPlane
       />
       <EmailSettingsForm />
     </div>

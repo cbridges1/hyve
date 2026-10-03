@@ -14,6 +14,7 @@ import (
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/orgdb"
 	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -140,6 +141,12 @@ type reconcilerSharedDeps struct {
 	controlNamespace   string
 	hostServiceAccount string
 	hostCAPath         string
+
+	// homeOrganizations: every target namespace other than
+	// controlNamespace is an organization on the home cluster
+	// (--watch-home-organizations), whose clusters may use the control
+	// plane's host as a management cluster when the install allows it.
+	homeOrganizations bool
 }
 
 // setupNamespaceReconcilers builds and registers one full, independent set
@@ -234,6 +241,10 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 		CAPath:                 deps.hostCAPath,
 	}
 
+	if deps.homeOrganizations && targetNamespace != deps.controlNamespace {
+		hyveReconciler.HostClusters = hostClustersFor(mgr, deps)
+	}
+
 	reconciler := &internalcontroller.ClusterDefinitionReconciler{
 		Client:                  mgr.GetClient(),
 		APIReader:               mgr.GetAPIReader(),
@@ -266,4 +277,36 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 	}
 
 	return nil
+}
+
+// hostClustersFor backs reconcile.Reconciler.HostClusters for an
+// organization on the home cluster: the control plane's access.method:
+// primary ClusterDefinitions, and whether the control plane's HyveConfig
+// shares them (spec.organizationsMayUseHostCluster). Both are read on every
+// call, so toggling the setting needs no restart.
+func hostClustersFor(mgr ctrl.Manager, deps reconcilerSharedDeps) func(context.Context) ([]types.ClusterDefinition, bool, error) {
+	control := &internalcontroller.CRDStateProvider{
+		Client:         mgr.GetClient(),
+		Namespace:      deps.controlNamespace,
+		ConfigName:     deps.configName,
+		ModulesDirPath: deps.modulesDir,
+	}
+	return func(ctx context.Context) ([]types.ClusterDefinition, bool, error) {
+		var cfg hyvev1alpha1.HyveConfig
+		err := mgr.GetClient().Get(ctx, apitypes.NamespacedName{Namespace: deps.controlNamespace, Name: deps.configName}, &cfg)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return nil, false, fmt.Errorf("read HyveConfig %s/%s: %w", deps.controlNamespace, deps.configName, err)
+		}
+		defs, err := control.LoadClusterDefinitions()
+		if err != nil {
+			return nil, false, err
+		}
+		var hosts []types.ClusterDefinition
+		for _, d := range defs {
+			if d.Spec.AccessMethod == types.AccessMethodPrimary {
+				hosts = append(hosts, d)
+			}
+		}
+		return hosts, cfg.Spec.OrganizationsMayUseHostCluster, nil
+	}
 }

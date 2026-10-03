@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -128,7 +129,8 @@ func (r *Reconciler) reconcileHostCluster(ctx context.Context, cluster types.Clu
 // mgmtKubeconfigLocatorFor returns the module.MgmtKubeconfigLocator a
 // reconcile-built Executor uses for cluster `from`. The management cluster's
 // name resolves like any cluster reference from `from` (resolveClusterRef —
-// so a short name works inside a cluster-mode environment). When it's hyve's
+// so a short name works inside a cluster-mode environment), or to the
+// control plane's host when shared (resolveMgmtCluster). When it's hyve's
 // own host (access.method: primary) and a HostKubeconfigIssuer is configured
 // (cluster mode), a fresh host kubeconfig is minted — the host has no module
 // auth kubeconfig of its own, and minting per operation means the token
@@ -136,13 +138,12 @@ func (r *Reconciler) reconcileHostCluster(ctx context.Context, cluster types.Clu
 // (module.DefaultMgmtKubeconfigLocator), looked up by its real name.
 func (r *Reconciler) mgmtKubeconfigLocatorFor(from types.ClusterDefinition) module.MgmtKubeconfigLocator {
 	return func(ctx context.Context, mgmt string) (string, error) {
-		defs, err := r.stateMgr.LoadClusterDefinitions()
-		if err != nil {
-			return "", fmt.Errorf("load cluster definitions to find management cluster %q: %w", mgmt, err)
-		}
-		def, ok := resolveClusterRef(defs, from, mgmt)
-		if !ok {
+		def, err := r.resolveMgmtCluster(ctx, from, mgmt)
+		if errors.Is(err, errMgmtClusterNotFound) {
 			return "", fmt.Errorf("management cluster %q doesn't exist", mgmt)
+		}
+		if err != nil {
+			return "", fmt.Errorf("management cluster %q: %w", mgmt, err)
 		}
 		name := def.Metadata.Name
 		if r.HostKubeconfigIssuer != nil && def.Spec.AccessMethod == types.AccessMethodPrimary {

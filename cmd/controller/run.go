@@ -244,6 +244,7 @@ func runController() {
 		controlNamespace:   namespace,
 		hostServiceAccount: hostServiceAccount,
 		hostCAPath:         hostCAPath,
+		homeOrganizations:  watchHomeOrganizations,
 	}
 
 	// One full reconciler instance per target namespace — see
