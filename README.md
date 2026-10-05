@@ -19,14 +19,10 @@ Hyve manages the full lifecycle of Kubernetes clusters (create, configure, recon
 ## Install
 
 ```bash
-brew install cbridges1/tap/hyve
-# or
-go install github.com/cbridges1/hyve@latest   # Go 1.26+, git on PATH; web console is a placeholder
-# or
-docker run --rm -v "$(pwd)":/repo ghcr.io/cbridges1/hyve:latest reconcile --path .
+go install github.com/cbridges1/hyve@latest
 ```
 
-Prebuilt binaries for macOS, Linux, and Windows are on every [GitHub Release](https://github.com/cbridges1/hyve/releases).
+Needs Go 1.26+, and `git` on your `PATH` (hyve fetches modules with it). Make sure `$(go env GOPATH)/bin` is on your `PATH` too.
 
 ## Quick start
 
