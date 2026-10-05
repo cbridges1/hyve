@@ -39,3 +39,8 @@ func TestRenderClusterDefinitionSpec_CopiesAccess(t *testing.T) {
 	assert.True(t, spec.Access.Agent.Enabled)
 	assert.True(t, spec.Access.Agent.Proxy)
 }
+
+func TestRenderClusterDefinitionSpec_CopiesMgmtCluster(t *testing.T) {
+	spec := RenderClusterDefinitionSpec(TemplateSpec{MgmtCluster: "capi-mgmt"}, "", nil)
+	assert.Equal(t, "capi-mgmt", spec.MgmtCluster)
+}

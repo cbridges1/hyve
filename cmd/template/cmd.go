@@ -46,6 +46,7 @@ var templateCreateCmd = &cobra.Command{
 		driverSource, _ := cmd.Flags().GetString("driver")
 		driverVersion, _ := cmd.Flags().GetString("driver-version")
 		region, _ := cmd.Flags().GetString("region")
+		mgmtCluster, _ := cmd.Flags().GetString("mgmt-cluster")
 		setVals, _ := cmd.Flags().GetStringArray("set")
 		beforeCreate, _ := cmd.Flags().GetString("before-create")
 		onCreate, _ := cmd.Flags().GetString("on-create")
@@ -68,12 +69,12 @@ var templateCreateCmd = &cobra.Command{
 		}
 
 		if sess, ok := shared.UseClusterMode(); ok {
-			createTemplateAPI(shared.NewAPIClient(sess), templateName, description, driverSource, driverVersion, region, params,
+			createTemplateAPI(shared.NewAPIClient(sess), templateName, description, driverSource, driverVersion, region, mgmtCluster, params,
 				beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
 			return
 		}
 
-		createTemplate(templateName, description, driverSource, driverVersion, region, params,
+		createTemplate(templateName, description, driverSource, driverVersion, region, mgmtCluster, params,
 			beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
 	},
 }
@@ -137,6 +138,7 @@ func init() {
 	templateCreateCmd.Flags().String("driver", "", "Module source (e.g. github.com/your-org/hyve-aws-eks-module)")
 	templateCreateCmd.Flags().String("driver-version", "latest", "Module version (semver constraint, tag, or commit)")
 	templateCreateCmd.Flags().StringP("region", "r", "", "Default region for clusters created from this template")
+	templateCreateCmd.Flags().String("mgmt-cluster", "", "Cluster the driver module uses as its management cluster (e.g. a Cluster API management cluster), overriding the module's default")
 	templateCreateCmd.Flags().StringArray("set", nil, "Default driver params (repeatable): KEY=VALUE")
 	templateCreateCmd.Flags().String("before-create", "", "Workflows to run before cluster creation (comma-separated)")
 	templateCreateCmd.Flags().StringP("on-create", "c", "", "Workflows to run after cluster creation (comma-separated)")
@@ -154,7 +156,7 @@ func init() {
 }
 
 func createTemplate(
-	name, description, driverSource, driverVersion, region string,
+	name, description, driverSource, driverVersion, region, mgmtCluster string,
 	params map[string]string,
 	beforeCreateStr, onCreateStr, onDeleteStr, afterDeleteStr string,
 	schedule string,
@@ -198,9 +200,10 @@ func createTemplate(
 			Description: description,
 		},
 		Spec: template.TemplateSpec{
-			Driver: types.DriverRef{Source: driverSource, Version: driverVersion},
-			Region: region,
-			Params: params,
+			Driver:      types.DriverRef{Source: driverSource, Version: driverVersion},
+			Region:      region,
+			MgmtCluster: mgmtCluster,
+			Params:      params,
 			Workflows: types.WorkflowsSpec{
 				BeforeCreate: parseWorkflows(beforeCreateStr),
 				OnCreate:     parseWorkflows(onCreateStr),

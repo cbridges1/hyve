@@ -418,7 +418,11 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 				return reqErr
 			}
 		}
-		if reqErr := r.validateMgmtClusterRequirement(ctx, cluster, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
+		mgmt := cluster.Spec.MgmtCluster
+		if mgmt == "" {
+			mgmt = manifest.Spec.Requirements.MgmtCluster
+		}
+		if reqErr := r.validateMgmtClusterRequirement(ctx, cluster, mgmt); reqErr != nil {
 			return reqErr
 		}
 	}
@@ -444,6 +448,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(cluster),
 		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(cluster),
+		MgmtCluster:           cluster.Spec.MgmtCluster,
 	}
 
 	// module.Executor.Execute guarantees a non-zero-exit status script
@@ -974,6 +979,7 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(depCluster),
 		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(depCluster),
+		MgmtCluster:           depCluster.Spec.MgmtCluster,
 	}
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {

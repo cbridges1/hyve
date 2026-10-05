@@ -20,9 +20,12 @@ type RunnerSpec struct {
 // a real Kubernetes object's metadata can only hold standard ObjectMeta
 // fields, not arbitrary custom ones.
 type TemplateSpec struct {
-	Description string            `json:"description,omitempty"`
-	Driver      DriverRef         `json:"driver,omitempty"`
-	Runner      RunnerSpec        `json:"runner,omitempty"`
+	Description string     `json:"description,omitempty"`
+	Driver      DriverRef  `json:"driver,omitempty"`
+	Runner      RunnerSpec `json:"runner,omitempty"`
+	// MgmtCluster is copied onto each rendered cluster — see
+	// ClusterDefinitionSpec.MgmtCluster.
+	MgmtCluster string            `json:"mgmtCluster,omitempty"`
 	Params      map[string]string `json:"params,omitempty"`
 	Region      string            `json:"region,omitempty"`
 	Workflows   WorkflowsSpec     `json:"workflows,omitempty"`

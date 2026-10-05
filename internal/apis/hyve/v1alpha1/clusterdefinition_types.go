@@ -31,6 +31,15 @@ type ClusterDefinitionSpec struct {
 	// Ignored entirely in local/CLI mode.
 	Runner RunnerSpec `json:"runner,omitempty"`
 
+	// MgmtCluster names the hyve cluster this cluster's driver module uses
+	// as its management cluster (e.g. the Cluster API management cluster a
+	// CAPI module creates its Cluster objects in), handed to every module
+	// operation as HYVE_MGMT_KUBECONFIG. Overrides the module's own
+	// requirements.mgmtCluster default; leave both unset for a module that
+	// manages its own (or needs none). Resolved like any cluster reference
+	// — see internal/reconcile's resolveMgmtCluster.
+	MgmtCluster string `json:"mgmtCluster,omitempty"`
+
 	// Params are arbitrary key/value pairs passed to the driver as
 	// HYVE_PARAM_<KEY> environment variables.
 	Params map[string]string `json:"params,omitempty"`

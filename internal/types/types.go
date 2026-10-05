@@ -148,6 +148,11 @@ type ClusterSpec struct {
 	// cluster's module operations — see RunnerSpec.
 	Runner RunnerSpec `yaml:"runner,omitempty" json:"runner,omitempty"`
 
+	// MgmtCluster names the cluster the driver module uses as its
+	// management cluster, overriding the module's requirements.mgmtCluster
+	// — see hyvev1alpha1.ClusterDefinitionSpec.MgmtCluster.
+	MgmtCluster string `yaml:"mgmtCluster,omitempty" json:"mgmtCluster,omitempty"`
+
 	// Params are arbitrary key/value pairs passed to the driver as HYVE_PARAM_<KEY>
 	// environment variables when running module operations.
 	Params map[string]string `yaml:"params,omitempty" json:"params,omitempty"`

@@ -70,6 +70,10 @@ type Executor struct {
 	// module with requirements.mgmtCluster (see MgmtKubeconfigEnv). nil
 	// means DefaultMgmtKubeconfigLocator.
 	MgmtKubeconfigLocator MgmtKubeconfigLocator
+	// MgmtCluster names the management cluster for this run, overriding
+	// the module's requirements.mgmtCluster — the cluster's own
+	// spec.mgmtCluster. Empty means the module's default (if any).
+	MgmtCluster string
 }
 
 // Execute runs a named operation and returns captured outputs.

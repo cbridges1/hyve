@@ -53,10 +53,14 @@ func mgmtClusterRequirement(moduleDir string) string {
 }
 
 // envWithMgmtKubeconfig returns e.Env plus MgmtKubeconfigEnv when the
-// module requires a management cluster. A HYVE_MGMT_KUBECONFIG path the
-// caller already put in e.Env wins.
+// cluster names a management cluster (e.MgmtCluster) or, failing that, the
+// module requires one. A HYVE_MGMT_KUBECONFIG path the caller already put
+// in e.Env wins.
 func (e *Executor) envWithMgmtKubeconfig(ctx context.Context) ([]string, error) {
-	mgmt := mgmtClusterRequirement(e.ModuleDir)
+	mgmt := e.MgmtCluster
+	if mgmt == "" {
+		mgmt = mgmtClusterRequirement(e.ModuleDir)
+	}
 	if mgmt == "" {
 		return e.Env, nil
 	}
@@ -71,7 +75,7 @@ func (e *Executor) envWithMgmtKubeconfig(ctx context.Context) ([]string, error) 
 	}
 	path, err := locate(ctx, mgmt)
 	if err != nil {
-		return nil, fmt.Errorf("module requires mgmtCluster %q: %w", mgmt, err)
+		return nil, fmt.Errorf("management cluster %q: %w", mgmt, err)
 	}
 	return append(append([]string{}, e.Env...), MgmtKubeconfigEnv+"="+path), nil
 }

@@ -123,6 +123,11 @@ spec:
                   silently ignored. Intended for admins enforcing standard
                   configurations.
                 type: boolean
+              mgmtCluster:
+                description: |-
+                  MgmtCluster is copied onto each rendered cluster — see
+                  ClusterDefinitionSpec.MgmtCluster.
+                type: string
               params:
                 additionalProperties:
                   type: string

@@ -23,7 +23,7 @@ import (
 // into the CLI just to reconstruct the same shape a second time.
 func createTemplateAPI(
 	client *shared.APIClient,
-	name, description, driverSource, driverVersion, region string,
+	name, description, driverSource, driverVersion, region, mgmtCluster string,
 	params map[string]string,
 	beforeCreateStr, onCreateStr, onDeleteStr, afterDeleteStr string,
 	schedule string,
@@ -44,9 +44,10 @@ func createTemplateAPI(
 	}
 
 	spec := template.TemplateSpec{
-		Driver: types.DriverRef{Source: driverSource, Version: driverVersion},
-		Region: region,
-		Params: params,
+		Driver:      types.DriverRef{Source: driverSource, Version: driverVersion},
+		Region:      region,
+		MgmtCluster: mgmtCluster,
+		Params:      params,
 		Workflows: types.WorkflowsSpec{
 			BeforeCreate: parseWorkflows(beforeCreateStr),
 			OnCreate:     parseWorkflows(onCreateStr),
