@@ -25,6 +25,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/hyve-agent ./cmd/agent
 
 FROM alpine:3.20
+# Links the image to this repository on GitHub (its Packages list).
+LABEL org.opencontainers.image.source="https://github.com/cbridges1/hyve"
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /out/hyve-agent /usr/local/bin/hyve-agent
 ENTRYPOINT ["hyve-agent"]

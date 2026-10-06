@@ -54,6 +54,8 @@ RUN /root/go/bin/hyve --home /root/.hyve set-state --current /state && \
     /root/go/bin/hyve --home /root/.hyve module install
 
 FROM alpine:3.20
+# Links the image to this repository on GitHub (its Packages list).
+LABEL org.opencontainers.image.source="https://github.com/cbridges1/hyve"
 ENV HOME=/root
 
 # Same package list as the plain-CLI Dockerfile/Dockerfile.release at this

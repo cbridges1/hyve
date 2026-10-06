@@ -39,6 +39,8 @@ COPY --from=ui-builder /src/web/dist/ internal/webui/dist/
 RUN CGO_ENABLED=0 go build -o /out/hyve .
 
 FROM alpine:3.20
+# Links the image to this repository on GitHub (its Packages list).
+LABEL org.opencontainers.image.source="https://github.com/cbridges1/hyve"
 ENV HOME=/root
 
 # Same package list as the plain-CLI Dockerfile/Dockerfile.release and

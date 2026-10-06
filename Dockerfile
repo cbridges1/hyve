@@ -21,6 +21,8 @@ COPY --from=ui-builder /src/web/dist/ internal/webui/dist/
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /hyve .
 
 FROM alpine:3.20
+# Links the image to this repository on GitHub (its Packages list).
+LABEL org.opencontainers.image.source="https://github.com/cbridges1/hyve"
 
 # Tools module auth/create/delete/status scripts commonly shell out to:
 # git for repo operations, kubectl/helm for spec.resources, curl/jq/openssl
