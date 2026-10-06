@@ -18,7 +18,6 @@ var (
 	loginAPIURL     string
 	loginUsername   string
 	loginPassword   string
-	loginOrg        string
 	loginCACertPath string
 )
 
@@ -98,7 +97,6 @@ func init() {
 	loginCmd.Flags().StringVar(&loginAPIURL, "api-url", "", "Base URL of the hyve API server, e.g. https://hyve-api.example.com (default: the current context's --api-url, see 'hyve context create')")
 	loginCmd.Flags().StringVar(&loginUsername, "username", "", "Username (omit to be prompted)")
 	loginCmd.Flags().StringVar(&loginPassword, "password", "", "Password (scripting only — omit to be prompted without echo)")
-	loginCmd.Flags().StringVar(&loginOrg, "org", "", "Tenant to log into (omit for the control-plane/superadmin tier) — resolved to a namespace client-side, see cmd/shared.ResolveOrgToNamespace")
 	loginCmd.Flags().StringVar(&loginCACertPath, "ca-cert", "", "Path to a PEM-encoded CA certificate to trust in addition to the system trust store (default: reuse whatever CA, if any, is already stored for this context)")
 
 	Cmd.AddCommand(loginCmd)
@@ -130,8 +128,6 @@ func runLogin() {
 		}
 	}
 
-	namespace := shared.ResolveOrgToNamespace(loginOrg)
-
 	apiURL := strings.TrimRight(apiURLFlag, "/")
 
 	caCertPEM := ""
@@ -145,7 +141,9 @@ func runLogin() {
 		caCertPEM = existingCACertForAPIURL(apiURL)
 	}
 
-	sess, err := shared.PerformLogin(apiURL, username, password, namespace, caCertPEM)
+	// No organization: one login reaches every organization the user
+	// belongs to (see 'hyve organization use').
+	sess, err := shared.PerformLogin(apiURL, username, password, "", caCertPEM)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -156,6 +154,29 @@ func runLogin() {
 	fmt.Printf("✅ Logged in as %s against %s (session expires %s)\n", username, apiURL, sess.SessionExpiresAt)
 
 	ensureClusterContextRegistered(apiURL, caCertPEM)
+
+	// --org on login (the root flag) selects that organization on the
+	// context, as 'hyve organization use' would.
+	if shared.ServerOrgFlagValue != "" {
+		rememberOrganization(apiURL, shared.ServerOrgFlagValue)
+	}
+}
+
+func rememberOrganization(apiURL, org string) {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		return
+	}
+	defer repoMgr.Close()
+	repo, err := repoMgr.GetRepositoryByAPIURL(apiURL)
+	if err != nil {
+		return
+	}
+	if err := repoMgr.SetServerOrganization(repo.Name, org); err != nil {
+		log.Printf("⚠️  Logged in, but couldn't select organization %q: %v", org, err)
+		return
+	}
+	fmt.Printf("🏢 Acting in organization %s\n", org)
 }
 
 // existingCACertForAPIURL looks up whatever CA cert (if any) is already

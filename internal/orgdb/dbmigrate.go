@@ -13,6 +13,7 @@ type MigrationSummary struct {
 	Organizations       int
 	Environments        int
 	Bindings            int
+	Users               int
 	SigningKeys         int
 	Sessions            int
 }
@@ -117,6 +118,17 @@ func Migrate(ctx context.Context, source, dest *Store) (MigrationSummary, error)
 			return summary, fmt.Errorf("copy binding %q/%q: %w", b.Namespace, b.Identity, err)
 		}
 		summary.Bindings++
+	}
+
+	users, err := source.ListUsers(ctx)
+	if err != nil {
+		return summary, fmt.Errorf("list source users: %w", err)
+	}
+	for _, u := range users {
+		if _, err := dest.CreateUser(ctx, u); err != nil {
+			return summary, fmt.Errorf("copy user %q: %w", u.Username, err)
+		}
+		summary.Users++
 	}
 
 	signingKeys, err := source.ListSigningKeys(ctx)

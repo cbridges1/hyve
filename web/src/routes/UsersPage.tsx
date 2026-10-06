@@ -2,20 +2,24 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { roleLabel, RoleAdmin, RoleReadOnly, RoleSuperadmin } from '../lib/api/auth'
 import { Modal } from '../components/Modal'
-import { accountsApi } from '../lib/api/accounts'
+import { accountsApi, type CreatedAccount } from '../lib/api/accounts'
 import { ApiError } from '../lib/api/client'
 import { useConfirm } from '../lib/confirm'
 import { useApi } from '../lib/useApi'
 import { useSession } from '../lib/useAuth'
 import { useWhoami } from '../lib/useWhoami'
 
-function NewUserForm({ onCreated }: { onCreated: () => void }) {
+function NewUserForm({ onCreated }: { onCreated: (account: CreatedAccount) => void }) {
   const who = useWhoami().data
   const [open, setOpen] = useState(false)
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState(RoleReadOnly)
+  // existing: add a user who already has a login (a member of another
+  // organization) — just a username and role; they keep their own
+  // password and email.
+  const [existing, setExisting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -26,7 +30,7 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
         onClick={() => setOpen(true)}
         className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
       >
-        New user
+        Add user
       </button>
     )
   }
@@ -35,13 +39,16 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
     setError(null)
     setSubmitting(true)
     try {
-      await accountsApi.create({ username, password, role, email: email || undefined })
+      const created = await accountsApi.create(
+        existing ? { username, role } : { username, password, role, email: email.trim() },
+      )
       setOpen(false)
       setUsername('')
       setEmail('')
       setPassword('')
       setRole(RoleReadOnly)
-      onCreated()
+      setExisting(false)
+      onCreated(created)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to create user')
     } finally {
@@ -50,7 +57,26 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <Modal title="New user" onClose={() => setOpen(false)}>
+    <Modal title="Add user" onClose={() => setOpen(false)}>
+      <div className="mb-4 inline-flex rounded-lg border border-neutral-300 p-0.5 text-sm dark:border-neutral-700">
+        {[
+          { value: false, label: 'New user' },
+          { value: true, label: 'Existing user' },
+        ].map((opt) => (
+          <button
+            key={opt.label}
+            type="button"
+            onClick={() => setExisting(opt.value)}
+            className={`rounded-md px-3 py-1 transition-colors ${
+              existing === opt.value
+                ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-900'
+                : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
       <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Username</span>
@@ -61,26 +87,30 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
             className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
           />
         </label>
-        <label className="text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Email (optional)</span>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="off"
-            className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
-          />
-        </label>
-        <label className="text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Password</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
-          />
-        </label>
+        {!existing && (
+          <>
+            <label className="text-sm">
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Email</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="off"
+                className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Password</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
+              />
+            </label>
+          </>
+        )}
         <label className="text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Role</span>
           <select
@@ -100,6 +130,11 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
           tenant of their own.
         </p>
       )}
+      <p className="mb-3 text-xs text-neutral-500">
+        {existing
+          ? 'They keep their own login and can switch to this organization from "Viewing".'
+          : "They'll get an email saying their account was created. Send them the password separately."}
+      </p>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="flex justify-end gap-2">
         <button
@@ -111,16 +146,19 @@ function NewUserForm({ onCreated }: { onCreated: () => void }) {
         </button>
         <button
           type="button"
-          disabled={!username || !password || submitting}
+          disabled={!username || (!existing && (!email.trim() || !password)) || submitting}
           onClick={submit}
           className="rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
-          {submitting ? 'Creating…' : 'Create'}
+          {submitting ? 'Adding…' : existing ? 'Add' : 'Create'}
         </button>
       </div>
       <p className="mt-3 text-xs text-neutral-500">
         A custom role with its own ServiceAccount still needs{' '}
-        <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">hyve cluster-config api create-user --role custom</code>.
+        <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">
+          hyve cluster-config api create-user --role custom
+        </code>
+        .
       </p>
     </Modal>
   )
@@ -130,11 +168,18 @@ export function UsersPage() {
   const session = useSession()
   const confirm = useConfirm()
   const { data: users, loading, error, reload } = useApi(() => accountsApi.list())
+  const [created, setCreated] = useState<CreatedAccount | null>(null)
+
+  function onCreated(account: CreatedAccount) {
+    setCreated(account)
+    reload()
+  }
 
   async function onDelete(username: string) {
     const ok = await confirm({
       title: `Delete user "${username}"?`,
-      message: 'This immediately revokes their access — any active session they have will stop working on its next request.',
+      message:
+        'This immediately revokes their access — any active session they have will stop working on its next request.',
       confirmLabel: 'Delete user',
       danger: true,
     })
@@ -147,8 +192,24 @@ export function UsersPage() {
     <div>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Users</h1>
-        <NewUserForm onCreated={reload} />
+        <NewUserForm onCreated={onCreated} />
       </div>
+
+      {created &&
+        (created.existingUser ? (
+          <p className="mb-4 text-sm text-green-700 dark:text-green-400">
+            Added {created.username} to this organization.
+          </p>
+        ) : created.emailSent ? (
+          <p className="mb-4 text-sm text-green-700 dark:text-green-400">
+            Created {created.username} — a notification was emailed to {created.email}.
+          </p>
+        ) : (
+          <p className="mb-4 text-sm text-amber-700 dark:text-amber-400">
+            Created {created.username}, but the notification email to {created.email} couldn't be sent — check the SMTP
+            settings under Control plane → Settings.
+          </p>
+        ))}
 
       {loading && <p className="text-sm text-neutral-500">Loading…</p>}
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
@@ -162,7 +223,9 @@ export function UsersPage() {
               <div key={u.username} className="flex items-center justify-between gap-3 px-4 py-3">
                 <Link to={`/users/${encodeURIComponent(u.username)}`} className="min-w-0 flex-1 group">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-neutral-900 group-hover:underline dark:text-neutral-100">{u.username}</span>
+                    <span className="font-medium text-neutral-900 group-hover:underline dark:text-neutral-100">
+                      {u.username}
+                    </span>
                     {isSelf && <span className="text-xs text-neutral-400">(you)</span>}
                     <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
                       {roleLabel(u.role)}

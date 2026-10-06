@@ -79,7 +79,7 @@ func runMigrateDB() {
 		log.Fatalf("❌ Migration failed: %v", err)
 	}
 
-	fmt.Printf("✅ Migrated %d reconciling cluster(s), %d organization(s), %d environment(s), %d binding(s), %d signing key(s), %d session(s)\n",
-		summary.ReconcilingClusters, summary.Organizations, summary.Environments, summary.Bindings, summary.SigningKeys, summary.Sessions)
+	fmt.Printf("✅ Migrated %d reconciling cluster(s), %d organization(s), %d environment(s), %d binding(s), %d user(s), %d signing key(s), %d session(s)\n",
+		summary.ReconcilingClusters, summary.Organizations, summary.Environments, summary.Bindings, summary.Users, summary.SigningKeys, summary.Sessions)
 	fmt.Println("Point hyve-api (and hyve-controller, if applicable) at the new database before starting them back up.")
 }

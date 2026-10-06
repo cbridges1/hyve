@@ -5,17 +5,28 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"time"
 
+	"github.com/coder/websocket"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/cbridges1/hyve/internal/agentpki"
 )
 
 // Config bundles everything Run needs to maintain a tunnel connection to
 // the control plane.
 type Config struct {
-	// TunnelAddress is the control plane's own SSH tunnel listener
-	// (internal/api.Server.ServeAgentTunnel), host:port.
+	// TunnelAddress is where the control plane serves the SSH tunnel:
+	// either its raw TCP listener (internal/api.Server.ServeAgentTunnel),
+	// host:port, or its WebSocket endpoint, a wss:// (or ws://) URL ending
+	// in agentpki.TunnelWebSocketPath — the same SSH session carried over
+	// HTTPS, for a control plane reachable only through a reverse proxy.
 	TunnelAddress string
+	// CACertPEM is an extra CA to trust for a wss:// TunnelAddress — the
+	// same one bootstrap trusts for the control-plane URL. Empty means the
+	// system trust store only.
+	CACertPEM string
 	// Identity carries CAPublicKey alongside the agent's own certificate
 	// (see Identity's own doc comment) — both came from the same
 	// bootstrap exchange, so Run verifies the control plane's host
@@ -126,11 +137,11 @@ func connectOnce(cfg Config) (*ssh.Client, error) {
 	// request (see internal/agentpki.ProxyChannelType), which only
 	// (*ssh.Client).HandleChannelOpen — set up in serveProxyChannels
 	// below — can ever see.
-	netConn, err := net.DialTimeout("tcp", cfg.TunnelAddress, clientConfig.Timeout)
+	netConn, err := dialTunnel(cfg, clientConfig.Timeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", cfg.TunnelAddress, err)
 	}
-	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, cfg.TunnelAddress, clientConfig)
+	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, sshAddress(cfg.TunnelAddress), clientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("handshake with %s: %w", cfg.TunnelAddress, err)
 	}
@@ -145,4 +156,48 @@ func connectOnce(cfg Config) (*ssh.Client, error) {
 	go serveProxyChannels(client)
 
 	return client, nil
+}
+
+// dialTunnel opens the transport the SSH session runs over: a WebSocket for
+// a ws:// or wss:// TunnelAddress (internal/api's handleAgentTunnelWebSocket),
+// otherwise a plain TCP connection. The SSH layer above is identical either
+// way — certificate authentication, heartbeats, proxy channels.
+func dialTunnel(cfg Config, timeout time.Duration) (net.Conn, error) {
+	if !agentpki.IsWebSocketTunnelAddress(cfg.TunnelAddress) {
+		return net.DialTimeout("tcp", cfg.TunnelAddress, timeout)
+	}
+	httpClient, err := bootstrapHTTPClient(cfg.CACertPEM)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, cfg.TunnelAddress, &websocket.DialOptions{HTTPClient: httpClient})
+	if err != nil {
+		return nil, err
+	}
+	// Background, not ctx: ctx only bounds the handshake. The connection
+	// lives until the SSH session closes it.
+	return websocket.NetConn(context.Background(), ws, websocket.MessageBinary), nil
+}
+
+// sshAddress is the host:port the SSH handshake's host-key check is given
+// (ssh.CertChecker.CheckHostKey splits it as one): TunnelAddress itself for
+// a raw TCP address, or a WebSocket URL's host with its default port.
+func sshAddress(tunnelAddress string) string {
+	if !agentpki.IsWebSocketTunnelAddress(tunnelAddress) {
+		return tunnelAddress
+	}
+	u, err := url.Parse(tunnelAddress)
+	if err != nil || u.Host == "" {
+		return tunnelAddress
+	}
+	if u.Port() != "" {
+		return u.Host
+	}
+	port := "443"
+	if u.Scheme == "ws" {
+		port = "80"
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }

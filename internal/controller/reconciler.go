@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
@@ -136,8 +137,9 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	lf = r.resolveWorkflowIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 	lf = r.resolveResourceIfNeeded(ctx, lf, def, secretsEnv[cliSecretGitHubToken])
 
-	var lastCreateOutput, lastDeleteOutput string
+	var lastCreateOutput, lastDeleteOutput, phase string
 	hooks := &reconcile.ReconcileHooks{
+		OnClusterStatus: func(status string) { phase = status },
 		OnEvent: func(eventType, reason, message string) {
 			if r.Recorder != nil {
 				r.Recorder.Event(&cr, eventType, reason, message)
@@ -154,21 +156,12 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	reconcileErr := r.Reconciler.ReconcileOne(ctx, def, lf, false, secretsEnv, hooks)
 
-	// Ready and Error are always set as a pair, one true and one false —
-	// never independently — so they can't both end up true at once (an
-	// error on this pass, alongside a stale true Ready condition from
-	// whenever the cluster last actually succeeded). See setConditions'
-	// own doc comment for the live bug this fixes.
-	conds := []metav1.Condition{
-		{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Reconciled", Message: "last reconcile succeeded"},
-		{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionFalse, Reason: "Reconciled", Message: "no error"},
+	// Phase: what this pass observed, else the last pass's (a pass can end
+	// before checking — e.g. a module that wouldn't resolve).
+	if phase == "" {
+		phase = cr.Status.Phase
 	}
-	if reconcileErr != nil {
-		conds = []metav1.Condition{
-			{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: "ReconcileFailed", Message: reconcileErr.Error()},
-			{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionTrue, Reason: "ReconcileFailed", Message: reconcileErr.Error()},
-		}
-	}
+	conds := clusterConditions(phase, reconcileErr)
 
 	// retry.RetryOnConflict, not a single Get-then-Update: ReconcileOne can
 	// itself drive one or more SaveClusterDefinition calls mid-cycle (via
@@ -199,6 +192,7 @@ func (r *ClusterDefinitionReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if lastDeleteOutput != "" {
 			fresh.Status.LastDeleteOutput = lastDeleteOutput
 		}
+		fresh.Status.Phase = phase
 		return r.setConditions(ctx, &fresh, fresh.Generation, conds)
 	})
 	if updateErr != nil && !apierrors.IsNotFound(updateErr) {
@@ -712,7 +706,10 @@ func (r *ClusterDefinitionReconciler) upsertResourceRefStatusCR(ctx context.Cont
 	}
 }
 
-// SetupWithManager wires this reconciler into mgr, watching ClusterDefinition.
+// SetupWithManager wires this reconciler into mgr, watching ClusterDefinition
+// under its default controller name. Filtered to r.Namespace when set: the
+// manager's cache can span several namespaces (--watch-home-organizations)
+// even when this, the control namespace's instance, keeps the plain name.
 func (r *ClusterDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	maxConcurrent := r.MaxConcurrentReconciles
 	if maxConcurrent <= 0 {
@@ -721,8 +718,12 @@ func (r *ClusterDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor("hyve-controller")
 	}
+	var opts []builder.ForOption
+	if r.Namespace != "" {
+		opts = append(opts, builder.WithPredicates(namespacePredicate(r.Namespace)))
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&hyvev1alpha1.ClusterDefinition{}).
+		For(&hyvev1alpha1.ClusterDefinition{}, opts...).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
 }
@@ -754,4 +755,46 @@ func (r *ClusterDefinitionReconciler) SetupWithManagerNamed(mgr ctrl.Manager, na
 		For(&hyvev1alpha1.ClusterDefinition{}, builder.WithPredicates(namespacePredicate(r.Namespace))).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
+}
+
+// clusterConditions builds the Ready/Error pair for a reconcile pass —
+// always set together, one true and one false, so they can't both end up
+// true at once (see setConditions). Ready is True only when the cluster
+// itself is ACTIVE and the pass succeeded: a pass that merely ran (say,
+// "still CREATING, skipping") isn't a ready cluster. Otherwise its reason
+// says why — ReconcileFailed, or the phase (Creating, Deleting, ...).
+func clusterConditions(phase string, reconcileErr error) []metav1.Condition {
+	if reconcileErr != nil {
+		return []metav1.Condition{
+			{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: "ReconcileFailed", Message: reconcileErr.Error()},
+			{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionTrue, Reason: "ReconcileFailed", Message: reconcileErr.Error()},
+		}
+	}
+	noError := metav1.Condition{Type: hyvev1alpha1.ConditionTypeError, Status: metav1.ConditionFalse, Reason: "Reconciled", Message: "no error"}
+	if phase == "ACTIVE" {
+		return []metav1.Condition{
+			{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Active", Message: "cluster is active"},
+			noError,
+		}
+	}
+	reason, message := "Unknown", "cluster state not reported yet"
+	if phase != "" {
+		reason, message = phaseReason(phase), "cluster is "+strings.ToLower(strings.ReplaceAll(phase, "_", " "))
+	}
+	return []metav1.Condition{
+		{Type: hyvev1alpha1.ConditionTypeReady, Status: metav1.ConditionFalse, Reason: reason, Message: message},
+		noError,
+	}
+}
+
+// phaseReason turns a driver status (NOT_FOUND) into a condition reason
+// (NotFound).
+func phaseReason(phase string) string {
+	var b strings.Builder
+	for _, part := range strings.Split(strings.ToLower(phase), "_") {
+		if part != "" {
+			b.WriteString(strings.ToUpper(part[:1]) + part[1:])
+		}
+	}
+	return b.String()
 }

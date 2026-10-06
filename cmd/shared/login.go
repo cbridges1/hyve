@@ -22,12 +22,10 @@ import (
 // (used to silently refresh it — see internal/api's Session/
 // AccessTokenTTL/SessionTTL doc comments). Username is carried onto the
 // returned Session purely for display (e.g. `hyve context whoami`'s local-only
-// summary before its own server round trip). namespace is the already-
-// resolved tenant to log into (empty for the control-plane/superadmin
-// namespace) — see ResolveOrgToNamespace for how --org gets here; this
-// function itself only ever deals in "namespace", never "org", per
-// HYVE-MULTI-TENANCY-PLAN.md's explicit design intent that the API (and
-// everything below it) never learns the concept of "org" at all.
+// summary before its own server round trip). namespace
+// optionally pre-selects an organization for the session; empty (what
+// `hyve context login` sends) selects none — one login reaches every
+// organization the user belongs to, picked per request instead.
 //
 // caCertPEM, if non-empty, is trusted in addition to the system trust
 // store for this one call — passed explicitly rather than resolved via
@@ -123,20 +121,6 @@ func PromptSecret(label string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
-}
-
-// ResolveOrgToNamespace maps a `--org` value to the `namespace` field
-// `hyve context login` actually sends. A trivial identity mapping deliberately
-// kept as its own isolated function rather than inlined at the call site:
-// resolving an org's current name to its real (renamable-independently)
-// namespace now happens server-side instead (see internal/api's
-// resolveLoginNamespace) — this function only needs to exist at all so a
-// future hosted directory (multiple API URLs, not just multiple
-// namespaces on one) can swap its body for a real
-// `org -> {apiURL, namespace}` lookup without touching anything else in
-// the login path.
-func ResolveOrgToNamespace(org string) string {
-	return org
 }
 
 // UniqueContextName returns base, or base-2, base-3, ... — whichever is

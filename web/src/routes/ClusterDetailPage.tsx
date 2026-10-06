@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { BackLink, Card, EmptyState } from '../components/Card'
-import { ReadyBadge } from '../components/ConditionBadge'
+import { AgentBadge, ClusterStatusBadge, ExpiryBadge } from '../components/ConditionBadge'
 import { AdminOnly } from '../components/RoleGate'
 import { SpecEditor } from '../components/SpecEditor'
 import { clustersApi } from '../lib/api/clusters'
@@ -13,7 +13,7 @@ import { usePolledApi } from '../lib/useApi'
 const POLL_INTERVAL_MS = 5000
 const EVENTS_PAGE_SIZE = 20
 
-function KubeconfigPanel({ name }: { name: string }) {
+function KubeconfigPanel({ name, env }: { name: string; env?: string }) {
   const [result, setResult] = useState<{ kind: 'kubeconfig'; text: string } | { kind: 'auth-context'; note: string } | null>(
     null,
   )
@@ -25,7 +25,7 @@ function KubeconfigPanel({ name }: { name: string }) {
     setLoading(true)
     setResult(null)
     try {
-      const kc = await kubeconfigApi.get(name)
+      const kc = await kubeconfigApi.get(name, env)
       setResult({ kind: 'kubeconfig', text: kc })
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -33,10 +33,10 @@ function KubeconfigPanel({ name }: { name: string }) {
         // inspection, since the console can't execute a driver module's
         // auth op itself (see Phase 11's own scope note on this endpoint).
         try {
-          await authContextApi.get(name)
+          await authContextApi.get(name, env)
           setResult({
             kind: 'auth-context',
-            note: `This cluster uses client-side auth (the default) — run "hyve cluster auth ${name}" from a terminal with the driver module's tools installed.`,
+            note: `This cluster uses client-side auth (the default) — run "hyve cluster auth ${name}${env ? ` --env ${env}` : ''}" from a terminal with the driver module's tools installed.`,
           })
         } catch (innerErr) {
           setError(innerErr instanceof ApiError ? innerErr.message : 'Failed to fetch auth context')
@@ -77,15 +77,20 @@ function KubeconfigPanel({ name }: { name: string }) {
 
 export function ClusterDetailPage() {
   const { name = '' } = useParams()
+  // The cluster's environment, from the link the list page built — see
+  // clusterPath. Without it a short name finds nothing in an organization
+  // with environments.
+  const [searchParams] = useSearchParams()
+  const env = searchParams.get('env') ?? undefined
   const navigate = useNavigate()
   const confirm = useConfirm()
-  const { data: cluster, error } = usePolledApi(() => clustersApi.get(name), POLL_INTERVAL_MS, [name])
-  const { data: resources } = usePolledApi(() => clustersApi.resources(name), POLL_INTERVAL_MS, [name])
+  const { data: cluster, error } = usePolledApi(() => clustersApi.get(name, env), POLL_INTERVAL_MS, [name, env])
+  const { data: resources } = usePolledApi(() => clustersApi.resources(name, env), POLL_INTERVAL_MS, [name, env])
   const [eventsOffset, setEventsOffset] = useState(0)
   const { data: activity } = usePolledApi(
-    () => clustersApi.events(name, EVENTS_PAGE_SIZE, eventsOffset),
+    () => clustersApi.events(name, EVENTS_PAGE_SIZE, eventsOffset, env),
     POLL_INTERVAL_MS,
-    [name, eventsOffset],
+    [name, env, eventsOffset],
   )
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -107,7 +112,7 @@ export function ClusterDetailPage() {
     setDeleteError(null)
     setDeleting(true)
     try {
-      await clustersApi.delete(name)
+      await clustersApi.delete(name, env)
       navigate('/clusters')
     } catch (err) {
       setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete cluster')
@@ -140,7 +145,8 @@ export function ClusterDetailPage() {
           <p className="text-sm text-neutral-500">{cluster.driver}</p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <ReadyBadge conditions={cluster.conditions} />
+          <ExpiryBadge expiresAt={cluster.expiresAt} />
+          <ClusterStatusBadge cluster={cluster} />
           <AdminOnly>
             <button
               type="button"
@@ -178,21 +184,12 @@ export function ClusterDetailPage() {
         </p>
       </Card>
 
-      <KubeconfigPanel name={name} />
+      <KubeconfigPanel name={name} env={env} />
 
       <Card title="Recent activity">
         {cluster.agent?.enabled && (
           <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 pb-3 mb-1 dark:border-neutral-800/70">
-            <span
-              className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${
-                cluster.agentStatus?.connected
-                  ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                  : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${cluster.agentStatus?.connected ? 'bg-green-600 dark:bg-green-400' : 'bg-neutral-400'}`} />
-              Agent {cluster.agentStatus?.connected ? 'connected' : 'disconnected'}
-            </span>
+            <AgentBadge state={cluster.agentState} />
             {cluster.agent?.proxy && (
               <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
                 Proxy enabled
@@ -293,7 +290,7 @@ export function ClusterDetailPage() {
 
       {cluster.spec && !cluster.pendingDeletion && (
         <AdminOnly>
-          <SpecEditor spec={cluster.spec} onSave={(spec) => clustersApi.update(name, spec).then(() => undefined)} />
+          <SpecEditor spec={cluster.spec} onSave={(spec) => clustersApi.update(name, spec, env).then(() => undefined)} />
         </AdminOnly>
       )}
     </div>

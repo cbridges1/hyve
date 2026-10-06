@@ -197,11 +197,11 @@ func (e EmailSettings) Configured() bool {
 // self-service forgot-password flow (see
 // HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 4). TokenHash, never the
 // raw token — it's a bearer secret good for a live password reset, same
-// treatment as Binding.PasswordHash. At most one live row per BindingID,
+// treatment as User.PasswordHash. At most one live row per UserID,
 // enforced at the application level — see Store.CreatePasswordResetToken.
 type PasswordResetToken struct {
 	ID        string
-	BindingID string
+	UserID    string
 	TokenHash string
 	ExpiresAt time.Time
 	CreatedAt time.Time

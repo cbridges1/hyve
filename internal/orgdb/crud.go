@@ -951,17 +951,18 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeleteSessionsBySubject removes every session for (subject, namespace) —
+// DeleteSessionsBySubject removes every session for subject, in every
+// organization (a session is no longer tied to one) —
 // bulk revocation, unlike DeleteSession's single-id form. Added for the
 // password-reset flow (HYVE-EMAIL-IMPLEMENTATION-PLAN.md's Milestone 4):
 // a successful reset should kill every *other* still-active session for
-// that binding, not just the one (if any) the reset itself was performed
+// that user, not just the one (if any) the reset itself was performed
 // through. Same caveat as handleLogout's own doc comment already states:
 // this revokes session tokens (the refresh capability), not any
 // already-issued, still-valid short-TTL access token — those keep working
 // until AccessTokenTTL lapses regardless.
-func (s *Store) DeleteSessionsBySubject(ctx context.Context, subject, namespace string) error {
-	_, err := s.exec(ctx, `DELETE FROM sessions WHERE subject = ? AND tenant_namespace = ?`, subject, namespace)
+func (s *Store) DeleteSessionsBySubject(ctx context.Context, subject string) error {
+	_, err := s.exec(ctx, `DELETE FROM sessions WHERE subject = ?`, subject)
 	if err != nil {
 		return fmt.Errorf("delete sessions for subject: %w", err)
 	}
@@ -1079,11 +1080,11 @@ func (s *Store) UpsertEmailSettings(ctx context.Context, e EmailSettings) (Email
 	return s.GetEmailSettings(ctx)
 }
 
-const passwordResetTokenColumns = `id, binding_id, token_hash, expires_at, created_at`
+const passwordResetTokenColumns = `id, user_id, token_hash, expires_at, created_at`
 
 func scanPasswordResetToken(row *sql.Row) (PasswordResetToken, error) {
 	var t PasswordResetToken
-	err := row.Scan(&t.ID, &t.BindingID, &t.TokenHash, &t.ExpiresAt, &t.CreatedAt)
+	err := row.Scan(&t.ID, &t.UserID, &t.TokenHash, &t.ExpiresAt, &t.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PasswordResetToken{}, ErrNotFound
 	}
@@ -1093,45 +1094,42 @@ func scanPasswordResetToken(row *sql.Row) (PasswordResetToken, error) {
 	return t, nil
 }
 
-// CreatePasswordResetToken deletes any existing token for b.BindingID and
-// inserts b — at most one live token per binding, the same "delete then
-// recreate" shape CreateUser's own "safe to re-run" CLI convention
-// already uses, done here inside one call (not a separate transaction
-// type this Store doesn't otherwise expose) since both statements are
-// simple unconditional deletes/inserts with nothing to roll back for.
+// CreatePasswordResetToken deletes any existing token for t.UserID and
+// inserts t — at most one live token per user, done inside one call since
+// both statements are simple unconditional deletes/inserts with nothing to
+// roll back for.
 func (s *Store) CreatePasswordResetToken(ctx context.Context, t PasswordResetToken) (PasswordResetToken, error) {
 	if t.ID == "" {
 		t.ID = newID()
 	}
-	if _, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, t.BindingID); err != nil {
+	if _, err := s.exec(ctx, `DELETE FROM user_password_reset_tokens WHERE user_id = ?`, t.UserID); err != nil {
 		return PasswordResetToken{}, fmt.Errorf("clear existing password reset token: %w", err)
 	}
 	_, err := s.exec(ctx, `
-		INSERT INTO password_reset_tokens (id, binding_id, token_hash, expires_at)
+		INSERT INTO user_password_reset_tokens (id, user_id, token_hash, expires_at)
 		VALUES (?, ?, ?, ?)
-	`, t.ID, t.BindingID, t.TokenHash, t.ExpiresAt)
+	`, t.ID, t.UserID, t.TokenHash, t.ExpiresAt)
 	if err != nil {
 		return PasswordResetToken{}, fmt.Errorf("insert password reset token: %w", err)
 	}
-	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM password_reset_tokens WHERE id = ?`, t.ID)
+	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM user_password_reset_tokens WHERE id = ?`, t.ID)
 	return scanPasswordResetToken(row)
 }
 
-// GetPasswordResetTokenByBindingID looks up bindingID's live token, if
-// any — orgdb.ErrNotFound if none exists (already expired-and-deleted
-// tokens aren't distinguished from never-requested ones; the caller
-// checks ExpiresAt itself for a row that does exist, see
-// handleResetPassword).
-func (s *Store) GetPasswordResetTokenByBindingID(ctx context.Context, bindingID string) (PasswordResetToken, error) {
-	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM password_reset_tokens WHERE binding_id = ?`, bindingID)
+// GetPasswordResetTokenByUserID looks up userID's live token, if any —
+// orgdb.ErrNotFound if none exists (already expired-and-deleted tokens
+// aren't distinguished from never-requested ones; the caller checks
+// ExpiresAt itself for a row that does exist, see handleResetPassword).
+func (s *Store) GetPasswordResetTokenByUserID(ctx context.Context, userID string) (PasswordResetToken, error) {
+	row := s.queryRow(ctx, `SELECT `+passwordResetTokenColumns+` FROM user_password_reset_tokens WHERE user_id = ?`, userID)
 	return scanPasswordResetToken(row)
 }
 
-// DeletePasswordResetTokensForBinding removes bindingID's token, if any —
+// DeletePasswordResetTokensForUser removes userID's token, if any —
 // called once a reset succeeds (single-use) or is otherwise no longer
 // wanted. A missing row is not an error, same stance as DeleteSession.
-func (s *Store) DeletePasswordResetTokensForBinding(ctx context.Context, bindingID string) error {
-	_, err := s.exec(ctx, `DELETE FROM password_reset_tokens WHERE binding_id = ?`, bindingID)
+func (s *Store) DeletePasswordResetTokensForUser(ctx context.Context, userID string) error {
+	_, err := s.exec(ctx, `DELETE FROM user_password_reset_tokens WHERE user_id = ?`, userID)
 	if err != nil {
 		return fmt.Errorf("delete password reset tokens: %w", err)
 	}

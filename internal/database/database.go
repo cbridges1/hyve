@@ -125,6 +125,7 @@ func (d *DB) initialize() error {
 			api_url TEXT,
 			api_ca_cert TEXT,
 			server_environment TEXT,
+			server_organization TEXT,
 			session_token TEXT,
 			session_expires_at TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -240,7 +241,7 @@ func (d *DB) ensureRepositoryCredentialColumns() error {
 	}
 	rows.Close()
 
-	for _, col := range []string{"api_url", "api_ca_cert", "server_environment", "session_token", "session_expires_at"} {
+	for _, col := range []string{"api_url", "api_ca_cert", "server_environment", "server_organization", "session_token", "session_expires_at"} {
 		if existing[col] {
 			continue
 		}

@@ -12,16 +12,17 @@ import (
 // ClusterDefinition CR's own spec/status split.
 func FromTypesClusterDefinitionSpec(def *types.ClusterDefinition) hyvev1alpha1.ClusterDefinitionSpec {
 	return hyvev1alpha1.ClusterDefinitionSpec{
-		Region:    def.Metadata.Region,
-		Driver:    FromTypesDriverRef(def.Spec.Driver),
-		Runner:    hyvev1alpha1.RunnerSpec{Image: def.Spec.Runner.Image},
-		Params:    def.Spec.Params,
-		Workflows: FromTypesWorkflowsSpec(def.Spec.Workflows),
-		Resources: FromTypesResourceRefs(def.Spec.Resources),
-		Delete:    def.Spec.Delete,
-		Pause:     def.Spec.Pause,
-		ExpiresAt: def.Spec.ExpiresAt,
-		DependsOn: def.Spec.DependsOn,
+		Region:      def.Metadata.Region,
+		Driver:      FromTypesDriverRef(def.Spec.Driver),
+		Runner:      hyvev1alpha1.RunnerSpec{Image: def.Spec.Runner.Image},
+		MgmtCluster: def.Spec.MgmtCluster,
+		Params:      def.Spec.Params,
+		Workflows:   FromTypesWorkflowsSpec(def.Spec.Workflows),
+		Resources:   FromTypesResourceRefs(def.Spec.Resources),
+		Delete:      def.Spec.Delete,
+		Pause:       def.Spec.Pause,
+		ExpiresAt:   def.Spec.ExpiresAt,
+		DependsOn:   def.Spec.DependsOn,
 		Access: hyvev1alpha1.AccessSpec{
 			Method: def.Spec.AccessMethod,
 			Agent:  FromTypesAgentSpec(def.Spec.Agent),

@@ -1,4 +1,5 @@
 import { apiFetch, apiFetchText } from './client'
+import { withEnv } from './clusters'
 import type { AuthContext } from './types'
 
 export const kubeconfigApi = {
@@ -8,10 +9,11 @@ export const kubeconfigApi = {
    * auth) method this 409s with a message pointing at authContextApi
    * instead — see internal/api/kubeconfig_handler.go's handleKubeconfig.
    */
-  get: (clusterName: string) => apiFetchText(`/kubeconfig?cluster=${encodeURIComponent(clusterName)}`),
+  get: (clusterName: string, env?: string) => apiFetchText(withEnv(`/kubeconfig?cluster=${encodeURIComponent(clusterName)}`, env)),
 }
 
 export const authContextApi = {
   /** Everything needed to run a driver module's auth op client-side — the console can't execute it (see AppShell's "run from your terminal" messaging), but can still surface driverSource/params/driverOutputs for inspection. */
-  get: (clusterName: string) => apiFetch<AuthContext>(`/clusters/${encodeURIComponent(clusterName)}/auth-context`),
+  get: (clusterName: string, env?: string) =>
+    apiFetch<AuthContext>(withEnv(`/clusters/${encodeURIComponent(clusterName)}/auth-context`, env)),
 }

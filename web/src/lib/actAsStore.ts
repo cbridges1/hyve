@@ -1,11 +1,11 @@
 const STORAGE_KEY = 'hyve-act-as-namespace'
 
 // Same tiny external-store pattern as authStore.ts/themeStore.ts: a
-// module-level value notified through useSyncExternalStore. null means
-// "Control plane" — no X-Hyve-Act-As-Namespace header sent, the
-// superadmin's own default view (see internal/api/server.go's
-// TenantNamespace, which honors this header only for a superadmin caller —
-// an ordinary admin's requests never carry it at all, see apiFetch below).
+// module-level value notified through useSyncExternalStore: the namespace
+// of the organization picked in "Viewing", sent as X-Hyve-Organization
+// (see apiFetch). null sends nothing and lets the server pick — the
+// control plane for a superadmin, a user's only (or first) organization
+// otherwise (internal/api's resolveAccess).
 let current: string | null = localStorage.getItem(STORAGE_KEY)
 const listeners = new Set<() => void>()
 

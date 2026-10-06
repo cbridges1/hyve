@@ -210,6 +210,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/request-password-reset", s.handleRequestPasswordReset)
 	mux.HandleFunc("POST /auth/reset-password", s.handleResetPassword)
 	s.registerAgentBootstrapRoutes(mux)
+	s.registerAgentTunnelWebSocketRoute(mux)
 	s.registerDocsRoutes(mux)
 
 	apiMux := http.NewServeMux()
@@ -231,7 +232,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerAgentProxyRoutes(apiMux)
 	s.registerEmailSettingsRoutes(apiMux)
 
-	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(s.requireRole(apiMux))))
+	mux.Handle("/api/", http.StripPrefix("/api", s.requireAuth(organizationFromAgentProxyPath(s.requireRole(apiMux)))))
 	mux.Handle("/proxy/", http.StripPrefix("/proxy", http.HandlerFunc(s.handleProxy)))
 	mux.Handle("/", http.FileServer(http.FS(webui.FS())))
 	return corsMiddleware(mux)
@@ -282,53 +283,33 @@ func NamespaceFromContext(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
-// actAsNamespaceHeader lets a superadmin caller view/act within a chosen
-// tenant namespace without a separate HyveAccessBinding of their own there
-// — a superadmin's session otherwise has no tenant namespace at all (see
-// RoleSuperadmin's doc comment), and re-login with --org doesn't work for
-// them either (their identity binding only exists in the control-plane
-// namespace). Honored ONLY when the caller's already-resolved role is
-// RoleSuperadmin — see TenantNamespace below for why this is safe even
-// though requireRole itself calls TenantNamespace before role is known.
+// organizationHeader selects which organization a request acts in — an
+// organization's name (or, equivalently until it's renamed, its
+// namespace). A session isn't tied to one: the same login reaches every
+// organization its user is a member of, and requireRole checks the
+// selection against those memberships on every request (a superadmin may
+// select any). Sent by the CLI ('hyve organization use', --org) and the
+// console's "Viewing" picker.
+const organizationHeader = "X-Hyve-Organization"
+
+// actAsNamespaceHeader is organizationHeader's predecessor, a
+// superadmin-only literal namespace — still honored the same way, for
+// older consoles and CLIs.
 const actAsNamespaceHeader = "X-Hyve-Act-As-Namespace"
 
-// TenantNamespace resolves the namespace a request's own CRUD should be
-// scoped to — the token's own namespace when the request carries one
-// (the normal case, threaded by requireAuth from the verified access
-// token), falling back to s.Namespace (this install's control-plane
-// namespace) only for requests with no verified token in context at all,
-// which shouldn't occur for anything mounted behind requireAuth. Handlers
-// that manage tenant-scoped objects (ClusterDefinition, Template,
-// Workflow, Resource, HyveAccessBinding, credentials Secrets, etc.) call
-// this instead of reading s.Namespace directly — see
-// HYVE-MULTI-TENANCY-PLAN.md's "Phase 2" section for why: s.Namespace is
-// now fixed per-install control-plane bookkeeping only (HyveConfig, the
-// primary ClusterDefinition), not a tenant's own
-// namespace, which varies per login. Organizations themselves live in
-// OrgStore (Postgres/SQLite), not a namespaced Kubernetes object at all —
-// see internal/orgdb.
-//
-// A superadmin caller may override this via actAsNamespaceHeader — checked
-// only when RoleFromContext already resolves to RoleSuperadmin, which is
-// what makes this safe to check unconditionally here rather than gating it
-// per call site: requireRole's own internal call to TenantNamespace (to
-// look up the caller's own binding, before role is known) runs before
-// contextKeyRole is ever set, so RoleFromContext returns ok=false there and
-// the header is correctly ignored for that call — a non-superadmin, or a
-// not-yet-role-resolved request, can never have this header honored, under
-// any circumstance.
+// TenantNamespace resolves the namespace a request's own CRUD is scoped to:
+// the organization requireRole selected and authorized for this request
+// (see resolveAccess). Falls back to s.Namespace (the control plane) only
+// for a request with no selection in context at all, which shouldn't occur
+// for anything mounted behind requireRole. Handlers that manage
+// tenant-scoped objects (ClusterDefinition, Template, Workflow, Resource,
+// bindings, secrets, ...) call this instead of reading s.Namespace, which
+// is fixed per-install control-plane bookkeeping only (HyveConfig, the
+// primary ClusterDefinition).
 func (s *Server) TenantNamespace(r *http.Request) string {
-	if role, ok := RoleFromContext(r.Context()); ok && role == hyvev1alpha1.RoleSuperadmin {
-		if actAs := r.Header.Get(actAsNamespaceHeader); actAs != "" {
-			return actAs
-		}
-	}
 	if ns, ok := NamespaceFromContext(r.Context()); ok && ns != "" {
 		return ns
 	}
-	// Empty (a superadmin's own login) means "the control-plane
-	// namespace" — the same value s.Namespace already holds, not a
-	// distinct third namespace.
 	return s.Namespace
 }
 
@@ -369,26 +350,43 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// requireRole resolves the authenticated username (set by requireAuth,
-// which must run first in the chain) to a role via its binding (Postgres/
-// SQLite, internal/orgdb — see identity.go's findBindingBySubject) and
-// puts it on the request context. An authenticated identity with no
-// matching binding gets 401, not 403: a structurally valid, unexpired JWT
-// for an identity whose binding has since been deleted (the account was
-// removed, or — in local dev — the whole organization datastore was
-// recreated from scratch) can never succeed no matter what the caller
-// does short of logging in again, which is exactly what 401 means to
-// every caller of this API. 403 is reserved for RequireRole's own
-// role-mismatch case just below (a real, bound identity that legitimately
-// lacks permission for one specific action) — that caller IS a valid
-// principal, just not an authorized one, which is a genuinely different
-// case from "this identity doesn't exist here at all." Confirmed live:
-// returning 403 here left the web console silently stuck on stale
-// credentials — its own apiFetch only clears the local session and
-// falls back to the login screen on a literal 401 (see
-// web/src/lib/api/client.ts), so this specific 403 never triggered that,
-// no re-login prompt, no obvious way out short of manually clearing
-// localStorage.
+// agentProxyOrgPrefix is the agent-proxy URL form that names the
+// organization: /api/agent-proxy/org/<namespace>/<cluster>/... — what
+// AgentProvider.Kubeconfig mints.
+const agentProxyOrgPrefix = "/api/agent-proxy/org/"
+
+// organizationFromAgentProxyPath turns /agent-proxy/org/<org>/<rest> (the
+// path under /api) into /agent-proxy/<rest> with <org> as the request's
+// organizationHeader, ahead of requireRole. A kubeconfig can carry a URL
+// but not custom headers, and its token names no organization, so this is
+// how kubectl through an agent reaches a cluster outside the caller's
+// default organization. Access is still checked by requireRole.
+func organizationFromAgentProxyPath(next http.Handler) http.Handler {
+	const prefix = "/agent-proxy/org/"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.Path, prefix); ok {
+			if org, path, ok := strings.Cut(rest, "/"); ok && org != "" {
+				r2 := r.Clone(r.Context())
+				r2.Header.Set(organizationHeader, org)
+				r2.URL.Path = "/agent-proxy/" + path
+				r2.URL.RawPath = ""
+				next.ServeHTTP(w, r2)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireRole resolves which organization the request acts in and the
+// caller's role there (see resolveAccess), and puts both on the request
+// context. An account with no memberships left at all gets 401, not 403: a
+// structurally valid, unexpired token for a user whose access has since
+// been removed can never succeed short of logging in again, which is what
+// 401 means to every caller (the console only falls back to its login
+// screen on a literal 401 — see web/src/lib/api/client.ts). Selecting an
+// organization the caller isn't a member of is 403: a real principal, just
+// not authorized there.
 func (s *Server) requireRole(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, ok := UsernameFromContext(r.Context())
@@ -396,14 +394,107 @@ func (s *Server) requireRole(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		binding, err := s.findBindingBySubject(r.Context(), s.TenantNamespace(r), orgdb.SubjectTypeLocal, username)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "no access binding for this identity — please log in again")
+		ns, role, status, msg := s.resolveAccess(r, username)
+		if status != 0 {
+			writeError(w, status, msg)
 			return
 		}
-		ctx := context.WithValue(r.Context(), contextKeyRole, binding.Role)
+		ctx := context.WithValue(r.Context(), contextKeyRole, role)
+		ctx = context.WithValue(ctx, contextKeyNamespace, ns)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// resolveAccess picks the namespace a request acts in and the caller's role
+// there, from their memberships (every local binding for username):
+//
+//   - An organization selected by organizationHeader (or the legacy
+//     superadmin actAsNamespaceHeader, or a pre-redesign session's own
+//     login namespace): a superadmin acts there as superadmin; anyone
+//     else as their highest-privilege membership there, or gets 403.
+//   - Nothing selected: a superadmin acts in the control plane; anyone
+//     else in their only organization, or — a member of several — the
+//     first by namespace, until they pick one ('hyve organization use',
+//     or the console's picker).
+//
+// status is 0 on success, else the HTTP status and message to fail with.
+func (s *Server) resolveAccess(r *http.Request, username string) (namespace, role string, status int, msg string) {
+	ctx := r.Context()
+	if s.OrgStore == nil {
+		return "", "", http.StatusUnauthorized, "no access binding for this identity — please log in again"
+	}
+	memberships, err := s.OrgStore.ListBindingsForIdentity(ctx, orgdb.SubjectTypeLocal, username)
+	if err != nil {
+		log.Printf("api: failed to list memberships for %q: %v", username, err)
+		return "", "", http.StatusInternalServerError, "failed to resolve access"
+	}
+	if len(memberships) == 0 {
+		return "", "", http.StatusUnauthorized, "no access binding for this identity — please log in again"
+	}
+	superadmin := false
+	for _, b := range memberships {
+		if b.Namespace == s.Namespace && b.Role == hyvev1alpha1.RoleSuperadmin {
+			superadmin = true
+		}
+	}
+
+	selected, requested := "", ""
+	if org := strings.TrimSpace(r.Header.Get(organizationHeader)); org != "" {
+		selected, requested = s.resolveLoginNamespace(ctx, org), org
+	} else if actAs := r.Header.Get(actAsNamespaceHeader); actAs != "" && superadmin {
+		selected, requested = actAs, actAs
+	} else if tokenNS, ok := NamespaceFromContext(ctx); ok {
+		selected, requested = tokenNS, tokenNS
+	}
+
+	if selected != "" {
+		// Superadmin outranks any membership of their own there.
+		if superadmin {
+			return selected, hyvev1alpha1.RoleSuperadmin, 0, ""
+		}
+		if best, ok := bestMembership(memberships, selected); ok {
+			return selected, best.Role, 0, ""
+		}
+		return "", "", http.StatusForbidden, fmt.Sprintf("you don't have access to organization %q", requested)
+	}
+	if superadmin {
+		return s.Namespace, hyvev1alpha1.RoleSuperadmin, 0, ""
+	}
+	// memberships is ordered by namespace (ListBindingsForIdentity).
+	best, _ := bestMembership(memberships, memberships[0].Namespace)
+	return best.Namespace, best.Role, 0, ""
+}
+
+// bestMembership returns the highest-privilege membership in namespace —
+// the same rule as orgdb.Store.FindBindingBySubject.
+func bestMembership(memberships []orgdb.Binding, namespace string) (orgdb.Binding, bool) {
+	var best *orgdb.Binding
+	for i := range memberships {
+		b := &memberships[i]
+		if b.Namespace != namespace {
+			continue
+		}
+		if best == nil || roleRank(b.Role) > roleRank(best.Role) {
+			best = b
+		}
+	}
+	if best == nil {
+		return orgdb.Binding{}, false
+	}
+	return *best, true
+}
+
+func roleRank(role string) int {
+	switch role {
+	case hyvev1alpha1.RoleSuperadmin:
+		return 4
+	case hyvev1alpha1.RoleAdmin:
+		return 3
+	case hyvev1alpha1.RoleReadOnly:
+		return 2
+	default:
+		return 1
+	}
 }
 
 // RequireRole 403s the request unless its resolved role (set by
@@ -422,7 +513,7 @@ func RequireRole(w http.ResponseWriter, r *http.Request, allowed ...string) bool
 		}
 		// A superadmin can do anything an admin can, everywhere an admin
 		// call site checks RoleAdmin — this is what makes the "act as"
-		// environment switcher (TenantNamespace's X-Hyve-Act-As-Namespace
+		// organization picker (organizationHeader, resolved by resolveAccess
 		// handling) actually usable: without it, every one of the ~20
 		// RoleAdmin-only mutation endpoints (clusters/templates/workflows/
 		// resources/secrets/workflow-runs) rejected a

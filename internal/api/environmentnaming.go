@@ -8,6 +8,8 @@ import (
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
+
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // hyveEnvironmentLabel is applied to a ClusterDefinition created while its
@@ -221,23 +223,52 @@ func (s *Server) resolveCreateName(w http.ResponseWriter, r *http.Request, names
 // resolveAddressedName resolves a GET/PATCH/DELETE's {name} path value plus
 // its ?env= query parameter into the real Kubernetes metadata.name to
 // address — the read-side counterpart to resolveCreateName, and (as of the
-// environments-scope-to-clusters-only follow-up) used only by
-// clusters.go's own handlers, for the same reason. Unlike create, a
-// missing/ambiguous ?env= here degrades gracefully to treating {name} as
-// the literal metadata.name (legacy behavior) rather than erroring, since a
-// GET by exact name has always been valid regardless of environment and
-// should stay that way for any pre-Milestone-3 caller.
+// environments-scope-to-clusters-only follow-up) used only for
+// ClusterDefinitions (clusters.go, the kubeconfig and auth-context
+// endpoints, workflow runs).
+//
+// With ?env= naming a real environment, {name} is that environment's short
+// name. Without one, {name} still has to work when it's unambiguous —
+// otherwise a caller with no environment selected (a CLI with none chosen,
+// an old console link) gets "cluster not found" for every cluster. So:
+// an object literally named {name} wins (a pre-environments object, or a
+// caller already using the real name); failing that, the short name
+// resolves in the environment effectiveEnvironmentLabel picks — the
+// organization's only environment, or "default" — the same rule the list
+// endpoint uses to label unlabeled clusters. Anything else falls back to
+// the literal name (legacy behavior).
 func (s *Server) resolveAddressedName(r *http.Request, namespace, name string) string {
 	requestedEnv := r.URL.Query().Get(envQueryParam)
-	if requestedEnv == "" || s.OrgStore == nil {
+	if s.OrgStore == nil {
 		return name
 	}
 	org, err := s.OrgStore.GetOrganizationByName(r.Context(), namespace)
 	if err != nil {
 		return name
 	}
-	if _, err := s.OrgStore.GetEnvironmentByName(r.Context(), org.ID, requestedEnv); err != nil {
+	if requestedEnv != "" {
+		if _, err := s.OrgStore.GetEnvironmentByName(r.Context(), org.ID, requestedEnv); err != nil {
+			return name
+		}
+		return joinEnvironmentName(requestedEnv, name)
+	}
+	if s.clusterDefinitionExists(r.Context(), namespace, name) {
 		return name
 	}
-	return joinEnvironmentName(requestedEnv, name)
+	if env := s.effectiveEnvironmentLabel(r.Context(), namespace, ""); env != "" {
+		return joinEnvironmentName(env, name)
+	}
+	return name
+}
+
+// clusterDefinitionExists reports whether a ClusterDefinition named name
+// exists in namespace. Any lookup error counts as "no", leaving the caller
+// to fall through to its own handling (and its own 404 or 500).
+func (s *Server) clusterDefinitionExists(ctx context.Context, namespace, name string) bool {
+	c, err := s.resourceClient(ctx, namespace)
+	if err != nil {
+		return false
+	}
+	var cd hyvev1alpha1.ClusterDefinition
+	return c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &cd) == nil
 }

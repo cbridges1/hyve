@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -233,4 +235,25 @@ func TestAgentTunnel_RejectsUnsignedKey(t *testing.T) {
 		Timeout:         5 * time.Second,
 	})
 	assert.Error(t, err, "a connection presenting a bare key instead of a CA-signed certificate must be rejected")
+}
+
+func TestAgentTunnelWebSocket_UnconfiguredIs503(t *testing.T) {
+	ts := httptest.NewServer((&Server{}).Routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + agentpki.TunnelWebSocketPath)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestAgentTunnelWebSocket_PlainGETIsNotUpgraded(t *testing.T) {
+	ca, err := agentpki.LoadOrCreateCA(context.Background(), k8sfake.NewClientset(), testNamespace)
+	require.NoError(t, err)
+	ts := httptest.NewServer((&Server{Client: newFakeClient(t), AgentCA: ca, AgentRegistry: NewAgentRegistry()}).Routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + agentpki.TunnelWebSocketPath)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode, "a request without a WebSocket upgrade must be refused")
+	assert.Less(t, resp.StatusCode, 500)
 }

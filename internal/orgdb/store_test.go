@@ -41,7 +41,7 @@ func openTestPostgres(t *testing.T) *Store {
 	// runs — truncate before each test so leftover rows from a prior run
 	// (or a prior test in this same run) can't collide with this one's
 	// fixed fixture names/unique constraints.
-	_, err = s.db.Exec(`TRUNCATE bindings, environments, organizations, reconciling_clusters, signing_keys, sessions, email_settings, password_reset_tokens CASCADE`)
+	_, err = s.db.Exec(`TRUNCATE bindings, environments, organizations, reconciling_clusters, signing_keys, sessions, email_settings, password_reset_tokens, user_password_reset_tokens, users CASCADE`)
 	require.NoError(t, err)
 
 	return s
@@ -236,13 +236,13 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	otherSubjSess, err := s.CreateSession(ctx, Session{Subject: "carol", TenantNamespace: "acme", TokenHash: "ddd", ExpiresAt: time.Now().Add(time.Hour)})
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeleteSessionsBySubject(ctx, "bob", "acme"))
+	require.NoError(t, s.DeleteSessionsBySubject(ctx, "bob"))
 	_, err = s.GetSession(ctx, sessA.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = s.GetSession(ctx, sessB.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = s.GetSession(ctx, otherNsSess.ID)
-	assert.NoError(t, err, "a session for the same subject in a different namespace must survive")
+	assert.ErrorIs(t, err, ErrNotFound, "a user's sessions go in every organization — a session isn't tied to one")
 	_, err = s.GetSession(ctx, otherSubjSess.ID)
 	assert.NoError(t, err, "a different subject's session in the same namespace must survive")
 
@@ -275,46 +275,42 @@ func testCRUDRoundTrip(t *testing.T, s *Store) {
 	assert.Equal(t, "smtp2.example.com", replaced.SMTPHost)
 	assert.Nil(t, replaced.SMTPUsername, "omitting a field on the replacing call must actually clear it, not leave the old value behind")
 
-	// Milestone 1: password reset tokens — one live token per binding.
-	resetBinding, err := s.CreateBinding(ctx, Binding{
-		Namespace: "acme", OrganizationID: &org.ID, EnvironmentID: &env.ID, SubjectType: SubjectTypeLocal,
-		Identity: "reset-target", Role: "admin", ServiceAccountName: "hyve-access-admin", ServiceAccountNamespace: "acme",
-	})
+	// Password reset tokens — one live token per user.
+	resetUser, err := s.CreateUser(ctx, User{Username: "reset-target"})
 	require.NoError(t, err)
 
-	_, err = s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	_, err = s.GetPasswordResetTokenByUserID(ctx, resetUser.ID)
 	assert.ErrorIs(t, err, ErrNotFound, "no token exists yet")
 
 	firstToken, err := s.CreatePasswordResetToken(ctx, PasswordResetToken{
-		BindingID: resetBinding.ID, TokenHash: "hash-one", ExpiresAt: time.Now().Add(2 * time.Hour),
+		UserID: resetUser.ID, TokenHash: "hash-one", ExpiresAt: time.Now().Add(2 * time.Hour),
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, firstToken.ID)
 
 	secondToken, err := s.CreatePasswordResetToken(ctx, PasswordResetToken{
-		BindingID: resetBinding.ID, TokenHash: "hash-two", ExpiresAt: time.Now().Add(2 * time.Hour),
+		UserID: resetUser.ID, TokenHash: "hash-two", ExpiresAt: time.Now().Add(2 * time.Hour),
 	})
 	require.NoError(t, err)
 
-	current, err := s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	current, err := s.GetPasswordResetTokenByUserID(ctx, resetUser.ID)
 	require.NoError(t, err)
 	assert.Equal(t, secondToken.ID, current.ID, "requesting a new token must replace, not accumulate alongside, the old one")
 	assert.Equal(t, "hash-two", current.TokenHash)
 
-	require.NoError(t, s.DeletePasswordResetTokensForBinding(ctx, resetBinding.ID))
-	_, err = s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
+	require.NoError(t, s.DeletePasswordResetTokensForUser(ctx, resetUser.ID))
+	_, err = s.GetPasswordResetTokenByUserID(ctx, resetUser.ID)
 	assert.ErrorIs(t, err, ErrNotFound)
-	require.NoError(t, s.DeletePasswordResetTokensForBinding(ctx, resetBinding.ID), "deleting an already-gone token must not error")
+	require.NoError(t, s.DeletePasswordResetTokensForUser(ctx, resetUser.ID), "deleting an already-gone token must not error")
 
-	// DeleteBinding must also clean up any live token — no ON DELETE
-	// CASCADE backs this (see migrations/*/0005_password_reset_tokens.sql).
+	// DeleteUser must also clean up any live token — no ON DELETE CASCADE.
 	_, err = s.CreatePasswordResetToken(ctx, PasswordResetToken{
-		BindingID: resetBinding.ID, TokenHash: "hash-three", ExpiresAt: time.Now().Add(2 * time.Hour),
+		UserID: resetUser.ID, TokenHash: "hash-three", ExpiresAt: time.Now().Add(2 * time.Hour),
 	})
 	require.NoError(t, err)
-	require.NoError(t, s.DeleteBinding(ctx, resetBinding.ID))
-	_, err = s.GetPasswordResetTokenByBindingID(ctx, resetBinding.ID)
-	assert.ErrorIs(t, err, ErrNotFound, "deleting the binding must delete its outstanding reset token too")
+	require.NoError(t, s.DeleteUser(ctx, resetUser.ID))
+	_, err = s.GetPasswordResetTokenByUserID(ctx, resetUser.ID)
+	assert.ErrorIs(t, err, ErrNotFound, "deleting the user must delete its outstanding reset token too")
 }
 
 func ptr(s string) *string { return &s }

@@ -107,10 +107,15 @@ func (r *WorkflowRunReconciler) finish(ctx context.Context, wr *hyvev1alpha1.Wor
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager wires this reconciler into mgr, watching WorkflowRun.
+// SetupWithManager wires this reconciler into mgr, watching WorkflowRun —
+// filtered to r.Namespace when set, as ClusterDefinitionReconciler's is.
 func (r *WorkflowRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	var opts []builder.ForOption
+	if r.Namespace != "" {
+		opts = append(opts, builder.WithPredicates(namespacePredicate(r.Namespace)))
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&hyvev1alpha1.WorkflowRun{}).
+		For(&hyvev1alpha1.WorkflowRun{}, opts...).
 		Complete(r)
 }
 

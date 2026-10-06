@@ -41,6 +41,21 @@ type APIClient struct {
 	// Env is the hyve-api environment cluster-scoped calls send as ?env=
 	// (see envPath) — empty lets the server resolve its own default.
 	Env string
+	// Org is the organization every call acts in, sent as the
+	// X-Hyve-Organization header — empty lets the server pick.
+	Org string
+}
+
+// organizationHeader is hyve-api's per-request organization selection
+// (internal/api's organizationHeader).
+const organizationHeader = "X-Hyve-Organization"
+
+// setHeaders adds the session token and the selected organization.
+func (c *APIClient) setHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if c.Org != "" {
+		req.Header.Set(organizationHeader, c.Org)
+	}
 }
 
 // ServerEnvFlagValue is bound to the root command's --env persistent flag
@@ -48,12 +63,37 @@ type APIClient struct {
 // selected environment ('hyve environment use').
 var ServerEnvFlagValue string
 
+// ServerOrgFlagValue is bound to the root command's --org persistent flag
+// — a one-command override of the active context's selected organization
+// ('hyve organization use').
+var ServerOrgFlagValue string
+
 // NewAPIClient builds a client from the current session — callers should
 // already have gone through UseClusterMode/EnsureValidSession, which
 // guarantee AccessToken is current.
 func NewAPIClient(sess *session.Session) *APIClient {
 	baseURL := strings.TrimRight(sess.APIURL, "/")
-	return &APIClient{BaseURL: baseURL, Token: sess.AccessToken, Env: SelectedServerEnvironment(baseURL)}
+	return &APIClient{BaseURL: baseURL, Token: sess.AccessToken, Env: SelectedServerEnvironment(baseURL), Org: SelectedServerOrganization(baseURL)}
+}
+
+// SelectedServerOrganization returns the organization commands against
+// apiURL act in: --org if given, else the active context's own selection —
+// only when the active context is the one registered for apiURL, like
+// SelectedServerEnvironment. Empty means none selected.
+func SelectedServerOrganization(apiURL string) string {
+	if ServerOrgFlagValue != "" {
+		return ServerOrgFlagValue
+	}
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		return ""
+	}
+	defer repoMgr.Close()
+	current, err := repoMgr.GetCurrentRepository()
+	if err != nil || strings.TrimRight(current.APIURL, "/") != apiURL {
+		return ""
+	}
+	return current.ServerOrganization
 }
 
 // SelectedServerEnvironment returns the hyve-api environment commands
@@ -226,6 +266,44 @@ type ClusterDTO struct {
 	// `hyve cluster show` (to display connectivity — cmd/cluster/api.go).
 	Agent       *hyvev1alpha1.AgentSpec  `json:"agent,omitempty"`
 	AgentStatus hyvev1alpha1.AgentStatus `json:"agentStatus,omitempty"`
+
+	// Phase, AgentState and ExpiresAt mirror internal/api's clusterDTO:
+	// the cluster's own state (CREATING, ACTIVE, ...), hyve-agent's
+	// (waiting, installing, connected, disconnected), and when it's
+	// scheduled to be deleted (RFC 3339; empty: never).
+	Phase      string `json:"phase,omitempty"`
+	AgentState string `json:"agentState,omitempty"`
+	ExpiresAt  string `json:"expiresAt,omitempty"`
+}
+
+// FormatExpiry renders an RFC 3339 expiresAt as local time plus how long
+// until then ("2026-10-04 12:00 CDT (in 3h20m)", or "(overdue — deleting
+// on the next reconcile)"); an unparseable value is returned as is.
+func FormatExpiry(expiresAt string, now time.Time) string {
+	t, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return expiresAt
+	}
+	local := t.Local().Format("2006-01-02 15:04 MST")
+	d := t.Sub(now)
+	if d <= 0 {
+		return local + " (overdue — deleting on the next reconcile)"
+	}
+	return local + " (in " + roundDuration(d) + ")"
+}
+
+// roundDuration shortens d for display: days and hours past a day, hours
+// and minutes past an hour, else minutes.
+func roundDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		days := int(d / (24 * time.Hour))
+		return fmt.Sprintf("%dd%dh", days, int((d-time.Duration(days)*24*time.Hour)/time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh%dm", int(d/time.Hour), int((d%time.Hour)/time.Minute))
+	default:
+		return fmt.Sprintf("%dm", int(d/time.Minute)+1)
+	}
 }
 
 // ConditionDTO mirrors metav1.Condition's JSON shape closely enough for
@@ -633,7 +711,7 @@ func (c *APIClient) GetAuthContext(clusterName string) (*AuthContextDTO, error) 
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	c.setHeaders(req)
 
 	resp, err := httpClientForAPIURL(c.BaseURL).Do(req)
 	if err != nil {
@@ -674,7 +752,7 @@ func (c *APIClient) GetKubeconfig(clusterName string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	c.setHeaders(req)
 
 	resp, err := httpClientForAPIURL(c.BaseURL).Do(req)
 	if err != nil {
@@ -808,6 +886,24 @@ type WhoamiDTO struct {
 	Organization       string `json:"organization,omitempty"`
 	ReconcilingCluster string `json:"reconcilingCluster,omitempty"`
 	Migrating          bool   `json:"migrating,omitempty"`
+	// Organizations is every organization this login can act in.
+	Organizations []WhoamiOrganizationDTO `json:"organizations"`
+}
+
+type WhoamiOrganizationDTO struct {
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace"`
+	Role         string `json:"role"`
+	ControlPlane bool   `json:"controlPlane,omitempty"`
+}
+
+// DisplayName is how an organization is shown: "control plane" for the
+// install's own, else its name.
+func (o WhoamiOrganizationDTO) DisplayName() string {
+	if o.ControlPlane {
+		return "control plane (" + o.Name + ")"
+	}
+	return o.Name
 }
 
 func (c *APIClient) Whoami() (*WhoamiDTO, error) {
@@ -830,7 +926,7 @@ func (c *APIClient) CurrentOrganization(explicit string) (string, error) {
 		return "", err
 	}
 	if who.Organization == "" {
-		return "", fmt.Errorf("your session (namespace %q) doesn't belong to an organization — pass --org to name one", who.Namespace)
+		return "", fmt.Errorf("namespace %q isn't an organization — pick one with 'hyve organization use <name>' (or --org)", who.Namespace)
 	}
 	return who.Organization, nil
 }
@@ -1026,7 +1122,7 @@ func (c *APIClient) do(method, path string, body []byte, out interface{}) error 
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	c.setHeaders(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

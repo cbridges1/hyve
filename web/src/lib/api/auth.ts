@@ -14,22 +14,14 @@ type LoginResponse = {
   sessionExpiresAt: string
 }
 
-// resolveOrgToNamespace mirrors cmd/shared/login.go's ResolveOrgToNamespace
-// exactly — today a trivial identity mapping (org name IS namespace name),
-// kept as its own function so a future hosted-directory lookup replaces
-// just this one spot, matching the CLI's own isolation of this seam. An
-// empty org resolves to no namespace at all (a superadmin logging in with
-// no tenant), not an empty-string namespace.
-function resolveOrgToNamespace(org: string): string | undefined {
-  return org.trim() || undefined
-}
-
-export async function login(username: string, password: string, org: string = ''): Promise<void> {
-  const namespace = resolveOrgToNamespace(org)
+// login needs no organization: one login reaches every organization the
+// user belongs to — the "Viewing" picker selects one per request (see
+// apiFetch's X-Hyve-Organization header).
+export async function login(username: string, password: string): Promise<void> {
   const res = await fetch('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, ...(namespace ? { namespace } : {}) }),
+    body: JSON.stringify({ username, password }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
@@ -68,12 +60,11 @@ export async function logout(): Promise<void> {
 // usernames/emails exist). A network-level failure (server unreachable)
 // still throws, so the caller can distinguish "couldn't even ask" from
 // "asked, response is deliberately uninformative."
-export async function requestPasswordReset(identifier: string, org: string = ''): Promise<void> {
-  const namespace = resolveOrgToNamespace(org)
+export async function requestPasswordReset(identifier: string): Promise<void> {
   const res = await fetch('/auth/request-password-reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier, ...(namespace ? { namespace } : {}) }),
+    body: JSON.stringify({ identifier }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
@@ -81,16 +72,13 @@ export async function requestPasswordReset(identifier: string, org: string = '')
   }
 }
 
-// resetPassword consumes a reset link's email/token/namespace query
-// parameters (see internal/api.buildPasswordResetLink) — namespace is the
-// exact value that link carried, round-tripped as-is, never re-resolved
-// from org/email here (see resetPasswordRequest.Namespace's own doc
-// comment for why).
-export async function resetPassword(email: string, token: string, newPassword: string, namespace?: string): Promise<void> {
+// resetPassword consumes a reset link's email/token query parameters (see
+// internal/api.buildPasswordResetLink).
+export async function resetPassword(email: string, token: string, newPassword: string): Promise<void> {
   const res = await fetch('/auth/reset-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, token, newPassword, ...(namespace ? { namespace } : {}) }),
+    body: JSON.stringify({ email, token, newPassword }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
@@ -111,7 +99,15 @@ export type Whoami = {
   // organization (see internal/api's whoamiResponse).
   reconcilingCluster?: string
   migrating?: boolean
+  // organizations is every organization this login can act in (all of
+  // them, as superadmin, for a superadmin) — the "Viewing" picker's
+  // options.
+  organizations: WhoamiOrganization[]
 }
+
+// controlPlane marks the install's own organization — shown as "Control
+// plane", not by its namespace.
+export type WhoamiOrganization = { name: string; namespace: string; role: string; controlPlane?: boolean }
 
 export const whoami = () => apiFetch<Whoami>('/whoami')
 

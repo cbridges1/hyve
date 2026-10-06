@@ -13,7 +13,6 @@ const inputClass =
 // own link, not from anywhere deeper in the console.
 export function ForgotPasswordPage() {
   const [identifier, setIdentifier] = useState('')
-  const [org, setOrg] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sent, setSent] = useState(false)
@@ -23,7 +22,7 @@ export function ForgotPasswordPage() {
     setError(null)
     setSubmitting(true)
     try {
-      await requestPasswordReset(identifier, org)
+      await requestPasswordReset(identifier)
       // Always show the same confirmation, whether or not identifier
       // actually matched an account — the backend already stays generic
       // for the same reason (see internal/api.handleRequestPasswordReset's
@@ -78,19 +77,6 @@ export function ForgotPasswordPage() {
               />
             </label>
 
-            <label className="mb-5 block text-sm">
-              <span className="mb-1.5 block font-medium text-neutral-600 dark:text-neutral-400">
-                Organization <span className="font-normal text-neutral-400 dark:text-neutral-500">(optional)</span>
-              </span>
-              <input
-                type="text"
-                value={org}
-                onChange={(e) => setOrg(e.target.value)}
-                placeholder="leave blank for a superadmin account"
-                autoComplete="organization"
-                className={inputClass}
-              />
-            </label>
 
             {error && (
               <p className="mb-5 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/60 dark:text-red-300">

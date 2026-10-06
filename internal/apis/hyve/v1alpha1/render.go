@@ -20,12 +20,13 @@ func RenderClusterDefinitionSpec(tpl TemplateSpec, region string, overrides map[
 		region = tpl.Region
 	}
 	return ClusterDefinitionSpec{
-		Region:    region,
-		Driver:    tpl.Driver,
-		Runner:    tpl.Runner,
-		Params:    params,
-		Workflows: tpl.Workflows,
-		Resources: tpl.Resources,
-		Access:    tpl.Access,
+		Region:      region,
+		Driver:      tpl.Driver,
+		Runner:      tpl.Runner,
+		MgmtCluster: tpl.MgmtCluster,
+		Params:      params,
+		Workflows:   tpl.Workflows,
+		Resources:   tpl.Resources,
+		Access:      tpl.Access,
 	}
 }

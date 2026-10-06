@@ -55,13 +55,15 @@ func readInvocations(t *testing.T, path string) string {
 // fakeAgentTokenIssuer counts calls and returns a fixed token — lets tests
 // assert a token was (or wasn't) minted without a real Kubernetes clientset.
 type fakeAgentTokenIssuer struct {
-	calls int
-	token string
-	err   error
+	calls     int
+	token     string
+	err       error
+	namespace string // the targetNamespace of the last call
 }
 
-func (f *fakeAgentTokenIssuer) IssueBootstrapToken(_ context.Context, _, _ string) (string, error) {
+func (f *fakeAgentTokenIssuer) IssueBootstrapToken(_ context.Context, targetNamespace, _ string) (string, error) {
 	f.calls++
+	f.namespace = targetNamespace
 	if f.err != nil {
 		return "", f.err
 	}
@@ -98,8 +100,9 @@ func TestReconcileAgent_InstallsWhenEnabled(t *testing.T) {
 
 	log := readInvocations(t, invocations)
 	records := strings.Split(log, invocationDelimiter)
-	require.NotEmpty(t, records)
-	applyRecord := records[0]
+	require.GreaterOrEqual(t, len(records), 2)
+	assert.Contains(t, records[0], "delete Secret "+agentCertSecretName, "the saved identity is dropped so the agent bootstraps with the new token")
+	applyRecord := records[1]
 	assert.Contains(t, applyRecord, "apply", "the core manifest must be applied")
 	assert.Contains(t, applyRecord, "kind: Deployment")
 	assert.Contains(t, applyRecord, "test-bootstrap-token", "the minted token must reach the rendered Deployment env")
@@ -120,7 +123,7 @@ func TestReconcileAgent_UpToDate_SkipsReapply(t *testing.T) {
 		Metadata: types.ClusterMetadata{Name: "acme-worker"},
 		Spec: types.ClusterSpec{
 			Agent:        types.AgentSpec{Enabled: true},
-			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, ""), AppliedAt: "2026-01-01T00:00:00Z"},
+			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, "", r.agentIdentityNamespace()), AppliedAt: "2026-01-01T00:00:00Z"},
 		},
 	}
 
@@ -217,14 +220,14 @@ func TestReconcileAgent_ProxyTurnedOff_RemovesProxyBindingsOnly(t *testing.T) {
 		Metadata: types.ClusterMetadata{Name: "acme-worker"},
 		Spec: types.ClusterSpec{
 			Agent:        types.AgentSpec{Enabled: true, Proxy: false},
-			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(true, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, ""), AppliedAt: "2026-01-01T00:00:00Z"},
+			AppliedAgent: &types.AppliedAgent{ConfigHash: agentConfigHash(true, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, "", r.agentIdentityNamespace()), AppliedAt: "2026-01-01T00:00:00Z"},
 		},
 	}
 
 	err := r.reconcileAgent(context.Background(), &cluster, nil)
 	require.NoError(t, err)
 	require.NotNil(t, cluster.Spec.AppliedAgent)
-	assert.Equal(t, agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, ""), cluster.Spec.AppliedAgent.ConfigHash)
+	assert.Equal(t, agentConfigHash(false, image, r.AgentControlPlaneURL, r.AgentTunnelAddress, "", r.agentIdentityNamespace()), cluster.Spec.AppliedAgent.ConfigHash)
 
 	log := readInvocations(t, invocations)
 	assert.Contains(t, log, agentProxyAdminBindingName)
@@ -260,11 +263,34 @@ func TestReconcileAgent_SkipsWhenNotConfigured(t *testing.T) {
 }
 
 func TestAgentConfigHash_ChangesWithProxyOrImageOrEndpoints(t *testing.T) {
-	base := agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "")
-	assert.NotEqual(t, base, agentConfigHash(true, "image:v1", "http://cp.example.com", "cp.example.com:8092", ""), "proxy toggling must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v2", "http://cp.example.com", "cp.example.com:8092", ""), "image change must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp2.example.com", "cp.example.com:8092", ""), "control-plane URL change must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp2.example.com:8092", ""), "tunnel address change must change the hash")
-	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "-----BEGIN CERTIFICATE-----..."), "CA cert change must change the hash")
-	assert.Equal(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", ""), "identical inputs must hash identically")
+	base := agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "", "acme")
+	assert.NotEqual(t, base, agentConfigHash(true, "image:v1", "http://cp.example.com", "cp.example.com:8092", "", "acme"), "proxy toggling must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v2", "http://cp.example.com", "cp.example.com:8092", "", "acme"), "image change must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp2.example.com", "cp.example.com:8092", "", "acme"), "control-plane URL change must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp2.example.com:8092", "", "acme"), "tunnel address change must change the hash")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "-----BEGIN CERTIFICATE-----...", "acme"), "CA cert change must change the hash")
+	assert.Equal(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "", "acme"), "identical inputs must hash identically")
+	assert.NotEqual(t, base, agentConfigHash(false, "image:v1", "http://cp.example.com", "cp.example.com:8092", "", "widget"), "the identity's namespace must change the hash")
+}
+
+// TestReconcileAgent_IdentityForTheClustersOrganization: an organization's
+// cluster gets an agent identity for that organization's namespace —
+// where hyve-api looks the cluster up — not the control plane's.
+func TestReconcileAgent_IdentityForTheClustersOrganization(t *testing.T) {
+	withFakeKubectl(t)
+	issuer := &fakeAgentTokenIssuer{token: "tok"}
+	r := newTestAgentReconciler(t, issuer)
+	r.ClusterNamespace = "branlen"
+
+	cluster := types.ClusterDefinition{
+		Metadata: types.ClusterMetadata{Name: "default-branclust"},
+		Spec:     types.ClusterSpec{Agent: types.AgentSpec{Enabled: true}},
+	}
+	require.NoError(t, r.reconcileAgent(context.Background(), &cluster, nil))
+	assert.Equal(t, "branlen", issuer.namespace)
+
+	r.ClusterNamespace = ""
+	cluster.Spec.AppliedAgent = nil
+	require.NoError(t, r.reconcileAgent(context.Background(), &cluster, nil))
+	assert.Equal(t, "hyve-system", issuer.namespace, "no cluster namespace (CLI): the control plane's")
 }

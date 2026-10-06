@@ -4,383 +4,95 @@
 
 # Hyve
 
-Hyve manages the full lifecycle of Kubernetes clusters — creation, configuration, reconciliation, and teardown — across any cloud provider. Define clusters as YAML and reconcile them with the `hyve` CLI (GitOps-friendly: plain files in a directory, git optional, no extra infrastructure to run it), or deploy `hyve` itself as a cluster-native controller + API for team/multi-tenant use — both modes share the same YAML and the same reconcile engine, so nothing about how a cluster is defined changes between them. Cloud operations are delegated to **modules**: versioned, self-contained packages that implement cluster operations via shell scripts or workflow YAMLs. No cloud SDKs are embedded in Hyve itself.
+Kubernetes clusters as code. Describe a cluster in YAML and Hyve creates, updates, and deletes it to match — on your laptop, in a pipeline, or as a controller in your cluster.
 
 [![Documentation](https://img.shields.io/badge/docs-hyve--website-green)](https://cbridges1.github.io/hyve-website/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Features
+## Run it where you need it
 
-- **GitOps Friendly** — Cluster state is plain YAML in a directory. Keep it in git and every change is version-controlled, reviewed through pull requests, and rolled back with a revert commit — hyve never commits or pushes itself.
-- **Module System** — Modules are versioned packages for any cloud provider. Install once, reference from any template. No cloud SDKs bundled.
-- **Lifecycle Hooks** — `beforeCreate`, `onCreate`, `afterCreate`, `onDelete`, `afterDelete` — run arbitrary workflows at each stage of a cluster's lifecycle, automatically.
-- **Cluster Templates** — Define the shape of a cluster once; execute the template by name to stamp out clusters consistently.
-- **Variable Injection** — Module params are injected as `HYVE_PARAM_*` env vars. Workflow outputs flow back as `HYVE_KEY=value` lines and are persisted for the next reconcile.
-- **Any Provider** — A module is just a git repository of scripts, so anything with a CLI works. `hyve module init` scaffolds one; see the [module authoring guide](https://cbridges1.github.io/hyve-website/docs/guides/module-authoring). Your credentials stay in your environment.
-- **Two Run Modes, One Engine** — `hyve reconcile` against a local/git directory, or deploy Hyve as a cluster-native controller + API (with a built-in web console) for team/multi-tenant use — the same reconcile engine and the same YAML either way.
+- **Locally** — `hyve reconcile` against a directory. Git-backed if you want history and review; a plain folder if you don't.
+- **In pipelines** — the same command from CI, e.g. clusters created for a test run and torn down after.
+- **In Kubernetes** — a controller plus an API and web console for your team. Reconcile on the cluster Hyve runs on, or point each organization at a separate reconciling cluster to keep the app apart from the work.
 
-## Why Hyve?
+The same YAML and the same engine everywhere: locally a cluster is a file, in Kubernetes a custom resource.
 
-**Your files are the state.** No S3 bucket, no Terraform Cloud, no extra credentials — desired state and each cluster's recorded state (`cluster-state/`) are plain files, so a git repository gives you the full history of every change.
+## Bring your own provisioner
 
-**Continuous reconciliation, not plan-and-apply.** Add a definition to create, set `spec.delete: true` (`hyve cluster delete`) to destroy, update a field to reconcile the difference. The same `hyve reconcile` command handles all three cases — or, in cluster mode, the controller does it continuously.
+How a cluster gets built is up to a **module** — a small, versioned set of scripts (create, status, scale, auth, delete). Anything you can script works: Terraform, Crossplane, Cluster API, or a provider's own CLI. Hyve embeds no cloud SDKs; credentials stay where your tools already keep them.
 
-**Lifecycle hooks are built in.** Five hook points cover the full cluster lifecycle:
+**Cluster API is first-class:** [hyve-capi-module](https://github.com/cbridges1/hyve-capi-module) builds clusters from any ClusterClass on any provider Cluster API supports — on a management cluster you already run, or a kind cluster it starts for local runs and pipelines. `hyve module init` scaffolds your own.
 
-| Hook           | Cluster Exists? | When It Runs |
-|----------------|-----------------|--------------|
-| `beforeCreate` | No              | Before provisioning — provision VPCs, IAM roles, etc. |
-| `onCreate`     | Yes             | After the cluster is active, before `spec.resources` applies — deploy apps, configure monitoring |
-| `afterCreate`  | Yes             | After the cluster is active and `spec.resources` has applied — anything depending on a resource-created object (e.g. a Secret referenced by a resource-managed Deployment) |
-| `onDelete`     | Yes             | Before deletion — drain workloads, export backups |
-| `afterDelete`  | No              | After deletion — destroy VPCs, release IPs, clean up roles |
+Templates stamp out clusters to a pattern, lifecycle hooks (`beforeCreate`, `onCreate`, `afterCreate`, `onDelete`, `afterDelete`) run workflows around each change, and `hyve cluster auth` hands you a working kubeconfig.
 
-**Modules, not embedded SDKs.** Old-style GitOps tools embed cloud SDKs. If your provider isn't supported, you're stuck. Hyve modules shell out to any CLI tool you already have configured — your credentials, your tools, your control.
-
-## Documentation
-
-Full documentation at **[cbridges1.github.io/hyve-website](https://cbridges1.github.io/hyve-website/)** — concepts, guides (including writing your own modules), and the CLI reference.
-
-## Installation
-
-**Homebrew (macOS/Linux):**
-
-```bash
-brew install cbridges1/tap/hyve
-```
-
-**Binary download:**
-
-Prebuilt binaries for macOS and Linux (amd64/arm64) and Windows (amd64) are attached to every [GitHub Release](https://github.com/cbridges1/hyve/releases).
-
-```bash
-curl -sL https://github.com/cbridges1/hyve/releases/latest/download/hyve_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz | tar xz
-sudo mv hyve /usr/local/bin/
-```
-
-**Docker:**
-
-```bash
-docker pull ghcr.io/cbridges1/hyve:latest
-docker run --rm -v "$(pwd)":/repo ghcr.io/cbridges1/hyve:latest reconcile --path .
-```
-
-Requires Go 1.26+ and the system `git` binary in `PATH` for the options below. A binary built this way serves a placeholder instead of the web console (it's built from `web/` and embedded at release time) — only relevant if you run `hyve cluster-config api run` from it.
-
-**Using `go install`:**
+## Install
 
 ```bash
 go install github.com/cbridges1/hyve@latest
 ```
 
-**From source (install to `$GOPATH/bin`):**
+Needs Go 1.26+, and `git` on your `PATH` (hyve fetches modules with it). Make sure `$(go env GOPATH)/bin` is on your `PATH` too.
+
+## Quick start
 
 ```bash
-git clone https://github.com/cbridges1/hyve.git
-cd hyve
-go install .
+hyve module add github.com/your-org/hyve-civo-module   # placeholder module
+hyve context create --path .                            # any directory; git optional
+
+hyve template create civo --driver github.com/your-org/hyve-civo-module \
+  --driver-version latest --region PHX1 --set node_count=3
+hyve cluster create my-cluster --template civo          # writes clusters/my-cluster.yaml
+
+hyve reconcile                                          # provisions it and runs hooks
+hyve cluster auth my-cluster && kubectl get nodes
 ```
 
-Ensure `$(go env GOPATH)/bin` is in your `PATH`. This builds and installs the binary in one step with no manual copy required.
+Every file Hyve writes is a real `hyve.io/v1alpha1` custom resource (`ClusterDefinition`, `Template`, `Workflow`). You can `kubectl apply` them to a cluster running Hyve's controller unchanged.
 
-**From source (local binary):**
+## Cluster mode
 
-```bash
-git clone https://github.com/cbridges1/hyve.git
-cd hyve
-go build -o hyve .
-sudo mv hyve /usr/local/bin/
-```
-
-## Quick Start
-
-```bash
-# 1. Add a module (any git repository laid out as a hyve module — write your
-#    own with `hyve module init`; the source below is a placeholder)
-hyve module add github.com/your-org/hyve-civo-module
-
-# 2. Point Hyve at a directory for state (a plain local directory works too —
-#    git is entirely optional and, if used, is just your own 'git' CLI)
-git clone https://github.com/company/hyve-state.git && cd hyve-state
-hyve context create --path .
-
-# 3. Create a template
-hyve template create my-civo-template \
-  --driver github.com/your-org/hyve-civo-module \
-  --driver-version latest \
-  --region PHX1 \
-  --set node_size=g4s.kube.medium \
-  --set node_count=3
-
-# 4. Create a cluster from the template — writes a cluster YAML to your state directory
-hyve cluster create my-cluster --template my-civo-template
-
-# 5. Reconcile — provisions the cluster and runs any lifecycle hooks
-hyve reconcile
-
-# 6. Configure kubectl
-hyve cluster auth my-cluster
-kubectl get nodes
-
-# 7. If your state directory is a git checkout, commit and push when you're ready —
-#    Hyve writes files locally but never commits or pushes on its own
-git add -A && git commit -m "add my-cluster" && git push
-```
-
-The resulting cluster YAML, written to your state directory:
-
-```yaml
-apiVersion: hyve.io/v1alpha1
-kind: ClusterDefinition
-metadata:
-  name: my-cluster
-spec:
-  region: PHX1
-  driver:
-    source: github.com/your-org/hyve-civo-module
-    version: latest
-  params:
-    node_size: g4s.kube.medium
-    node_count: "3"
-  workflows:
-    onCreate:
-      - name: deploy-monitoring
-    onDelete:
-      - name: drain-workloads
-```
-
-This is real `ClusterDefinition` custom resource YAML — the same shape a Kubernetes cluster running hyve's controller uses, group `hyve.io/v1alpha1`. `kubectl apply -f clusters/my-cluster.yaml` works unmodified once that cluster's CRDs are installed; there's no separate "cluster mode" file format to convert to. Templates (`templates/*.yaml`, kind `Template`) and Workflows (`workflows/*.yaml`, kind `Workflow`) are the same story — every YAML file under your state directory is a real CR, usable locally or on-cluster without translation.
-
-Cloud credentials are read directly from your environment — the same way the underlying CLI tools (`civo`, `aws`, `gcloud`, `az`) read them. Hyve never stores credentials.
-
-## Contexts: Local State vs. a Live Cluster
-
-Hyve works two ways, sharing the exact same YAML:
-
-- **Local mode** (above) — `hyve reconcile` reads `clusters/`, `templates/`, `workflows/` from the active **context**'s directory and drives everything from your machine or CI. A context (`hyve context`) is this machine's named pointer at a local directory, a hyve-api server, or both, registered and switched with `hyve context create`/`hyve context use <name>`/`hyve context list`.
-- **Cluster mode** — deploy hyve's controller + API (one Helm chart for both — see [Deploying cluster mode](#deploying-cluster-mode)) onto a Kubernetes cluster and run `hyve context login --api-url https://hyve-api.example.com`. Every `hyve cluster`/`template`/`workflow` command then talks to the API instead, which stores each resource as a real CR, and the same URL serves a web console. The controller reconciles `ClusterDefinition`s continuously.
-
-**The active context decides the mode; your login is separate.** A context with an API URL sends commands to that server (you must be logged into it); one without works on local files, even if you're still logged in elsewhere. The login itself is a machine-wide credential, like `gh auth login` or `docker login` — switching contexts never logs you out, and logging in never switches which context is active:
-
-```bash
-hyve context create prod --path ~/repos/prod-config
-hyve context create staging --path ~/repos/staging-config
-hyve context use prod              # only switches which directory 'hyve reconcile' reads
-
-hyve context login --api-url https://hyve-api.example.com   # one login for the whole machine
-hyve context whoami                    # confirm who you're authenticated as, and where
-hyve context logout                    # revoke it
-```
-
-A context can also just be a cluster API URL, with no local directory at all — `hyve context create` registers where to log in later, without authenticating on the spot or requiring you already be logged in:
-
-```bash
-hyve context create prod-cluster --api-url https://hyve-api.example.com
-hyve context create staging-cluster --api-url https://hyve-api-staging.example.com
-hyve context list                  # both show up as separate, first-class entries
-
-hyve context use prod-cluster
-hyve context login                     # --api-url defaults to the active context's, no need to repeat it
-```
-
-`--api-url` here only remembers the URL — it stores no credential and doesn't authenticate anything by itself. The actual login is still the one global session described above; registering a cluster context and logging into it are two independently-timed steps.
-
-`hyve context login --api-url ...` also registers the context for you automatically if that URL isn't already known — so a single `hyve context login --api-url https://hyve-api.example.com` is enough on its own; a separate `hyve context create --api-url` step is only needed if you want to pre-register a cluster before authenticating against it. The auto-registered name is derived from the URL's host (deduplicated on collision), and it's only made the active context if you had none registered yet — otherwise whatever local directory you're already working in stays active.
-
-`hyve context login` returns two credentials: a short-lived **access token** (30 minutes, used on every API call) and a long-lived **session token** (30 days, kept only to silently mint fresh access tokens via `POST /auth/refresh` — no password re-entry, which is what makes unattended use, e.g. a cron job, practical). The session itself is a real, revocable row in hyve-api's own datastore (`internal/orgdb`, Postgres or SQLite — not a Kubernetes object) — `hyve context logout` revokes it immediately, and any cached access token from it keeps working for at most its own short remaining TTL after that.
-
-`hyve migrate` bulk-imports a directory into whichever cluster the active context is logged into (workflows and templates first, then clusters, so lifecycle-hook references resolve correctly). Its source is always explicit — a positional path, or `--dir`/`--file` — defaulting to the current working directory, never implicitly the active context's own directory (you might migrate a one-off directory into whatever cluster you're logged into). It's a dry run by default — pass `--write` to actually create resources; safe to re-run, since `--skip-existing` (on by default) treats an already-migrated resource as success.
-
-### Deploying cluster mode
-
-Each release publishes the Helm chart to GHCR as an OCI artifact, with its image defaulting to the matching `ghcr.io/cbridges1/hyve` release:
+Deploy the controller + API with Helm, then point the CLI at it:
 
 ```bash
 helm install hyve oci://ghcr.io/cbridges1/charts/hyve --version <version> \
   --namespace hyve-system --create-namespace \
   --set api.publicBaseURL=https://hyve.example.com \
   --set api.bootstrapAdmin.username=admin \
-  --set api.bootstrapAdmin.passwordSecret.name=hyve-admin   # existing Secret with a "password" key
+  --set api.bootstrapAdmin.passwordSecret.name=hyve-admin   # Secret with a "password" key
+
+hyve context login --api-url https://hyve.example.com   # username or email + password
+hyve organization list                                 # the organizations you can access
+hyve organization use acme                             # act in acme from now on
+hyve cluster list --org widget                         # or pick one for a single command
 ```
 
-- The chart creates a `ClusterIP` Service (`hyve-api`, port 80) and no Ingress — expose it however your cluster already does, with TLS in front, and set `api.publicBaseURL` to that address.
-- `api.bootstrapAdmin` creates the first superadmin on startup, only while none exists. To keep the username out of values too, set `api.bootstrapAdmin.usernameKey` (a key in the same Secret) instead of `username`. Without it, create one with `kubectl -n hyve-system exec deploy/hyve-api -- hyve cluster-config api create-user admin --role superadmin`.
-- `api.db.*` selects SQLite (default) or Postgres, `api.smtp.*` seeds outbound email, and `api.multiTenant.enabled` serves several organizations from one install — see `deploy/helm/hyve/values.yaml`.
-- Managed clusters that enable hyve-agent pull `ghcr.io/cbridges1/hyve-agent` at the same version.
+One login reaches every organization you're a member of — pick one with `hyve organization use` or `--org` (the "Viewing" picker in the console).
 
-From a source checkout instead: `helm install hyve deploy/helm/hyve ...` (the chart also lives in this repo), or `task cluster:local && task install:local` for a local k3d dev install.
+- The chart creates a `hyve-api` ClusterIP Service and no Ingress — expose it with TLS your own way.
+- `api.db.*` picks SQLite (default, one replica) or Postgres (needed to scale or use reconciling clusters). See `deploy/helm/hyve/values.yaml`.
+- One install serves many **organizations**, each optionally on its own **reconciling cluster** (`hyve reconciling-cluster add/use`); `api.requireReconcilingCluster` keeps every organization off the cluster Hyve runs on. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- `hyve migrate <dir> --write` moves local state into a cluster (without `--write`, a dry run).
 
-### Environments (cluster mode)
+> Helm only installs CRDs on first install. After a CRD change, run `kubectl apply -f deploy/helm/hyve/crds/` before `helm upgrade`.
 
-A context is this machine's own pointer at where state lives. An **environment** is something else: a named scope within your organization on a hyve-api server (`default`, `staging`, `production`, ...), shared by everyone in it. Clusters are created in one, and two environments can each have a cluster with the same name. Every organization starts with `default`.
-
-```bash
-hyve environment list
-hyve environment create staging
-hyve environment use staging          # remembered on the active context
-hyve cluster list                     # staging's clusters only
-hyve cluster show web --env default    # one-off override for a single command
-hyve environment unset                # back to letting the server pick
-```
-
-Each context that points at a server keeps its own selection, so `hyve context use` switches environments with it. With nothing selected, the server picks when the organization has exactly one environment and asks you to choose when it has several.
-
-`hyve apply -f <file>` creates a single resource, auto-detecting `kind` (ClusterDefinition/Template/Workflow) from the file — the single-file equivalent of `hyve cluster create --file`, `hyve template create --file`, or `hyve workflow create --file`, without needing to know which one matches a given file. Either way — `apply`, `migrate`, or the per-resource `--file` flags — the same file works: `kubectl apply -f` it directly, or hand it to the CLI.
-
-### Multi-tenant installs
-
-Two ways to serve multiple tenants, and they compose (a reconciling
-cluster, below, can itself run a separate install if you want that extra
-isolation).
-
-**Organizations (the common case, one shared install).** A single
-controller + API pair serves any number of tenants, each an `Organization`
-— a row in hyve-api's own datastore (`internal/orgdb`, Postgres or
-SQLite), not a separate Helm release. `Namespace` scoping is still the
-real isolation boundary underneath (an Organization owns one Kubernetes
-Namespace, same as before), it's just provisioned and tracked through the
-API/CLI now instead of a second `helm install`:
-
-```bash
-hyve context login --api-url https://hyve-api.example.com   # as a superadmin
-
-hyve organization create <tenant-name>
-# accounts live in hyve-api's own datastore, so create-user runs inside the API pod
-kubectl -n hyve-system exec deploy/hyve-api -- \
-  hyve cluster-config api create-user <username> --role admin --namespace <tenant-name>
-```
-
-Each organization can optionally live on its own **reconciling cluster** —
-a separate, registered Kubernetes cluster hyve-controller reconciles that
-tenant's `ClusterDefinition`/`Template`/`Workflow`/`Resource` objects
-against, distinct from wherever hyve-controller/hyve-api's own pods run
-(useful for real workload isolation between tenants sharing one control
-plane). An organization's admin can keep several stored and switch
-between them by name, without re-entering a kubeconfig each time:
-
-```bash
-hyve reconciling-cluster add k3s --kubeconfig-file ~/k3s.yaml
-hyve reconciling-cluster add civo --kubeconfig-file ~/civo.yaml
-hyve reconciling-cluster list
-hyve reconciling-cluster use civo      # copies every resource over, then switches
-hyve reconciling-cluster use --home    # back to the install's own home cluster
-```
-
-A superadmin can also register clusters in an install-wide pool and
-assign one to an organization directly:
-
-```bash
-hyve reconciling-cluster pool add <name> --kubeconfig-file <path>
-hyve reconciling-cluster pool list
-hyve organization migrate <tenant-name> --reconciling-cluster <name>
-```
-
-See `hyve organization --help`/`hyve reconciling-cluster --help` for the
-full command surface, and the "Session and
-auth model"/"Multi-tenant installs" sections of `docs/ARCHITECTURE.md` for
-how isolation is actually enforced at the API layer.
-
-**`api.requireReconcilingCluster`** (`--require-reconciling-cluster`,
-values.yaml, default `false`) refuses to let any organization other than
-this install's own control-plane one land on, or migrate back to, the
-home cluster — every organization must have an explicit reconciling
-cluster. Two use cases: a self-hosted install that wants a hard guarantee
-tenant organizations can never touch the cluster hyve-controller/hyve-api
-themselves run on, and a hosted/managed offering where end users must
-never reach the operator's own shared infrastructure at all. Turning this
-on against an install that already has tenant organizations on the home
-cluster needs each one migrated first (`hyve organization migrate <name>
---reconciling-cluster <name>`) — hyve-api refuses to start otherwise.
-
-**SQLite vs. Postgres.** SQLite (the default) is the simplest choice —
-no external database to run — but only ever supports one API replica
-(SQLite has no story for concurrent multi-process writers) and is refused
-outright by hyve-api itself once any organization moves onto a reconciling
-cluster. Postgres (`--set api.db.driver=postgres --set
-api.db.postgresDSNSecret.name=<existing-secret>`) is required for
-horizontal API scaling or any real use of reconciling clusters. Switching
-between the two on an install that already has data needs `hyve
-cluster-config api migrate-db` — see that command's own `--help` and
-`values.yaml`'s `api.db` block for the full set of options (PVC sizing,
-an optional Litestream sidecar for continuous SQLite backup).
-
-**Separate installs (the older, still-supported alternative).** Multiple
-full hyve installs (controller + API pairs) can also share one Kubernetes
-cluster, each isolated to its own namespace — one Helm release per tenant,
-rather than one shared controller watching many namespaces via
-Organizations. Every `hyve.io` CRD is namespaced, and by default
-(`api.accessRoles.clusterScoped: false`) each install's admin/read-only
-roles are scoped to its own namespace only, so one tenant's caller can
-never read, modify, or gain cluster-admin over another tenant's objects or
-namespace:
-
-```bash
-kubectl create namespace <tenant-ns>
-helm install hyve-<tenant> deploy/helm/hyve \
-  --namespace <tenant-ns> \
-  -f deploy/helm/hyve/values-tenant-example.yaml \
-  --set namespace=<tenant-ns> \
-  --set api.publicBaseURL=https://<tenant>.hyve.example.com
-
-kubectl exec -n <tenant-ns> deployment/hyve-api -- \
-  hyve cluster-config api create-user <username> --role admin --namespace <tenant-ns>
-```
-
-This chart has no Ingress/LoadBalancer of its own to enable — point whatever exposure you're already running (an existing Ingress controller, a cloud LoadBalancer, your own routing) at the `hyve-api` Service this release creates in `<tenant-ns>` — it serves the API and the web console on the same port. See `deploy/helm/hyve/values-tenant-example.yaml` for the full set of per-tenant overrides. Exposure is deliberately left out of the chart: what ingress, load balancer, or TLS setup a cluster already has varies too much to guess at.
-
-**CRDs are cluster-global, shared by every install on the cluster (both models above).** `helm install` only applies `deploy/helm/hyve/crds/` on a chart's first install in a cluster — `helm upgrade` never touches them (standard Helm behavior). So only the very first install actually creates them; a later CRD schema change needs a manual `kubectl apply -f deploy/helm/hyve/crds/` before any install runs `helm upgrade`, or that upgrade will run against a stale schema.
-
-
-## Module System
-
-Modules are directories containing operation files that Hyve executes during reconciliation:
+## Modules
 
 | File | Operation |
 |------|-----------|
-| `status.sh` / `status.yaml` | Check if the cluster exists and return its state |
-| `create.sh` / `create.yaml` | Provision the cluster |
-| `delete.sh` / `delete.yaml` | Destroy the cluster |
-| `auth.yaml` | Configure `~/.kube/config` for the cluster |
-| `scale.sh` / `scale.yaml` | Adjust node count (optional) |
+| `status.sh` / `.yaml` | Report whether the cluster exists and its state |
+| `create.sh` / `.yaml` | Provision the cluster |
+| `delete.sh` / `.yaml` | Destroy the cluster |
+| `auth.yaml` | Print `HYVE_KUBECONFIG_B64=<kubeconfig>` |
+| `scale.sh` / `.yaml` | Apply param changes (optional) |
 
-Operations emit outputs by printing `HYVE_KEY=value` lines to stdout. Hyve captures these as the cluster's `driverOutputs` — in local mode in `cluster-state/<name>.state.yaml` next to `clusters/`, in cluster mode on the `ClusterDefinition`'s status — making them available on every subsequent reconcile. `auth.sh`/`auth.yaml` follows the same contract but for kubeconfig: it prints `HYVE_KUBECONFIG_B64=<base64-encoded kubeconfig>`, which hyve decodes and writes locally — the script itself never touches the filesystem directly.
-
-```bash
-# Validate a locked module's structure
-hyve module validate <source>
-
-# List installed modules
-hyve module list
-
-# Scaffold a new module
-hyve module init my-provider
-```
-
-**Local mode** runs every module operation as an inline child process on your machine, using whatever cloud CLI tools (`civo`, `aws`, `gcloud`, `az`, ...) and credentials are already on your `PATH`/in your environment. **Cluster mode** instead dispatches each operation to a fresh, single-use Kubernetes `Job` — the image comes from the cluster's own `spec.runner.image` (inherited from its Template) or `HyveConfig.spec.defaultModuleImage` as a fallback — so the controller pod itself never needs those cloud CLIs installed. Either way, secrets set via `hyve context secrets set` (cluster mode) are fetched live on every reconcile and injected as env vars — no controller restart needed to pick up a changed or newly-set credential.
+Params arrive as `HYVE_PARAM_*` env vars. Operations print `HYVE_KEY=value` lines, which are saved as `driverOutputs` and passed to later runs. See the [module authoring guide](https://cbridges1.github.io/hyve-website/docs/guides/module-authoring).
 
 ## Development
 
-[Task](https://taskfile.dev) is used to simplify common operations:
+```bash
+task build          # build the binary
+task check          # go vet + tests
+task cluster:local && task install:local   # local k3d dev install
+```
 
-| Command | Description |
-|---------|-------------|
-| `task build` | Build the `hyve` binary |
-| `task run -- [args]` | Build and run with arguments |
-| `task dev -- [args]` | Run directly with `go run` |
-| `task test` | Run all tests |
-| `task test:verbose` | Run all tests with verbose output |
-| `task test:race` | Run all tests with race detector |
-| `task test:cover` | Run all tests with coverage report |
-| `task test:report` | Run tests and generate JSON report |
-| `task vet` | Run `go vet` |
-| `task check` | Run vet and tests |
-| `task tidy` | Tidy go modules |
-| `task clean` | Remove binary and report artifacts |
-| `task cluster:local` | Create a local k3d cluster for hyve dev (run once) |
-| `task install:local` | Build from source and install the controller + API onto it |
-| `task api:docker -- <k3d-cluster>` | Run hyve-api as a standalone container against an existing k3d cluster |
-| `task test:concurrency` | Live smoke test for `--max-concurrent-reconciles` safety |
-| `task test:secretsfrom` | Live smoke test for `runtime: client` workflows + `secretsFrom` |
-| `task test:api` | Live smoke test for the API/auth layer (login, authz, CRUD) |
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the codebase fits together, and [docs/TESTING.md](docs/TESTING.md) for the full testing guide, including the live cluster smoke tests above.
+Run `task --list` for the rest. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TESTING.md](docs/TESTING.md). Full docs are at **[cbridges1.github.io/hyve-website](https://cbridges1.github.io/hyve-website/)**.

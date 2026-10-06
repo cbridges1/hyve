@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -92,6 +93,14 @@ type Reconciler struct {
 	// change.
 	AgentControlPlaneNamespace string
 
+	// ClusterNamespace is the namespace this reconciler's clusters live in
+	// (an organization's — cmd/controller sets it per target namespace).
+	// A cluster's hyve-agent is issued its identity for this namespace,
+	// which is where hyve-api looks the cluster up when the agent
+	// connects. Empty (the CLI, local mode) falls back to
+	// AgentControlPlaneNamespace.
+	ClusterNamespace string
+
 	// AgentControlPlaneURL is hyve-api's own externally-reachable base URL
 	// for POST /agent/bootstrap — the value hyve-agent's own
 	// --control-plane-url flag needs (see cmd/agent/main.go). Left empty,
@@ -127,6 +136,16 @@ type Reconciler struct {
 	// AgentTokenIssuer above takes. cmd/controller/run.go is the only
 	// caller that sets this.
 	HostKubeconfigIssuer HostKubeconfigIssuer
+
+	// HostClusters, when set, lists hyve's host cluster(s) — the control
+	// plane's access.method: primary ClusterDefinitions — for a
+	// requirements.mgmtCluster that doesn't resolve among this reconciler's
+	// own clusters, plus whether this organization may use them
+	// (HyveConfigSpec.OrganizationsMayUseHostCluster). Set by
+	// cmd/controller only for an organization on the home cluster; nil
+	// everywhere else, including the control plane itself (the host is
+	// already one of its own clusters).
+	HostClusters func(ctx context.Context) (hosts []types.ClusterDefinition, allowed bool, err error)
 }
 
 // moduleImage resolves the image a module.Executor should use when
@@ -265,6 +284,21 @@ type ReconcileHooks struct {
 	// since k8sjob.Run always deletes its Job immediately after fetching
 	// logs, so nothing else survives to inspect after the fact.
 	OnOperationOutput func(op module.OperationType, output string)
+
+	// OnClusterStatus fires with the cluster's own state as of this pass —
+	// the driver's status op result (NOT_FOUND, CREATING, ACTIVE,
+	// UPDATING, DELETING, FAILED), CREATING right after a create op
+	// returns, DELETING once a delete starts, ACTIVE for a driverless host
+	// cluster. Cluster mode records it as status.phase and gates Ready on
+	// it: a reconcile that merely succeeded says nothing about whether the
+	// cluster is up.
+	OnClusterStatus func(status string)
+}
+
+func (h *ReconcileHooks) clusterStatus(status string) {
+	if h != nil && h.OnClusterStatus != nil {
+		h.OnClusterStatus(status)
+	}
 }
 
 func (h *ReconcileHooks) emitEvent(eventType, reason, message string) {
@@ -384,7 +418,11 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 				return reqErr
 			}
 		}
-		if reqErr := r.validateMgmtClusterRequirement(cluster, manifest.Spec.Requirements.MgmtCluster); reqErr != nil {
+		mgmt := cluster.Spec.MgmtCluster
+		if mgmt == "" {
+			mgmt = manifest.Spec.Requirements.MgmtCluster
+		}
+		if reqErr := r.validateMgmtClusterRequirement(ctx, cluster, mgmt); reqErr != nil {
 			return reqErr
 		}
 	}
@@ -410,6 +448,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(cluster),
 		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(cluster),
+		MgmtCluster:           cluster.Spec.MgmtCluster,
 	}
 
 	// module.Executor.Execute guarantees a non-zero-exit status script
@@ -428,6 +467,7 @@ func (r *Reconciler) reconcileCluster(ctx context.Context, cluster types.Cluster
 	status := effectiveStatus(statusResult.Outputs["HYVE_CLUSTER_STATUS"], isAuthOnly)
 	r.logf("[%s] status: %s", name, status)
 	hooks.emitEvent("Normal", "StatusChecked", fmt.Sprintf("Status: %s", status))
+	hooks.clusterStatus(status)
 
 	switch {
 	case cluster.Spec.Delete && (status == "ACTIVE" || status == "FAILED"):
@@ -579,6 +619,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 
 	r.logf("[%s] ✅ Cluster created", name)
 	hooks.emitEvent("Normal", "Created", "Cluster created successfully")
+	hooks.clusterStatus("CREATING")
 
 	// Rebuild env so onCreate workflows see the new driverOutputs.
 	env = buildModuleEnv(cluster, secretsEnv)
@@ -623,6 +664,7 @@ func (r *Reconciler) createCluster(ctx context.Context, cluster types.ClusterDef
 func (r *Reconciler) deleteCluster(ctx context.Context, cluster types.ClusterDefinition, exec *module.Executor, env []string, lf *module.LockFile, hooks *ReconcileHooks) error {
 	name := cluster.Metadata.Name
 	r.logf("[%s] Deleting cluster...", name)
+	hooks.clusterStatus("DELETING")
 	hooks.emitEvent("Normal", "Deleting", "Cluster delete operation starting")
 
 	authResult, authErr := exec.Execute(ctx, module.OperationAuth)
@@ -937,6 +979,7 @@ func (r *Reconciler) checkDependencyStatus(ctx context.Context, depCluster types
 		Runner:                r.ModuleRunner,
 		Image:                 r.moduleImage(depCluster),
 		MgmtKubeconfigLocator: r.mgmtKubeconfigLocatorFor(depCluster),
+		MgmtCluster:           depCluster.Spec.MgmtCluster,
 	}
 	statusResult, err := exec.Execute(ctx, module.OperationStatus)
 	if err != nil {
@@ -970,27 +1013,69 @@ func (r *Reconciler) unmetDependency(ctx context.Context, def types.ClusterDefin
 
 // validateMgmtClusterRequirement checks that a module's optional
 // requirements.mgmtCluster (see internal/module.ModuleRequirements) names a
-// cluster that actually exists in the current StateProvider, before
-// reconcile ever attempts one of the module's operations against it — a
-// missing/wrong mgmtCluster would otherwise only ever surface as a script
-// failure deep inside create.yaml (or wherever the module's own op files
-// try to use credentials for it). Works identically in local/CLI mode and
-// controller mode — LoadClusterDefinitions is a StateProvider method, not
-// something either mode implements specially. The name resolves like any
-// cluster reference — see resolveClusterRef.
-func (r *Reconciler) validateMgmtClusterRequirement(cluster types.ClusterDefinition, mgmtCluster string) error {
+// cluster that actually exists, before reconcile ever attempts one of the
+// module's operations against it — a missing/wrong mgmtCluster would
+// otherwise only ever surface as a script failure deep inside create.yaml
+// (or wherever the module's own op files try to use credentials for it).
+// Works identically in local/CLI mode and controller mode. The name
+// resolves like any cluster reference, falling back to the host cluster —
+// see resolveMgmtCluster.
+func (r *Reconciler) validateMgmtClusterRequirement(ctx context.Context, cluster types.ClusterDefinition, mgmtCluster string) error {
 	if mgmtCluster == "" {
 		return nil
 	}
 	clusterName := cluster.Metadata.Name
-	defs, err := r.stateMgr.LoadClusterDefinitions()
-	if err != nil {
+	_, err := r.resolveMgmtCluster(ctx, cluster, mgmtCluster)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errMgmtClusterNotFound):
+		return fmt.Errorf("cluster %s: module requires mgmtCluster %q, which doesn't exist — create it first, or check for a typo", clusterName, mgmtCluster)
+	case errors.Is(err, errHostClusterNotShared):
+		return fmt.Errorf("cluster %s: module requires mgmtCluster %q: %w", clusterName, mgmtCluster, err)
+	default:
 		return fmt.Errorf("cluster %s: failed to check mgmtCluster requirement %q: %w", clusterName, mgmtCluster, err)
 	}
-	if _, ok := resolveClusterRef(defs, cluster, mgmtCluster); ok {
-		return nil
+}
+
+var (
+	errMgmtClusterNotFound  = errors.New("no such cluster")
+	errHostClusterNotShared = errors.New("that's the host cluster, which other organizations may not use — a superadmin can allow it in the control plane's Settings (\"Organizations may use the host cluster\")")
+)
+
+// resolveMgmtCluster finds the cluster a module's requirements.mgmtCluster
+// names for cluster `from`: first among this reconciler's own clusters
+// (resolveClusterRef), then, for an organization on the home cluster, the
+// control plane's host cluster (HostClusters) — matched by its name or its
+// short name in any environment, since there's one host for the whole
+// install — if the install allows it. errMgmtClusterNotFound when neither
+// matches; errHostClusterNotShared when only the host does but isn't shared.
+func (r *Reconciler) resolveMgmtCluster(ctx context.Context, from types.ClusterDefinition, ref string) (types.ClusterDefinition, error) {
+	defs, err := r.stateMgr.LoadClusterDefinitions()
+	if err != nil {
+		return types.ClusterDefinition{}, fmt.Errorf("load cluster definitions: %w", err)
 	}
-	return fmt.Errorf("cluster %s: module requires mgmtCluster %q, which doesn't exist — create it first, or check for a typo", clusterName, mgmtCluster)
+	if def, ok := resolveClusterRef(defs, from, ref); ok {
+		return def, nil
+	}
+	if r.HostClusters == nil {
+		return types.ClusterDefinition{}, errMgmtClusterNotFound
+	}
+	hosts, allowed, err := r.HostClusters(ctx)
+	if err != nil {
+		return types.ClusterDefinition{}, fmt.Errorf("look up the host cluster: %w", err)
+	}
+	for _, h := range hosts {
+		env := h.Metadata.Environment
+		if h.Metadata.Name != ref && (env == "" || h.Metadata.Name != env+"-"+ref) {
+			continue
+		}
+		if !allowed {
+			return types.ClusterDefinition{}, errHostClusterNotShared
+		}
+		return h, nil
+	}
+	return types.ClusterDefinition{}, errMgmtClusterNotFound
 }
 
 func (r *Reconciler) paramsChanged(cluster types.ClusterDefinition) bool {

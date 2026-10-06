@@ -11,11 +11,13 @@
 package organization
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cbridges1/hyve/cmd/shared"
+	"github.com/cbridges1/hyve/internal/repository"
 )
 
 // Cmd is the organization command.
@@ -30,9 +32,63 @@ cluster mode: run 'hyve context login' against a hyve-api server first.
 An organization's environments are managed with 'hyve environment', and
 its reconciling clusters with 'hyve reconciling-cluster'.
 
+One login reaches every organization you're a member of. 'use' picks the
+one commands act in, remembered on the active context; --org overrides it
+for a single command:
+
+  hyve organization list           # the organizations you can access
+  hyve organization use acme
+  hyve cluster list --org widget   # one-off
+
+With nothing selected, the server picks: your only organization, or the
+control plane for a superadmin.
+
 Creating an organization only provisions the namespace/environment — it
-grants no one access. Use 'hyve cluster-config api create-user' (or POST
-/accounts) to create its first account.`,
+grants no one access. Add its first member from the console's Users page
+(or POST /accounts) — an existing user keeps their own login.`,
+}
+
+var useCmd = &cobra.Command{
+	Use:   "use <name>",
+	Short: "Select the organization commands act in",
+	Long: `Records <name> on the active context. Every cluster-mode command then acts in
+it until you run 'use' again or 'unset'. Clears the selected environment,
+which belongs to the previous organization.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		useOrganization(args[0])
+	},
+}
+
+var unsetCmd = &cobra.Command{
+	Use:   "unset",
+	Short: "Clear the selected organization",
+	Long:  "Commands go back to letting the server pick: your only organization, or the control plane for a superadmin.",
+	Run: func(cmd *cobra.Command, args []string) {
+		setSelectedOrganization("")
+		log.Println("✅ Cleared the selected organization")
+	},
+}
+
+var currentCmd = &cobra.Command{
+	Use:   "current",
+	Short: "Show the organization commands act in",
+	Run: func(cmd *cobra.Command, args []string) {
+		who, err := requireClusterMode().Whoami()
+		if err != nil {
+			log.Fatalf("Failed to resolve organization: %v", err)
+		}
+		name := who.Organization
+		if name == "" {
+			name = who.Namespace
+		}
+		for _, org := range who.Organizations {
+			if org.Namespace == who.Namespace {
+				name = org.DisplayName()
+			}
+		}
+		fmt.Printf("%s (%s)\n", name, who.Role)
+	},
 }
 
 var createCmd = &cobra.Command{
@@ -49,7 +105,7 @@ var createCmd = &cobra.Command{
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all organizations",
+	Short: "List the organizations you can access",
 	Run: func(cmd *cobra.Command, args []string) {
 		listOrganizations()
 	},
@@ -128,7 +184,7 @@ func init() {
 	migrateCmd.Flags().String("reconciling-cluster", "", "Name of an already-registered reconciling cluster to move this organization onto")
 	migrateCmd.Flags().Bool("home", false, "Move this organization back to the control plane's own home cluster")
 
-	Cmd.AddCommand(createCmd)
+	Cmd.AddCommand(useCmd, unsetCmd, currentCmd, createCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(migrateCmd)
@@ -162,28 +218,59 @@ func createOrganization(name, adminIdentity, adminRole, reconcilingCluster strin
 }
 
 func listOrganizations() {
-	orgs, err := requireClusterMode().ListOrganizations()
+	who, err := requireClusterMode().Whoami()
 	if err != nil {
 		log.Fatalf("Failed to list organizations: %v", err)
 	}
-	if len(orgs) == 0 {
-		log.Println("❌ No organizations found")
-		log.Println("\n💡 Run 'hyve organization create <name>' to create one")
+	if len(who.Organizations) == 0 {
+		log.Println("❌ You don't belong to any organization")
 		return
 	}
-	log.Printf("📦 Organizations (%d):", len(orgs))
-	for _, org := range orgs {
-		log.Printf("  %s", org.Name)
-		log.Printf("    Namespace: %s", org.Namespace)
-		if org.Plan != "" {
-			log.Printf("    Plan: %s", org.Plan)
+	log.Printf("📦 Organizations (%d):", len(who.Organizations))
+	for _, org := range who.Organizations {
+		marker := ""
+		if org.Namespace == who.Namespace {
+			marker = " ← current"
 		}
-		if org.ReconcilingCluster != "" {
-			log.Printf("    Reconciling cluster: %s", org.ReconcilingCluster)
+		log.Printf("  %s (%s)%s", org.DisplayName(), org.Role, marker)
+	}
+	if len(who.Organizations) > 1 {
+		log.Println("\n💡 Switch with 'hyve organization use <name>', or --org for one command")
+	}
+}
+
+// useOrganization checks that name is one you can access, then records it
+// on the active context.
+func useOrganization(name string) {
+	who, err := requireClusterMode().Whoami()
+	if err != nil {
+		log.Fatalf("Failed to list organizations: %v", err)
+	}
+	for _, org := range who.Organizations {
+		if org.Name == name || org.Namespace == name || (org.ControlPlane && name == "control-plane") {
+			setSelectedOrganization(org.Name)
+			log.Printf("✅ Now acting in %s (%s)", org.DisplayName(), org.Role)
+			return
 		}
-		if org.Migrating {
-			log.Printf("    ⏳ Migration in progress")
-		}
+	}
+	log.Fatalf("❌ You don't have access to an organization named %q — 'hyve organization list' shows the ones you do", name)
+}
+
+func setSelectedOrganization(name string) {
+	repoMgr, err := repository.NewManager()
+	if err != nil {
+		log.Fatalf("Failed to open contexts: %v", err)
+	}
+	defer repoMgr.Close()
+	current, err := repoMgr.GetCurrentRepository()
+	if err != nil {
+		log.Fatal("No active context. Use 'hyve context login --api-url ...' first.")
+	}
+	if current.APIURL == "" {
+		log.Fatalf("Context '%s' is a local directory — organizations only exist on a hyve-api server. Switch with 'hyve context use'.", current.Name)
+	}
+	if err := repoMgr.SetServerOrganization(current.Name, name); err != nil {
+		log.Fatalf("Failed to save the selected organization: %v", err)
 	}
 }
 

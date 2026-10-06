@@ -455,19 +455,19 @@ func TestModuleImage(t *testing.T) {
 func TestValidateMgmtClusterRequirement(t *testing.T) {
 	t.Run("empty requirement is always fine", func(t *testing.T) {
 		r := NewReconciler(&fakeStateProvider{})
-		assert.NoError(t, r.validateMgmtClusterRequirement(types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, ""))
+		assert.NoError(t, r.validateMgmtClusterRequirement(context.Background(), types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, ""))
 	})
 
 	t.Run("named cluster exists passes", func(t *testing.T) {
 		r := NewReconciler(&fakeStateProvider{defs: []types.ClusterDefinition{
 			{Metadata: types.ClusterMetadata{Name: "mgmt"}},
 		}})
-		assert.NoError(t, r.validateMgmtClusterRequirement(types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, "mgmt"))
+		assert.NoError(t, r.validateMgmtClusterRequirement(context.Background(), types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, "mgmt"))
 	})
 
 	t.Run("named cluster missing errors with a clear message", func(t *testing.T) {
 		r := NewReconciler(&fakeStateProvider{})
-		err := r.validateMgmtClusterRequirement(types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, "mgmt")
+		err := r.validateMgmtClusterRequirement(context.Background(), types.ClusterDefinition{Metadata: types.ClusterMetadata{Name: "workload"}}, "mgmt")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `mgmtCluster "mgmt"`)
 		assert.Contains(t, err.Error(), "doesn't exist")

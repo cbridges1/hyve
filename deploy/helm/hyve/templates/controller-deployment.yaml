@@ -78,6 +78,15 @@ spec:
             {{- if .Values.api.hostServiceAccount }}
             - --host-service-account={{ .Values.api.hostServiceAccount }}
             {{- end }}
+            {{- if include "hyve.controller.watchHomeOrganizations" . }}
+            # Multi-tenant: also reconcile every organization still on this
+            # (home) cluster, read from hyve-api's Postgres datastore.
+            # SQLite can't be shared with hyve-api's pod, so that case
+            # keeps watching .Values.namespace alone.
+            - --watch-home-organizations
+            - --db=postgres
+            - --db-dsn=$(HYVE_DB_DSN)
+            {{- end }}
           # HOME=/data redirects module.CacheDir()'s hardcoded
           # $HOME/.hyve/module-cache (internal/module/cache.go — it doesn't
           # respect --home/HYVE_HOME) onto the same PVC --modules-dir lives
@@ -88,6 +97,13 @@ spec:
           env:
             - name: HOME
               value: /data
+            {{- if include "hyve.controller.watchHomeOrganizations" . }}
+            - name: HYVE_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.db.postgresDSNSecret.name }}
+                  key: {{ .Values.api.db.postgresDSNSecret.key }}
+            {{- end }}
           volumeMounts:
             - name: modules
               mountPath: /data

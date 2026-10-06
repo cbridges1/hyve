@@ -8,16 +8,13 @@ import { ThemeToggle } from '../components/ThemeToggle'
 const inputClass =
   'w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:border-neutral-500 dark:focus:ring-white/10'
 
-// ResetPasswordPage is where a password-reset email's link lands — email/
-// token/namespace all come from the query string exactly as
-// internal/api.buildPasswordResetLink wrote them (see that function's own
-// doc comment for why namespace has to round-trip unchanged rather than
-// being re-derived from email here).
+// ResetPasswordPage is where a password-reset email's link lands — email
+// and token come from the query string exactly as
+// internal/api.buildPasswordResetLink wrote them.
 export function ResetPasswordPage() {
   const [params] = useSearchParams()
   const email = params.get('email') ?? ''
   const token = params.get('token') ?? ''
-  const namespace = params.get('namespace') ?? undefined
 
   const [newPassword, setNewPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -31,7 +28,7 @@ export function ResetPasswordPage() {
     setError(null)
     setSubmitting(true)
     try {
-      await resetPassword(email, token, newPassword, namespace)
+      await resetPassword(email, token, newPassword)
       setDone(true)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to reach server')

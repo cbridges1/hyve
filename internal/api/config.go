@@ -44,13 +44,15 @@ func (s *Server) registerConfigRoutes(mux *http.ServeMux) {
 // value" — the console needs this to decide whether saving should create
 // or update, and to word its own empty state correctly.
 type hyveConfigDTO struct {
-	Exists               bool              `json:"exists"`
-	StrictResourceDelete bool              `json:"strictResourceDelete"`
-	DefaultWorkflowImage string            `json:"defaultWorkflowImage,omitempty"`
-	DefaultModuleImage   string            `json:"defaultModuleImage,omitempty"`
-	DefaultAgentImage    string            `json:"defaultAgentImage,omitempty"`
-	ImageInstalls        []imageInstallDTO `json:"imageInstalls,omitempty"`
-	ImagePullSecrets     []string          `json:"imagePullSecrets,omitempty"`
+	Exists               bool `json:"exists"`
+	StrictResourceDelete bool `json:"strictResourceDelete"`
+	// Control plane only — see HyveConfigSpec.OrganizationsMayUseHostCluster.
+	OrganizationsMayUseHostCluster bool              `json:"organizationsMayUseHostCluster"`
+	DefaultWorkflowImage           string            `json:"defaultWorkflowImage,omitempty"`
+	DefaultModuleImage             string            `json:"defaultModuleImage,omitempty"`
+	DefaultAgentImage              string            `json:"defaultAgentImage,omitempty"`
+	ImageInstalls                  []imageInstallDTO `json:"imageInstalls,omitempty"`
+	ImagePullSecrets               []string          `json:"imagePullSecrets,omitempty"`
 }
 
 type imageInstallDTO struct {
@@ -64,13 +66,14 @@ func dtoFromHyveConfig(cfg *hyvev1alpha1.HyveConfig) hyveConfigDTO {
 		installs = append(installs, imageInstallDTO{Image: ii.Image, Install: ii.Install})
 	}
 	return hyveConfigDTO{
-		Exists:               true,
-		StrictResourceDelete: cfg.Spec.StrictResourceDelete,
-		DefaultWorkflowImage: cfg.Spec.DefaultWorkflowImage,
-		DefaultModuleImage:   cfg.Spec.DefaultModuleImage,
-		DefaultAgentImage:    cfg.Spec.DefaultAgentImage,
-		ImageInstalls:        installs,
-		ImagePullSecrets:     cfg.Spec.ImagePullSecrets,
+		Exists:                         true,
+		StrictResourceDelete:           cfg.Spec.StrictResourceDelete,
+		OrganizationsMayUseHostCluster: cfg.Spec.OrganizationsMayUseHostCluster,
+		DefaultWorkflowImage:           cfg.Spec.DefaultWorkflowImage,
+		DefaultModuleImage:             cfg.Spec.DefaultModuleImage,
+		DefaultAgentImage:              cfg.Spec.DefaultAgentImage,
+		ImageInstalls:                  installs,
+		ImagePullSecrets:               cfg.Spec.ImagePullSecrets,
 	}
 }
 
@@ -80,12 +83,13 @@ func specFromDTO(dto hyveConfigDTO) hyvev1alpha1.HyveConfigSpec {
 		installs = append(installs, hyvev1alpha1.ImageInstall{Image: ii.Image, Install: ii.Install})
 	}
 	return hyvev1alpha1.HyveConfigSpec{
-		StrictResourceDelete: dto.StrictResourceDelete,
-		DefaultWorkflowImage: dto.DefaultWorkflowImage,
-		DefaultModuleImage:   dto.DefaultModuleImage,
-		DefaultAgentImage:    dto.DefaultAgentImage,
-		ImageInstalls:        installs,
-		ImagePullSecrets:     dto.ImagePullSecrets,
+		StrictResourceDelete:           dto.StrictResourceDelete,
+		OrganizationsMayUseHostCluster: dto.OrganizationsMayUseHostCluster,
+		DefaultWorkflowImage:           dto.DefaultWorkflowImage,
+		DefaultModuleImage:             dto.DefaultModuleImage,
+		DefaultAgentImage:              dto.DefaultAgentImage,
+		ImageInstalls:                  installs,
+		ImagePullSecrets:               dto.ImagePullSecrets,
 	}
 }
 

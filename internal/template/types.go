@@ -19,12 +19,15 @@ type TemplateRunnerConfig struct {
 // of identical shape) — Workflows gains PreReconcile support this way,
 // which the old template-local TemplateWorkflowsSpec never had.
 type TemplateSpec struct {
-	Driver    types.DriverRef      `yaml:"driver" json:"driver"`
-	Runner    TemplateRunnerConfig `yaml:"runner,omitempty" json:"runner,omitempty"`
-	Params    map[string]string    `yaml:"params,omitempty" json:"params,omitempty"`
-	Region    string               `yaml:"region,omitempty" json:"region,omitempty"`
-	Workflows types.WorkflowsSpec  `yaml:"workflows,omitempty" json:"workflows,omitempty"`
-	Resources []types.ResourceRef  `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Driver types.DriverRef      `yaml:"driver" json:"driver"`
+	Runner TemplateRunnerConfig `yaml:"runner,omitempty" json:"runner,omitempty"`
+	// MgmtCluster is copied onto each cluster created from this template —
+	// see hyvev1alpha1.ClusterDefinitionSpec.MgmtCluster.
+	MgmtCluster string              `yaml:"mgmtCluster,omitempty" json:"mgmtCluster,omitempty"`
+	Params      map[string]string   `yaml:"params,omitempty" json:"params,omitempty"`
+	Region      string              `yaml:"region,omitempty" json:"region,omitempty"`
+	Workflows   types.WorkflowsSpec `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	Resources   []types.ResourceRef `yaml:"resources,omitempty" json:"resources,omitempty"`
 
 	// Schedule is a 5-field cron expression (e.g. "0 20 * * 5").
 	// When a cluster is created from this template, the next occurrence is

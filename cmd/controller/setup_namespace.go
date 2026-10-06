@@ -2,8 +2,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
@@ -12,6 +14,7 @@ import (
 	"github.com/cbridges1/hyve/internal/module"
 	"github.com/cbridges1/hyve/internal/orgdb"
 	"github.com/cbridges1/hyve/internal/reconcile"
+	"github.com/cbridges1/hyve/internal/types"
 	"github.com/cbridges1/hyve/internal/workflow"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,30 +24,87 @@ import (
 )
 
 // resolveTargetNamespaces answers "which namespace(s) should this
-// controller process reconcile" — Phase 1's default (reconcilingClusterID
-// == "") is always exactly []string{currentNamespace}, orgStore unused
-// (nil is fine, and expected, in this case — see cmd/controller/run.go's
-// own call site, which only opens a Store at all when reconcilingClusterID
-// is set). Set, this queries orgStore (Milestone 6's one deliberate,
-// narrow exception to "the controller never touches Store" — see
-// HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs) for every
-// organization mapped to that id and returns their namespaces instead — an
-// empty, non-nil slice (not an error) when none are mapped yet, matching
-// this command's own "reconcile nothing until one is" stance rather than
-// failing to start.
-func resolveTargetNamespaces(ctx context.Context, orgStore *orgdb.Store, currentNamespace, reconcilingClusterID string) ([]string, error) {
-	if reconcilingClusterID == "" {
+// controller process reconcile":
+//
+//   - reconcilingClusterID set (Milestone 6): every organization mapped to
+//     that id, queried from orgStore — an empty, non-nil slice (not an
+//     error) when none are mapped yet, matching this command's own
+//     "reconcile nothing until one is" stance. watchHome is ignored.
+//   - watchHome (--watch-home-organizations, the home cluster's controller
+//     in a multi-tenant install): currentNamespace plus every organization
+//     still on the home cluster (reconciling_cluster_id NULL) — without it,
+//     nothing ever reconciles those organizations' namespaces, since no
+//     reconciling-cluster process claims them either.
+//   - neither (Phase 1's default): exactly []string{currentNamespace},
+//     orgStore unused (nil is fine, and expected).
+//
+// orgStore is read-only here — Milestone 6's one deliberate, narrow
+// exception to "the controller never touches Store" (see
+// HYVE-ORGANIZATION-MODEL-PROPOSAL.md, nexus-config/docs).
+func resolveTargetNamespaces(ctx context.Context, orgStore *orgdb.Store, currentNamespace, reconcilingClusterID string, watchHome bool) ([]string, error) {
+	if reconcilingClusterID == "" && !watchHome {
 		return []string{currentNamespace}, nil
 	}
-	orgs, err := orgStore.ListOrganizationsByReconcilingCluster(ctx, &reconcilingClusterID)
+	var id *string
+	if reconcilingClusterID != "" {
+		id = &reconcilingClusterID
+	}
+	orgs, err := orgStore.ListOrganizationsByReconcilingCluster(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	namespaces := make([]string, len(orgs))
-	for i, org := range orgs {
-		namespaces[i] = org.Namespace
+	namespaces := make([]string, 0, len(orgs)+1)
+	if id == nil {
+		namespaces = append(namespaces, currentNamespace)
+	}
+	for _, org := range orgs {
+		if id == nil && org.Namespace == currentNamespace {
+			continue // the control plane's own organization, already first
+		}
+		namespaces = append(namespaces, org.Namespace)
 	}
 	return namespaces, nil
+}
+
+// errTargetNamespacesChanged ends the manager when the set
+// resolveTargetNamespaces returns no longer matches the one this process
+// started with (an organization was created, deleted, or migrated). The
+// manager's cache is fixed to its namespaces at construction, so the
+// controller exits and Kubernetes restarts it onto the new set.
+var errTargetNamespacesChanged = errors.New("the set of namespaces to reconcile changed")
+
+// watchTargetNamespaces re-runs resolve every interval and returns
+// errTargetNamespacesChanged once its result differs (as a set) from
+// current; a failed lookup is logged and retried, never fatal. Returns nil
+// when ctx ends. Added to the manager as a Runnable, so its error stops
+// mgr.Start.
+func watchTargetNamespaces(ctx context.Context, interval time.Duration, current []string, resolve func(context.Context) ([]string, error)) error {
+	want := make(map[string]bool, len(current))
+	for _, ns := range current {
+		want[ns] = true
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		got, err := resolve(ctx)
+		if err != nil {
+			log.Printf("⚠️  Could not re-check which namespaces to reconcile (%v) — retrying in %s", err, interval)
+			continue
+		}
+		if len(got) != len(want) {
+			return fmt.Errorf("%w: %v → %v", errTargetNamespacesChanged, current, got)
+		}
+		for _, ns := range got {
+			if !want[ns] {
+				return fmt.Errorf("%w: %v → %v", errTargetNamespacesChanged, current, got)
+			}
+		}
+	}
 }
 
 // reconcilerSharedDeps bundles setup shared across every target
@@ -81,6 +141,12 @@ type reconcilerSharedDeps struct {
 	controlNamespace   string
 	hostServiceAccount string
 	hostCAPath         string
+
+	// homeOrganizations: every target namespace other than
+	// controlNamespace is an organization on the home cluster
+	// (--watch-home-organizations), whose clusters may use the control
+	// plane's host as a management cluster when the install allows it.
+	homeOrganizations bool
 }
 
 // setupNamespaceReconcilers builds and registers one full, independent set
@@ -121,7 +187,15 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 	var defaultWorkflowImage, defaultModuleImage, defaultAgentImage string
 	var imagePullSecrets []string
 	var imageInstalls []k8sjob.ImageInstall
-	if err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: targetNamespace, Name: deps.configName}, &startupCfg); err != nil {
+	err := mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: targetNamespace, Name: deps.configName}, &startupCfg)
+	if apierrors.IsNotFound(err) && targetNamespace != deps.controlNamespace {
+		// An organization on the home cluster has no HyveConfig of its own
+		// (the console's per-organization settings only exist on a
+		// reconciling cluster), so it inherits the install-wide one's
+		// default images, pull secrets, and image installs.
+		err = mgr.GetAPIReader().Get(context.Background(), apitypes.NamespacedName{Namespace: deps.controlNamespace, Name: deps.configName}, &startupCfg)
+	}
+	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Printf("⚠️  [%s] Could not read HyveConfig.spec.defaultWorkflowImage/defaultModuleImage/defaultAgentImage/imagePullSecrets/imageInstalls at startup (%v) — workflow jobs/module operations with no image of their own will fail until this is fixed and the controller restarts", targetNamespace, err)
 		}
@@ -150,6 +224,7 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 	hyveReconciler.DefaultAgentImage = defaultAgentImage
 	hyveReconciler.AgentTokenIssuer = &agentpki.TokenIssuer{Clientset: deps.clientset, ControlPlaneNamespace: deps.controlNamespace}
 	hyveReconciler.AgentControlPlaneNamespace = deps.controlNamespace
+	hyveReconciler.ClusterNamespace = targetNamespace
 	hyveReconciler.AgentControlPlaneURL = deps.agentControlPlaneURL
 	hyveReconciler.AgentTunnelAddress = deps.agentTunnelAddress
 	hyveReconciler.AgentCACertPEM = deps.agentCACertPEM
@@ -165,6 +240,10 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 		Namespace:              deps.controlNamespace,
 		HostServiceAccountName: deps.hostServiceAccount,
 		CAPath:                 deps.hostCAPath,
+	}
+
+	if deps.homeOrganizations && targetNamespace != deps.controlNamespace {
+		hyveReconciler.HostClusters = hostClustersFor(mgr, deps)
 	}
 
 	reconciler := &internalcontroller.ClusterDefinitionReconciler{
@@ -199,4 +278,36 @@ func setupNamespaceReconcilers(mgr ctrl.Manager, targetNamespace, controllerName
 	}
 
 	return nil
+}
+
+// hostClustersFor backs reconcile.Reconciler.HostClusters for an
+// organization on the home cluster: the control plane's access.method:
+// primary ClusterDefinitions, and whether the control plane's HyveConfig
+// shares them (spec.organizationsMayUseHostCluster). Both are read on every
+// call, so toggling the setting needs no restart.
+func hostClustersFor(mgr ctrl.Manager, deps reconcilerSharedDeps) func(context.Context) ([]types.ClusterDefinition, bool, error) {
+	control := &internalcontroller.CRDStateProvider{
+		Client:         mgr.GetClient(),
+		Namespace:      deps.controlNamespace,
+		ConfigName:     deps.configName,
+		ModulesDirPath: deps.modulesDir,
+	}
+	return func(ctx context.Context) ([]types.ClusterDefinition, bool, error) {
+		var cfg hyvev1alpha1.HyveConfig
+		err := mgr.GetClient().Get(ctx, apitypes.NamespacedName{Namespace: deps.controlNamespace, Name: deps.configName}, &cfg)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return nil, false, fmt.Errorf("read HyveConfig %s/%s: %w", deps.controlNamespace, deps.configName, err)
+		}
+		defs, err := control.LoadClusterDefinitions()
+		if err != nil {
+			return nil, false, err
+		}
+		var hosts []types.ClusterDefinition
+		for _, d := range defs {
+			if d.Spec.AccessMethod == types.AccessMethodPrimary {
+				hosts = append(hosts, d)
+			}
+		}
+		return hosts, cfg.Spec.OrganizationsMayUseHostCluster, nil
+	}
 }

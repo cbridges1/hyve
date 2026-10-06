@@ -87,7 +87,18 @@ export type ClusterSummary = {
   // whichever hyve-api process holds this cluster's tunnel connection).
   agent?: AgentSpec
   agentStatus?: AgentStatus
+  // phase is the cluster's own state (CREATING, ACTIVE, ...), separate
+  // from whether reconciling it succeeded (conditions).
+  phase?: string
+  // agentState says where hyve-agent is when it's enabled — "waiting" means
+  // the cluster itself isn't up yet (see internal/api's agentState).
+  agentState?: AgentState
+  // expiresAt is when the cluster is scheduled to be deleted (RFC 3339 —
+  // e.g. from its template's schedule); undefined when it never expires.
+  expiresAt?: string
 }
+
+export type AgentState = 'waiting' | 'installing' | 'connected' | 'disconnected'
 
 export type AgentSpec = { enabled?: boolean; proxy?: boolean }
 export type AgentStatus = {
@@ -342,6 +353,8 @@ export type ImageInstall = { image: string; install: string }
 export type HyveConfig = {
   exists: boolean
   strictResourceDelete: boolean
+  // Control plane only — see internal/apis/hyve/v1alpha1.HyveConfigSpec.
+  organizationsMayUseHostCluster?: boolean
   defaultWorkflowImage?: string
   defaultModuleImage?: string
   defaultAgentImage?: string

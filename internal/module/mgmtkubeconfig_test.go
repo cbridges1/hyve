@@ -82,7 +82,7 @@ func TestExecute_MgmtLocatorErrorFailsTheOperation(t *testing.T) {
 	}
 	_, err := exec.Execute(context.Background(), OperationStatus)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `mgmtCluster "capi-mgmt"`)
+	assert.Contains(t, err.Error(), `management cluster "capi-mgmt"`)
 	assert.Contains(t, err.Error(), "not reachable")
 }
 
@@ -99,4 +99,26 @@ func TestDefaultMgmtKubeconfigLocator(t *testing.T) {
 	got, err := DefaultMgmtKubeconfigLocator(context.Background(), "capi-mgmt")
 	require.NoError(t, err)
 	assert.Equal(t, path, got)
+}
+
+// TestExecute_ClusterMgmtClusterOverridesModule: a cluster's own
+// spec.mgmtCluster wins over the module's default, and supplies one for a
+// module with no default at all.
+func TestExecute_ClusterMgmtClusterOverridesModule(t *testing.T) {
+	for _, moduleDefault := range []string{"capi-mgmt", ""} {
+		var asked string
+		exec := &Executor{
+			ModuleDir:   writeMgmtModule(t, moduleDefault),
+			ClusterName: "workload",
+			MgmtCluster: "other-mgmt",
+			MgmtKubeconfigLocator: func(_ context.Context, cluster string) (string, error) {
+				asked = cluster
+				return "/tmp/other.yaml", nil
+			},
+		}
+		res, err := exec.Execute(context.Background(), OperationStatus)
+		require.NoError(t, err)
+		assert.Equal(t, "other-mgmt", asked, "module default %q", moduleDefault)
+		assert.Equal(t, "/tmp/other.yaml", res.Outputs["HYVE_GOT_MGMT"])
+	}
 }

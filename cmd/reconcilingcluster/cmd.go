@@ -27,8 +27,6 @@ import (
 	"github.com/cbridges1/hyve/cmd/shared"
 )
 
-var orgFlag string
-
 // Cmd is the reconciling-cluster command.
 var Cmd = &cobra.Command{
 	Use:   "reconciling-cluster",
@@ -158,7 +156,6 @@ var poolListCmd = &cobra.Command{
 
 func init() {
 	for _, c := range []*cobra.Command{addCmd, listCmd, useCmd, removeCmd, currentCmd} {
-		c.Flags().StringVar(&orgFlag, "org", "", "Organization to act on (default: your own; superadmin only for any other)")
 		Cmd.AddCommand(c)
 	}
 	addCmd.Flags().String("kubeconfig-file", "", "Path to the kubeconfig file to store (required) — pass - to read from stdin")
@@ -183,7 +180,7 @@ func requireClusterMode() *shared.APIClient {
 
 func clientAndOrg() (*shared.APIClient, string) {
 	c := requireClusterMode()
-	org, err := c.CurrentOrganization(orgFlag)
+	org, err := c.CurrentOrganization("")
 	if err != nil {
 		log.Fatalf("Failed to resolve organization: %v", err)
 	}

@@ -33,7 +33,10 @@ const EDITOR_PADDING = 12
 // doesn't have one) — a same-height sibling column inside the shared
 // scroll container below rather than its own scrollable element, so it
 // tracks the editor's scroll position for free instead of needing to be
-// synced by hand.
+// synced by hand. The two columns sit in an inner flex row, not directly in
+// the scroll box: as the box's own flex children they'd be stretched to its
+// max height, and the editor clips its overflow, so the last lines would be
+// cut off. The inner row is as tall as its content instead.
 function LineNumbers({ lineCount }: { lineCount: number }) {
   return (
     <div
@@ -123,22 +126,24 @@ export function SpecEditor<T>({ spec, onSave }: { spec: T; onSave: (spec: T) => 
 
   return (
     <Card title="Edit spec">
-      <div className="flex max-h-96 overflow-auto rounded-lg border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-950">
-        <LineNumbers lineCount={text.split('\n').length} />
-        <Editor
-          value={text}
-          onValueChange={setText}
-          highlight={highlightYaml}
-          padding={EDITOR_PADDING}
-          textareaClassName="focus:outline-none"
-          style={{
-            fontFamily: MONO_FONT,
-            fontSize: EDITOR_FONT_SIZE,
-            lineHeight: EDITOR_LINE_HEIGHT,
-            minHeight: '260px',
-          }}
-          className="min-w-0 flex-1 text-neutral-800 dark:text-neutral-200"
-        />
+      <div className="max-h-96 overflow-auto rounded-lg border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-950">
+        <div className="flex">
+          <LineNumbers lineCount={text.split('\n').length} />
+          <Editor
+            value={text}
+            onValueChange={setText}
+            highlight={highlightYaml}
+            padding={EDITOR_PADDING}
+            textareaClassName="focus:outline-none"
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: EDITOR_FONT_SIZE,
+              lineHeight: EDITOR_LINE_HEIGHT,
+              minHeight: '260px',
+            }}
+            className="min-w-0 flex-1 text-neutral-800 dark:text-neutral-200"
+          />
+        </div>
       </div>
       {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div className="mt-3 flex gap-2">

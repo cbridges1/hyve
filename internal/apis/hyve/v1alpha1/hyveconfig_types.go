@@ -19,6 +19,17 @@ type HyveConfigSpec struct {
 	// auto-pruned instead of just logged as an orphan warning.
 	StrictResourceDelete bool `json:"strictResourceDelete,omitempty"`
 
+	// OrganizationsMayUseHostCluster lets a cluster in another organization
+	// on this home cluster name the host (access.method: primary, in the
+	// control plane) as its module's requirements.mgmtCluster — e.g. a
+	// tenant's CAPI clusters managed from the host. Off by default: the
+	// module then gets the host's minted cluster-admin kubeconfig, and a
+	// tenant picks its own module, so only turn this on when every
+	// organization on the install is trusted with that. Read from the
+	// control plane's own HyveConfig only, on every reconcile; ignored on
+	// an organization's reconciling-cluster HyveConfig.
+	OrganizationsMayUseHostCluster bool `json:"organizationsMayUseHostCluster,omitempty"`
+
 	// DefaultWorkflowImage is the container image KubernetesJobStepRunner
 	// falls back to for a workflow job/step that doesn't set its own
 	// container:. See internal/workflow's StepRunner design — resolution

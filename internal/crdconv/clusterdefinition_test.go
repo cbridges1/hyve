@@ -53,3 +53,13 @@ func TestToTypesClusterDefinition_CarriesEnvironmentLabel(t *testing.T) {
 		t.Fatalf("unlabeled CR: environment %q, want empty", env)
 	}
 }
+
+func TestMgmtCluster_RoundTripsBetweenCRDAndTypesShapes(t *testing.T) {
+	cr := &hyvev1alpha1.ClusterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec:       hyvev1alpha1.ClusterDefinitionSpec{MgmtCluster: "capi-mgmt"},
+	}
+	def := ToTypesClusterDefinition(cr)
+	assert.Equal(t, "capi-mgmt", def.Spec.MgmtCluster)
+	assert.Equal(t, "capi-mgmt", FromTypesClusterDefinitionSpec(&def).MgmtCluster)
+}

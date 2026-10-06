@@ -9,11 +9,14 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/cbridges1/hyve/internal/agentpki"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/orgdb"
 
@@ -23,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
@@ -40,6 +44,7 @@ var (
 	hostServiceAccount      string
 	hostCAPath              string
 	reconcilingClusterID    string
+	watchHomeOrganizations  bool
 	controllerDBDriver      string
 	controllerDBDSN         string
 )
@@ -78,16 +83,22 @@ func init() {
 	runCmd.Flags().BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for controller manager HA")
 	runCmd.Flags().IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4, "Maximum ClusterDefinitions reconciled at once — without this, a single stuck cluster (e.g. a workflow step wedged on ImagePullBackOff) blocks every other cluster's reconcile in the namespace")
 	runCmd.Flags().StringVar(&agentControlPlaneURL, "agent-control-plane-url", "", "hyve-api's own externally-reachable base URL, for a newly-installed hyve-agent's POST /agent/bootstrap (e.g. https://hyve-api.example.com) — leave unset to disable hyve-agent installation entirely (spec.access.agent.enabled becomes a no-op, logged as a warning)")
-	runCmd.Flags().StringVar(&agentTunnelAddress, "agent-tunnel-address", "", "hyve-api's own externally-reachable SSH tunnel listener address, host:port (e.g. hyve-api.example.com:8092) — same disable-if-unset behavior as --agent-control-plane-url")
+	runCmd.Flags().StringVar(&agentTunnelAddress, "agent-tunnel-address", "", "where hyve-agent reaches hyve-api's agent tunnel: a wss:// URL (its WebSocket endpoint, wss://<host>/agent/tunnel) or host:port (its raw SSH listener, e.g. hyve-api.example.com:8092). Defaults to the WebSocket endpoint at --agent-control-plane-url")
 	runCmd.Flags().StringVar(&agentCAPath, "agent-ca-path", "", "PEM-encoded CA certificate that signed whatever terminates TLS in front of --agent-control-plane-url — embedded as a literal ConfigMap on every remote cluster hyve-agent installs onto (a cross-cluster volume mount isn't possible, unlike --public-ca-path's same-cluster case) so hyve-agent's own POST /agent/bootstrap call trusts it. Leave unset for a publicly-trusted certificate (e.g. a real ACME/Let's Encrypt cert) — see internal/reconcile/agent.go")
 	runCmd.Flags().StringVar(&hostServiceAccount, "host-service-account", "hyve-host-admin", "Name of the dedicated ServiceAccount (in --namespace) this controller mints a token against to reconcile spec.resources for a primary-marked ClusterDefinition with no real spec.driver — see internal/reconcile/host.go and deploy/helm/hyve/templates/api-access-roles.yaml. Must match hyve-api's own --host-service-account")
 	runCmd.Flags().StringVar(&hostCAPath, "in-cluster-ca-path", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "This pod's own in-cluster CA — used for the host-cluster kubeconfig's certificate-authority-data")
 	runCmd.Flags().StringVar(&reconcilingClusterID, "reconciling-cluster-id", "", "Id of the internal/orgdb.ReconcilingCluster this process reconciles. Leave unset for the default single-namespace mode (--namespace alone). When set, --db/--db-dsn must point at the same organization datastore hyve-api uses — this process queries it once at startup (read-only) for every organization mapped to this id, and reconciles exactly those namespaces, one full reconciler instance per namespace, all on this one process/manager")
-	runCmd.Flags().StringVar(&controllerDBDriver, "db", "sqlite", "Organization datastore driver — only read when --reconciling-cluster-id is set (\"sqlite\" or \"postgres\", matching hyve-api's own --db)")
-	runCmd.Flags().StringVar(&controllerDBDSN, "db-dsn", "/data/orgdb.sqlite", "Organization datastore DSN — only read when --reconciling-cluster-id is set. Must resolve to the SAME datastore hyve-api itself uses; a SQLite DSN only works here if this process can reach that same file, which in practice means --db=postgres is required for any real deployment using this flag (see cmd/api/run.go's own SQLite/Postgres deployment gate)")
+	runCmd.Flags().BoolVar(&watchHomeOrganizations, "watch-home-organizations", false, "Also reconcile every organization still on the home cluster (no reconciling cluster assigned), alongside --namespace — for the home cluster's controller in a multi-tenant install. Needs --db/--db-dsn pointing at hyve-api's datastore and cluster-wide RBAC; the set is re-checked periodically and the process exits to restart when it changes. Ignored with --reconciling-cluster-id")
+	runCmd.Flags().StringVar(&controllerDBDriver, "db", "sqlite", "Organization datastore driver — only read when --reconciling-cluster-id or --watch-home-organizations is set (\"sqlite\" or \"postgres\", matching hyve-api's own --db)")
+	runCmd.Flags().StringVar(&controllerDBDSN, "db-dsn", "/data/orgdb.sqlite", "Organization datastore DSN — only read when --reconciling-cluster-id or --watch-home-organizations is set. Must resolve to the SAME datastore hyve-api itself uses; a SQLite DSN only works here if this process can reach that same file, which in practice means --db=postgres is required for any real deployment using this flag (see cmd/api/run.go's own SQLite/Postgres deployment gate)")
 
 	Cmd.AddCommand(runCmd)
 }
+
+// namespaceRecheckInterval is how often a controller backed by the
+// organization datastore re-checks which namespaces it should reconcile —
+// so a new organization waits at most this long, plus a pod restart.
+const namespaceRecheckInterval = 30 * time.Second
 
 func runController() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -112,8 +123,12 @@ func runController() {
 	// reconciles all of their namespaces instead, one full reconciler
 	// instance per namespace (see setupNamespaceReconcilers).
 	multiInstance := reconcilingClusterID != ""
+	if multiInstance && watchHomeOrganizations {
+		log.Printf("ℹ️  --watch-home-organizations ignored: --reconciling-cluster-id is set, and home-cluster organizations belong to the home cluster's controller")
+		watchHomeOrganizations = false
+	}
 	var orgStore *orgdb.Store
-	if multiInstance {
+	if multiInstance || watchHomeOrganizations {
 		var dbErr error
 		orgStore, dbErr = orgdb.Open(controllerDBDriver, controllerDBDSN)
 		if dbErr != nil {
@@ -121,9 +136,12 @@ func runController() {
 		}
 		defer orgStore.Close()
 	}
-	targetNamespaces, resolveErr := resolveTargetNamespaces(context.Background(), orgStore, namespace, reconcilingClusterID)
+	resolve := func(ctx context.Context) ([]string, error) {
+		return resolveTargetNamespaces(ctx, orgStore, namespace, reconcilingClusterID, watchHomeOrganizations)
+	}
+	targetNamespaces, resolveErr := resolve(context.Background())
 	if resolveErr != nil {
-		log.Fatalf("❌ Failed to list organizations for reconciling cluster %q: %v", reconcilingClusterID, resolveErr)
+		log.Fatalf("❌ Failed to list the organizations this controller reconciles (reconciling cluster %q, home organizations %t): %v", reconcilingClusterID, watchHomeOrganizations, resolveErr)
 	}
 	if multiInstance && len(targetNamespaces) == 0 {
 		log.Printf("⚠️  No organizations are currently mapped to reconciling cluster %q — this process will reconcile nothing until one is", reconcilingClusterID)
@@ -191,8 +209,20 @@ func runController() {
 		}
 		agentCACertPEM = string(agentCA)
 	}
-	if agentControlPlaneURL == "" || agentTunnelAddress == "" {
-		log.Printf("ℹ️  --agent-control-plane-url/--agent-tunnel-address not set — spec.access.agent.enabled will be a no-op on every cluster")
+	// No --agent-tunnel-address: tunnel over a WebSocket at the control
+	// plane URL itself (wss://<host>/agent/tunnel), which reaches hyve-api
+	// through the same HTTPS route bootstrap already uses — no raw TCP
+	// port to expose.
+	if agentControlPlaneURL != "" && agentTunnelAddress == "" {
+		derived, err := agentpki.TunnelWebSocketURL(agentControlPlaneURL)
+		if err != nil {
+			log.Fatalf("❌ --agent-control-plane-url: %v", err)
+		}
+		agentTunnelAddress = derived
+		log.Printf("ℹ️  hyve-agent tunnel: %s (derived from --agent-control-plane-url)", agentTunnelAddress)
+	}
+	if agentControlPlaneURL == "" {
+		log.Printf("ℹ️  --agent-control-plane-url not set — spec.access.agent.enabled will be a no-op on every cluster")
 	}
 
 	deps := reconcilerSharedDeps{
@@ -214,6 +244,7 @@ func runController() {
 		controlNamespace:   namespace,
 		hostServiceAccount: hostServiceAccount,
 		hostCAPath:         hostCAPath,
+		homeOrganizations:  watchHomeOrganizations,
 	}
 
 	// One full reconciler instance per target namespace — see
@@ -222,11 +253,22 @@ func runController() {
 	// preserves today's exact controller names/behavior unchanged.
 	for _, ns := range targetNamespaces {
 		namePrefix := ""
-		if multiInstance {
+		if multiInstance || ns != namespace {
 			namePrefix = "org-" + ns
 		}
 		if err := setupNamespaceReconcilers(mgr, ns, namePrefix, deps); err != nil {
 			log.Fatalf("❌ Failed to set up reconcilers for namespace %q: %v", ns, err)
+		}
+	}
+
+	// The cache is fixed to targetNamespaces, so an organization created,
+	// deleted, or migrated after startup needs a restart to be picked up:
+	// exit cleanly when the set changes and let Kubernetes restart the pod.
+	if orgStore != nil {
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			return watchTargetNamespaces(ctx, namespaceRecheckInterval, targetNamespaces, resolve)
+		})); err != nil {
+			log.Fatalf("❌ Failed to set up the organization watcher: %v", err)
 		}
 	}
 
@@ -238,7 +280,10 @@ func runController() {
 	}
 
 	log.Printf("🚀 hyve controller starting — namespaces=%v modules-dir=%s config=%s reconciling-cluster-id=%q", targetNamespaces, modulesDir, configName, reconcilingClusterID)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctrl.SetupSignalHandler()); errors.Is(err, errTargetNamespacesChanged) {
+		log.Printf("🔄 %v — exiting so the restart picks up the new set", err)
+		os.Exit(0)
+	} else if err != nil {
 		log.Fatalf("❌ Manager exited with error: %v", err)
 	}
 }

@@ -50,7 +50,7 @@ func TestHandleRequestPasswordReset_UnknownIdentifier_StillReports200(t *testing
 // same generic response — nothing to act on, not an error.
 func TestHandleRequestPasswordReset_NoEmailOnFile_StillReports200(t *testing.T) {
 	s := newTestServer(t)
-	binding, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	binding, err := createAccount(t.Context(), s.OrgStore, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "no-email-user", Role: hyvev1alpha1.RoleReadOnly,
 		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace,
 	})
@@ -59,7 +59,7 @@ func TestHandleRequestPasswordReset_NoEmailOnFile_StillReports200(t *testing.T) 
 	rec := doRequestPasswordReset(s, "no-email-user", "")
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	_, err = s.OrgStore.GetPasswordResetTokenByBindingID(t.Context(), binding.ID)
+	_, err = s.OrgStore.GetPasswordResetTokenByUserID(t.Context(), userIDOf(t, s.OrgStore, binding.Identity))
 	assert.ErrorIs(t, err, orgdb.ErrNotFound, "no token should be created for an account with no email")
 }
 
@@ -73,7 +73,7 @@ func TestHandleRequestPasswordReset_NoEmailOnFile_StillReports200(t *testing.T) 
 func TestHandleRequestPasswordReset_RealAccount_CreatesToken(t *testing.T) {
 	s := newTestServer(t)
 	email := "alice@example.com"
-	binding, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	binding, err := createAccount(t.Context(), s.OrgStore, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "alice", Role: hyvev1alpha1.RoleReadOnly,
 		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &email,
 	})
@@ -82,7 +82,7 @@ func TestHandleRequestPasswordReset_RealAccount_CreatesToken(t *testing.T) {
 	rec := doRequestPasswordReset(s, "alice", "")
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	token, err := s.OrgStore.GetPasswordResetTokenByBindingID(t.Context(), binding.ID)
+	token, err := s.OrgStore.GetPasswordResetTokenByUserID(t.Context(), userIDOf(t, s.OrgStore, binding.Identity))
 	require.NoError(t, err, "a real token row must be created")
 	assert.NotEmpty(t, token.TokenHash)
 	assert.WithinDuration(t, time.Now().Add(passwordResetTokenTTL), token.ExpiresAt, time.Minute)
@@ -98,7 +98,7 @@ func TestHandleRequestPasswordReset_RealAccount_CreatesToken(t *testing.T) {
 func TestHandleRequestPasswordReset_ByEmail(t *testing.T) {
 	s := newTestServer(t)
 	email := "alice@example.com"
-	binding, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	binding, err := createAccount(t.Context(), s.OrgStore, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "alice", Role: hyvev1alpha1.RoleReadOnly,
 		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &email,
 	})
@@ -107,7 +107,7 @@ func TestHandleRequestPasswordReset_ByEmail(t *testing.T) {
 	rec := doRequestPasswordReset(s, "alice@example.com", "")
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	_, err = s.OrgStore.GetPasswordResetTokenByBindingID(t.Context(), binding.ID)
+	_, err = s.OrgStore.GetPasswordResetTokenByUserID(t.Context(), userIDOf(t, s.OrgStore, binding.Identity))
 	assert.NoError(t, err)
 }
 
@@ -117,18 +117,18 @@ func TestHandleRequestPasswordReset_ByEmail(t *testing.T) {
 func TestHandleRequestPasswordReset_SecondRequestReplacesToken(t *testing.T) {
 	s := newTestServer(t)
 	email := "alice@example.com"
-	binding, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	binding, err := createAccount(t.Context(), s.OrgStore, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "alice", Role: hyvev1alpha1.RoleReadOnly,
 		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &email,
 	})
 	require.NoError(t, err)
 
 	doRequestPasswordReset(s, "alice", "")
-	first, err := s.OrgStore.GetPasswordResetTokenByBindingID(t.Context(), binding.ID)
+	first, err := s.OrgStore.GetPasswordResetTokenByUserID(t.Context(), userIDOf(t, s.OrgStore, binding.Identity))
 	require.NoError(t, err)
 
 	doRequestPasswordReset(s, "alice", "")
-	second, err := s.OrgStore.GetPasswordResetTokenByBindingID(t.Context(), binding.ID)
+	second, err := s.OrgStore.GetPasswordResetTokenByUserID(t.Context(), userIDOf(t, s.OrgStore, binding.Identity))
 	require.NoError(t, err)
 
 	assert.NotEqual(t, first.ID, second.ID, "a second request must mint a fresh token row, not reuse the first")
@@ -143,7 +143,7 @@ func setUpPasswordResetTarget(t *testing.T, s *Server, username, email, password
 	t.Helper()
 	hash, err := HashPassword(password)
 	require.NoError(t, err)
-	binding, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	binding, err := createAccount(t.Context(), s.OrgStore, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: username, Role: hyvev1alpha1.RoleReadOnly,
 		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: &email, PasswordHash: &hash,
 	})
@@ -153,7 +153,7 @@ func setUpPasswordResetTarget(t *testing.T, s *Server, username, email, password
 	tokenHash, err := HashPassword(rawToken)
 	require.NoError(t, err)
 	_, err = s.OrgStore.CreatePasswordResetToken(t.Context(), orgdb.PasswordResetToken{
-		BindingID: binding.ID, TokenHash: tokenHash, ExpiresAt: time.Now().Add(passwordResetTokenTTL),
+		UserID: userIDOf(t, s.OrgStore, binding.Identity), TokenHash: tokenHash, ExpiresAt: time.Now().Add(passwordResetTokenTTL),
 	})
 	require.NoError(t, err)
 	return binding, rawToken
@@ -172,11 +172,11 @@ func TestHandleResetPassword_Success(t *testing.T) {
 
 	updated, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "alice")
 	require.NoError(t, err)
-	require.NotNil(t, updated.PasswordHash)
-	assert.True(t, VerifyPassword(*updated.PasswordHash, "new-password-123"))
-	assert.False(t, VerifyPassword(*updated.PasswordHash, "old-password"))
+	require.NotNil(t, passwordHashOf(t, s.OrgStore, updated.Identity))
+	assert.True(t, VerifyPassword(*passwordHashOf(t, s.OrgStore, updated.Identity), "new-password-123"))
+	assert.False(t, VerifyPassword(*passwordHashOf(t, s.OrgStore, updated.Identity), "old-password"))
 
-	_, err = s.OrgStore.GetPasswordResetTokenByBindingID(t.Context(), binding.ID)
+	_, err = s.OrgStore.GetPasswordResetTokenByUserID(t.Context(), userIDOf(t, s.OrgStore, binding.Identity))
 	assert.ErrorIs(t, err, orgdb.ErrNotFound, "the token must be consumed (single-use)")
 }
 
@@ -200,12 +200,12 @@ func TestHandleResetPassword_WrongToken(t *testing.T) {
 
 	updated, err := s.findBindingBySubject(t.Context(), testNamespace, orgdb.SubjectTypeLocal, "alice")
 	require.NoError(t, err)
-	assert.True(t, VerifyPassword(*updated.PasswordHash, "old-password"), "password must be unchanged on a rejected reset")
+	assert.True(t, VerifyPassword(*passwordHashOf(t, s.OrgStore, updated.Identity), "old-password"), "password must be unchanged on a rejected reset")
 }
 
 func TestHandleResetPassword_ExpiredToken(t *testing.T) {
 	s := newTestServer(t)
-	binding, err := s.OrgStore.CreateBinding(t.Context(), orgdb.Binding{
+	binding, err := createAccount(t.Context(), s.OrgStore, orgdb.Binding{
 		Namespace: testNamespace, SubjectType: orgdb.SubjectTypeLocal, Identity: "alice", Role: hyvev1alpha1.RoleReadOnly,
 		ServiceAccountName: "hyve-access-readonly", ServiceAccountNamespace: testNamespace, Email: strPtr("alice@example.com"),
 	})
@@ -213,7 +213,7 @@ func TestHandleResetPassword_ExpiredToken(t *testing.T) {
 	tokenHash, err := HashPassword("TESTTOK1")
 	require.NoError(t, err)
 	_, err = s.OrgStore.CreatePasswordResetToken(t.Context(), orgdb.PasswordResetToken{
-		BindingID: binding.ID, TokenHash: tokenHash, ExpiresAt: time.Now().Add(-time.Hour),
+		UserID: userIDOf(t, s.OrgStore, binding.Identity), TokenHash: tokenHash, ExpiresAt: time.Now().Add(-time.Hour),
 	})
 	require.NoError(t, err)
 
