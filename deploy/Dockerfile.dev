@@ -22,21 +22,25 @@
 # committed to git so a plain `go build` (no Docker, no npm) still
 # compiles for local Go development — this stage's COPY overwrites it with
 # the real thing.
-FROM node:24-alpine AS ui-builder
+# Both build stages run on the build machine (--platform=$BUILDPLATFORM) and
+# cross-compile: the console is platform-independent and the binary is pure
+# Go, so a multi-arch build needs no emulation for them.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS ui-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ .
 RUN npm run build
 
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+ARG TARGETOS TARGETARCH
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui-builder /src/web/dist/ internal/webui/dist/
-RUN CGO_ENABLED=0 go build -o /out/hyve .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/hyve .
 
 FROM alpine:3.20
 # Links the image to this repository on GitHub (its Packages list).

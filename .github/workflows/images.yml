@@ -1,0 +1,79 @@
+name: Images
+
+# Builds and pushes the hyve and hyve-agent images for every commit pushed
+# to a branch — what non-release deploys run (release images come from
+# release.yml on v* tags). Tagged by commit and by branch:
+#   ghcr.io/cbridges1/hyve:sha-<7-char commit>    ghcr.io/cbridges1/hyve:<branch>
+#   ghcr.io/cbridges1/hyve-agent:sha-<commit>     ghcr.io/cbridges1/hyve-agent:<branch>
+on:
+  push:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: hyve
+            dockerfile: deploy/Dockerfile.dev
+          - image: hyve-agent
+            dockerfile: deploy/Dockerfile.agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Only the final stage (alpine + apk) runs per platform; the Go and
+      # web builds cross-compile on the runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Labels and annotations include org.opencontainers.image.source,
+      # which links the package to this repository.
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ghcr.io/cbridges1/${{ matrix.image }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

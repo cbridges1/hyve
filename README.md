@@ -95,4 +95,6 @@ task check          # go vet + tests
 task cluster:local && task install:local   # local k3d dev install
 ```
 
+Every push to a branch builds `ghcr.io/cbridges1/hyve` and `ghcr.io/cbridges1/hyve-agent` (amd64 and arm64), tagged `sha-<commit>` and `<branch>`; `v*` tags build the releases.
+
 Run `task --list` for the rest. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TESTING.md](docs/TESTING.md). Full docs are at **[cbridges1.github.io/hyve-website](https://cbridges1.github.io/hyve-website/)**.
