@@ -133,6 +133,14 @@ func Up(ctx context.Context, o Options) error {
 			return fmt.Errorf("%s not found on PATH: local mode needs Docker and k3d", bin)
 		}
 	}
+	if o.Image == "" && install.IsDevBuild() {
+		// A build from source has no published image: use the one the
+		// checkout builds, before creating anything.
+		if _, err := run(ctx, "docker", "image", "inspect", install.DevImage); err != nil {
+			return fmt.Errorf("%w\n  (or run 'task local', which does both)", install.ErrNoImage)
+		}
+		o.Image = install.DevImage
+	}
 	dir := Dir(o.Home)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -45,6 +45,7 @@ hyve cluster kubeconfig demo > demo.yaml
 ```bash
 task build          # build the binary
 task check          # go vet + tests
+task local          # build the binary and a hyve:dev image, then hyve local up with them
 ```
 
 The design is in nexus-config's `docs/HYVE-PROPOSAL.md`.

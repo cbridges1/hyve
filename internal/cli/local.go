@@ -49,7 +49,7 @@ func localUpCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.IntVar(&o.Port, "port", local.DefaultPort, "host port the host endpoint listens on")
 	f.StringVar(&o.K3sImage, "k3s-image", local.DefaultK3s, "K3s image")
-	f.StringVar(&o.Image, "image", "", "hyve image (default: the release's; a local Docker image is imported)")
+	f.StringVar(&o.Image, "image", "", "hyve image (default: the release's, or 'hyve:dev' for a build from source; a local Docker image is imported)")
 	f.StringVar(&o.PublicURL, "public-url", "", "the host endpoint's URL for clusters outside Docker's kind network (a tunnel you run)")
 	f.StringSliceVar(&o.Providers, "providers", nil, "Cluster API providers to add (default: docker, with kubeadm)")
 	f.StringVar(&o.GOGC, "gogc", "40", "GOGC for K3s and every controller, trading a little CPU for memory")

@@ -27,6 +27,15 @@ tasks:
     desc: Run with go run main.go
     cmd: go run main.go {{.CLI_ARGS}}
 
+  image:
+    desc: Build hyve's image from this checkout as hyve:dev
+    cmd: docker build -t hyve:dev .
+
+  local:
+    desc: Build the binary and image, then bring up local mode with them
+    deps: [build, image]
+    cmd: ./{{.BINARY}}{{.EXT}} local up --image hyve:dev {{.CLI_ARGS}}
+
   test:
     desc: Run all tests
     cmd: go test ./...

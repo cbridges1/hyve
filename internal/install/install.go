@@ -9,12 +9,14 @@ package install
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/cbridges1/hyve/internal/kube"
@@ -36,6 +38,7 @@ var (
 	capiOperatorManifest []byte
 
 	deploymentGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	podGVR        = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
 	secretGVR     = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 	getOpts       = metav1.GetOptions{}
 	crdGVR        = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
@@ -69,6 +72,23 @@ type Options struct {
 	Log      func(format string, args ...any)
 }
 
+// Version is this binary's release version, set by cmd; "dev" (or empty)
+// is a build from source, which has no published image.
+var Version = "dev"
+
+// DefaultImage is the published image for this release.
+const DefaultImage = "ghcr.io/cbridges1/hyve"
+
+// DevImage is the image a source checkout builds for itself (`task image`).
+const DevImage = "hyve:dev"
+
+// IsDevBuild says whether this binary was built from source.
+func IsDevBuild() bool { return Version == "" || Version == "dev" }
+
+// ErrNoImage is Install's refusal to deploy a dev build without an image.
+var ErrNoImage = errors.New("this hyve is a development build, which has no published image: " +
+	"build one from the checkout (docker build -t " + DevImage + " .) and pass --image " + DevImage)
+
 // Result says what Install found and did.
 type Result struct {
 	Rancher   bool
@@ -78,6 +98,9 @@ type Result struct {
 // Install installs hyve and, without Rancher, whatever it needs that's
 // missing. Safe to re-run.
 func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
+	if o.Image == "" && IsDevBuild() {
+		return nil, ErrNoImage
+	}
 	if o.Namespace == "" {
 		o.Namespace = "hyve-system"
 	}
@@ -154,6 +177,9 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	}
 
 	values := map[string]any{}
+	if o.Image == "" {
+		o.Image = DefaultImage + ":" + Version
+	}
 	if o.Image != "" {
 		repo, tag, _ := strings.Cut(o.Image, ":")
 		img := map[string]any{"repository": repo}
@@ -351,11 +377,67 @@ func waitDeployments(ctx context.Context, kc *kube.Client, ns string, logf func(
 			want, _, _ := unstructured.NestedInt64(d.Object, "spec", "replicas")
 			ready, _, _ := unstructured.NestedInt64(d.Object, "status", "availableReplicas")
 			if ready < want || want == 0 {
+				if err := pullFailure(ctx, kc, ns, d); err != nil {
+					return false, "", fmt.Errorf("%s/%s: %w", ns, n, err)
+				}
 				return false, fmt.Sprintf("waiting for %s/%s (%d/%d)", ns, n, ready, want), nil
 			}
 		}
 		return true, "", nil
 	})
+}
+
+// pullFailure reports a Deployment's pod whose image doesn't exist or
+// can't be had, which waiting won't fix. Other pull errors may be
+// transient, so they're left to the timeout.
+func pullFailure(ctx context.Context, kc *kube.Client, ns string, d *unstructured.Unstructured) error {
+	sel, _, _ := unstructured.NestedStringMap(d.Object, "spec", "selector", "matchLabels")
+	if len(sel) == 0 {
+		return nil
+	}
+	pods, err := kc.Dynamic.Resource(podGVR).Namespace(ns).List(ctx, metav1.ListOptions{LabelSelector: labels.SelectorFromSet(sel).String()})
+	if err != nil {
+		return nil
+	}
+	// Pods of an older rollout may be failing on an image that's since
+	// changed; only the current ones count.
+	current := map[string]bool{}
+	containers, _, _ := unstructured.NestedSlice(d.Object, "spec", "template", "spec", "containers")
+	for _, c := range containers {
+		if c, ok := c.(map[string]any); ok {
+			image, _ := c["image"].(string)
+			current[image] = true
+		}
+	}
+	for _, p := range pods.Items {
+		// The status's image may be normalized (docker.io/library/...);
+		// the pod's spec has it as the Deployment does.
+		specImage := map[string]string{}
+		podContainers, _, _ := unstructured.NestedSlice(p.Object, "spec", "containers")
+		for _, c := range podContainers {
+			if c, ok := c.(map[string]any); ok {
+				name, _ := c["name"].(string)
+				specImage[name], _ = c["image"].(string)
+			}
+		}
+		statuses, _, _ := unstructured.NestedSlice(p.Object, "status", "containerStatuses")
+		for _, c := range statuses {
+			c, _ := c.(map[string]any)
+			reason, _, _ := unstructured.NestedString(c, "state", "waiting", "reason")
+			msg, _, _ := unstructured.NestedString(c, "state", "waiting", "message")
+			lower := strings.ToLower(msg)
+			permanent := strings.Contains(lower, "not found") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "denied")
+			name, _, _ := unstructured.NestedString(c, "name")
+			image := specImage[name]
+			if !current[image] {
+				continue
+			}
+			if reason == "InvalidImageName" || ((reason == "ErrImagePull" || reason == "ImagePullBackOff") && permanent) {
+				return fmt.Errorf("can't pull %s (%s): %s", image, reason, msg)
+			}
+		}
+	}
+	return nil
 }
 
 // providerSet is the CAPI Operator providers a named provider needs.

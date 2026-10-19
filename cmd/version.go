@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/cbridges1/hyve/cmd/host"
+	"github.com/cbridges1/hyve/internal/install"
 )
 
 // version/commit/date are set via -ldflags at build time by GoReleaser
@@ -19,5 +20,6 @@ var (
 func init() {
 	rootCmd.Version = version
 	host.Version = version
+	install.Version = version
 	rootCmd.SetVersionTemplate(fmt.Sprintf("hyve %s (commit %s, built %s)\n", version, commit, date))
 }
