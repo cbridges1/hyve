@@ -136,8 +136,47 @@ func prepareForRancher(ctx context.Context, kc *kube.Client) error {
 	}}); err != nil {
 		return err
 	}
-	_, err := setTurtlesUseCAAPF(ctx, kc)
-	return err
+	if _, err := setTurtlesUseCAAPF(ctx, kc); err != nil {
+		return err
+	}
+	return skipKeyRotationMigration(ctx, kc)
+}
+
+var rkeControlPlaneGVR = schema.GroupVersionResource{Group: "rke.cattle.io", Version: "v1", Resource: "rkecontrolplanes"}
+
+// skipKeyRotationMigration marks one of Rancher's one-time migrations done
+// when there's nothing for it to migrate. Rancher 2.14 runs it once Cluster
+// API is ready, and it looks up each management cluster's RKE2 control
+// plane in the cluster's Fleet workspace (pkg/rancher/migrations.go,
+// migrateEncryptionKeyRotationLeader). With use-caapf, Turtles imports
+// clusters without a Fleet workspace, so on a cluster where hyve's clusters
+// exist before Rancher's first start that lookup fails and Rancher exits,
+// every start. The migration only moves an annotation on RKE2 control
+// planes, so with none of those, it has nothing to do.
+func skipKeyRotationMigration(ctx context.Context, kc *kube.Client) error {
+	const name, key = "migrateencryptionkeyrotationleadertostatus", "encryptionKeyRotationStatusMigrated"
+	ri := kc.Dynamic.Resource(configMapGVR).Namespace(rancherConfigNS)
+	if cm, err := ri.Get(ctx, name, metav1.GetOptions{}); err == nil {
+		if v, _, _ := unstructured.NestedString(cm.Object, "data", key); v == "true" {
+			return nil
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if hasCRD(ctx, kc, "rkecontrolplanes.rke.cattle.io") {
+		list, err := kc.Dynamic.Resource(rkeControlPlaneGVR).List(ctx, metav1.ListOptions{Limit: 1})
+		if err != nil {
+			return err
+		}
+		if len(list.Items) > 0 {
+			return nil
+		}
+	}
+	return kc.ApplyObject(ctx, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": name, "namespace": rancherConfigNS},
+		"data":     map[string]any{key: "true"},
+	}})
 }
 
 // setTurtlesUseCAAPF sets features.use-caapf.enabled in the Turtles values

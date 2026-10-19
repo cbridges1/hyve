@@ -119,6 +119,10 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 			return nil, fmt.Errorf("Rancher is installed but Cluster API isn't: install Rancher Turtles first")
 		}
 		if !o.OnlyHyve {
+			// Before anything that gets Turtles' Cluster API ready.
+			if err := skipKeyRotationMigration(ctx, kc); err != nil {
+				return res, err
+			}
 			if err := adoptIntoTurtles(ctx, kc, logf); err != nil {
 				return res, fmt.Errorf("handing Cluster API to Turtles: %w", err)
 			}
