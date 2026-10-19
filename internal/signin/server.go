@@ -30,9 +30,13 @@ type Server struct {
 	// Routes, if set, adds more routes: the agent tunnel and the
 	// child-cluster proxy.
 	Routes func(*http.ServeMux)
+	// UI, if set, serves hyve's own UI at / (everything no other route
+	// takes).
+	UI http.Handler
 
 	userLimit *limiter
 	addrLimit *limiter
+	nsCache   namespacesCache
 }
 
 // NewServer returns a Server with Rancher-like limits on failed sign-ins:
@@ -58,6 +62,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1-public/authproviders", s.handleProviders)
 	mux.HandleFunc("POST /v1-public/login", s.handleLogin)
 	mux.HandleFunc("POST /v1/logout", s.handleLogout)
+	mux.HandleFunc("GET /v1/me", s.handleMe)
+	mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
+	mux.HandleFunc("POST /v1/ui-sessions", s.handleNewUISession)
+	mux.HandleFunc("POST /v1-public/ui-session", s.handleUISession)
 	mux.HandleFunc("PUT /v1/users/{name}/password", s.handleSetPassword)
 	if s.Proxy != nil {
 		mux.Handle("/k8s/clusters/local/", s.Proxy)
@@ -65,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.Routes != nil {
 		s.Routes(mux)
+	}
+	if s.UI != nil {
+		mux.Handle("/", s.UI)
 	}
 	return mux
 }
@@ -139,6 +150,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "InvalidFormat", "unsupported auth provider "+req.Type)
 		return
 	}
+	if req.ResponseType == "cookie" && !fromUI(r) {
+		writeError(w, http.StatusForbidden, "Forbidden", "missing the "+UIHeader+" header")
+		return
+	}
 	userKey, addrKey := "user:"+req.Username, "addr:"+clientAddr(r)
 	if s.userLimit.Blocked(userKey) || s.addrLimit.Blocked(addrKey) {
 		writeError(w, http.StatusTooManyRequests, "TooManyRequests", "too many failed sign-ins; try again later")
@@ -167,6 +182,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.addrLimit.Succeed(addrKey)
 
 	id, _, _ := parseSessionToken(token)
+	if req.ResponseType == "cookie" {
+		// The UI: the session goes in a cookie script can't read.
+		setSessionCookie(w, r, token, expiresAt)
+		token = ""
+	}
 	writeJSON(w, http.StatusCreated, LoginResponse{
 		Token:     token,
 		ExpiresAt: expiresAt.Format(time.RFC3339),
@@ -187,7 +207,12 @@ func bearer(r *http.Request) string {
 }
 
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (Identity, bool) {
-	ident, err := s.Store.Lookup(r.Context(), bearer(r))
+	token, ok := sessionToken(r)
+	if !ok {
+		writeError(w, http.StatusForbidden, "Forbidden", "missing the "+UIHeader+" header")
+		return Identity{}, false
+	}
+	ident, err := s.Store.Lookup(r.Context(), token)
 	if err != nil {
 		if !errors.Is(err, ErrInvalidSession) {
 			log.Printf("signin: session lookup: %v", err)
@@ -199,7 +224,13 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (Identity,
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.Logout(r.Context(), bearer(r)); err != nil && !errors.Is(err, ErrInvalidSession) {
+	token, ok := sessionToken(r)
+	if !ok {
+		writeError(w, http.StatusForbidden, "Forbidden", "missing the "+UIHeader+" header")
+		return
+	}
+	clearSessionCookie(w, r)
+	if err := s.Store.Logout(r.Context(), token); err != nil && !errors.Is(err, ErrInvalidSession) {
 		log.Printf("signin: logout: %v", err)
 		writeError(w, http.StatusInternalServerError, "ServerError", "sign-out failed")
 		return
@@ -308,8 +339,8 @@ func (s *Server) RunSessionCleanup(ctx context.Context, interval time.Duration) 
 // SessionIdentity resolves a request's hyve session, for other handlers on
 // the host; ok is false when it has no valid one.
 func (s *Server) SessionIdentity(r *http.Request) (Identity, bool) {
-	token := bearer(r)
-	if !IsSessionToken(token) {
+	token, ok := sessionToken(r)
+	if !ok || !IsSessionToken(token) {
 		return Identity{}, false
 	}
 	ident, err := s.Store.Lookup(r.Context(), token)

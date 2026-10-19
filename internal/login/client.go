@@ -300,3 +300,28 @@ func SetPassword(ctx context.Context, c *http.Client, s *Server, username, curre
 	}
 	return fmt.Errorf("setting the password: %s", resp.Status)
 }
+
+// UISession asks a hyve host for a new session for the browser, as the
+// same user (`hyve ui`).
+func UISession(ctx context.Context, c *http.Client, s *Server) (Session, error) {
+	if s.Kind != KindHyve {
+		return Session{}, errors.New("only a hyve host serves hyve's own UI")
+	}
+	resp, data, err := do(ctx, c, http.MethodPost, s.URL+"/v1/ui-sessions", map[string]any{}, s.Token)
+	if err != nil {
+		return Session{}, err
+	}
+	switch resp.StatusCode {
+	case http.StatusCreated, http.StatusOK:
+		return parseSession(data)
+	case http.StatusUnauthorized:
+		return Session{}, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.URL)
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return Session{}, errors.New("this hyve host is too old to sign the browser in; upgrade it")
+	default:
+		if _, msg := apiError(data); msg != "" {
+			return Session{}, errors.New(msg)
+		}
+		return Session{}, fmt.Errorf("starting a browser session: %s", resp.Status)
+	}
+}

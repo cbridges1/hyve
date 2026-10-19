@@ -5,6 +5,9 @@ project_name: hyve
 before:
   hooks:
     - go mod tidy
+    # hyve's own UI, embedded in the binary (internal/webui).
+    - npm --prefix ui/standalone ci --no-audit --no-fund
+    - npm --prefix ui/standalone run build
 
 builds:
   - id: hyve

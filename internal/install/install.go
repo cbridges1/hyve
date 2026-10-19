@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -39,9 +40,11 @@ var (
 
 	deploymentGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	podGVR        = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
-	secretGVR     = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	getOpts       = metav1.GetOptions{}
-	crdGVR        = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
+
+	fleetAddonConfigGVR = schema.GroupVersionResource{Group: "addons.cluster.x-k8s.io", Version: "v1alpha1", Resource: "fleetaddonconfigs"}
+	secretGVR           = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	getOpts             = metav1.GetOptions{}
+	crdGVR              = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
 )
 
 // Options for Install.
@@ -115,6 +118,14 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		if !hasCRD(ctx, kc, "clusters.cluster.x-k8s.io") {
 			return nil, fmt.Errorf("Rancher is installed but Cluster API isn't: install Rancher Turtles first")
 		}
+		if !o.OnlyHyve {
+			if err := adoptIntoTurtles(ctx, kc, logf); err != nil {
+				return res, fmt.Errorf("handing Cluster API to Turtles: %w", err)
+			}
+			if err := ensureRancherCAAPF(ctx, kc, logf); err != nil {
+				return res, err
+			}
+		}
 	} else if o.OnlyHyve {
 		logf("Installing only hyve; cert-manager, Cluster API, CAAPF and Fleet are left to you")
 	} else {
@@ -174,6 +185,13 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		if err := applyFleetConfig(ctx, kc, o, logf); err != nil {
 			return res, err
 		}
+		// For Rancher added later: Turtles reads use-caapf when Rancher
+		// installs it, and imports this install's clusters straight away.
+		// Rancher registers a cluster with Fleet itself if it imports it
+		// before use-caapf is on, and can't be made to stop, so set it now.
+		if err := prepareForRancher(ctx, kc); err != nil {
+			return res, err
+		}
 	}
 
 	values := map[string]any{}
@@ -223,6 +241,11 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	}
 	if err := applyRetrying(ctx, kc, manifest, logf); err != nil {
 		return res, err
+	}
+	if res.Rancher {
+		if err := pruneStandalone(ctx, kc, o.Namespace, values, logf); err != nil {
+			return res, err
+		}
 	}
 	names := []string{"hyve-controller"}
 	if h, ok := values["host"].(map[string]any); ok && h["enabled"] == true {
@@ -306,9 +329,26 @@ func applyFleetConfig(ctx context.Context, kc *kube.Client, o Options, logf func
 	// the BundleNamespaceMapping that carries a template namespace's
 	// bundles to clusters in environments; CAAPF only writes it (and the
 	// class's ClusterGroup) with patchResource on.
-	spec := map[string]any{"config": map[string]any{"server": server}, "cluster": map[string]any{"hostNetwork": true, "applyClassGroup": true, "patchResource": true, "selector": map[string]any{}, "namespaceSelector": map[string]any{}}, "clusterClass": map[string]any{"patchResource": true}}
-	if !hasCRD(ctx, kc, "bundles.fleet.cattle.io") {
-		logf("CAAPF will install Fleet %s", FleetVersion)
+	// bootstrapLocalCluster registers the management cluster itself with
+	// Fleet (fleet-local), so repos can deploy to it: ClusterClasses and
+	// their templates, for one.
+	spec := map[string]any{"config": map[string]any{"server": server, "bootstrapLocalCluster": true}, "cluster": map[string]any{"hostNetwork": true, "applyClassGroup": true, "patchResource": true, "selector": map[string]any{}, "namespaceSelector": map[string]any{}}, "clusterClass": map[string]any{"patchResource": true}}
+	// CAAPF installs Fleet if it's missing. Once it has, keep asking it to,
+	// or a re-run's apply would drop the field.
+	existing, err := kc.Dynamic.Resource(fleetAddonConfigGVR).Get(ctx, "fleet-addon-config", getOpts)
+	_, installedByCAAPF, _ := unstructured.NestedMap(existingObject(existing, err), "spec", "install")
+	// Agents go where Turtles puts them, so adding Rancher later doesn't
+	// move them; an install from before keeps CAAPF's default
+	// (agentNamespaceOf).
+	if apierrors.IsNotFound(err) {
+		spec["cluster"].(map[string]any)["agentNamespace"] = AgentNamespace
+	} else if ns, _, _ := unstructured.NestedString(existingObject(existing, err), "spec", "cluster", "agentNamespace"); ns != "" {
+		spec["cluster"].(map[string]any)["agentNamespace"] = ns
+	}
+	if installedByCAAPF || !hasCRD(ctx, kc, "bundles.fleet.cattle.io") {
+		if !installedByCAAPF {
+			logf("CAAPF will install Fleet %s", FleetVersion)
+		}
 		spec["install"] = map[string]any{"version": FleetVersion}
 	}
 	return kc.ApplyObject(ctx, &unstructured.Unstructured{Object: map[string]any{
@@ -316,6 +356,13 @@ func applyFleetConfig(ctx context.Context, kc *kube.Client, o Options, logf func
 		"metadata": map[string]any{"name": "fleet-addon-config"},
 		"spec":     spec,
 	}})
+}
+
+func existingObject(u *unstructured.Unstructured, err error) map[string]any {
+	if err != nil || u == nil {
+		return nil
+	}
+	return u.Object
 }
 
 func hasCRD(ctx context.Context, kc *kube.Client, name string) bool {

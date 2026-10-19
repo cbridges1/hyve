@@ -33,6 +33,9 @@ spec:
             {{- if not .Values.controller.webhook }}
             - --no-webhook
             {{- end }}
+            {{- if .Values.controller.lazyProviders }}
+            - --lazy-providers
+            {{- end }}
             {{- if and .Values.host.enabled .Values.host.agentURL }}
             - --host-url={{ .Values.host.agentURL }}
             - --agent-image={{ .Values.host.agentImage }}

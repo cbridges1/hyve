@@ -138,13 +138,16 @@ func (r *Rancher) ReconcileCreator(ctx context.Context, req reconcile.Request) (
 	if err := r.Client.Get(ctx, req.NamespacedName, c); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	creator := c.GetAnnotations()[AnnotationCreator]
-	if !IsRancherUser(creator) || c.GetDeletionTimestamp() != nil {
-		return reconcile.Result{}, nil
+	if c.GetDeletionTimestamp() != nil {
+		return reconcile.Result{}, r.finishTurtlesDelete(ctx, c)
 	}
 	rc, err := r.rancherClusterFor(ctx, c.GetNamespace(), c.GetName())
 	if err != nil {
 		return reconcile.Result{}, err
+	}
+	creator := c.GetAnnotations()[AnnotationCreator]
+	if !IsRancherUser(creator) {
+		return reconcile.Result{}, nil
 	}
 	if rc == nil {
 		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil // not imported yet
@@ -160,6 +163,52 @@ func (r *Rancher) ReconcileCreator(ctx context.Context, req reconcile.Request) (
 		return reconcile.Result{}, fmt.Errorf("making %s owner of %s: %w", creator, rc.GetName(), err)
 	}
 	return reconcile.Result{}, nil
+}
+
+// turtlesFinalizer is the finalizer Turtles puts on CAPI Clusters it
+// imports.
+const turtlesFinalizer = "capicluster.turtles.cattle.io"
+
+// finishTurtlesDelete does Turtles' part of deleting a CAPI Cluster when
+// Turtles won't: it only handles a deletion while the cluster's control
+// plane is available (rancher/turtles v0.26, import_controller.go), so a
+// cluster whose control plane went first, as it does when CAPI deletes it,
+// can be left with only Turtles' finalizer forever. Then, as Turtles would,
+// delete the Rancher cluster it imported this one as and drop the
+// finalizer.
+func (r *Rancher) finishTurtlesDelete(ctx context.Context, c *unstructured.Unstructured) error {
+	fins := c.GetFinalizers()
+	if len(fins) != 1 || fins[0] != turtlesFinalizer || controlPlaneAvailable(c) {
+		return nil
+	}
+	lg := log.FromContext(ctx)
+	rc, err := r.rancherClusterFor(ctx, c.GetNamespace(), c.GetName())
+	if err != nil {
+		return err
+	}
+	if rc != nil && rc.GetDeletionTimestamp() == nil {
+		if err := r.Client.Delete(ctx, rc); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("deleting the Rancher cluster for %s/%s: %w", c.GetNamespace(), c.GetName(), err)
+		}
+	}
+	patch := client.MergeFrom(c.DeepCopy())
+	c.SetFinalizers(nil)
+	if err := r.Client.Patch(ctx, c, patch); err != nil {
+		return err
+	}
+	lg.Info("finished deleting a cluster Turtles left behind", "cluster", c.GetNamespace()+"/"+c.GetName())
+	return nil
+}
+
+func controlPlaneAvailable(c *unstructured.Unstructured) bool {
+	conds, _, _ := unstructured.NestedSlice(c.Object, "status", "conditions")
+	for _, x := range conds {
+		m, _ := x.(map[string]any)
+		if m["type"] == "ControlPlaneAvailable" {
+			return m["status"] == "True"
+		}
+	}
+	return false
 }
 
 func (r *Rancher) crtbsForClusterResource(ctx context.Context, o client.Object) []reconcile.Request {

@@ -24,7 +24,12 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["users/status"]
     verbs: ["get", "patch", "update"]
-  # Checks whether a caller may set someone else's password.
+  # Which namespaces a user can work in, for the UI (GET /v1/namespaces).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  # Checks whether a caller may set someone else's password, and which
+  # namespaces they can work in.
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
@@ -125,6 +130,9 @@ spec:
             - --namespace={{ .Values.namespace }}
             - --session-ttl={{ .Values.host.sessionTTL }}
             - --bootstrap-secret={{ .Values.host.bootstrapSecret }}
+            {{- if .Values.ui.enabled }}
+            - --ui
+            {{- end }}
             {{- if .Values.host.caCertsConfigMap }}
             - --cacerts=/etc/hyve/cacerts/ca.crt
             {{- end }}

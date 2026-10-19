@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -131,6 +134,21 @@ func providerAddCmd() *cobra.Command {
 			if fetchURL != "" {
 				spec["fetchConfig"] = map[string]any{"url": fetchURL}
 			}
+			if install.DetectCAPI(s.kube) == install.CAPILean {
+				return leanProviderAdd(ctx, s, name, fetchURL, data)
+			}
+			// The providers hyve knows (docker, kubeadm) go in as local mode
+			// adds them: every type they need (kubeadm is a bootstrap and a
+			// control-plane provider), at core Cluster API's version.
+			if known, err := install.ProviderObjects(name); err == nil && !s.turtles() && !cmd.Flags().Changed("type") && version == "" && fetchURL == "" && len(vars)+len(varFiles)+len(varB64Files) == 0 {
+				for _, o := range known {
+					if err := s.kube.ApplyObject(ctx, o); err != nil {
+						return err
+					}
+				}
+				logf("Applied Cluster API provider %s (%s); 'hyve provider list' shows when it's ready", name, install.CAPIVersion)
+				return nil
+			}
 			var obj *unstructured.Unstructured
 			if s.turtles() {
 				spec["name"], spec["type"] = providerName, typ
@@ -180,6 +198,94 @@ func providerAddCmd() *cobra.Command {
 	return cmd
 }
 
+// leanProviders lists a lean install's providers from their Deployments,
+// which the release manifests label with the provider's clusterctl name
+// (infrastructure-docker, control-plane-kubeadm, cluster-api).
+func leanProviders(ctx context.Context, s *session) ([]providerRow, error) {
+	list, err := s.kube.Dynamic.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}).
+		List(ctx, metav1.ListOptions{LabelSelector: "cluster.x-k8s.io/provider"})
+	if err != nil {
+		return nil, err
+	}
+	var rows []providerRow
+	for i := range list.Items {
+		d := &list.Items[i]
+		full := d.GetLabels()["cluster.x-k8s.io/provider"]
+		typ, name := "core", full
+		if full == "fleet" {
+			// CAAPF labels itself with the bare name.
+			typ = "addon"
+		}
+		for _, t := range []string{"infrastructure", "bootstrap", "control-plane", "addon", "ipam", "runtime-extension"} {
+			if n, ok := strings.CutPrefix(full, t+"-"); ok {
+				typ, name = t, n
+			}
+		}
+		version := ""
+		if cs, _, _ := unstructured.NestedSlice(d.Object, "spec", "template", "spec", "containers"); len(cs) > 0 {
+			if c, ok := cs[0].(map[string]any); ok {
+				img, _ := c["image"].(string)
+				if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
+					version = img[i+1:]
+				}
+			}
+		}
+		phase := "Installing"
+		ready, _, _ := unstructured.NestedInt64(d.Object, "status", "availableReplicas")
+		if want, _, _ := unstructured.NestedInt64(d.Object, "spec", "replicas"); ready >= want && want > 0 {
+			phase = "Ready"
+		}
+		rows = append(rows, providerRow{d.GetNamespace(), name, typ, full, version, phase})
+	}
+	return rows, nil
+}
+
+// leanProviderAdd adds a provider to a lean install (local mode), which
+// has no CAPI Operator: from the manifests hyve embeds, or the release
+// manifest at fetchURL, with the variables substituted the way clusterctl
+// does.
+func leanProviderAdd(ctx context.Context, s *session, name, fetchURL string, data map[string]any) error {
+	vars := map[string]string{}
+	for k, v := range data {
+		vars[k] = fmt.Sprint(v)
+	}
+	o := install.LeanOptions{Variables: vars, Log: logf}
+	if fetchURL == "" {
+		if _, ok := install.LeanProviders[name]; !ok {
+			return fmt.Errorf("hyve doesn't carry provider %q: give its components manifest with --fetch-url", name)
+		}
+		if err := install.LeanInstall(ctx, s.kube, []string{name}, o); err != nil {
+			return err
+		}
+	} else {
+		raw, err := fetchManifest(ctx, fetchURL)
+		if err != nil {
+			return err
+		}
+		if err := install.LeanInstallManifest(ctx, s.kube, name, raw, o); err != nil {
+			return err
+		}
+	}
+	logf("Added Cluster API provider %s", name)
+	return nil
+}
+
+func fetchManifest(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching %s: %s", url, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+}
+
 type providerRow struct {
 	ns, name, typ, provider, version, phase string
 }
@@ -201,6 +307,9 @@ func listProviders(cmd *cobra.Command, s *session) ([]providerRow, error) {
 			rows = append(rows, providerRow{p.GetNamespace(), p.GetName(), get(p, "spec", "type"), get(p, "spec", "name"), get(p, "status", "installedVersion"), get(p, "status", "phase")})
 		}
 		return rows, nil
+	}
+	if install.DetectCAPI(s.kube) == install.CAPILean {
+		return leanProviders(ctx, s)
 	}
 	for typ, kind := range operatorKinds {
 		list, err := s.kube.Dynamic.Resource(operatorGVR(kind)).List(ctx, metav1.ListOptions{})

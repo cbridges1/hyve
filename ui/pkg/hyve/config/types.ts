@@ -5,6 +5,11 @@ export const HYVE = {
   RESOURCE:         'hyve.io.resource',
   CLUSTER_RESOURCE: 'hyve.io.clusterresource',
   CREATE_CLUSTER:   'hyve-create-cluster',
+  OVERVIEW:         'hyve-overview',
+  MATRIX:           'hyve-resources',
+  PROVIDERS:        'hyve-providers',
+  SECRETS:          'hyve-secrets',
+  REPOS:            'hyve-repos',
 };
 
 export const CAPI_CLUSTER = 'cluster.x-k8s.io.cluster';

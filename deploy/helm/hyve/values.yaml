@@ -18,6 +18,11 @@ controller:
   # the validating one keeps locked variables locked. Without them,
   # templated Clusters must be complete when created (the CLI does that).
   webhook: true
+  # Add known Cluster API providers (docker, kubeadm) the first time a
+  # ClusterClass or a Fleet bundle needs their kinds. Installing providers
+  # takes cluster-admin, which this grants the controller. Local mode turns
+  # it on.
+  lazyProviders: false
   resources:
     requests:
       cpu: 20m
@@ -35,12 +40,13 @@ rancher:
   # like Rancher's own controllers. Turn it off to grant owners by hand.
   creatorOwner: true
 
-# hyve's UI. With Rancher, the extension (Cluster Templates, Clusters with
-# their Resources tab, Create Cluster, Shared Resources) is installed into
-# Rancher. Without Rancher, hyve's own UI is still to come.
+# hyve's UI. With Rancher, the extension is installed into Rancher (a
+# UIPlugin served by the image below). Without Rancher, the host serves the
+# same pages itself at / (built into hyve's binary, so nothing more is
+# installed); open it with `hyve ui`.
 ui:
   enabled: true
-  # The extension's version (ui/pkg/hyve/package.json).
+  # The extension's version (ui/pkg/hyve/package.json); Rancher mode only.
   version: "0.1.0"
   image:
     repository: ghcr.io/cbridges1/hyve-ui

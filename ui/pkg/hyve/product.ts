@@ -15,10 +15,8 @@ export function init($plugin: IPlugin, store: any) {
     weight:              90,
     showNamespaceFilter: true,
     to:                  {
-      name:   `${ PRODUCT }-c-cluster-resource`,
-      params: {
-        product: PRODUCT, cluster: BLANK_CLUSTER, resource: CAPI_CLUSTER
-      },
+      name:   `${ PRODUCT }-c-cluster-${ HYVE.OVERVIEW }`,
+      params: { product: PRODUCT, cluster: BLANK_CLUSTER },
     },
   });
 
@@ -35,21 +33,27 @@ export function init($plugin: IPlugin, store: any) {
     isCreatable: false, isEditable: true, isRemovable: true, canYaml: true,
   });
 
-  virtualType({
-    labelKey:   'hyve.createCluster.menuLabel',
-    name:       HYVE.CREATE_CLUSTER,
+  // hyve's own pages, in the side nav.
+  const page = (name: string, labelKey: string) => virtualType({
+    labelKey,
+    name,
     namespaced: false,
     route:      {
-      name:   `${ PRODUCT }-c-cluster-${ HYVE.CREATE_CLUSTER }`,
+      name:   `${ PRODUCT }-c-cluster-${ name }`,
       params: { product: PRODUCT, cluster: BLANK_CLUSTER },
     },
   });
 
-  basicType([CAPI_CLUSTER, HYVE.CREATE_CLUSTER, HYVE.TEMPLATE, HYVE.RESOURCE]);
-  weightType(CAPI_CLUSTER, 4, true);
-  weightType(HYVE.CREATE_CLUSTER, 3, true);
-  weightType(HYVE.TEMPLATE, 2, true);
-  weightType(HYVE.RESOURCE, 1, true);
+  page(HYVE.OVERVIEW, 'hyve.menu.overview');
+  page(HYVE.CREATE_CLUSTER, 'hyve.createCluster.menuLabel');
+  page(HYVE.MATRIX, 'hyve.menu.matrix');
+  page(HYVE.PROVIDERS, 'hyve.menu.providers');
+  page(HYVE.SECRETS, 'hyve.menu.secrets');
+  page(HYVE.REPOS, 'hyve.menu.repos');
+
+  basicType([HYVE.OVERVIEW, CAPI_CLUSTER, HYVE.CREATE_CLUSTER, HYVE.TEMPLATE, HYVE.MATRIX, HYVE.RESOURCE, HYVE.SECRETS, HYVE.PROVIDERS, HYVE.REPOS]);
+  [HYVE.OVERVIEW, CAPI_CLUSTER, HYVE.CREATE_CLUSTER, HYVE.TEMPLATE, HYVE.MATRIX, HYVE.RESOURCE, HYVE.SECRETS, HYVE.PROVIDERS, HYVE.REPOS]
+    .forEach((t, i, all) => weightType(t, all.length - i, true));
 
   headers(HYVE.TEMPLATE, [
     { name: 'name', labelKey: 'tableHeaders.name', value: 'nameDisplay', sort: ['nameSort'], formatter: 'LinkDetail' },

@@ -40,7 +40,7 @@ func init() {
 
 	// Clusters and what goes on them.
 	rootCmd.AddCommand(cli.ClusterCmd(), cli.TemplateCmd(), cli.ResourceCmd(), cli.EnvCmd(), cli.AccessCmd(),
-		cli.ProviderCmd(), cli.RepoCmd(), cli.SecretsCmd(), cli.RenderCmd(), cli.ImportCmd(), cli.InstallCmd(), cli.LocalCmd())
+		cli.ProviderCmd(), cli.RepoCmd(), cli.SecretsCmd(), cli.RenderCmd(), cli.ImportCmd(), cli.InstallCmd(), cli.LocalCmd(), cli.UICmd())
 
 	// Signing in (HYVE-PROPOSAL.md, "Signing in"): one URL, a hyve host or
 	// Rancher.
@@ -49,4 +49,7 @@ func init() {
 
 	// What the chart runs.
 	rootCmd.AddCommand(cli.ControllerCmd(), host.Cmd)
+
+	// Local mode saves its state after each change.
+	rootCmd.PersistentPostRun = func(cmd *cobra.Command, _ []string) { cli.SaveLocalStateAfter(cmd) }
 }

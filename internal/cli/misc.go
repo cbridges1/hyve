@@ -297,6 +297,7 @@ func ControllerCmd() *cobra.Command {
 	f.StringVar(&o.ServiceNamespace, "service-namespace", "hyve-system", "webhook Service namespace")
 	f.StringVar(&o.MutatingWebhookName, "mutating-webhook", "hyve-controller", "MutatingWebhookConfiguration to patch the CA into")
 	f.StringVar(&o.ValidatingWebhook, "validating-webhook", "hyve-controller", "ValidatingWebhookConfiguration to patch the CA into")
+	f.BoolVar(&o.LazyProviders, "lazy-providers", false, "add known Cluster API providers when a ClusterClass or a Fleet bundle first needs them (local mode)")
 	f.BoolVar(&o.NoWebhook, "no-webhook", false, "run without the webhooks (templates then aren't filled in server-side)")
 	f.StringVar(&o.Agents.HostURL, "host-url", "", "the hyve host's URL as child clusters reach it; installs cattle-cluster-agent on each cluster, pointed there (leave unset with Rancher)")
 	f.StringVar(&hostCAFile, "host-cacerts", "", "PEM CA the host's certificate chains to, when it isn't publicly trusted")

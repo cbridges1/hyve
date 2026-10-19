@@ -4,6 +4,11 @@ import ViewResource from '@shell/pages/c/_cluster/_product/_resource/_id.vue';
 import ViewNamespacedResource from '@shell/pages/c/_cluster/_product/_resource/_namespace/_id.vue';
 import { BLANK_CLUSTER } from '@shell/store/store-types.js';
 import CreateCluster from '../pages/CreateCluster.vue';
+import Overview from '../pages/Overview.vue';
+import ResourceMatrix from '../pages/ResourceMatrix.vue';
+import Providers from '../pages/Providers.vue';
+import Secrets from '../pages/Secrets.vue';
+import Repos from '../pages/Repos.vue';
 import CliLogin from '../pages/CliLogin.vue';
 import { HYVE, PRODUCT } from '../config/types';
 import { CLI_LOGIN_PATH, CLI_LOGIN_ROUTE } from '../utils/cli-login';
@@ -21,6 +26,18 @@ const routes: any[] = [
       component: CliLogin,
     },
   },
+  ...[
+    [HYVE.OVERVIEW, Overview],
+    [HYVE.MATRIX, ResourceMatrix],
+    [HYVE.PROVIDERS, Providers],
+    [HYVE.SECRETS, Secrets],
+    [HYVE.REPOS, Repos],
+  ].map(([page, component]) => ({
+    name:      `${ PRODUCT }-c-cluster-${ page }`,
+    path:      `/${ PRODUCT }/c/:cluster/${ page }`,
+    component,
+    meta,
+  })),
   {
     name:      `${ PRODUCT }-c-cluster-${ HYVE.CREATE_CLUSTER }`,
     path:      `/${ PRODUCT }/c/:cluster/${ HYVE.CREATE_CLUSTER }`,

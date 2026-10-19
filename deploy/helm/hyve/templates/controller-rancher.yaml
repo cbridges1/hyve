@@ -15,3 +15,20 @@ subjects:
     name: hyve-controller
     namespace: {{ .Values.namespace }}
 {{- end }}
+{{- if and .Values.controller.enabled .Values.controller.lazyProviders }}
+---
+# See values.yaml, controller.lazyProviders: installing a provider creates
+# CRDs, cluster roles and webhooks.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyve-controller-lazy-providers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: hyve-controller
+    namespace: {{ .Values.namespace }}
+{{- end }}

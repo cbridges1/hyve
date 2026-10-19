@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -75,7 +76,46 @@ func Resume(ctx context.Context, home string, logf func(string, ...any)) error {
 			return err
 		}
 	}
+	if !running {
+		// The host answers before its pods can reach the API server again.
+		if err := waitAPI(ctx, home); err != nil {
+			return err
+		}
+	}
 	return StartIdleWatcher(home, DefaultIdle)
+}
+
+// waitAPI waits until the management cluster's API answers through the
+// host endpoint.
+func waitAPI(ctx context.Context, home string) error {
+	cfg, err := login.Load(home)
+	if err != nil {
+		return err
+	}
+	s, err := cfg.Get(ContextName)
+	if err != nil {
+		return err
+	}
+	hc, err := login.HTTPClient(s.CACertFile, false)
+	if err != nil {
+		return err
+	}
+	return retry(ctx, 2*time.Minute, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.URL, "/")+"/k8s/clusters/"+login.LocalCluster+"/version", nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+s.Token)
+		resp, err := hc.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("the local cluster's API isn't answering yet: %s", resp.Status)
+		}
+		return nil
+	})
 }
 
 // StartIdleWatcher starts `hyve local idle-stop` in the background, unless
@@ -124,6 +164,9 @@ func IdleStop(ctx context.Context, home string, idle time.Duration) error {
 		}
 		if d := idleFor(home); d >= idle {
 			fmt.Printf("%s: idle for %s, stopping the local cluster\n", time.Now().Format(time.RFC3339), d.Round(time.Second))
+			if _, err := Save(ctx, home, ""); err != nil {
+				fmt.Printf("not saving the state: %v\n", err)
+			}
 			return Stop(ctx)
 		}
 	}

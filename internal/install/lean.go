@@ -44,7 +44,10 @@ var LeanProviders = map[string][]string{
 type LeanOptions struct {
 	// GOGC for every controller, to trade CPU for memory.
 	GOGC string
-	Log  func(format string, args ...any)
+	// Variables are the provider's clusterctl variables (credentials,
+	// flags), over hyve's feature variables.
+	Variables map[string]string
+	Log       func(format string, args ...any)
 }
 
 var varRE = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])([^}]*))?\}`)
@@ -75,14 +78,6 @@ func substitute(manifest []byte, vars map[string]string) ([]byte, error) {
 // LeanInstall applies the named providers' manifests (see LeanProviders),
 // once each, with certificates made here.
 func LeanInstall(ctx context.Context, kc *kube.Client, providers []string, o LeanOptions) error {
-	logf := o.Log
-	if logf == nil {
-		logf = func(string, ...any) {}
-	}
-	vars := map[string]string{}
-	for k, v := range FeatureVariables {
-		vars[k] = v
-	}
 	ca, caKey, err := leanCA(ctx, kc)
 	if err != nil {
 		return err
@@ -102,36 +97,75 @@ func LeanInstall(ctx context.Context, kc *kube.Client, providers []string, o Lea
 			if err != nil {
 				return err
 			}
-			raw, err = substitute(raw, vars)
-			if err != nil {
-				return fmt.Errorf("%s: %w", f, err)
-			}
-			objs, err := kube.Decode(raw)
-			if err != nil {
-				return fmt.Errorf("%s: %w", f, err)
-			}
-			out, err := withoutCertManager(objs, ca, caKey)
-			if err != nil {
-				return fmt.Errorf("%s: %w", f, err)
-			}
-			if o.GOGC != "" {
-				setGOGC(out, o.GOGC)
-			}
-			logf("Installing %s", f)
-			var manifest []byte
-			for _, obj := range out {
-				b, err := obj.MarshalJSON()
-				if err != nil {
-					return err
-				}
-				manifest = append(manifest, []byte("---\n")...)
-				manifest = append(manifest, b...)
-				manifest = append(manifest, '\n')
-			}
-			if err := applyRetrying(ctx, kc, manifest, logf); err != nil {
-				return fmt.Errorf("%s: %w", f, err)
+			if err := leanApply(ctx, kc, f, raw, ca, caKey, o); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+// LeanInstallManifest applies one provider's release manifest (its
+// clusterctl components file) the lean way: o.Variables and hyve's feature
+// variables substituted, with certificates made here.
+func LeanInstallManifest(ctx context.Context, kc *kube.Client, name string, raw []byte, o LeanOptions) error {
+	ca, caKey, err := leanCA(ctx, kc)
+	if err != nil {
+		return err
+	}
+	return leanApply(ctx, kc, name, raw, ca, caKey, o)
+}
+
+func leanApply(ctx context.Context, kc *kube.Client, name string, raw []byte, ca *x509.Certificate, caKey *ecdsa.PrivateKey, o LeanOptions) error {
+	logf := o.Log
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	vars := map[string]string{}
+	for k, v := range FeatureVariables {
+		vars[k] = v
+	}
+	for k, v := range o.Variables {
+		vars[k] = v
+	}
+	raw, err := substitute(raw, vars)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	objs, err := kube.Decode(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	out, err := withoutCertManager(objs, ca, caKey)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if o.GOGC != "" {
+		setGOGC(out, o.GOGC)
+	}
+	// The label clusterctl init puts on every component; clusterctl move
+	// (local mode's saved state) only discovers kinds whose CRDs have it.
+	for _, obj := range out {
+		l := obj.GetLabels()
+		if l == nil {
+			l = map[string]string{}
+		}
+		l["clusterctl.cluster.x-k8s.io"] = ""
+		obj.SetLabels(l)
+	}
+	logf("Installing %s", name)
+	var manifest []byte
+	for _, obj := range out {
+		b, err := obj.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		manifest = append(manifest, []byte("---\n")...)
+		manifest = append(manifest, b...)
+		manifest = append(manifest, '\n')
+	}
+	if err := applyRetrying(ctx, kc, manifest, logf); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

@@ -266,6 +266,23 @@ func (s *Store) SetPassword(ctx context.Context, username, password string) erro
 	return nil
 }
 
+// NewSession starts another session for a signed-in user, without a
+// password: `hyve ui` signs the browser in this way, with its own session
+// so signing out of one leaves the other.
+func (s *Store) NewSession(ctx context.Context, ident Identity) (string, time.Time, error) {
+	u, err := s.getUser(ctx, ident.Username)
+	if apierrors.IsNotFound(err) {
+		return "", time.Time{}, ErrInvalidSession
+	}
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if u.Spec.Disabled {
+		return "", time.Time{}, ErrInvalidSession
+	}
+	return s.createSession(ctx, u)
+}
+
 func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User) (string, time.Time, error) {
 	token, id, hash, err := newSessionToken()
 	if err != nil {
@@ -346,6 +363,19 @@ func (s *Store) Lookup(ctx context.Context, token string) (Identity, error) {
 	s.cache[hash] = cachedIdentity{identity: ident, until: until}
 	s.mu.Unlock()
 	return ident, nil
+}
+
+// Expiry returns when the session behind a valid token ends.
+func (s *Store) Expiry(ctx context.Context, token string) (time.Time, error) {
+	id, _, ok := parseSessionToken(token)
+	if !ok {
+		return time.Time{}, ErrInvalidSession
+	}
+	var sec corev1.Secret
+	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: sessionSecretName(id)}, &sec); err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339, string(sec.Data[keyExpiresAt]))
 }
 
 // Logout deletes the session behind token.

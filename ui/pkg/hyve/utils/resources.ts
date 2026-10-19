@@ -120,12 +120,22 @@ export function helmEntry(f: { name?: string; repo?: string; chart: string; vers
   return e;
 }
 
-export interface Item { name: string; kind: string; source: string; ownerKind: string; owner: string; model: any }
+export interface Item { name: string; kind: string; source: string; ownerKind: string; owner: string; model: any; bundles?: any[] }
 
 // hyve's Fleet objects owned by the given template or ClusterResources.
 export async function listItems(store: any, owners: { kind: string; name: string; namespace: string }[]): Promise<Item[]> {
   const all = await Promise.all([FLEET.HELM_OP, FLEET.GIT_REPO, FLEET.BUNDLE].map((type) => store.dispatch('management/findAll', { type }).catch(() => [])));
   const out: Item[] = [];
+  // The Fleet bundles behind each object, which Fleet labels with its
+  // name: a HelmOp's or a GitRepo's; or a Bundle itself.
+  const bundlesOf = (m: any) => {
+    if (m.type === FLEET.BUNDLE) {
+      return [m];
+    }
+    const label = m.type === FLEET.GIT_REPO ? 'fleet.cattle.io/repo-name' : 'fleet.cattle.io/fleet-helm-name';
+
+    return all[2].filter((b: any) => b.metadata.namespace === m.metadata.namespace && b.metadata.labels?.[label] === m.metadata.name);
+  };
 
   all.flat().forEach((m: any) => {
     const l = m.metadata?.labels || {};
@@ -146,6 +156,7 @@ export async function listItems(store: any, owners: { kind: string; name: string
       ownerKind: l[LABELS.OWNER_KIND],
       owner:     l[LABELS.OWNER],
       model:     m,
+      bundles:   bundlesOf(m),
     });
   });
 
@@ -169,6 +180,23 @@ export async function clusterItems(store: any, capi: any): Promise<Item[]> {
   return listItems(store, owners);
 }
 
+// A Fleet Cluster's own summary, for users who can't read its
+// BundleDeployments (they live in Fleet's per-cluster namespace): every
+// bundle is Ready except the ones it lists as not ready.
+const SUMMARY = '__summary';
+
+function fromSummary(fc: any, out: Record<string, string>) {
+  const sum = fc?.status?.summary;
+
+  if (!sum) {
+    return;
+  }
+  out[SUMMARY] = `${ fc.metadata.namespace }/${ fc.metadata.name }`;
+  (sum.nonReadyResources || []).forEach((r: any) => {
+    out[`nonready:${ fc.metadata.namespace }/${ r.name }`] = r.bundleState || 'NotReady';
+  });
+}
+
 // "<bundle namespace>/<bundle name>" -> BundleDeployment state on the Fleet
 // cluster CAAPF registered for a CAPI cluster (same name and namespace);
 // GitRepo bundles roll up under "repo:<namespace>/<name>".
@@ -179,8 +207,10 @@ export async function clusterStates(store: any, ns: string, name: string): Promi
   if (!bdNS) {
     return null;
   }
-  const bds = await store.dispatch('management/findAll', { type: FLEET.BUNDLE_DEPLOYMENT });
+  const bds = await store.dispatch('management/findAll', { type: FLEET.BUNDLE_DEPLOYMENT }).catch(() => []);
   const out: Record<string, string> = {};
+
+  fromSummary(fc, out);
 
   bds.filter((bd: any) => bd.metadata.namespace === bdNS).forEach((bd: any) => {
     const l = bd.metadata.labels || {};
@@ -222,8 +252,32 @@ export function stateOn(it: Item, states: Record<string, string> | null): string
     return '';
   }
   const key = `${ it.model.metadata.namespace }/${ it.model.metadata.name }`;
+  const direct = it.kind === 'GitRepo' ? states[`repo:${ key }`] : states[key];
 
-  return it.kind === 'GitRepo' ? states[`repo:${ key }`] || '' : states[key] || '';
+  if (direct || !states[SUMMARY]) {
+    return direct || '';
+  }
+  // Only the Fleet Cluster's summary: what it lists as not ready (a
+  // GitRepo's bundles are named "<repo>-<path>"), else what each bundle's
+  // own summary says about this cluster. No bundle yet: Fleet hasn't
+  // made it.
+  const nonReady = Object.keys(states).find((k) => k === `nonready:${ key }` || (it.kind === 'GitRepo' && k.startsWith(`nonready:${ key }-`)));
+
+  if (nonReady) {
+    return states[nonReady];
+  }
+  if (!it.bundles?.length) {
+    return 'Pending';
+  }
+  for (const b of it.bundles) {
+    const r = (b.status?.summary?.nonReadyResources || []).find((x: any) => x.name === states[SUMMARY]);
+
+    if (r) {
+      return r.bundleState || 'NotReady';
+    }
+  }
+
+  return 'Ready';
 }
 
 // A ClusterResource object for an extra on one cluster.
@@ -239,4 +293,94 @@ export function clusterResourceObject(capi: any, e: Entry): any {
     },
     spec: { ...spec, clusterName: capi.metadata.name },
   };
+}
+
+// Fleet's states for every CAPI cluster at once: "<ns>/<name>" -> the same
+// map clusterStates gives one cluster (missing until CAAPF registers it).
+export async function allClusterStates(store: any): Promise<Record<string, Record<string, string>>> {
+  const [fcs, bds] = await Promise.all([
+    store.dispatch('management/findAll', { type: FLEET.CLUSTER }).catch(() => []),
+    store.dispatch('management/findAll', { type: FLEET.BUNDLE_DEPLOYMENT }).catch(() => []),
+  ]);
+  const byNS: Record<string, string> = {};
+
+  fcs.forEach((fc: any) => {
+    if (fc.status?.namespace) {
+      byNS[fc.status.namespace] = `${ fc.metadata.namespace }/${ fc.metadata.name }`;
+    }
+  });
+  const out: Record<string, Record<string, string>> = {};
+
+  fcs.forEach((fc: any) => {
+    fromSummary(fc, out[`${ fc.metadata.namespace }/${ fc.metadata.name }`] = {});
+  });
+  bds.forEach((bd: any) => {
+    const cluster = byNS[bd.metadata.namespace];
+
+    if (!cluster) {
+      return;
+    }
+    const states = out[cluster] || (out[cluster] = {});
+    const l = bd.metadata.labels || {};
+    const state = bd.status?.display?.state || (bd.status?.ready ? 'Ready' : 'Pending');
+
+    states[`${ l['fleet.cattle.io/bundle-namespace'] }/${ l['fleet.cattle.io/bundle-name'] }`] = state;
+    const repo = l['fleet.cattle.io/repo-name'];
+
+    if (repo) {
+      const rk = `repo:${ l['fleet.cattle.io/bundle-namespace'] }/${ repo }`;
+      const cur = states[rk];
+
+      states[rk] = !cur || cur === 'Ready' ? state : cur;
+    }
+  });
+
+  return out;
+}
+
+// Every template's and ClusterResource's Fleet objects, with the clusters
+// each reaches: a template's go to every cluster made from it, a
+// ClusterResource's to its one cluster.
+export async function allItems(store: any): Promise<{ items: Item[]; clusters: any[]; templates: any[]; clusterResources: any[]; reaches:(it: Item) => any[] }> {
+  const [clusters, templates, clusterResources] = await Promise.all([
+    store.dispatch('management/findAll', { type: 'cluster.x-k8s.io.cluster' }).catch(() => []),
+    store.dispatch('management/findAll', { type: HYVE.TEMPLATE }).catch(() => []),
+    store.dispatch('management/findAll', { type: HYVE.CLUSTER_RESOURCE }).catch(() => []),
+  ]);
+  const owners = [
+    ...templates.map((t: any) => ({ kind: 'ClusterTemplate', name: t.metadata.name, namespace: t.metadata.namespace })),
+    ...clusterResources.map((cr: any) => ({ kind: 'ClusterResource', name: cr.metadata.name, namespace: cr.metadata.namespace })),
+  ];
+  const items = await listItems(store, owners);
+  const reaches = (it: Item) => {
+    if (it.ownerKind === 'ClusterTemplate') {
+      return clusters.filter((c: any) => {
+        const l = c.metadata?.labels || {};
+
+        return l[LABELS.TEMPLATE] === it.owner && (l[LABELS.TEMPLATE_NAMESPACE] || c.metadata.namespace) === it.model.metadata.namespace;
+      });
+    }
+    const cr = clusterResources.find((x: any) => x.metadata.name === it.owner && x.metadata.namespace === it.model.metadata.namespace);
+
+    return cr ? clusters.filter((c: any) => c.metadata.namespace === cr.metadata.namespace && c.metadata.name === cr.spec?.clusterName) : [];
+  };
+
+  return {
+    items, clusters, templates, clusterResources, reaches
+  };
+}
+
+// A Fleet state as a badge colour.
+export function stateColor(state: string): string {
+  if (!state || state === '-') {
+    return 'text-muted';
+  }
+  if (state === 'Ready') {
+    return 'text-success';
+  }
+  if (/^(Error|ErrApplied|Modified|OutOfSync|NotReady)|^[A-Z][a-zA-Z]*: /.test(state)) {
+    return 'text-error';
+  }
+
+  return 'text-warning';
 }

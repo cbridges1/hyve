@@ -22,7 +22,8 @@ type SessionLookup interface {
 
 // LocalProxy serves /k8s/clusters/local: the management cluster's API.
 //
-// A request carrying a hyve session is checked, stripped of its own
+// A request carrying a hyve session (a bearer token, or the UI's cookie)
+// is checked, stripped of its own
 // credentials and any Impersonate-* headers, and forwarded with the host's
 // service account impersonating "hyve:<username>" and the user's groups,
 // so management-cluster RBAC decides it. Any other request, such as
@@ -102,8 +103,16 @@ func singleJoin(a, b string) string {
 }
 
 func (p *LocalProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token := bearer(r)
+	token, ok := sessionToken(r)
+	if !ok {
+		writeError(w, http.StatusForbidden, "Forbidden", "missing the "+UIHeader+" header")
+		return
+	}
 	if !IsSessionToken(token) {
+		if _, err := r.Cookie(SessionCookie); err == nil {
+			r = r.Clone(r.Context())
+			r.Header.Del("Cookie")
+		}
 		p.passthrough.ServeHTTP(w, r)
 		return
 	}
@@ -119,6 +128,8 @@ func (p *LocalProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	r = r.Clone(r.Context())
 	r.Header.Del("Authorization")
+	r.Header.Del("Cookie")
+	r.Header.Del(UIHeader)
 	for h := range r.Header {
 		if strings.HasPrefix(strings.ToLower(h), "impersonate-") {
 			r.Header.Del(h)

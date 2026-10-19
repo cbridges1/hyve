@@ -64,6 +64,10 @@ type session struct {
 	server *login.Server // nil with --kubeconfig
 }
 
+// usedLocal says the command went through the local context, so its
+// changes are saved afterwards (SaveLocalStateAfter).
+var usedLocal bool
+
 func newSession() (*session, error) {
 	if kubeconfigFlag != "" {
 		cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigFlag)
@@ -90,6 +94,14 @@ func newSession() (*session, error) {
 		if err := local.Resume(context.Background(), Home(), logf); err != nil {
 			return nil, err
 		}
+		usedLocal = true
+		// A long command (waiting for a cluster) is use too: keep the idle
+		// watcher from stopping the cluster under it.
+		go func() {
+			for range time.Tick(time.Minute) {
+				local.Touch(Home())
+			}
+		}()
 		if cfg, err = login.Load(Home()); err != nil {
 			return nil, err
 		}

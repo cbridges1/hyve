@@ -117,3 +117,44 @@ func TestRecordCreatorTakesRancherUsers(t *testing.T) {
 	}
 	_ = templates.AnnotationExpiresAt
 }
+
+func TestFinishTurtlesDelete(t *testing.T) {
+	deleting := func(cpAvailable string, finalizers ...string) *unstructured.Unstructured {
+		c := capiCluster("prod", "web", nil, nil, nil)
+		c.SetFinalizers(finalizers)
+		c.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "ControlPlaneAvailable", "status": cpAvailable}}}
+		return c
+	}
+	for _, tc := range []struct {
+		name     string
+		cluster  *unstructured.Unstructured
+		finishes bool
+	}{
+		{"only Turtles' finalizer, control plane gone", deleting("False", turtlesFinalizer), true},
+		{"control plane still there: Turtles handles it", deleting("True", turtlesFinalizer), false},
+		{"CAPI still deleting", deleting("False", turtlesFinalizer, "cluster.cluster.x-k8s.io"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cl := fake.NewClientBuilder().WithObjects(tc.cluster, imported("c-x1", "prod", "web")).Build()
+			// Mark it deleting: the fake client keeps it while it has finalizers.
+			if err := cl.Delete(ctx, tc.cluster.DeepCopy()); err != nil {
+				t.Fatal(err)
+			}
+			r := &Rancher{Client: cl}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "prod", Name: "web"}}
+			if _, err := r.ReconcileCreator(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			capiErr := cl.Get(ctx, req.NamespacedName, object(clusterGVK))
+			rcErr := cl.Get(ctx, types.NamespacedName{Name: "c-x1"}, object(rancherClusterGVK))
+			if tc.finishes {
+				if capiErr == nil || rcErr == nil {
+					t.Errorf("want both gone: CAPI err=%v, Rancher err=%v", capiErr, rcErr)
+				}
+			} else if capiErr != nil || rcErr != nil {
+				t.Errorf("want both left: CAPI err=%v, Rancher err=%v", capiErr, rcErr)
+			}
+		})
+	}
+}

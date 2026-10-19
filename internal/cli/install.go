@@ -28,7 +28,11 @@ func InstallCmd() *cobra.Command {
 		Long: `Installs hyve on the cluster your kubeconfig points at.
 
 With Rancher installed, that's hyve-controller: Rancher brings Cluster API
-(through Turtles) and Fleet, and its agents connect to Rancher.
+(through Turtles) and Fleet, and its agents connect to Rancher. hyve also
+adds CAAPF through Turtles if it's missing, and turns on Turtles' use-caapf
+(in cattle-system/rancher-config), so CAAPF alone registers clusters with
+Fleet. Turning it on reinstalls fleet-agent on clusters Turtles already
+imported.
 
 Without Rancher, it also installs what's missing of cert-manager, the
 Cluster API Operator with core Cluster API, and CAAPF (which installs
@@ -129,7 +133,7 @@ Run it as a cluster admin. Safe to re-run.`,
 	f.StringVar(&tlsKey, "host-tls-key", "", "key for --host-tls-cert")
 	f.StringVar(&caFile, "host-cacerts", "", "PEM CA the host's certificate chains to, when it isn't publicly trusted")
 	f.StringVarP(&valuesFile, "values", "f", "", "extra chart values (YAML)")
-	f.BoolVar(&o.OnlyHyve, "only-hyve", false, "install hyve's chart only, not cert-manager, Cluster API, CAAPF or Fleet")
+	f.BoolVar(&o.OnlyHyve, "only-hyve", false, "install hyve's chart only, not cert-manager, Cluster API, CAAPF or Fleet (with Rancher: leave CAAPF and use-caapf alone)")
 	f.DurationVar(&timeout, "timeout", 20*time.Minute, "how long to wait")
 	return cmd
 }

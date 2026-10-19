@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -98,6 +99,22 @@ func (c *Client) ApplyObject(ctx context.Context, o *unstructured.Unstructured) 
 	return nil
 }
 
+// DeleteObject deletes o (by kind, namespace and name); one that's already
+// gone, or whose kind isn't served any more, is fine.
+func (c *Client) DeleteObject(ctx context.Context, o *unstructured.Unstructured) error {
+	ri, err := c.resource(o)
+	if err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil
+		}
+		return err
+	}
+	if err := ri.Delete(ctx, o.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete %s %s: %w", o.GetKind(), o.GetName(), err)
+	}
+	return nil
+}
+
 func (c *Client) resource(o *unstructured.Unstructured) (dynamic.ResourceInterface, error) {
 	gvk := o.GroupVersionKind()
 	m, err := c.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
@@ -152,4 +169,22 @@ func Poll(ctx context.Context, interval, timeout time.Duration, progress func(st
 		case <-time.After(interval):
 		}
 	}
+}
+
+// ServesKind says whether the API server serves a kind, at any version.
+func (c *Client) ServesKind(gk schema.GroupKind) bool {
+	return len(c.Unserved([]schema.GroupKind{gk})) == 0
+}
+
+// Unserved are the kinds the API server doesn't serve, from one fresh
+// discovery.
+func (c *Client) Unserved(gks []schema.GroupKind) []schema.GroupKind {
+	c.mapper.Reset()
+	var out []schema.GroupKind
+	for _, gk := range gks {
+		if _, err := c.mapper.RESTMapping(gk); err != nil {
+			out = append(out, gk)
+		}
+	}
+	return out
 }

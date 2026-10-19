@@ -28,6 +28,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
 	"github.com/cbridges1/hyve/internal/tunnel"
@@ -62,6 +63,9 @@ type Options struct {
 	NoWebhook bool
 	// Agent registration, when hyve is the Rancher host.
 	Agents AgentOptions
+	// LazyProviders adds known Cluster API providers when something first
+	// needs them (local mode).
+	LazyProviders bool
 }
 
 // Run runs hyve-controller until ctx ends.
@@ -99,10 +103,26 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 	if err := setupResources(mgr, dc); err != nil {
 		return err
 	}
+	if o.LazyProviders {
+		kc, err := kube.New(cfg)
+		if err != nil {
+			return err
+		}
+		if err := setupLazyProviders(mgr, kc); err != nil {
+			return err
+		}
+	}
 	if probe, err := client.New(cfg, client.Options{}); err == nil && RancherInstalled(ctx, probe) {
 		lg.Info("Rancher is installed: using Rancher's users and roles, filling Turtles' gaps")
 		if err := setupRancher(ctx, mgr); err != nil {
 			return err
+		}
+		// Rancher added to a standalone install: its agents are Rancher's now.
+		if o.Agents.Namespace != "" {
+			if err := ctrl.NewControllerManagedBy(mgr).Named("hyve-release-agents").For(object(clusterGVK)).
+				Complete(&ReleaseAgents{Client: mgr.GetClient(), Namespace: o.Agents.Namespace}); err != nil {
+				return err
+			}
 		}
 	} else if o.Agents.HostURL != "" {
 		// Without Rancher, hyve keeps access too (with Rancher, Rancher's

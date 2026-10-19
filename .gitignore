@@ -37,15 +37,14 @@ go.work.sum
 .hyve
 
 # GoReleaser output
-dist/
-# ...except the checked-in placeholder internal/webui/dist embeds by
-# default (go:embed requires something to exist at build time even when
-# nobody's run `npm run build` yet) — deploy/Dockerfile.dev overwrites
-# this with the real build before compiling; see internal/webui's own
-# doc comment.
-!internal/webui/dist/
-!internal/webui/dist/**
-# The UI extension's dependencies and build output.
+/dist/
+# The standalone UI's build, embedded by internal/webui; only its
+# placeholder is checked in (go:embed needs something there to build).
+internal/webui/dist/*
+!internal/webui/dist/PLACEHOLDER
+# The UI's dependencies and build output.
 ui/node_modules/
+ui/standalone/node_modules/
+ui/pkg/hyve/node_modules/
 ui/dist-pkg/
 ui/dist/

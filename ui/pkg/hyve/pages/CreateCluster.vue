@@ -10,6 +10,7 @@ import {
   ANNOTATIONS, CAPI_CLUSTER, CAPI_CLUSTER_CLASS, HYVE, LABELS, NAMESPACE, NEVER, PRODUCT
 } from '../config/types';
 import { nextRun } from '../utils/cron';
+import { classOf, providerOfClass } from '../utils/providers';
 
 // Mirrors the template edit view's value encoding.
 function toText(v) {
@@ -55,6 +56,9 @@ export default {
       .map((ns) => ns.metadata.name)
       .sort();
     this.environment = this.environments[0] || '';
+    // From a tile on Rancher's Create Cluster page: only that provider's
+    // templates.
+    this.provider = this.$route.query.provider || '';
     const q = this.$route.query.template;
 
     if (q && templates.find((t) => t.id === q)) {
@@ -69,6 +73,7 @@ export default {
       classes:      [],
       environments: [],
       environment:  '',
+      provider:     '',
       templateId:   '',
       name:         '',
       version:      '',
@@ -83,7 +88,9 @@ export default {
 
   computed: {
     templateOptions() {
-      return this.templates.map((t) => ({ label: `${ t.metadata.namespace }/${ t.metadata.name }`, value: t.id }));
+      return this.templates
+        .filter((t) => !this.provider || providerOfClass(classOf(t, this.classes)) === this.provider)
+        .map((t) => ({ label: `${ t.metadata.namespace }/${ t.metadata.name }`, value: t.id }));
     },
     template() {
       return this.templates.find((t) => t.id === this.templateId);
@@ -210,6 +217,11 @@ export default {
       v-if="!environments.length"
       color="warning"
       :label="t('hyve.createCluster.noEnvironments')"
+    />
+    <Banner
+      v-if="provider && !templateOptions.length"
+      color="warning"
+      :label="t('hyve.createCluster.noProviderTemplates', { provider })"
     />
 
     <div class="row mb-20">

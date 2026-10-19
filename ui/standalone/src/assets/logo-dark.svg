@@ -1,0 +1,19 @@
+<svg width="177" height="24" viewBox="0 0 177 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- Beehive logo (scaled and repositioned for logo size) - White for dark theme -->
+<g transform="translate(2, 2) scale(0.22)">
+  <!-- Block 1 -->
+  <rect x="20" y="0" width="60" height="16" fill="#FFFFFF" rx="2"/>
+
+  <!-- Block 2 -->
+  <rect x="10" y="24" width="80" height="16" fill="#FFFFFF" rx="2"/>
+
+  <!-- Block 3 -->
+  <rect x="20" y="48" width="60" height="16" fill="#FFFFFF" rx="2"/>
+
+  <!-- Block 4 -->
+  <rect x="35" y="72" width="30" height="16" fill="#FFFFFF" rx="2"/>
+</g>
+
+<!-- "Hyve" text for dark theme -->
+<text x="28" y="18" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#FAFAFA">Hyve</text>
+</svg>

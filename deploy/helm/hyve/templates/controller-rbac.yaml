@@ -47,10 +47,12 @@ rules:
     verbs: ["create", "patch"]
   # With Rancher: creators become Cluster Owners (CRTBs), each CRTB reaches
   # its CAPI Cluster, and environments get FleetWorkspaces and Projects.
+  # Deleting a Rancher cluster finishes a CAPI Cluster's deletion when
+  # Turtles can't (internal/operator/rancher.go, finishTurtlesDelete).
   # Ignored without Rancher.
   - apiGroups: ["management.cattle.io"]
     resources: ["clusters"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "delete"]
   - apiGroups: ["management.cattle.io"]
     resources: ["clusterroletemplatebindings"]
     verbs: ["get", "list", "watch", "create"]
@@ -75,10 +77,11 @@ rules:
     resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
     resourceNames: ["hyve-controller"]
     verbs: ["get", "update"]
-{{- if and .Values.host.enabled .Values.host.agentURL }}
+{{- if or (and .Values.host.enabled .Values.host.agentURL) .Values.rancher.enabled }}
 ---
 # Agent registration: each child cluster's registration token and what its
-# agent reports live in the host's namespace.
+# agent reports live in the host's namespace. With Rancher, the controller
+# deletes them as it hands each agent to Rancher (internal/operator/release.go).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -11,8 +11,20 @@ tasks:
     cmd: task --list
 
   build:
-    desc: Build the hyve binary
+    desc: Build the hyve binary (with the UI, if 'task ui' has built it)
     cmd: go build {{.BUILD_FLAGS}} -o {{.BINARY}}{{.EXT}} .
+
+  ui:
+    desc: Build hyve's own UI into internal/webui/dist, for the binary to embed
+    dir: ui/standalone
+    cmds:
+      - npm ci --no-audit --no-fund
+      - npm run build
+
+  ui:dev:
+    desc: "Serve the UI with hot reload against a host (HYVE_HOST=https://127.0.0.1:30444 task ui:dev)"
+    dir: ui/standalone
+    cmd: npm run dev
 
   run:
     desc: Build and run hyve (pass args with -- e.g. task run -- cluster list)

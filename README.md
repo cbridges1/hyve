@@ -36,16 +36,21 @@ hyve template resource add capd-small --helm podinfo --repo https://stefanprodan
 hyve cluster create demo -t capd-small
 hyve resource status demo
 hyve cluster kubeconfig demo > demo.yaml
+hyve ui                                   # the web UI, signed in
 ```
+
+`hyve ui` opens hyve's own UI for a hyve host or local mode (served through the CLI at `http://127.0.0.1:30445` when the host's certificate is from a private CA), or Rancher's dashboard at the hyve extension for a Rancher context.
 
 `hyve render -f template.yaml -f class.yaml` prints what a template produces without touching a cluster. `hyve import` converts old hyve Templates and herd ClusterTemplates.
 
 ## Development
 
 ```bash
+task ui             # build hyve's own UI (ui/standalone) for the binary to embed
 task build          # build the binary
 task check          # go vet + tests
-task local          # build the binary and a hyve:dev image, then hyve local up with them
+task local          # build the binary and a hyve:dev image (which builds the UI), then hyve local up with them
+HYVE_HOST=https://127.0.0.1:30444 task ui:dev    # the UI with hot reload, against a running host
 ```
 
 The design is in nexus-config's `docs/HYVE-PROPOSAL.md`.

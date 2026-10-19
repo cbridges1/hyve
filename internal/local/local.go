@@ -54,7 +54,12 @@ type Options struct {
 	// PublicURL is the host endpoint's URL for children that can't reach
 	// Docker's kind network (a tunnel you run); default the node's address.
 	PublicURL string
-	// Providers are added on first start: CAPD and kubeadm by default.
+	// StateDir keeps saved state somewhere other than ~/.hyve/local/state,
+	// such as inside a repo CI caches; it's remembered.
+	StateDir string
+	// Providers are added on start. By default none: hyve-controller adds
+	// a known provider (CAPD, kubeadm) the first time a ClusterClass or a
+	// Fleet bundle needs it.
 	Providers []string
 	// Tuning, for memory (open question 5): GOGC for K3s and every
 	// controller (default 40), and the full install (CAPI Operator and
@@ -153,7 +158,14 @@ func Up(ctx context.Context, o Options) error {
 	if ex, _ := Running(ctx); ex && !ours(ctx) {
 		return fmt.Errorf("a k3d cluster named %q exists that local mode didn't create; rename or delete it", Name)
 	}
+	if o.StateDir != "" {
+		if err := SetStateDir(o.Home, o.StateDir); err != nil {
+			return err
+		}
+	}
+	created := false
 	if ex, running := Running(ctx); !ex {
+		created = true
 		o.Log("Creating the local cluster (%s)", o.K3sImage)
 		args := []string{"cluster", "create", Name,
 			"--image", o.K3sImage,
@@ -253,8 +265,11 @@ func Up(ctx context.Context, o Options) error {
 		Namespace: ns, Image: o.Image, PullPolicy: pullPolicy,
 		HostURL: hostURL, HostTLSSecret: "hyve-host-tls", HostCACerts: string(caPEM),
 		Lean: !o.Full, GOGC: o.GOGC,
-		Values: map[string]any{"host": map[string]any{"service": map[string]any{"type": "NodePort", "nodePort": o.Port}}},
-		Log:    o.Log,
+		Values: map[string]any{
+			"host":       map[string]any{"service": map[string]any{"type": "NodePort", "nodePort": o.Port}},
+			"controller": map[string]any{"lazyProviders": true},
+		},
+		Log: o.Log,
 	}); err != nil {
 		return err
 	}
@@ -263,6 +278,14 @@ func Up(ctx context.Context, o Options) error {
 	}
 	if err := addProviders(ctx, kc, o); err != nil {
 		return err
+	}
+	if dir := StateDir(o.Home); created && HasState(dir) {
+		o.Log("Restoring the saved state from %s", dir)
+		n, err := Restore(ctx, o.Home, dir, o.Log)
+		if err != nil {
+			return fmt.Errorf("restoring the saved state: %w", err)
+		}
+		o.Log("Restored %d objects", n)
 	}
 	Touch(o.Home)
 	return StartIdleWatcher(o.Home, DefaultIdle)
@@ -324,16 +347,15 @@ func retry(ctx context.Context, timeout time.Duration, f func() error) error {
 	}
 }
 
-// addProviders adds the default providers through the CAPI Operator.
+// addProviders adds the providers asked for up front.
 func addProviders(ctx context.Context, kc *kube.Client, o Options) error {
-	providers := o.Providers
-	if providers == nil {
-		providers = []string{"docker"}
+	if len(o.Providers) == 0 {
+		return nil
 	}
 	if !o.Full {
-		return install.LeanInstall(ctx, kc, providers, install.LeanOptions{GOGC: o.GOGC, Log: o.Log})
+		return install.LeanInstall(ctx, kc, o.Providers, install.LeanOptions{GOGC: o.GOGC, Log: o.Log})
 	}
-	for _, p := range providers {
+	for _, p := range o.Providers {
 		objs, err := install.ProviderObjects(p)
 		if err != nil {
 			return err
@@ -358,9 +380,10 @@ func Stop(ctx context.Context) error {
 }
 
 // Down deletes the local cluster. CAPD children are containers of their
-// own; delete them first ('hyve cluster delete'), or remove them with
-// removeChildren.
-func Down(ctx context.Context, home string) error {
+// own; delete them first ('hyve cluster delete'). With keepContext, the
+// "local" context stays (signed out), keeping its default environment for
+// the next Up, which restores the saved state.
+func Down(ctx context.Context, home string, keepContext bool) error {
 	if exists(ctx) {
 		if !ours(ctx) {
 			return fmt.Errorf("the k3d cluster %q isn't local mode's; not deleting it", Name)
@@ -372,6 +395,15 @@ func Down(ctx context.Context, home string) error {
 	cfg, err := login.Load(home)
 	if err != nil {
 		return err
+	}
+	if keepContext {
+		s, err := cfg.Get(ContextName)
+		if err != nil {
+			return nil
+		}
+		s.Token, s.ExpiresAt = "", time.Time{}
+		cfg.Put(*s)
+		return cfg.Save()
 	}
 	if cfg.Remove(ContextName) {
 		return cfg.Save()

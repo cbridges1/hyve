@@ -76,6 +76,7 @@ hyve:
     preview: Request
     create: Create
     created: "Created {name}."
+    noProviderTemplates: "No templates make {provider} clusters yet: a template whose ClusterClass uses {provider}'s infrastructure shows here."
   resources:
     tab: Resources
     notHyve: This cluster wasn't made by hyve, so hyve delivers nothing to it.
@@ -111,3 +112,80 @@ hyve:
   expiry:
     extend: Extend expiry by 8 hours
     remove: Remove expiry
+  menu:
+    overview: Overview
+    matrix: Resources
+    providers: Providers
+    secrets: Secrets
+    repos: Repos
+  environment:
+    label: Environment
+    all: All environments
+  overview:
+    title: Overview
+    clusters: clusters
+    failing: resources failing
+    expiringSoon: expiring within a day
+    failingTitle: Failing resources
+    problem: Where it's failing
+    clustersTitle: Clusters
+    provider: Provider
+    rancher: Rancher
+    never: Never
+    none: No clusters yet.
+  matrix:
+    title: Resources
+    hint: Every resource hyve delivers, across the clusters it reaches, with Fleet's state on each. A + adds the row's resource to that cluster only.
+    add: Add resource
+    resource: Resource
+    cluster: Cluster
+    toTemplate: On a template (every cluster made from it, now and later)
+    toCluster: On one cluster (an extra)
+    pickTemplate: Pick a template
+    pickCluster: Pick a cluster
+    exists: "Template {template} already has a resource named {name}"
+    willReach: "Will be delivered to: {clusters}"
+    reachesNone: No clusters yet; it reaches clusters as they're made.
+    addHere: Add to this cluster
+    waiting: Waiting
+  providers:
+    title: Providers
+    add: Add provider
+    type: Type
+    health: Health
+    ready: Ready
+    notReady: "Not ready ({state})"
+    none: No Cluster API providers installed.
+    cliHint: "Add a provider with 'hyve provider add NAME' (in local mode, hyve adds known ones when first needed)."
+  secrets:
+    title: Secrets
+    hint: The Secrets resources copy to clusters, by name. hyve never shows or edits values; create them with kubectl or your secrets tooling in the namespace shown.
+    exists: Exists
+    present: Present
+    missing: Missing
+    neededBy: Needed by
+    deliveredTo: Delivered to
+    none: No resource copies Secrets.
+  repos:
+    title: Repos
+    hint: Fleet GitRepos. In fleet-local they deploy to this management cluster (ClusterClasses, templates); other workspaces target their clusters.
+    add: Add repo
+    workspace: Workspace
+    repo: Repository URL
+    branch: Branch
+    paths: Paths
+    pathsPlaceholder: comma-separated directories with a fleet.yaml (default the root)
+    privateHint: "Private repos need credentials: 'hyve repo add NAME --repo URL --username USER --token-env VAR' creates them."
+    bundles: Bundles ready
+    state: State
+    badName: "Name: lowercase letters, digits and dashes"
+    needRepo: The repository URL is required
+    none: No repos yet.
+
+cluster:
+  providerGroup:
+    create-hyve: Create a cluster from a hyve template
+  provider:
+    hyve-civo: Civo
+    hyve-unraid: Unraid
+    hyve-template: Any hyve template

@@ -26,6 +26,7 @@ func (f fakeSessions) Lookup(_ context.Context, token string) (Identity, error) 
 type seen struct {
 	Path          string
 	Authorization string
+	Cookie        string
 	User          string
 	Groups        []string
 }
@@ -55,6 +56,7 @@ func apiServer(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(seen{
 			Path:          r.URL.Path,
 			Authorization: r.Header.Get("Authorization"),
+			Cookie:        r.Header.Get("Cookie"),
 			User:          r.Header.Get("Impersonate-User"),
 			Groups:        r.Header.Values("Impersonate-Group"),
 		})
@@ -141,4 +143,35 @@ func TestProxyUpgrades(t *testing.T) {
 	_, msg, err := c.Read(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "echo:ls", string(msg))
+}
+
+func TestProxyAcceptsTheUICookie(t *testing.T) {
+	_, front := newTestProxy(t)
+	url := front.URL + "/k8s/clusters/local/api/v1/namespaces"
+	cookie := SessionCookie + "=" + aliceToken
+
+	status, s := get(t, url, map[string]string{"Cookie": cookie})
+	require.Equal(t, http.StatusOK, status)
+	assert.Equal(t, "hyve:alice", s.User)
+	assert.Empty(t, s.Cookie, "the session never reaches the API server")
+
+	// A write authenticated by the cookie needs the UI's header.
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader("{}"))
+	require.NoError(t, err)
+	req.Header.Set("Cookie", cookie)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	req, err = http.NewRequest(http.MethodPost, url, strings.NewReader("{}"))
+	require.NoError(t, err)
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set(UIHeader, "1")
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&s))
+	assert.Equal(t, "hyve:alice", s.User)
 }

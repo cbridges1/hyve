@@ -2,7 +2,8 @@
 // in for Rancher's when Rancher isn't installed (HYVE-PROPOSAL.md, "hyve as
 // the Rancher host"): sign-in, the management cluster's API at
 // /k8s/clusters/local, the tunnel child clusters' cattle-cluster-agents
-// dial (/v3/connect), and their APIs through it at /k8s/clusters/<id>.
+// dial (/v3/connect), their APIs through it at /k8s/clusters/<id>, and
+// hyve's own UI at / (--ui).
 package host
 
 import (
@@ -26,6 +27,7 @@ import (
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/signin"
 	"github.com/cbridges1/hyve/internal/tunnel"
+	"github.com/cbridges1/hyve/internal/webui"
 )
 
 // Version is reported by /v1-public/hyve; set by the root command.
@@ -39,6 +41,7 @@ var (
 	sessionTTL      time.Duration
 	bootstrapSecret string
 	caCertsFile     string
+	serveUI         bool
 )
 
 // Cmd is `hyve host`.
@@ -79,6 +82,7 @@ func init() {
 	runCmd.Flags().StringVar(&namespace, "namespace", ns, "namespace holding password and session Secrets (default: $POD_NAMESPACE or hyve-system)")
 	runCmd.Flags().DurationVar(&sessionTTL, "session-ttl", signin.DefaultSessionTTL, "how long a sign-in lasts")
 	runCmd.Flags().StringVar(&bootstrapSecret, "bootstrap-secret", "bootstrap-secret", "Secret holding the first admin's bootstrapPassword")
+	runCmd.Flags().BoolVar(&serveUI, "ui", false, "serve hyve's own UI at / (built into the binary with 'task ui')")
 	runCmd.Flags().StringVar(&caCertsFile, "cacerts", "", "PEM CA the host's certificate chains to, for agents to pin (leave unset for a publicly trusted certificate)")
 	Cmd.AddCommand(runCmd)
 }
@@ -130,6 +134,12 @@ func run(ctx context.Context) error {
 	srv.Routes = func(mux *http.ServeMux) {
 		tun.Register(mux)
 		mux.Handle("/k8s/clusters/", children)
+	}
+	if serveUI {
+		if !webui.Built() {
+			log.Printf("host: --ui is set, but this binary was built without the UI; / says so")
+		}
+		srv.UI = webui.Handler()
 	}
 	go srv.RunSessionCleanup(ctx, 10*time.Minute)
 

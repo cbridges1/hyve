@@ -3,6 +3,7 @@ import {
   ActionLocation, IPlugin, TabLocation, TableColumnLocation
 } from '@shell/core/types';
 import extensionRouting from './routing/extension-routing';
+import { PROVISIONERS } from './provisioners/tiles';
 import { ANNOTATIONS, CAPI_CLUSTER, NEVER } from './config/types';
 import {
   CLI_LOGIN_PATH, CLI_LOGIN_ROUTE, clearStash, stashRequest, stashedQuery
@@ -31,6 +32,9 @@ export default function(plugin: IPlugin): void {
 
   plugin.addProduct(require('./product'));
   plugin.addRoutes(extensionRouting);
+
+  // Tiles on Rancher's Create Cluster page.
+  PROVISIONERS.forEach((p) => plugin.register('provisioner', p.ID, p));
 
   // The hyve CLI's sign-in page. If the user isn't signed in to Rancher,
   // Rancher's sign-in comes first, and for GitHub, Google and OIDC it leaves

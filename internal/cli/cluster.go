@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/login"
 	"github.com/cbridges1/hyve/internal/resources"
@@ -145,6 +146,14 @@ By default waits until the cluster is ACTIVE and registered with Fleet.`,
 				if classNS != c.GetNamespace() {
 					_ = unstructured.SetNestedField(c.Object, classNS, "spec", "topology", "classRef", "namespace")
 				}
+			}
+			// Local mode adds providers when first needed: this class's.
+			added, _, err := install.EnsureProviders(ctx, s.kube, install.RefKinds(cls), install.LeanOptions{Log: logf})
+			if err != nil {
+				return err
+			}
+			for _, p := range added {
+				logf("Added Cluster API provider %s, which ClusterClass %s needs", p, cls.GetName())
 			}
 			if cmd.Flags().Changed("workers") || workerClass != "" || workerType != "" {
 				typ, wc := clusters.DefaultWorkers(cls)
