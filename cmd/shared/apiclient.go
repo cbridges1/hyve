@@ -1,3 +1,5 @@
+//go:build ignore
+
 package shared
 
 import (
@@ -189,43 +191,14 @@ func httpClientTrustingCA(caCertPEM string) (*http.Client, error) {
 	}, nil
 }
 
-// UseClusterMode reports whether the current command should talk to the API
-// instead of local files. The ACTIVE ENVIRONMENT decides this, not session
-// presence alone — changed after live confirmation that the original
-// "session presence always wins" rule was surprising in practice: `hyve context
-// use <local-only-environment>` had no effect on cluster-mode-aware
-// commands as long as an unrelated session was still active from earlier,
-// requiring an explicit `hyve context logout` to actually get local behavior
-// back, which defeated much of the point of `env use` existing at all.
-//
-//   - Active environment has no --api-url (a pure local directory): always
-//     local mode, full stop, regardless of whether some other session
-//     happens to still be active elsewhere. `hyve context use` alone is now
-//     enough to switch back to local — no `hyve context logout` required.
-//   - Active environment has an --api-url: cluster mode, provided the
-//     current session (see EnsureValidSession) is both valid and for that
-//     same --api-url. Switching back to a cluster environment whose
-//     session is still active resumes cluster mode automatically, with no
-//     re-login needed — switching environments never touches the session
-//     itself (session.Load/Save), only which environment is read here to
-//     decide whether to use it. Session storage and environment selection
-//     remain genuinely independent state (see internal/session's own doc
-//     comment for why that split exists); this function is just the one
-//     place that now gates cluster-mode dispatch on both together, rather
-//     than on the session alone.
-//
-// Every other case is a hard failure, not a silent fallback — preserving
-// this function's original reasoning: for a cluster-mode environment, its
-// local clusters/ directory is not a second source of truth (frequently
-// empty or stale, since the real state lives in the cluster's CRDs).
-// Silently falling through to the local branch would let a command like
-// `hyve cluster delete` operate on stale local files and run
-// reconciliation directly against a cloud provider from this machine,
-// bypassing the controller entirely, with no indication anything unusual
-// happened. (`hyve context whoami`/`hyve context list`/`hyve context current` do not
-// call this — they read the session/environment directly and report
-// mismatches as information, not a fatal error, since they're the tools
-// meant for diagnosing exactly this situation.)
+// UseClusterMode reports whether the current command should talk to
+// hyve-api instead of local files. It never does any more: hyve-api's
+// login was replaced by 'hyve login' (HYVE-PROPOSAL.md, "Signing in"), so
+// no new hyve-api session can be made. A context that still points at a
+// hyve-api server is a hard failure rather than a silent fall back to its
+// local directory, which in cluster mode was never the source of truth.
+// The cluster-mode branches that call this go when hyve core replaces
+// their commands.
 func UseClusterMode() (*session.Session, bool) {
 	repoMgr, err := repository.NewManager()
 	if err != nil {
@@ -237,18 +210,8 @@ func UseClusterMode() (*session.Session, bool) {
 	if err != nil || current.APIURL == "" {
 		return nil, false
 	}
-
-	sess, sessErr := EnsureValidSession()
-	if sess == nil {
-		log.Fatalf("❌ Context '%s' points at a hyve-api server (API: %s), but you're not logged in.\n\nRun 'hyve context login' to authenticate against it.", current.Name, current.APIURL)
-	}
-	if sess.APIURL != current.APIURL {
-		log.Fatalf("❌ Context '%s' expects API %s, but your active session is for %s.\n\nRun 'hyve context login' to authenticate against '%s' (or 'hyve context use' whichever context your active session actually belongs to).", current.Name, current.APIURL, sess.APIURL, current.Name)
-	}
-	if sessErr != nil {
-		log.Fatalf("❌ %v — this is a cluster-mode context (API: %s), not a local one. Refusing to silently fall back to local file operations, which could target stale or missing state instead of the live cluster.\n\nRun 'hyve context login --api-url %s' to re-authenticate.", sessErr, sess.APIURL, sess.APIURL)
-	}
-	return sess, true
+	log.Fatalf("❌ Context '%s' points at a hyve-api server (%s), which hyve no longer signs in to.\n\nSwitch to a local context with 'hyve context use <name>', or remove this one with 'hyve context remove %s'.", current.Name, current.APIURL, current.Name)
+	return nil, false
 }
 
 // ClusterDTO mirrors internal/api's clusterDTO response shape.

@@ -1,3 +1,5 @@
+//go:build ignore
+
 package cluster
 
 import (
@@ -22,35 +24,8 @@ var authMethodFlag string
 var authCmd = &cobra.Command{
 	Use:   "auth [cluster-name]",
 	Short: "Configure kubeconfig for a cluster",
-	Long: `Local mode (no 'hyve context login' session active): runs the driver module's auth
-operation directly against the target cloud/cluster and writes the result to
-your local kubeconfig, exactly as before.
-
-Cluster mode (a valid 'hyve context login' session exists): by default, runs the
-same auth operation client-side too, but with no local module resolution
-required at all — GET /api/clusters/<name>/auth-context delivers the
-resolved auth operation file's content directly (resolved against the API's
-own module cache, not yours), along with driver info
-(source/version/params/outputs). No local context, git checkout, or
-'hyve module install' is needed; only your own local credentials/tools
-(civo, aws, gcloud, etc.) still apply, since the script runs on your
-machine.
-
-If the cluster has opted into server-side auth (spec.access.method:
-module-auth on its ClusterDefinition), the module instead runs inside the
-API pod and this fetches an already-minted kubeconfig (GET /api/kubeconfig)
-and merges it in — --method isn't supported for that path, since the server
-always uses the module's default auth method.
-
-If the cluster has hyve-agent proxying enabled (spec.access.agent.proxy:
-true), this also fetches an already-minted kubeconfig (GET
-/api/kubeconfig, same call as the server-side-auth case above) — but its
-server: doesn't point at the target cluster's own real apiserver, or at
-any driver module's auth op at all. It points back at this API's own
-/api/agent-proxy/<name> path: every kubectl request against the resulting
-context is relayed through hyve-api, over hyve-agent's own outbound SSH
-tunnel, to the cluster's real apiserver — the cluster never needs a
-directly reachable endpoint or its own native driver auth.`,
+	Long: `Runs the driver module's auth operation directly against the target
+cloud/cluster and writes the result to your local kubeconfig.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		runClusterAuth(args[0], authMethodFlag)

@@ -1,26 +1,18 @@
-# Used by GoReleaser (see .goreleaser.yaml `dockers:`) — it cross-compiles
-# the hyve binary once per platform via `builds:`, then packages the
-# already-built binary here rather than rebuilding Go from source per image.
-# For a local `docker build` that compiles from source, use ./Dockerfile
-# instead. Keep the apk package list identical between the two.
+# Used by GoReleaser (see .goreleaser.yaml `dockers_v2:`): it cross-compiles
+# the hyve binary once per platform, then packages the built binary here.
+# For a local `docker build` from source, use ./Dockerfile. hyve talks to
+# Kubernetes with client-go, so the image needs no kubectl or helm.
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates bash git curl jq openssl \
-    kubectl helm
+RUN apk add --no-cache ca-certificates
 
-# GoReleaser's multi-platform docker build stages each platform's binary
-# under <os>/<arch>/ in the build context (buildx's TARGETOS/TARGETARCH
-# convention) rather than at the context root.
+# GoReleaser's multi-platform build stages each platform's binary under
+# <os>/<arch>/ in the build context.
 ARG TARGETOS
 ARG TARGETARCH
 COPY ${TARGETOS}/${TARGETARCH}/hyve /usr/local/bin/hyve
 
-# Same layout as deploy/Dockerfile.dev: the chart runs hyve-api with
-# --modules-dir=/var/lib/hyve/modules and the controller with HOME set to
-# its own PVC.
-ENV HOME=/root
-RUN mkdir -p /var/lib/hyve/modules
-
-WORKDIR /repo
+# The chart runs every component as non-root.
+USER 65532:65532
 ENTRYPOINT ["hyve"]
 CMD ["--help"]

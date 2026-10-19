@@ -1,16 +1,15 @@
+//go:build ignore
+
 package template
 
 import (
 	"encoding/json"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	"github.com/cbridges1/hyve/internal/template"
 	"github.com/cbridges1/hyve/internal/types"
-
-	"sigs.k8s.io/yaml"
 )
 
 // createTemplateAPI is cluster mode's counterpart to createTemplate — see
@@ -78,40 +77,6 @@ func createTemplateAPI(
 type specWithDescription struct {
 	template.TemplateSpec
 	Description string `json:"description,omitempty"`
-}
-
-// createTemplateFromFileAPI reads path as the same apiVersion/kind/metadata/
-// spec YAML shape a local templates/<name>.yaml already uses, extracts
-// metadata.name and spec, and POSTs them — mirrors
-// cmd/cluster/api.go's createClusterFromFileAPI.
-func createTemplateFromFileAPI(client *shared.APIClient, path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("Failed to read %s: %v", path, err)
-	}
-	jsonData, err := yaml.YAMLToJSON(data)
-	if err != nil {
-		log.Fatalf("Failed to parse %s: %v", path, err)
-	}
-
-	var parsed struct {
-		Metadata struct {
-			Name string `json:"name"`
-		} `json:"metadata"`
-		Spec json.RawMessage `json:"spec"`
-	}
-	if err := json.Unmarshal(jsonData, &parsed); err != nil {
-		log.Fatalf("Failed to parse %s: %v", path, err)
-	}
-	if parsed.Metadata.Name == "" {
-		log.Fatalf("%s: metadata.name is required", path)
-	}
-
-	created, err := client.CreateTemplate(parsed.Metadata.Name, parsed.Spec)
-	if err != nil {
-		log.Fatalf("Failed to create template: %v", err)
-	}
-	log.Printf("✅ Template '%s' created from file", created.Name)
 }
 
 func listTemplatesAPI(client *shared.APIClient) {

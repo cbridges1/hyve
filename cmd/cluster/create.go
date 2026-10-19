@@ -1,3 +1,5 @@
+//go:build ignore
+
 package cluster
 
 import (
@@ -18,15 +20,9 @@ import (
 
 var createCmd = &cobra.Command{
 	Use:   "create [cluster-name]",
-	Short: "Create a cluster from a template (local mode) or a file (cluster mode)",
-	Long: `Local mode (no 'hyve context login' session active): creates from a template via
---template, or from an already-fully-specified file via --file.
-
-Cluster mode (a valid 'hyve context login' session exists): same choice — --template
-renders the named Template CR server-side (via the same rendering function
-local mode uses), or --file points at an already-fully-specified cluster
-definition (the same apiVersion/kind/metadata/spec YAML shape a local
-clusters/<name>.yaml already uses).`,
+	Short: "Create a cluster from a template or a file",
+	Long: `Creates a cluster from a template via --template, or from an
+already-fully-specified file via --file.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterName := args[0]

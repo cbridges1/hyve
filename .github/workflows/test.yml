@@ -34,31 +34,6 @@ jobs:
         with:
           input: report.json
 
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type-check and build
-        run: npm run build
-
   chart:
     runs-on: ubuntu-latest
     steps:
@@ -71,13 +46,28 @@ jobs:
       - name: Lint
         run: helm lint deploy/helm/hyve
 
-      - name: Render (defaults, and Postgres + bootstrap admin + SMTP)
+      - name: Render (defaults, and with the host endpoint)
         run: |
-          helm template hyve deploy/helm/hyve > /dev/null
-          helm template hyve deploy/helm/hyve \
-            --set api.db.driver=postgres --set api.db.postgresDSNSecret.name=db \
-            --set api.bootstrapAdmin.username=admin --set api.bootstrapAdmin.passwordSecret.name=admin \
-            --set api.smtp.host=smtp.example.com --set api.smtp.passwordSecret.name=smtp > /dev/null
-          helm template hyve deploy/helm/hyve \
-            --set api.bootstrapAdmin.usernameKey=username --set api.bootstrapAdmin.passwordSecret.name=admin \
-            | grep -q -- '--bootstrap-admin-username-file=/etc/hyve/bootstrap-admin/username'
+          helm template hyve deploy/helm/hyve --include-crds > /dev/null
+          helm template hyve deploy/helm/hyve --set host.enabled=true \
+            | grep -q 'name: hyve-host'
+
+  # hyve's host endpoint against the pinned rancher/rancher-agent; also
+  # how a new agent version is tested before the pin moves.
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/v5.8.3/install.sh | TAG=v5.8.3 bash
+
+      - name: Agent test
+        run: hack/e2e-agent.sh

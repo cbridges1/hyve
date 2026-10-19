@@ -1,3 +1,5 @@
+//go:build ignore
+
 package cmd
 
 import (
@@ -18,17 +20,7 @@ a plain local directory works the same as a git checkout.
 
 When --path is provided, the given local directory is used directly and all
 reconciliation runs locally, bypassing the cicd mode check in hyve.yaml. This is
-intended for use inside CI/CD pipelines that have already checked out the repository.
-
-Cluster mode (a valid 'hyve context login' session exists) and no --path given: this
-command is a no-op. There's no local checkout to reconcile against, and
-nothing to trigger — the deployed controller already watches every
-ClusterDefinition and reconciles it continuously via Kubernetes' own
-reconcile loop, so a one-shot CLI trigger doesn't map onto anything
-meaningful. Use 'kubectl get clusterdefinitions' / 'kubectl describe' to
-check status instead. --path still runs a local reconciliation regardless of
-session state, same as it already bypasses the cicd mode check — it's an
-explicit "reconcile this directory" request, independent of cluster mode.`,
+intended for use inside CI/CD pipelines that have already checked out the repository.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		repoPath, _ := cmd.Flags().GetString("path")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")

@@ -1,6 +1,10 @@
 package cmd
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/cbridges1/hyve/cmd/host"
+)
 
 // version/commit/date are set via -ldflags at build time by GoReleaser
 // (see .goreleaser.yaml). They default to these values for `go build`/`go
@@ -14,5 +18,6 @@ var (
 
 func init() {
 	rootCmd.Version = version
+	host.Version = version
 	rootCmd.SetVersionTemplate(fmt.Sprintf("hyve %s (commit %s, built %s)\n", version, commit, date))
 }

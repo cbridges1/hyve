@@ -31,15 +31,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # GoReleaser's before hooks build the web console (web/) that gets
-      # embedded into the binary — see .goreleaser.yaml.
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
       - name: Set up Helm
         uses: azure/setup-helm@v4
 

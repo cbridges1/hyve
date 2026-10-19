@@ -1,3 +1,5 @@
+//go:build ignore
+
 package cmd
 
 import (
@@ -82,7 +84,7 @@ both will reconcile the SAME downstream clusters simultaneously. The
 correct order is: (1) run this command, (2) deploy controller+API to the
 target but don't point traffic/DNS at it yet, (3) stop the source
 cluster's controller — verified, not assumed, (4) cut over DNS/whatever
-'hyve context login' sessions point at, (5) only then treat the new primary as
+clients point at, (5) only then treat the new primary as
 authoritative. This command refuses to run past a dry run without
 --i-have-stopped-the-source-controller as an explicit acknowledgment that
 step 3 already happened.
@@ -232,7 +234,7 @@ func runMigrateCluster() {
 	log.Println("\n✅ Data copied. Remaining steps, still yours to do:")
 	log.Println("   2. Deploy the controller + API onto the target — don't point real traffic/DNS at it yet.")
 	log.Println("   3. (You've already confirmed the source controller is stopped.)")
-	log.Println("   4. Cut over DNS / whatever 'hyve context login' sessions point at.")
+	log.Println("   4. Cut over DNS / whatever clients point at.")
 	log.Println("   5. Only then treat the target as the authoritative primary cluster.")
 }
 

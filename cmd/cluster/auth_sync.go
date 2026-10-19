@@ -1,3 +1,5 @@
+//go:build ignore
+
 package cluster
 
 import (
@@ -18,9 +20,8 @@ var authSyncDryRun bool
 var authSyncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Remove stale local kubeconfig entries for clusters that no longer exist",
-	Long: "Diffs context names in ~/.kube/config against known clusters — fetched from " +
-		"the API in cluster mode (a 'hyve context login' session is active), or from local " +
-		"clusters/*.yaml files otherwise — and removes any context, plus its cluster " +
+	Long: "Diffs context names in ~/.kube/config against the clusters in local " +
+		"clusters/*.yaml files and removes any context, plus its cluster " +
 		"and user entries, that no longer corresponds to a known cluster.",
 	Run: func(cmd *cobra.Command, args []string) {
 		runClusterAuthSync(authSyncDryRun)

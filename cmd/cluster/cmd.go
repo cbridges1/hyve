@@ -1,3 +1,5 @@
+//go:build ignore
+
 package cluster
 
 import (
@@ -22,7 +24,7 @@ var showCmd = &cobra.Command{
 
 var deleteCmd = &cobra.Command{
 	Use:   "delete [cluster-name]",
-	Short: "Mark a cluster for deletion (reconciler runs onDelete + module delete)",
+	Short: "Mark a cluster for deletion (the next reconcile runs the module's delete)",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		markClusterForDeletion(args[0])

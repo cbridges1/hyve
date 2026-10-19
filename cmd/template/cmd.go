@@ -1,3 +1,5 @@
+//go:build ignore
+
 package template
 
 import (
@@ -33,25 +35,12 @@ var templateCreateCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		templateName := args[0]
-		file, _ := cmd.Flags().GetString("file")
-
-		if sess, ok := shared.UseClusterMode(); ok {
-			if file != "" {
-				createTemplateFromFileAPI(shared.NewAPIClient(sess), file)
-				return
-			}
-		}
-
 		description, _ := cmd.Flags().GetString("description")
 		driverSource, _ := cmd.Flags().GetString("driver")
 		driverVersion, _ := cmd.Flags().GetString("driver-version")
 		region, _ := cmd.Flags().GetString("region")
 		mgmtCluster, _ := cmd.Flags().GetString("mgmt-cluster")
 		setVals, _ := cmd.Flags().GetStringArray("set")
-		beforeCreate, _ := cmd.Flags().GetString("before-create")
-		onCreate, _ := cmd.Flags().GetString("on-create")
-		onDelete, _ := cmd.Flags().GetString("on-delete")
-		afterDelete, _ := cmd.Flags().GetString("after-delete")
 		schedule, _ := cmd.Flags().GetString("schedule")
 		lockParams, _ := cmd.Flags().GetBool("lock-params")
 
@@ -70,12 +59,13 @@ var templateCreateCmd = &cobra.Command{
 
 		if sess, ok := shared.UseClusterMode(); ok {
 			createTemplateAPI(shared.NewAPIClient(sess), templateName, description, driverSource, driverVersion, region, mgmtCluster, params,
-				beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
+				"", "", "", "", schedule, lockParams)
 			return
 		}
 
+		// No lifecycle-hook workflows: the workflow commands are gone for now.
 		createTemplate(templateName, description, driverSource, driverVersion, region, mgmtCluster, params,
-			beforeCreate, onCreate, onDelete, afterDelete, schedule, lockParams)
+			"", "", "", "", schedule, lockParams)
 	},
 }
 
@@ -140,13 +130,8 @@ func init() {
 	templateCreateCmd.Flags().StringP("region", "r", "", "Default region for clusters created from this template")
 	templateCreateCmd.Flags().String("mgmt-cluster", "", "Cluster the driver module uses as its management cluster (e.g. a Cluster API management cluster), overriding the module's default")
 	templateCreateCmd.Flags().StringArray("set", nil, "Default driver params (repeatable): KEY=VALUE")
-	templateCreateCmd.Flags().String("before-create", "", "Workflows to run before cluster creation (comma-separated)")
-	templateCreateCmd.Flags().StringP("on-create", "c", "", "Workflows to run after cluster creation (comma-separated)")
-	templateCreateCmd.Flags().String("on-delete", "", "Workflows to run before cluster destruction (comma-separated)")
-	templateCreateCmd.Flags().String("after-delete", "", "Workflows to run after cluster deletion (comma-separated)")
 	templateCreateCmd.Flags().String("schedule", "", "Cron expression for cluster expiry (e.g. '0 20 * * 5')")
 	templateCreateCmd.Flags().Bool("lock-params", false, "Prevent users from overriding default params when creating a cluster from this template")
-	templateCreateCmd.Flags().StringP("file", "f", "", "Create from an existing Template YAML file instead of flags (cluster mode only)")
 
 	templateCmd.AddCommand(templateCreateCmd)
 	templateCmd.AddCommand(templateListCmd)

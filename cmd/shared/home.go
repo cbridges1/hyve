@@ -33,3 +33,12 @@ func resolvedHyveHome() string {
 	}
 	return os.Getenv("HYVE_HOME")
 }
+
+// ExplicitHome returns the hyve home when one was chosen with --home or
+// HYVE_HOME, or "" for the default; kubeconfigs pass it to `hyve token`.
+func ExplicitHome() string {
+	if resolvedHyveHome() == "" {
+		return ""
+	}
+	return HyveHome()
+}

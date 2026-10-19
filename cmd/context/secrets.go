@@ -1,3 +1,5 @@
+//go:build ignore
+
 package contextcmd
 
 import (
@@ -17,23 +19,13 @@ var secretsContextFlag string
 var secretsCmd = &cobra.Command{
 	Use:   "secrets",
 	Short: "Manage secrets attached to a context",
-	Long: `Commands to read and update KEY=VALUE secrets.
-
-Local mode: stored in hyve.db attached to a context — not tied to any
-repository/folder, and removed automatically when the context itself is
-(see 'hyve context remove').
-
-Cluster mode (a valid 'hyve context login' session exists): stored as a single
-Kubernetes Secret in the hyve-api server's own namespace, shared by every
-caller logged into that server — --context/the context name argument have
-no effect here, since cluster-mode secrets aren't scoped per local
-context. Listing key names works for any role; reading/setting/
-unsetting values requires the admin role.
+	Long: `Commands to read and update KEY=VALUE secrets, stored in hyve.db attached
+to a context — not tied to any repository/folder, and removed
+automatically when the context itself is (see 'hyve context remove').
 
 Loaded into the process environment before every command (see 'hyve
-reconcile', 'hyve workflow run') — cluster-mode secrets take precedence
-over local ones, which take precedence over a legacy repo-relative
-hyve.yaml env.file, if one is also configured.`,
+reconcile'), taking precedence over a legacy
+repo-relative hyve.yaml env.file, if one is also configured.`,
 }
 
 var secretsListCmd = &cobra.Command{

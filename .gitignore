@@ -45,3 +45,7 @@ dist/
 # doc comment.
 !internal/webui/dist/
 !internal/webui/dist/**
+# The UI extension's dependencies and build output.
+ui/node_modules/
+ui/dist-pkg/
+ui/dist/
