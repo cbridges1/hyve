@@ -97,46 +97,12 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func exists(ctx context.Context) bool {
-	out, err := run(ctx, "k3d", "cluster", "list", "--no-headers")
-	if err != nil {
-		return false
-	}
-	for _, l := range strings.Split(out, "\n") {
-		if f := strings.Fields(l); len(f) > 0 && f[0] == Name {
-			return true
-		}
-	}
-	return false
-}
-
-func nodeName() string { return "k3d-" + Name + "-server-0" }
-
-const ownerLabel = "hyve.io/local=true"
-
-// ours reports whether the k3d cluster's node carries local mode's label.
-func ours(ctx context.Context) bool {
-	out, err := run(ctx, "docker", "inspect", "-f", `{{ index .Config.Labels "hyve.io/local" }}`, nodeName())
-	return err == nil && out == "true"
-}
-
-// Running reports whether the local cluster exists and its node is up.
-func Running(ctx context.Context) (exists_, running bool) {
-	if !exists(ctx) {
-		return false, false
-	}
-	out, err := run(ctx, "docker", "inspect", "-f", "{{.State.Running}}", nodeName())
-	return true, err == nil && out == "true"
-}
-
 // Up creates (or starts) the local cluster, installs hyve in it and signs
 // the CLI in as its admin. Safe to re-run.
 func Up(ctx context.Context, o Options) error {
 	o.defaults()
-	for _, bin := range []string{"docker", "k3d"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			return fmt.Errorf("%s not found on PATH: local mode needs Docker and k3d", bin)
-		}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return errors.New("docker not found on PATH: local mode needs Docker")
 	}
 	if o.Image == "" && install.IsDevBuild() {
 		// A build from source has no published image: use the one the
@@ -155,8 +121,8 @@ func Up(ctx context.Context, o Options) error {
 			return err
 		}
 	}
-	if ex, _ := Running(ctx); ex && !ours(ctx) {
-		return fmt.Errorf("a k3d cluster named %q exists that local mode didn't create; rename or delete it", Name)
+	if n := node(ctx); n != "" && !ours(ctx, n) {
+		return fmt.Errorf("a container named %q exists that local mode didn't create; rename or delete it", n)
 	}
 	if o.StateDir != "" {
 		if err := SetStateDir(o.Home, o.StateDir); err != nil {
@@ -167,38 +133,17 @@ func Up(ctx context.Context, o Options) error {
 	if ex, running := Running(ctx); !ex {
 		created = true
 		o.Log("Creating the local cluster (%s)", o.K3sImage)
-		args := []string{"cluster", "create", Name,
-			"--image", o.K3sImage,
-			"--network", DockerNetwork,
-			"--no-lb",
-			"--port", fmt.Sprintf("%d:%d@server:0:direct", o.Port, o.Port),
-			// CAPD creates child-cluster nodes as containers on this Docker.
-			"--volume", "/var/run/docker.sock:/var/run/docker.sock@server:0",
-			"--kubeconfig-update-default=false",
-			// Marks the node as local mode's, so it never takes over a k3d
-			// cluster it didn't create.
-			"--runtime-label", ownerLabel + "@server:0",
-			"--wait", "--timeout", "5m",
-		}
-		for _, d := range []string{"traefik", "metrics-server", "servicelb"} {
-			args = append(args, "--k3s-arg", "--disable="+d+"@server:0")
-		}
-		for _, a := range o.APIServerArg {
-			args = append(args, "--k3s-arg", "--kube-apiserver-arg="+a+"@server:0")
-		}
-		if o.GOGC != "" {
-			args = append(args, "--env", "GOGC="+o.GOGC+"@server:0")
-		}
-		if _, err := run(ctx, "k3d", args...); err != nil {
+		if err := createNode(ctx, o); err != nil {
 			return err
 		}
 	} else if !running {
 		o.Log("Starting the local cluster")
-		if _, err := run(ctx, "k3d", "cluster", "start", Name, "--wait"); err != nil {
+		if err := startNode(ctx, node(ctx)); err != nil {
 			return err
 		}
 	}
-	kcRaw, err := run(ctx, "k3d", "kubeconfig", "get", Name)
+	n := node(ctx)
+	kcRaw, err := nodeKubeconfig(ctx, n)
 	if err != nil {
 		return err
 	}
@@ -206,7 +151,7 @@ func Up(ctx context.Context, o Options) error {
 	if err := os.WriteFile(kcPath, []byte(kcRaw+"\n"), 0o600); err != nil {
 		return err
 	}
-	ip, err := run(ctx, "docker", "inspect", nodeName(), "--format", fmt.Sprintf(`{{ (index .NetworkSettings.Networks %q).IPAddress }}`, DockerNetwork))
+	ip, err := run(ctx, "docker", "inspect", n, "--format", fmt.Sprintf(`{{ (index .NetworkSettings.Networks %q).IPAddress }}`, DockerNetwork))
 	if err != nil || ip == "" {
 		return fmt.Errorf("can't find the local cluster's address on the %q network: %v", DockerNetwork, err)
 	}
@@ -215,9 +160,9 @@ func Up(ctx context.Context, o Options) error {
 	// restarts.
 	hostURL := o.PublicURL
 	if hostURL == "" {
-		hostURL = fmt.Sprintf("https://%s:%d", nodeName(), o.Port)
+		hostURL = fmt.Sprintf("https://%s:%d", n, o.Port)
 	}
-	caPEM, certPEM, keyPEM, err := ensurePKI(dir, ip)
+	caPEM, certPEM, keyPEM, err := ensurePKI(dir, ip, n)
 	if err != nil {
 		return err
 	}
@@ -229,10 +174,13 @@ func Up(ctx context.Context, o Options) error {
 	if err != nil {
 		return err
 	}
+	if err := waitReady(ctx, kc); err != nil {
+		return err
+	}
 	if o.Image != "" {
 		if _, err := run(ctx, "docker", "image", "inspect", o.Image); err == nil {
 			o.Log("Importing %s", o.Image)
-			if _, err := run(ctx, "k3d", "image", "import", "-c", Name, o.Image); err != nil {
+			if err := importImage(ctx, n, o.Image); err != nil {
 				return err
 			}
 		}
@@ -372,10 +320,11 @@ func addProviders(ctx context.Context, kc *kube.Client, o Options) error {
 
 // Stop stops the local cluster's node; child clusters keep running.
 func Stop(ctx context.Context) error {
-	if !ours(ctx) {
+	n := node(ctx)
+	if n == "" || !ours(ctx, n) {
 		return fmt.Errorf("no local-mode cluster to stop")
 	}
-	_, err := run(ctx, "k3d", "cluster", "stop", Name)
+	_, err := run(ctx, "docker", "stop", n)
 	return err
 }
 
@@ -384,12 +333,16 @@ func Stop(ctx context.Context) error {
 // "local" context stays (signed out), keeping its default environment for
 // the next Up, which restores the saved state.
 func Down(ctx context.Context, home string, keepContext bool) error {
-	if exists(ctx) {
-		if !ours(ctx) {
-			return fmt.Errorf("the k3d cluster %q isn't local mode's; not deleting it", Name)
+	if n := node(ctx); n != "" {
+		if !ours(ctx, n) {
+			return fmt.Errorf("the container %q isn't local mode's; not deleting it", n)
 		}
-		if _, err := run(ctx, "k3d", "cluster", "delete", Name); err != nil {
+		if _, err := run(ctx, "docker", "rm", "-f", "-v", n); err != nil {
 			return err
+		}
+		if n == legacyNodeName {
+			// What else k3d made for it.
+			_, _ = run(ctx, "docker", "volume", "rm", "k3d-"+Name+"-images")
 		}
 	}
 	cfg, err := login.Load(home)
@@ -424,8 +377,8 @@ func ensureSecretFile(path string) (string, error) {
 }
 
 // ensurePKI keeps a local CA and a host certificate for the node's
-// address, localhost and 127.0.0.1 in dir.
-func ensurePKI(dir, ip string) (caPEM, certPEM, keyPEM []byte, err error) {
+// address and name, localhost and 127.0.0.1 in dir.
+func ensurePKI(dir, ip, name string) (caPEM, certPEM, keyPEM []byte, err error) {
 	caCrt, caKeyPath := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key")
 	hostCrt, hostKey := filepath.Join(dir, "host.crt"), filepath.Join(dir, "host.key")
 	caPEM, err1 := os.ReadFile(caCrt)
@@ -444,10 +397,10 @@ func ensurePKI(dir, ip string) (caPEM, certPEM, keyPEM []byte, err error) {
 	}
 	certPEM, err1 = os.ReadFile(hostCrt)
 	keyPEM, err2 = os.ReadFile(hostKey)
-	if err1 == nil && err2 == nil && certCovers(certPEM, ip) {
+	if err1 == nil && err2 == nil && certCovers(certPEM, ip) && certCovers(certPEM, name) {
 		return caPEM, certPEM, keyPEM, nil
 	}
-	certPEM, keyPEM, err = newCert(caPEM, caKeyPEM, "hyve-local-host", []string{ip, "127.0.0.1", "localhost", nodeName()})
+	certPEM, keyPEM, err = newCert(caPEM, caKeyPEM, "hyve-local-host", []string{ip, "127.0.0.1", "localhost", name})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -457,7 +410,7 @@ func ensurePKI(dir, ip string) (caPEM, certPEM, keyPEM []byte, err error) {
 	return caPEM, certPEM, keyPEM, os.WriteFile(hostKey, keyPEM, 0o600)
 }
 
-func certCovers(certPEM []byte, ip string) bool {
+func certCovers(certPEM []byte, host string) bool {
 	b, _ := pem.Decode(certPEM)
 	if b == nil {
 		return false
@@ -466,7 +419,7 @@ func certCovers(certPEM []byte, ip string) bool {
 	if err != nil || time.Now().After(c.NotAfter.Add(-30*24*time.Hour)) {
 		return false
 	}
-	return c.VerifyHostname(ip) == nil
+	return c.VerifyHostname(host) == nil
 }
 
 // newCert makes a CA (caPEM nil) or a server certificate signed by it.

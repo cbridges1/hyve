@@ -44,12 +44,12 @@ func idleFor(home string) time.Duration {
 // was never set up.
 func Resume(ctx context.Context, home string, logf func(string, ...any)) error {
 	ex, running := Running(ctx)
-	if !ex || !ours(ctx) {
+	if !ex || !ours(ctx, node(ctx)) {
 		return errors.New("local mode isn't set up; run 'hyve local up'")
 	}
 	if !running {
 		logf("Starting the local cluster")
-		if _, err := run(ctx, "k3d", "cluster", "start", Name, "--wait"); err != nil {
+		if err := startNode(ctx, node(ctx)); err != nil {
 			return err
 		}
 	}

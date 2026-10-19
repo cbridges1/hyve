@@ -75,7 +75,7 @@ var (
 // adminKubeconfig writes the local cluster's admin kubeconfig to a file
 // clusterctl can read, and returns a client for it.
 func adminKubeconfig(ctx context.Context, home string) (string, *kube.Client, error) {
-	raw, err := run(ctx, "k3d", "kubeconfig", "get", Name)
+	raw, err := nodeKubeconfig(ctx, node(ctx))
 	if err != nil {
 		return "", nil, err
 	}
