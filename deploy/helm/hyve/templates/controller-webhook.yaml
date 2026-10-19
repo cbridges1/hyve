@@ -1,0 +1,88 @@
+{{- if and .Values.controller.enabled .Values.controller.webhook }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: hyve-controller
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: hyve-controller
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+---
+# Fills in a Cluster labelled hyve.io/template from its ClusterTemplate when
+# it's created (HYVE-PROPOSAL.md, open question 1, option B). Fails closed:
+# a templated Cluster can't be created while the controller is down, rather
+# than being created half-filled. caBundle is set by the controller.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: hyve-controller
+webhooks:
+  - name: fill.clusters.hyve.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: hyve-controller
+        namespace: {{ .Values.namespace }}
+        path: /mutate-cluster
+    objectSelector:
+      matchExpressions:
+        - {key: hyve.io/template, operator: Exists}
+    rules:
+      - apiGroups: ["cluster.x-k8s.io"]
+        apiVersions: ["v1beta2"]
+        resources: ["clusters"]
+        operations: ["CREATE"]
+  # Records who created a Cluster in an environment (hyve.io/creator), from
+  # the API server's view of the request, so they become its owner: a
+  # ClusterAccess without Rancher, a cluster-owner CRTB with it.
+  - name: creator.clusters.hyve.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: hyve-controller
+        namespace: {{ .Values.namespace }}
+        path: /creator-cluster
+    namespaceSelector:
+      matchExpressions:
+        - {key: hyve.io/environment, operator: Exists}
+    rules:
+      - apiGroups: ["cluster.x-k8s.io"]
+        apiVersions: ["v1beta2"]
+        resources: ["clusters"]
+        operations: ["CREATE", "UPDATE"]
+---
+# Keeps a templated Cluster's locked variables at the template's values.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: hyve-controller
+webhooks:
+  - name: locks.clusters.hyve.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: hyve-controller
+        namespace: {{ .Values.namespace }}
+        path: /validate-cluster
+    objectSelector:
+      matchExpressions:
+        - {key: hyve.io/template, operator: Exists}
+    rules:
+      - apiGroups: ["cluster.x-k8s.io"]
+        apiVersions: ["v1beta2"]
+        resources: ["clusters"]
+        operations: ["CREATE", "UPDATE"]
+{{- end }}

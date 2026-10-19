@@ -1,0 +1,84 @@
+# ClusterAccess: a role for a hyve user or group on one cluster, or every
+# cluster in its environment; hyve's equivalent of Rancher's
+# ClusterRoleTemplateBinding, for installs without Rancher. hyve-controller
+# writes the role to each cluster it covers and binds hyve:<user> or
+# hyve:<group> there. It grants nothing on the management cluster beyond
+# reading (or, for owners, changing) the cluster's own CAPI Cluster.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusteraccesses.hyve.io
+spec:
+  group: hyve.io
+  scope: Namespaced
+  names:
+    kind: ClusterAccess
+    listKind: ClusterAccessList
+    plural: clusteraccesses
+    singular: clusteraccess
+    shortNames: [ca]
+    categories: [hyve]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Role
+          type: string
+          jsonPath: .spec.role
+        - name: User
+          type: string
+          jsonPath: .spec.user
+        - name: Group
+          type: string
+          jsonPath: .spec.group
+        - name: Cluster
+          type: string
+          jsonPath: .spec.clusterName
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            apiVersion: {type: string}
+            kind: {type: string}
+            metadata: {type: object}
+            spec:
+              type: object
+              required: [role]
+              x-kubernetes-validations:
+                - rule: "has(self.user) != has(self.group)"
+                  message: give exactly one of user or group
+              properties:
+                role:
+                  type: string
+                  enum: [owner, member, read-only]
+                user:
+                  type: string
+                  description: A hyve user's name (Kubernetes sees hyve:<user>).
+                group:
+                  type: string
+                  description: A hyve group (Kubernetes sees hyve:<group>).
+                clusterName:
+                  type: string
+                  description: One cluster in this namespace; empty covers every cluster in the environment.
+            status:
+              type: object
+              properties:
+                observedGeneration: {type: integer}
+                clusters:
+                  type: array
+                  items: {type: string}
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true

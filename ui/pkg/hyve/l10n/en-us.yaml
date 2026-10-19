@@ -1,0 +1,113 @@
+product:
+  hyve: hyve
+
+typeLabel:
+  hyve.io.clustertemplate: |-
+    {count, plural,
+      one { Cluster Template }
+      other { Cluster Templates }
+    }
+  cluster.x-k8s.io.cluster: |-
+    {count, plural,
+      one { Cluster }
+      other { Clusters }
+    }
+  hyve.io.resource: |-
+    {count, plural,
+      one { Shared Resource }
+      other { Shared Resources }
+    }
+  hyve.io.clusterresource: |-
+    {count, plural,
+      one { Cluster Extra }
+      other { Cluster Extras }
+    }
+
+hyve:
+  headers:
+    class: ClusterClass
+    version: Kubernetes
+    schedule: Expiry schedule
+    template: Template
+    phase: Phase
+    expires: Expires
+    environment: Environment
+    resources: Resources
+    ready: Ready
+  template:
+    description: Description
+    clusterClass: ClusterClass
+    clusterClassHint: The ClusterClass clusters from this template are built from, in the template's namespace. Clusters can be in any environment.
+    version: Kubernetes version
+    versionPlaceholder: ClusterClass default
+    controlPlane: Control-plane replicas
+    workers: Worker replicas
+    variables: Variables
+    variablesHint: Defaults for ClusterClass variables. Values are JSON when valid JSON, otherwise strings.
+    locked: Locked
+    lockedHint: Locked variables cannot be changed when creating a cluster.
+    loadDefaults: Load ClusterClass variables
+    schedule: Expiry schedule
+    schedulePlaceholder: e.g. 0 20 * * 5
+    scheduleHint: Cron (5 fields). Each cluster expires at the next run of the schedule after it is created.
+    resources: Resources
+    resourcesHint: Delivered by Fleet to every cluster made from this template, now and later; hyve-controller keeps the Fleet objects in step. Secrets named here must exist in this namespace; Fleet copies them to each cluster. Manifest bundles are managed with the CLI (hyve template resource add --path).
+    bundleRow: "{source} (managed with the CLI)"
+    labels: Cluster labels
+    labelsHint: Added to every cluster; Fleet sees them through CAAPF.
+  createCluster:
+    menuLabel: Create Cluster
+    action: Create Cluster
+    title: Create a cluster from a template
+    environment: Environment
+    noEnvironments: "No environments yet: create one with 'hyve env create NAME' (a namespace labelled hyve.io/environment)."
+    noClass: "ClusterClass {name} not found; the cluster can't be created until it exists."
+    previewHint: hyve-controller fills in the rest from the template and its ClusterClass when it's created.
+    template: Template
+    name: Cluster name
+    workers: Worker replicas
+    version: Kubernetes version
+    expiry: Expiry
+    expiryTemplate: "Template schedule ({schedule}) — expires {when}"
+    expiryNone: Never
+    expiryHours: After a number of hours
+    hours: Hours
+    lockedValue: "{value} (locked)"
+    preview: Request
+    create: Create
+    created: "Created {name}."
+  resources:
+    tab: Resources
+    notHyve: This cluster wasn't made by hyve, so hyve delivers nothing to it.
+    notRegistered: This cluster isn't registered with Fleet yet, so nothing has been delivered.
+    none: No resources yet.
+    from: From
+    fromCluster: This cluster
+    fromTemplate: "Template {name}"
+    kind: Kind
+    source: Source
+    state: State here
+    addHelm: Add Helm chart
+    addGit: Add git repo
+    addRef: Add shared resource
+    ref: Shared resource
+    secrets: Secrets to copy
+    secretsPlaceholder: comma-separated Secret names in this namespace
+    repo: Helm repository URL
+    gitRepo: Git repository URL
+    chart: Chart
+    version: Version
+    branch: Branch
+    paths: Paths (comma-separated)
+    name: Name
+    namespace: Target namespace
+    cliHint: "Also: hyve cluster resource add {name} --helm/--git/--path/--ref"
+  detail:
+    overview: Overview
+    controlPlane: Control plane
+    workers: Workers
+    never: Never
+    creator: Created by
+  expiry:
+    extend: Extend expiry by 8 hours
+    remove: Remove expiry

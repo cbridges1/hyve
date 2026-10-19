@@ -1,0 +1,17 @@
+{{- if and .Values.controller.enabled .Values.rancher.enabled .Values.rancher.creatorOwner }}
+# See values.yaml, rancher.creatorOwner: Rancher's webhook only accepts a
+# cluster-owner ClusterRoleTemplateBinding from someone who holds all its
+# rights.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyve-controller-rancher-owner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: hyve-controller
+    namespace: {{ .Values.namespace }}
+{{- end }}

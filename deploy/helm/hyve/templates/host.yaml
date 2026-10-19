@@ -1,0 +1,205 @@
+{{- if .Values.host.enabled }}
+# hyve's host endpoint: sign-in and /k8s/clusters/local. See values.yaml's
+# host: block and HYVE-PROPOSAL.md, "Signing in".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hyve-host
+  namespace: {{ .Values.namespace }}
+---
+# Impersonation can't be limited to "hyve:" names in Kubernetes, so this is
+# effectively cluster-wide trust, like Rancher's own server. hyve-host only
+# impersonates names built from a valid session (internal/signin/proxy.go).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hyve-host
+rules:
+  - apiGroups: [""]
+    resources: ["users", "groups"]
+    verbs: ["impersonate"]
+  - apiGroups: ["hyve.io"]
+    resources: ["users"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: ["hyve.io"]
+    resources: ["users/status"]
+    verbs: ["get", "patch", "update"]
+  # Checks whether a caller may set someone else's password.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyve-host
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hyve-host
+subjects:
+  - kind: ServiceAccount
+    name: hyve-host
+    namespace: {{ .Values.namespace }}
+---
+# Password hashes, sessions and the bootstrap Secret live in namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hyve-host
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyve-host
+  namespace: {{ .Values.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hyve-host
+subjects:
+  - kind: ServiceAccount
+    name: hyve-host
+    namespace: {{ .Values.namespace }}
+---
+# The bootstrap admin is a cluster admin, as Rancher's admin is.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyve-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: "hyve:admin"
+---
+# Lets a hyve user manage Users and set their passwords (`hyve user`).
+# Bound to nobody by default; cluster-admin already includes it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hyve-user-admin
+rules:
+  - apiGroups: ["hyve.io"]
+    resources: ["users"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["hyve.io"]
+    resources: ["users/password"]
+    verbs: ["update"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hyve-host
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-host
+spec:
+  replicas: {{ .Values.host.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hyve-host
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hyve-host
+    spec:
+      serviceAccountName: hyve-host
+      containers:
+        - name: host
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["hyve"]
+          args:
+            - host
+            - run
+            - --listen=:8080
+            - --namespace={{ .Values.namespace }}
+            - --session-ttl={{ .Values.host.sessionTTL }}
+            - --bootstrap-secret={{ .Values.host.bootstrapSecret }}
+            {{- if .Values.host.caCertsConfigMap }}
+            - --cacerts=/etc/hyve/cacerts/ca.crt
+            {{- end }}
+            {{- if .Values.host.tlsSecret }}
+            - --tls-cert=/etc/hyve/tls/tls.crt
+            - --tls-key=/etc/hyve/tls/tls.key
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+              {{- if .Values.host.tlsSecret }}
+              scheme: HTTPS
+              {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+              {{- if .Values.host.tlsSecret }}
+              scheme: HTTPS
+              {{- end }}
+          resources:
+            {{- toYaml .Values.host.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          {{- if or .Values.host.tlsSecret .Values.host.caCertsConfigMap }}
+          volumeMounts:
+            {{- if .Values.host.tlsSecret }}
+            - name: tls
+              mountPath: /etc/hyve/tls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.host.caCertsConfigMap }}
+            - name: cacerts
+              mountPath: /etc/hyve/cacerts
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if or .Values.host.tlsSecret .Values.host.caCertsConfigMap }}
+      volumes:
+        {{- if .Values.host.tlsSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.host.tlsSecret }}
+        {{- end }}
+        {{- if .Values.host.caCertsConfigMap }}
+        - name: cacerts
+          configMap:
+            name: {{ .Values.host.caCertsConfigMap }}
+        {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hyve-host
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: hyve-host
+spec:
+  type: {{ .Values.host.service.type }}
+  selector:
+    app.kubernetes.io/name: hyve-host
+  ports:
+    - name: http
+      port: {{ .Values.host.service.port }}
+      targetPort: http
+      {{- if and (eq .Values.host.service.type "NodePort") .Values.host.service.nodePort }}
+      nodePort: {{ .Values.host.service.nodePort }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,160 @@
+# ClusterTemplate: a ClusterClass plus defaults, locked variables, an expiry
+# schedule and the resources every cluster made from it gets. Clusters
+# labelled hyve.io/template are filled in from it by hyve-controller's
+# webhook; its resources become Fleet objects aimed at those clusters.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clustertemplates.hyve.io
+spec:
+  group: hyve.io
+  scope: Namespaced
+  names:
+    kind: ClusterTemplate
+    listKind: ClusterTemplateList
+    plural: clustertemplates
+    singular: clustertemplate
+    shortNames: [ct]
+    categories: [hyve]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Class
+          type: string
+          jsonPath: .spec.clusterClassRef.name
+        - name: Version
+          type: string
+          jsonPath: .spec.kubernetesVersion
+        - name: Schedule
+          type: string
+          jsonPath: .spec.schedule
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Description
+          type: string
+          jsonPath: .spec.description
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            apiVersion: {type: string}
+            kind: {type: string}
+            metadata: {type: object}
+            spec:
+              type: object
+              required: [clusterClassRef]
+              properties:
+                description:
+                  type: string
+                clusterClassRef:
+                  type: object
+                  required: [name]
+                  properties:
+                    name: {type: string}
+                    namespace:
+                      type: string
+                      description: Defaults to the template's namespace.
+                kubernetesVersion:
+                  type: string
+                  description: Defaults to the ClusterClass's hyve.io/default-version annotation.
+                controlPlane:
+                  type: object
+                  properties:
+                    replicas: {type: integer, minimum: 1}
+                workers:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [machineDeployment, machinePool]
+                      description: Defaults to whichever the ClusterClass defines.
+                    class: {type: string}
+                    count: {type: integer, minimum: 0}
+                variables:
+                  type: object
+                  description: ClusterClass variable defaults; a cluster may set others unless locked.
+                  x-kubernetes-preserve-unknown-fields: true
+                lockedVariables:
+                  type: array
+                  items: {type: string}
+                schedule:
+                  type: string
+                  description: Cron expression; each cluster expires at its next occurrence after creation (hyve.io/expires-at).
+                labels:
+                  type: object
+                  description: Extra labels on every Cluster; Fleet sees them through CAAPF.
+                  additionalProperties: {type: string}
+                resources:
+                  type: array
+                  description: What Fleet delivers to every cluster made from this template.
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name: {type: string}
+                      namespace:
+                        type: string
+                        description: Namespace for the resource's objects on the cluster, unless its Fleet spec sets one.
+                      secrets:
+                        type: array
+                        description: Secrets in this object's namespace that Fleet copies to each target cluster (downstreamResources).
+                        items: {type: string}
+                      ref:
+                        type: string
+                        description: A shared Resource to use instead of a spec here.
+                      refNamespace: {type: string}
+                      values:
+                        type: object
+                        description: With ref, merged over the shared Resource's Helm values.
+                        x-kubernetes-preserve-unknown-fields: true
+                      helmOp:
+                        type: object
+                        description: Fleet's HelmOp spec, without targets.
+                        x-kubernetes-preserve-unknown-fields: true
+                      bundle:
+                        type: object
+                        description: Fleet's Bundle spec, without targets.
+                        x-kubernetes-preserve-unknown-fields: true
+                      gitRepo:
+                        type: object
+                        description: Fleet's GitRepo spec, without targets.
+                        x-kubernetes-preserve-unknown-fields: true
+                rancher:
+                  type: object
+                  properties:
+                    autoImport:
+                      type: boolean
+                      description: With Rancher, whether Turtles imports the clusters (default true).
+            status:
+              type: object
+              properties:
+                observedGeneration: {type: integer}
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                resources:
+                  type: array
+                  description: Each Fleet object made, with Fleet's state.
+                  items:
+                    type: object
+                    properties:
+                      name: {type: string}
+                      kind: {type: string}
+                      object: {type: string}
+                      ready: {type: string}
+                      state: {type: string}
+                missingSecrets:
+                  type: array
+                  items: {type: string}
