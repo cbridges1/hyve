@@ -121,8 +121,10 @@ func Up(ctx context.Context, o Options) error {
 			return err
 		}
 	}
-	if n := node(ctx); n != "" && !ours(ctx, n) {
-		return fmt.Errorf("a container named %q exists that local mode didn't create; rename or delete it", n)
+	if n := node(ctx); n != "" {
+		if !ours(ctx, n) {
+			return fmt.Errorf("a container named %q exists that local mode didn't create; rename or delete it", n)
+		}
 	}
 	if o.StateDir != "" {
 		if err := SetStateDir(o.Home, o.StateDir); err != nil {
@@ -143,6 +145,9 @@ func Up(ctx context.Context, o Options) error {
 		}
 	}
 	n := node(ctx)
+	if err := persist(ctx, n); err != nil {
+		return err
+	}
 	kcRaw, err := nodeKubeconfig(ctx, n)
 	if err != nil {
 		return err
@@ -235,8 +240,7 @@ func Up(ctx context.Context, o Options) error {
 		}
 		o.Log("Restored %d objects", n)
 	}
-	Touch(o.Home)
-	return StartIdleWatcher(o.Home, DefaultIdle)
+	return nil
 }
 
 // signIn saves the "local" context, signed in as admin.

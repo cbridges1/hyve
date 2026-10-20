@@ -21,7 +21,7 @@ manages: the same templates and commands as a server, with nothing to run.
 'hyve local up' creates it and signs you in as its admin, as the "local"
 context. CAPD clusters run as containers next to it.`,
 	}
-	cmd.AddCommand(localUpCmd(), localStatusCmd(), localStopCmd(), localDownCmd(), localSaveCmd(), localRestoreCmd(), localUICmd(), localIdleStopCmd())
+	cmd.AddCommand(localUpCmd(), localStatusCmd(), localStopCmd(), localDownCmd(), localSaveCmd(), localRestoreCmd(), localUICmd())
 	return cmd
 }
 
@@ -84,7 +84,7 @@ func localStatusCmd() *cobra.Command {
 func localStopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the local cluster (child clusters keep running; their agents reconnect when it starts)",
+		Short: "Stop the local cluster until the next 'hyve local up' or local-mode command (child clusters keep running; their agents reconnect when it starts)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			saveLocalState(cmd.Context())
@@ -211,21 +211,4 @@ func SaveLocalStateAfter(cmd *cobra.Command) {
 		}
 	}
 	saveLocalState(cmd.Context())
-}
-
-// localIdleStopCmd is the background watcher 'hyve local up' and every
-// local-mode command start; hidden.
-func localIdleStopCmd() *cobra.Command {
-	var after time.Duration
-	cmd := &cobra.Command{
-		Use:    "idle-stop",
-		Short:  "Stop the local cluster once it has been idle (run in the background by hyve)",
-		Hidden: true,
-		Args:   cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return local.IdleStop(cmd.Context(), Home(), after)
-		},
-	}
-	cmd.Flags().DurationVar(&after, "after", local.DefaultIdle, "idle time before stopping")
-	return cmd
 }

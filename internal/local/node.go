@@ -28,7 +28,10 @@ const (
 	legacyNodeName = "k3d-" + Name + "-server-0"
 
 	ownerLabel = "hyve.io/local=true"
-	apiPort    = "6443/tcp"
+	// restartPolicy keeps the node running across Docker and machine
+	// restarts, until 'hyve local stop' stops it.
+	restartPolicy = "unless-stopped"
+	apiPort       = "6443/tcp"
 )
 
 // nodeEntrypoint runs K3s with the DNS fix k3d makes: Docker's embedded DNS
@@ -75,7 +78,7 @@ func Running(ctx context.Context) (exists, running bool) {
 
 func createNode(ctx context.Context, o Options) error {
 	args := []string{"run", "-d", "--name", NodeName, "--hostname", NodeName,
-		"--privileged", "--restart", "no",
+		"--privileged", "--restart", restartPolicy,
 		"--network", DockerNetwork,
 		"--label", ownerLabel,
 		"--tmpfs", "/run", "--tmpfs", "/var/run",
@@ -101,6 +104,13 @@ func createNode(ctx context.Context, o Options) error {
 
 func startNode(ctx context.Context, n string) error {
 	_, err := run(ctx, "docker", "start", n)
+	return err
+}
+
+// persist gives a node made before local mode kept it running (or by k3d)
+// the restart policy.
+func persist(ctx context.Context, n string) error {
+	_, err := run(ctx, "docker", "update", "--restart", restartPolicy, n)
 	return err
 }
 

@@ -14,13 +14,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/login"
 )
 
 var namespaceGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
 
 // LabelEnvironment marks a namespace as a hyve environment.
-const LabelEnvironment = "hyve.io/environment"
+const LabelEnvironment = install.LabelEnvironment
 
 // EnvCmd is `hyve env`: environments are namespaces (HYVE-PROPOSAL.md,
 // "Environments: namespaces, not organizations").

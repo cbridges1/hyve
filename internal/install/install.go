@@ -251,6 +251,9 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 			return res, err
 		}
 	}
+	if err := ensureDefaultNamespaces(ctx, kc); err != nil {
+		return res, err
+	}
 	names := []string{"hyve-controller"}
 	if h, ok := values["host"].(map[string]any); ok && h["enabled"] == true {
 		names = append(names, "hyve-host")
@@ -525,4 +528,28 @@ func ProviderObjects(name string) ([]*unstructured.Unstructured, error) {
 		out = append(out, objs...)
 	}
 	return out, nil
+}
+
+// The namespaces the CLI uses when none is given: the default environment
+// and the namespace for templates and shared resources.
+const (
+	DefaultEnvironment       = "default"
+	DefaultTemplateNamespace = "capi-clusters"
+	LabelEnvironment         = "hyve.io/environment"
+)
+
+// ensureDefaultNamespaces makes the default environment one (labelled, so
+// it's listed and hyve's cluster webhook covers it) and creates the
+// template namespace, so a new install is usable without setting up either.
+func ensureDefaultNamespaces(ctx context.Context, kc *kube.Client) error {
+	for _, o := range []map[string]any{
+		{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{
+			"name": DefaultEnvironment, "labels": map[string]any{LabelEnvironment: "true"}}},
+		{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": DefaultTemplateNamespace}},
+	} {
+		if err := kc.ApplyObject(ctx, &unstructured.Unstructured{Object: o}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/local"
 	"github.com/cbridges1/hyve/internal/login"
@@ -25,8 +26,8 @@ import (
 
 // Default namespaces when the server has none set.
 const (
-	DefaultEnvironment       = "default"
-	DefaultTemplateNamespace = "capi-clusters"
+	DefaultEnvironment       = install.DefaultEnvironment
+	DefaultTemplateNamespace = install.DefaultTemplateNamespace
 )
 
 // Home returns the hyve home directory, and ExplicitHome the same when it
@@ -95,13 +96,6 @@ func newSession() (*session, error) {
 			return nil, err
 		}
 		usedLocal = true
-		// A long command (waiting for a cluster) is use too: keep the idle
-		// watcher from stopping the cluster under it.
-		go func() {
-			for range time.Tick(time.Minute) {
-				local.Touch(Home())
-			}
-		}()
 		if cfg, err = login.Load(Home()); err != nil {
 			return nil, err
 		}
