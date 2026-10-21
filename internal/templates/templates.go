@@ -344,13 +344,15 @@ func ExpiresAt(c *unstructured.Unstructured) (time.Time, bool, error) {
 }
 
 // NextRun returns the schedule's next occurrence after now. Schedules are
-// standard 5-field cron, optionally prefixed with CRON_TZ=<zone>.
+// standard 5-field cron in UTC, or in the zone a CRON_TZ=<zone> prefix
+// names. UTC whatever now's zone, so the CLI (in the user's zone) and
+// hyve-controller (in UTC) agree.
 func NextRun(schedule string, now time.Time) (time.Time, error) {
 	sched, err := cron.ParseStandard(schedule)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("schedule %q: %w", schedule, err)
 	}
-	return sched.Next(now), nil
+	return sched.Next(now.UTC()), nil
 }
 
 // Validate checks a template for mistakes the CRD schema can't catch.

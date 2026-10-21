@@ -169,9 +169,16 @@ export default {
         </button>
       </div>
     </div>
-    <p class="text-muted mb-20">
+    <p class="text-muted mb-10">
       {{ t('hyve.secrets.hint') }}
     </p>
+    <div class="hyve-where mb-20">
+      <strong>{{ t('hyve.secrets.whereTitle') }}</strong>
+      <ul>
+        <li>{{ t('hyve.secrets.whereTemplate') }}</li>
+        <li>{{ t('hyve.secrets.whereEnv') }}</li>
+      </ul>
+    </div>
     <Banner
       v-for="(e, i) in errors"
       :key="i"
@@ -303,6 +310,7 @@ export default {
       :namespace="editing.namespace"
       :name="editing.name"
       :namespaces="namespaces"
+      :template-namespaces="templateNamespaces"
       @close="editing = null"
       @saved="saved"
     />
@@ -310,6 +318,10 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+.hyve-where {
+  font-size: 0.9em;
+  ul { margin: 4px 0 0; padding-left: 18px; list-style: disc; }
+}
 .header {
   display: flex;
   align-items: center;

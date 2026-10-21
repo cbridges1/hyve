@@ -1,6 +1,9 @@
 package main
 
 import (
+	// Time zones for CRON_TZ= expiry schedules: the image has no tzdata.
+	_ "time/tzdata"
+
 	"github.com/cbridges1/hyve/cmd"
 )
 

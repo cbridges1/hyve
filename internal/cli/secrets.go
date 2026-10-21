@@ -120,8 +120,18 @@ func secretsCreateCmd() *cobra.Command {
 		Long: `Creates a Secret in the template namespace (or --namespace), for template
 resources and cluster extras to name in their secrets. Values come from
 --from-literal, environment variables (--from-env) or files (--from-file);
-they're never printed.`,
+they're never printed.
+
+Which namespace depends on who reads the Secret:
+
+  template namespace  Secrets a template's resources copy to its clusters.
+  environment         Credentials a Cluster API provider reads (a Civo API key,
+                      Unraid SSH, cloud keys): providers only look in the
+                      cluster's own namespace, so put them in each environment
+                      you create clusters in (-n ENV). Also Secrets a single
+                      cluster's extra resources copy.`,
 		Example: `  CF_TOKEN=... hyve secrets create cloudflare-dns --from-env api-token=CF_TOKEN
+  CIVO_TOKEN=... hyve secrets create civo-credentials -n default --from-env token=CIVO_TOKEN
   hyve secrets create registry --type kubernetes.io/dockerconfigjson --from-file .dockerconfigjson=$HOME/.docker/config.json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

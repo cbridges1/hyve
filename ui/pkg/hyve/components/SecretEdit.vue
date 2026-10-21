@@ -49,6 +49,8 @@ export default {
     existing:   { type: Boolean, default: false },
     // Namespaces to offer for a new Secret.
     namespaces: { type: Array, default: () => [] },
+    // Which of them hold templates; the rest are environments.
+    templateNamespaces: { type: Array, default: () => [] },
   },
   emits: ['close', 'saved'],
 
@@ -90,6 +92,14 @@ export default {
   },
 
   computed: {
+    // What the chosen namespace means for who can read the Secret.
+    nsHint() {
+      if (!this.ns) {
+        return '';
+      }
+
+      return this.templateNamespaces.includes(this.ns) ? this.t('hyve.secrets.nsTemplate', { ns: this.ns }) : this.t('hyve.secrets.nsEnv', { ns: this.ns });
+    },
     title() {
       return this.existing ? this.t('hyve.secrets.editTitle', { name: `${ this.namespace }/${ this.name }` }) : this.t('hyve.secrets.createTitle');
     },
@@ -274,6 +284,11 @@ export default {
               />
             </div>
           </div>
+          <Banner
+            v-if="!existing && nsHint"
+            color="info"
+            :label="nsHint"
+          />
           <div
             v-else
             class="text-muted mb-10 hyve-secret-type"

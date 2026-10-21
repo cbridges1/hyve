@@ -178,6 +178,11 @@ hyve:
   secrets:
     title: Secrets
     hint: Secrets in the template and environment namespaces, and the ones resources copy to clusters. Values stay hidden until you reveal them. Clusters get a change the next time Fleet copies the Secret.
+    whereTitle: Which namespace?
+    whereTemplate: "Template namespace: Secrets that a template's resources copy to its clusters (for example a DNS token for external-dns)."
+    whereEnv: "Environment: credentials a Cluster API provider reads (a Civo API key, Unraid SSH login, cloud keys). Providers only look in the cluster's own namespace, so these go in each environment you create clusters in. Secrets that a single cluster's extra resources copy go here too."
+    nsTemplate: "{ns} is a template namespace: templates' resources can copy this Secret to clusters. Cluster API providers don't read credentials from here; put those in the environment."
+    nsEnv: "{ns} is an environment: providers read credentials here for clusters created in it, and a cluster's extra resources can copy it. Templates' resources can't copy it from here."
     create: Create Secret
     createTitle: Create a Secret
     editTitle: Edit Secret {name}
