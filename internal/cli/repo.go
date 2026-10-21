@@ -24,7 +24,7 @@ func RepoCmd() *cobra.Command {
 		Short:   "Point Fleet at git repositories (plain Fleet GitRepos)",
 	}
 	AddGlobalFlags(cmd)
-	cmd.AddCommand(repoAddCmd(), repoListCmd(), repoRemoveCmd())
+	cmd.AddCommand(repoAddCmd(), repoListCmd(), repoShowCmd(), repoRemoveCmd())
 	return cmd
 }
 

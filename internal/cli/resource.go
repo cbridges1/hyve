@@ -159,53 +159,203 @@ func resourceListCmd() *cobra.Command {
 }
 
 func resourceShowCmd() *cobra.Command {
-	return &cobra.Command{
+	var template, cluster, output string
+	cmd := &cobra.Command{
 		Use:   "show NAME",
-		Short: "Show a shared Resource and the templates and clusters that refer to it",
-		Args:  cobra.ExactArgs(1),
+		Short: "Show a resource: a shared Resource, or one on a template or cluster, as written and as delivered",
+		Long: `Shows a shared Resource and the templates and clusters that refer to it.
+A resource that isn't shared (one written into a template, or an extra on
+a cluster) is shown as written there, with the Fleet object hyve delivers
+it as; --template or --cluster picks one when several have that name.`,
+		Example: `  hyve resource show podinfo
+  hyve resource show flannel --template capd-small
+  hyve resource show monitoring --cluster demo -o yaml`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkOutput(output); err != nil {
+				return err
+			}
+			if template != "" && cluster != "" {
+				return errors.New("give --template or --cluster, not both")
+			}
 			s, err := newSession()
 			if err != nil {
 				return err
 			}
 			ctx := cmd.Context()
-			u, err := s.kube.Dynamic.Resource(resources.ResourceGVR).Namespace(s.templateNS()).Get(ctx, args[0], metav1.GetOptions{})
-			if err != nil {
-				return notInstalled(err)
-			}
-			unstructured.RemoveNestedField(u.Object, "metadata", "managedFields")
-			if err := printYAML(u.Object); err != nil {
-				return err
-			}
-			tl, err := s.kube.Dynamic.Resource(templates.GVR).Namespace(s.templateNS()).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				return err
-			}
-			var users []string
-			for i := range tl.Items {
-				t, err := templates.FromUnstructured(&tl.Items[i])
-				if err != nil {
-					continue
+			if template == "" && cluster == "" {
+				u, err := s.kube.Dynamic.Resource(resources.ResourceGVR).Namespace(s.templateNS()).Get(ctx, args[0], metav1.GetOptions{})
+				if err == nil {
+					return showShared(cmd, s, u, output)
 				}
-				for _, e := range t.Spec.Resources {
-					if e.Ref == args[0] && (e.RefNamespace == "" || e.RefNamespace == s.templateNS()) {
-						users = append(users, "template "+t.Name)
-					}
+				if !apierrors.IsNotFound(err) {
+					return notInstalled(err)
 				}
 			}
-			crs, err := s.kube.Dynamic.Resource(resources.ClusterResourceGVR).List(ctx, metav1.ListOptions{})
-			if err == nil {
-				for _, cr := range crs.Items {
-					if ref, _, _ := unstructured.NestedString(cr.Object, "spec", "ref"); ref == args[0] {
-						cn, _, _ := unstructured.NestedString(cr.Object, "spec", "clusterName")
-						users = append(users, "cluster "+cr.GetNamespace()+"/"+cn)
-					}
-				}
-			}
-			fmt.Printf("# used by: %s\n", dash(strings.Join(users, ", ")))
-			return nil
+			return showDelivered(cmd, s, args[0], template, cluster, output)
 		},
 	}
+	cmd.Flags().StringVar(&template, "template", "", "the resource written into this template")
+	cmd.Flags().StringVar(&cluster, "cluster", "", "the extra on this cluster (in the environment)")
+	addOutputFlag(cmd, &output)
+	return cmd
+}
+
+// showShared prints a shared Resource and who refers to it.
+func showShared(cmd *cobra.Command, s *session, u *unstructured.Unstructured, output string) error {
+	ctx := cmd.Context()
+	if output != "" {
+		return printObjects(output, tidy(u))
+	}
+	if err := printYAML(tidy(u)); err != nil {
+		return err
+	}
+	name := u.GetName()
+	tl, err := s.kube.Dynamic.Resource(templates.GVR).Namespace(s.templateNS()).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	var users []string
+	for i := range tl.Items {
+		t, err := templates.FromUnstructured(&tl.Items[i])
+		if err != nil {
+			continue
+		}
+		for _, e := range t.Spec.Resources {
+			if e.Ref == name && (e.RefNamespace == "" || e.RefNamespace == s.templateNS()) {
+				users = append(users, "template "+t.Name)
+			}
+		}
+	}
+	crs, err := s.kube.Dynamic.Resource(resources.ClusterResourceGVR).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, cr := range crs.Items {
+			if ref, _, _ := unstructured.NestedString(cr.Object, "spec", "ref"); ref == name {
+				cn, _, _ := unstructured.NestedString(cr.Object, "spec", "clusterName")
+				users = append(users, "cluster "+cr.GetNamespace()+"/"+cn)
+			}
+		}
+	}
+	fmt.Printf("# used by: %s\n", dash(strings.Join(users, ", ")))
+	return nil
+}
+
+// showDelivered prints a template's or cluster's resource: as its owner
+// has it (and the shared Resource it refers to), and the Fleet object hyve
+// made from it.
+func showDelivered(cmd *cobra.Command, s *session, name, template, cluster, output string) error {
+	ctx := cmd.Context()
+	sel := resources.Selector{}
+	owners := map[string]bool{}
+	switch {
+	case template != "":
+		t, err := s.getTemplate(ctx, template)
+		if err != nil {
+			return err
+		}
+		sel = resources.Selector{Namespace: t.Namespace, OwnerKind: resources.OwnerTemplate, Owner: t.Name}
+	case cluster != "":
+		sel = resources.Selector{Namespace: s.env(), OwnerKind: resources.OwnerClusterResource}
+		crs, err := s.kube.Dynamic.Resource(resources.ClusterResourceGVR).Namespace(s.env()).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		for _, cr := range crs.Items {
+			if cn, _, _ := unstructured.NestedString(cr.Object, "spec", "clusterName"); cn == cluster {
+				owners[cr.GetName()] = true
+			}
+		}
+	}
+	items, err := resources.List(ctx, s.kube.Dynamic, sel)
+	if err != nil {
+		return notInstalled(err)
+	}
+	var found []resources.Item
+	for _, it := range items {
+		if it.Name == name && (cluster == "" || owners[it.Owner]) {
+			found = append(found, it)
+		}
+	}
+	switch len(found) {
+	case 0:
+		where := "in the template namespace, or on any template or cluster"
+		if template != "" {
+			where = "on template " + template
+		} else if cluster != "" {
+			where = "on cluster " + cluster
+		}
+		return fmt.Errorf("no resource %q %s", name, where)
+	case 1:
+	default:
+		var opts []string
+		for _, it := range found {
+			if it.OwnerKind == resources.OwnerTemplate {
+				opts = append(opts, "--template "+it.Owner)
+			} else {
+				opts = append(opts, "--env "+it.Object.GetNamespace()+" (extra "+it.Owner+")")
+			}
+		}
+		return fmt.Errorf("several resources are called %q; pick one: %s", name, strings.Join(opts, ", "))
+	}
+	it := found[0]
+	ns := it.Object.GetNamespace()
+	type doc struct {
+		comment string
+		obj     any
+	}
+	var docs []doc
+	var entry *resources.Entry
+	if it.OwnerKind == resources.OwnerTemplate {
+		u, err := s.kube.Dynamic.Resource(templates.GVR).Namespace(ns).Get(ctx, it.Owner, metav1.GetOptions{})
+		if err == nil {
+			if t, err := templates.FromUnstructured(u); err == nil {
+				for i, e := range t.Spec.Resources {
+					if e.Name == name || (e.Name == "" && e.Ref == name) {
+						entry = &t.Spec.Resources[i]
+						docs = append(docs, doc{"as written in template " + ns + "/" + it.Owner, e})
+						break
+					}
+				}
+			}
+		}
+	} else {
+		cr, err := s.kube.Dynamic.Resource(resources.ClusterResourceGVR).Namespace(ns).Get(ctx, it.Owner, metav1.GetOptions{})
+		if err == nil {
+			docs = append(docs, doc{"as written, ClusterResource " + ns + "/" + it.Owner, tidy(cr)})
+			if e, err := resources.EntryFromSpec(cr); err == nil {
+				entry = &e
+			}
+		}
+	}
+	if entry != nil && entry.Ref != "" {
+		refNS := entry.RefNamespace
+		if refNS == "" {
+			refNS = s.templateNS()
+		}
+		if u, err := s.kube.Dynamic.Resource(resources.ResourceGVR).Namespace(refNS).Get(ctx, entry.Ref, metav1.GetOptions{}); err == nil {
+			docs = append(docs, doc{"the shared Resource it refers to", tidy(u)})
+		}
+	}
+	docs = append(docs, doc{"delivered as Fleet " + it.Kind + " " + ns + "/" + it.Object.GetName(), tidy(it.Object)})
+	if output != "" {
+		objs := make([]any, 0, len(docs))
+		for _, d := range docs {
+			objs = append(objs, d.obj)
+		}
+		return printObjects(output, objs...)
+	}
+	for i, d := range docs {
+		if i > 0 {
+			fmt.Println("---")
+		}
+		fmt.Printf("# %s\n", d.comment)
+		if err := printYAML(d.obj); err != nil {
+			return err
+		}
+	}
+	ready, state := it.Ready()
+	fmt.Printf("# ready: %s  state: %s\n", dash(ready), dash(state))
+	return nil
 }
 
 // resourceStatusCmd shows every resource on one cluster, or a matrix of

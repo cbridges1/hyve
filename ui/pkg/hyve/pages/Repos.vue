@@ -4,6 +4,7 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import { Banner } from '@components/Banner';
 import { LABELS } from '../config/types';
 import { FLEET, problem } from '../utils/resources';
+import ViewDialog from '../components/ViewDialog.vue';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -19,7 +20,7 @@ function emptyForm() {
 export default {
   name:       'HyveRepos',
   components: {
-    Loading, LabeledInput, Banner
+    Loading, LabeledInput, Banner, ViewDialog
   },
 
   async fetch() {
@@ -28,7 +29,7 @@ export default {
 
   data() {
     return {
-      repos: [], adding: false, form: emptyForm(), errors: [], saving: false
+      repos: [], adding: false, form: emptyForm(), errors: [], saving: false, viewing: null
     };
   },
 
@@ -221,6 +222,13 @@ export default {
             <button
               type="button"
               class="btn btn-sm role-link"
+              @click="viewing = r"
+            >
+              {{ t('hyve.view.view') }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm role-link"
               @click="remove(r)"
             >
               {{ t('generic.remove') }}
@@ -229,6 +237,12 @@ export default {
         </tr>
       </tbody>
     </table>
+    <ViewDialog
+      v-if="viewing"
+      :title="`GitRepo ${ viewing.metadata.namespace }/${ viewing.metadata.name }`"
+      :sections="[{ label: 'GitRepo', object: viewing }]"
+      @close="viewing = null"
+    />
   </div>
 </template>
 

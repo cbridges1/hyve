@@ -164,25 +164,51 @@ func waitReady(ctx context.Context, kc *kube.Client) error {
 }
 
 // importImage copies a local Docker image into the node's containerd.
-func importImage(ctx context.Context, n, image string) error {
-	save := exec.CommandContext(ctx, "docker", "save", image)
+//
+// It's imported under a tag naming the image's ID (hyve:dev becomes
+// hyve:dev-1a2b3c4d5e6f), which it returns for the Deployments to use: a
+// rebuilt image under the same tag would leave their spec unchanged, so
+// the pods would keep running the old one.
+func importImage(ctx context.Context, n, image string) (string, error) {
+	id, err := run(ctx, "docker", "image", "inspect", image, "--format", "{{.Id}}")
+	if err != nil {
+		return "", err
+	}
+	ref := image
+	if !strings.Contains(image, "@") {
+		repo, tag := image, "latest"
+		if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+			repo, tag = image[:i], image[i+1:]
+		}
+		short := strings.TrimPrefix(id, "sha256:")
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		ref = repo + ":" + tag + "-" + short
+		if _, err := run(ctx, "docker", "tag", image, ref); err != nil {
+			return "", err
+		}
+		// The host only needs the tag long enough to save it.
+		defer run(context.WithoutCancel(ctx), "docker", "rmi", ref) //nolint:errcheck
+	}
+	save := exec.CommandContext(ctx, "docker", "save", ref)
 	load := exec.CommandContext(ctx, "docker", "exec", "-i", n, "ctr", "-n", "k8s.io", "images", "import", "-")
 	pipe, err := save.StdoutPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 	load.Stdin = pipe
 	var saveErr strings.Builder
 	save.Stderr = &saveErr
 	if err := save.Start(); err != nil {
-		return err
+		return "", err
 	}
 	out, loadErr := load.CombinedOutput()
 	if err := save.Wait(); err != nil {
-		return fmt.Errorf("docker save %s: %w: %s", image, err, strings.TrimSpace(saveErr.String()))
+		return "", fmt.Errorf("docker save %s: %w: %s", ref, err, strings.TrimSpace(saveErr.String()))
 	}
 	if loadErr != nil {
-		return fmt.Errorf("importing %s: %w: %s", image, loadErr, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("importing %s: %w: %s", ref, loadErr, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return ref, nil
 }

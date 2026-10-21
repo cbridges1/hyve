@@ -11,6 +11,7 @@ import { _VIEW } from '@shell/config/query-params';
 import { CAPI_CLUSTER_CLASS, DEFAULT_TEMPLATE_NAMESPACE } from '../config/types';
 import { nextRun } from '../utils/cron';
 import { describe, kindOf, validate } from '../utils/resources';
+import ViewDialog from '../components/ViewDialog.vue';
 
 // A variable's value as text: JSON for anything but plain strings.
 function toText(v) {
@@ -37,7 +38,7 @@ export default {
   name:         'CruClusterTemplate',
   inheritAttrs: false,
   components:   {
-    CruResource, NameNsDescription, LabeledSelect, LabeledInput, Checkbox, KeyValue, Banner
+    CruResource, NameNsDescription, LabeledSelect, LabeledInput, Checkbox, KeyValue, Banner, ViewDialog
   },
   mixins: [CreateEditView],
 
@@ -56,6 +57,7 @@ export default {
     const locked = spec.lockedVariables || [];
 
     return {
+      viewing:      null,
       classes:      [],
       controlPlane: spec.controlPlane?.replicas ?? 1,
       workers:      spec.workers?.count ?? 1,
@@ -404,6 +406,13 @@ export default {
       <template v-if="r.type === 'bundle'">
         <div class="col span-11">
           <b>{{ r.name }}</b> — {{ t('hyve.template.bundleRow', { source: describe(r.orig) }) }}
+          <button
+            type="button"
+            class="btn btn-sm role-link"
+            @click="viewing = r"
+          >
+            {{ t('hyve.view.view') }}
+          </button>
         </div>
       </template>
       <template v-else-if="r.type === 'ref'">
@@ -539,6 +548,12 @@ export default {
       :protip="t('hyve.template.labelsHint')"
       :add-label="t('generic.add')"
       :read-allowed="false"
+    />
+    <ViewDialog
+      v-if="viewing"
+      :title="viewing.name"
+      :sections="[{ label: t('hyve.view.entry'), object: viewing.orig }]"
+      @close="viewing = null"
     />
   </CruResource>
 </template>

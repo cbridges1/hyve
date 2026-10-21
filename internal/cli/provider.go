@@ -47,7 +47,7 @@ Operator. Variables are what the provider's clusterctl configuration reads:
 credentials and feature flags.`,
 	}
 	AddGlobalFlags(cmd)
-	cmd.AddCommand(providerAddCmd(), providerListCmd(), providerRemoveCmd())
+	cmd.AddCommand(providerAddCmd(), providerListCmd(), providerShowCmd(), providerRemoveCmd())
 	return cmd
 }
 

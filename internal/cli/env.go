@@ -32,7 +32,7 @@ func EnvCmd() *cobra.Command {
 		Short:   "Environments: namespaces that hold clusters and their extras",
 	}
 	AddGlobalFlags(cmd)
-	cmd.AddCommand(envListCmd(), envCreateCmd(), envDeleteCmd(), envUseCmd())
+	cmd.AddCommand(envListCmd(), envShowCmd(), envCreateCmd(), envDeleteCmd(), envUseCmd())
 	return cmd
 }
 

@@ -2,6 +2,7 @@ package logincmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/cbridges1/hyve/cmd/shared"
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
@@ -21,6 +23,7 @@ import (
 )
 
 var (
+	userShowOutput       string
 	userDisplayName      string
 	userGroups           []string
 	userPasswordStdin    bool
@@ -249,13 +252,47 @@ var userRemoveCmd = &cobra.Command{
 	},
 }
 
+var userShowCmd = &cobra.Command{
+	Use:   "show NAME",
+	Short: "Show a user",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if userShowOutput != "" && userShowOutput != "yaml" && userShowOutput != "json" {
+			return fmt.Errorf(`--output is "yaml" or "json", not %q`, userShowOutput)
+		}
+		uc, err := newUserContext()
+		if err != nil {
+			return err
+		}
+		u := &hyvev1alpha1.User{}
+		if err := uc.kc.Get(cmd.Context(), client.ObjectKey{Name: args[0]}, u); err != nil {
+			return err
+		}
+		u.ManagedFields = nil
+		u.APIVersion, u.Kind = hyvev1alpha1.GroupVersion.String(), "User"
+		var out []byte
+		if userShowOutput == "json" {
+			out, err = json.MarshalIndent(u, "", "  ")
+			out = append(out, '\n')
+		} else {
+			out, err = yaml.Marshal(u)
+		}
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(out)
+		return err
+	},
+}
+
 func init() {
+	userShowCmd.Flags().StringVarP(&userShowOutput, "output", "o", "", `"yaml" (the default) or "json"`)
 	userAddCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
 	userAddCmd.Flags().StringSliceVar(&userGroups, "group", nil, "group to add the user to (repeatable)")
 	userAddCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read the initial password from stdin")
 	userAddCmd.Flags().BoolVar(&userNoPasswordChange, "no-password-change", false, "don't make the user change the password at first sign-in")
 	userPasswdCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read passwords from stdin: the current one then the new one for your own, just the new one for another user")
-	for _, c := range []*cobra.Command{userAddCmd, userListCmd, userPasswdCmd, userDisableCmd, userEnableCmd, userRemoveCmd} {
+	for _, c := range []*cobra.Command{userAddCmd, userListCmd, userShowCmd, userPasswdCmd, userDisableCmd, userEnableCmd, userRemoveCmd} {
 		addServerFlag(c)
 		c.SilenceUsage = true // session.go's init runs before this file's
 		UserCmd.AddCommand(c)

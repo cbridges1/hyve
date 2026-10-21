@@ -3,6 +3,7 @@ import Loading from '../shims/Loading.vue';
 import Modal from '../components/Modal.vue';
 import Pill from '../components/Pill.vue';
 import ConfirmButton from '../components/ConfirmButton.vue';
+import ViewDialog from '@pkg/components/ViewDialog.vue';
 import { CAPI_CLUSTER, LABELS, NAMESPACE } from '@pkg/config/types';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -12,7 +13,7 @@ const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 export default {
   name:       'HyveEnvironments',
   components: {
-    Loading, Modal, Pill, ConfirmButton
+    Loading, Modal, Pill, ConfirmButton, ViewDialog
   },
 
   async fetch() {
@@ -21,7 +22,7 @@ export default {
 
   data() {
     return {
-      envs: [], counts: {}, creating: false, name: '', error: '', busy: false
+      envs: [], counts: {}, creating: false, name: '', error: '', busy: false, viewing: null
     };
   },
 
@@ -79,7 +80,7 @@ export default {
 <template>
   <Loading v-if="$fetchState.pending" />
   <div v-else>
-    <div class="mb-4 flex items-center justify-between">
+    <div class="header">
       <h1 class="mb-0">
         Environments
       </h1>
@@ -116,16 +117,25 @@ export default {
               :label="`${ counts[env.metadata.name] || 0 } clusters`"
             />
           </div>
-          <ConfirmButton
-            v-if="!counts[env.metadata.name]"
-            label="Delete"
-            :confirm="`Delete ${ env.metadata.name }?`"
-            @confirm="remove(env)"
-          />
-          <span
-            v-else
-            class="text-xs text-neutral-400"
-          >Delete its clusters first</span>
+          <div class="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              class="btn role-tertiary btn-sm"
+              @click="viewing = env"
+            >
+              View
+            </button>
+            <ConfirmButton
+              v-if="!counts[env.metadata.name]"
+              label="Delete"
+              :confirm="`Delete ${ env.metadata.name }?`"
+              @confirm="remove(env)"
+            />
+            <span
+              v-else
+              class="text-xs text-neutral-400"
+            >Delete its clusters first</span>
+          </div>
         </div>
       </div>
     </div>
@@ -168,5 +178,11 @@ export default {
         </div>
       </form>
     </Modal>
+    <ViewDialog
+      v-if="viewing"
+      :title="`Environment ${ viewing.metadata.name }`"
+      :sections="[{ label: 'Namespace', object: viewing }]"
+      @close="viewing = null"
+    />
   </div>
 </template>

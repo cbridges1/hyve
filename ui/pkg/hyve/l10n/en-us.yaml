@@ -159,13 +159,29 @@ hyve:
     cliHint: "Add a provider with 'hyve provider add NAME' (in local mode, hyve adds known ones when first needed)."
   secrets:
     title: Secrets
-    hint: The Secrets resources copy to clusters, by name. hyve never shows or edits values; create them with kubectl or your secrets tooling in the namespace shown.
+    hint: The Secrets resources copy to clusters. View shows a Secret's keys, with values hidden until you reveal them; create and change Secrets with kubectl or your secrets tooling, in the namespace shown.
     exists: Exists
     present: Present
     missing: Missing
     neededBy: Needed by
     deliveredTo: Delivered to
     none: No resource copies Secrets.
+    type: Type
+    key: Key
+    value: Value
+    noKeys: This Secret has no keys.
+    reveal: Reveal
+    hide: Hide
+    notFound: This Secret doesn't exist yet.
+    forbidden: You can't read this Secret.
+  view:
+    view: View
+    copy: Copy
+    copied: Copied
+    metadata: Metadata
+    object: Object
+    entry: As written
+    delivered: Delivered as {kind}
   repos:
     title: Repos
     hint: Fleet GitRepos. In fleet-local they deploy to this management cluster (ClusterClasses, templates); other workspaces target their clusters.

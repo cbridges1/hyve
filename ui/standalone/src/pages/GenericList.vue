@@ -31,7 +31,7 @@ export default {
 <template>
   <Loading v-if="$fetchState.pending" />
   <div v-else>
-    <div class="mb-4 flex items-center justify-between">
+    <div class="header">
       <h1 class="mb-0">
         {{ schema ? schema.kind : type }}
       </h1>

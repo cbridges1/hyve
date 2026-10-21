@@ -5,7 +5,7 @@ import extension from '@pkg/l10n/en-us.yaml';
 
 const RANCHER = {
   generic: {
-    add: 'Add', cancel: 'Cancel', remove: 'Remove', save: 'Save', create: 'Create', edit: 'Edit', delete: 'Delete', close: 'Close', refresh: 'Refresh'
+    add: 'Add', cancel: 'Cancel', remove: 'Remove', save: 'Save', create: 'Create', edit: 'Edit', delete: 'Delete', close: 'Close', refresh: 'Refresh', loading: 'Loading…'
   },
   tableHeaders: { name: 'Name', namespace: 'Namespace' },
 };

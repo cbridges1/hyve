@@ -185,9 +185,11 @@ func Up(ctx context.Context, o Options) error {
 	if o.Image != "" {
 		if _, err := run(ctx, "docker", "image", "inspect", o.Image); err == nil {
 			o.Log("Importing %s", o.Image)
-			if err := importImage(ctx, n, o.Image); err != nil {
+			ref, err := importImage(ctx, n, o.Image)
+			if err != nil {
 				return err
 			}
+			o.Image = ref
 		}
 	}
 	password, err := ensureSecretFile(filepath.Join(dir, "admin-password"))

@@ -317,13 +317,15 @@ func templateShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "yaml" {
+			if err := checkOutput(output); err != nil {
+				return err
+			}
+			if output != "" {
 				u, err := s.kube.Dynamic.Resource(templates.GVR).Namespace(t.Namespace).Get(ctx, t.Name, metav1.GetOptions{})
 				if err != nil {
 					return err
 				}
-				unstructured.RemoveNestedField(u.Object, "metadata", "managedFields")
-				return printYAML(u.Object)
+				return printObjects(output, tidy(u))
 			}
 			fmt.Printf("Name:          %s/%s\n", t.Namespace, t.Name)
 			if t.Spec.Description != "" {
@@ -385,7 +387,7 @@ func templateShowCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&output, "output", "o", "", `"yaml" for the object itself`)
+	addOutputFlag(cmd, &output)
 	return cmd
 }
 

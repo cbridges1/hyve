@@ -48,7 +48,7 @@ export default {
       :to="back"
       label="Templates"
     />
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div class="header">
       <h1 class="mb-0">
         {{ mode === 'create' ? 'New template' : value.metadata.name }}
       </h1>

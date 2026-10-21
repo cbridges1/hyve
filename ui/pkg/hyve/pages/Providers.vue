@@ -3,10 +3,13 @@ import Loading from '@shell/components/Loading';
 import { Banner } from '@components/Banner';
 import { BLANK_CLUSTER } from '@shell/store/store-types.js';
 import { PRODUCT } from '../config/types';
+import ViewDialog from '../components/ViewDialog.vue';
 
 const DEPLOYMENT = 'apps.deployment';
 const TURTLES_PROVIDER = 'turtles-capi.cattle.io.capiprovider';
 const PROVIDER_LABEL = 'cluster.x-k8s.io/provider';
+// The CAPI Operator's provider kinds.
+const OPERATOR_TYPES = ['core', 'bootstrap', 'controlplane', 'infrastructure', 'addon', 'ipam', 'runtimeextension'].map((k) => `operator.cluster.x-k8s.io.${ k }provider`);
 const TYPES = ['infrastructure', 'bootstrap', 'control-plane', 'addon', 'ipam', 'runtime-extension'];
 
 // The installed Cluster API providers and their health, however they were
@@ -14,7 +17,7 @@ const TYPES = ['infrastructure', 'bootstrap', 'control-plane', 'addon', 'ipam', 
 // every provider's controller is a Deployment labelled with its name.
 export default {
   name:       'HyveProviders',
-  components: { Loading, Banner },
+  components: { Loading, Banner, ViewDialog },
 
   async fetch() {
     const deployments = await this.$store.dispatch('management/findAll', { type: DEPLOYMENT }).catch(() => []);
@@ -38,6 +41,7 @@ export default {
         const ready = d.status?.availableReplicas || 0;
 
         return {
+          d,
           id:      d.id,
           name,
           type,
@@ -52,7 +56,28 @@ export default {
   },
 
   data() {
-    return { rows: [], turtles: false };
+    return {
+      rows: [], turtles: false, viewing: null
+    };
+  },
+
+  methods: {
+    // A provider's controller, and the object it was installed from
+    // (Turtles' or the CAPI Operator's) when there is one.
+    async view(r) {
+      const sections = [];
+
+      for (const type of [TURTLES_PROVIDER, ...OPERATOR_TYPES]) {
+        if (!this.$store.getters['management/schemaFor'](type)) {
+          continue;
+        }
+        const all = await this.$store.dispatch('management/findAll', { type }).catch(() => []);
+
+        all.filter((p) => p.metadata.namespace === r.ns).forEach((p) => sections.push({ label: p.kind || type, object: p }));
+      }
+      sections.push({ label: 'Deployment', object: r.d });
+      this.viewing = { title: `${ r.type } ${ r.name }`, sections };
+    },
   },
 
   computed: {
@@ -94,11 +119,12 @@ export default {
           <th>{{ t('tableHeaders.namespace') }}</th>
           <th>{{ t('hyve.resources.version') }}</th>
           <th>{{ t('hyve.providers.health') }}</th>
+          <th />
         </tr>
       </thead>
       <tbody>
         <tr v-if="!rows.length">
-          <td colspan="5">
+          <td colspan="6">
             {{ t('hyve.providers.none') }}
           </td>
         </tr>
@@ -113,9 +139,24 @@ export default {
           <td :class="r.healthy ? 'text-success' : 'text-warning'">
             {{ r.healthy ? t('hyve.providers.ready') : t('hyve.providers.notReady', { state: r.state }) }}
           </td>
+          <td class="text-right">
+            <button
+              type="button"
+              class="btn btn-sm role-link"
+              @click="view(r)"
+            >
+              {{ t('hyve.view.view') }}
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
+    <ViewDialog
+      v-if="viewing"
+      :title="viewing.title"
+      :sections="viewing.sections"
+      @close="viewing = null"
+    />
   </div>
 </template>
 

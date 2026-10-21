@@ -2,14 +2,15 @@
 import Loading from '@shell/components/Loading';
 import { HYVE, LABELS } from '../config/types';
 import EnvironmentPicker from '../components/EnvironmentPicker.vue';
+import SecretView from '../components/SecretView.vue';
 
 // The Secrets each resource copies to clusters, by name: whether each
-// exists (from hyve-controller's status, so the page never reads a
-// Secret) and which clusters it's delivered to. Values are managed outside
-// hyve, so there's nothing to edit here.
+// exists (from hyve-controller's status, so listing reads no Secret) and
+// which clusters it's delivered to. View reads one, as the user. Values
+// are managed outside hyve, so there's nothing to edit here.
 export default {
   name:       'HyveSecrets',
-  components: { Loading, EnvironmentPicker },
+  components: { Loading, EnvironmentPicker, SecretView },
 
   async fetch() {
     const [templates, clusterResources, shared, clusters] = await Promise.all([
@@ -63,7 +64,9 @@ export default {
   },
 
   data() {
-    return { environment: '', rows: [] };
+    return {
+      environment: '', rows: [], viewing: null
+    };
   },
 
   computed: {
@@ -98,11 +101,12 @@ export default {
           <th>{{ t('hyve.secrets.exists') }}</th>
           <th>{{ t('hyve.secrets.neededBy') }}</th>
           <th>{{ t('hyve.secrets.deliveredTo') }}</th>
+          <th />
         </tr>
       </thead>
       <tbody>
         <tr v-if="!shown.length">
-          <td colspan="5">
+          <td colspan="6">
             {{ t('hyve.secrets.none') }}
           </td>
         </tr>
@@ -132,9 +136,25 @@ export default {
               {{ c.metadata.namespace }}/{{ c.metadata.name }}
             </div>
           </td>
+          <td class="text-right">
+            <button
+              v-if="!r.missing"
+              type="button"
+              class="btn btn-sm role-link"
+              @click="viewing = r"
+            >
+              {{ t('hyve.view.view') }}
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
+    <SecretView
+      v-if="viewing"
+      :namespace="viewing.ns"
+      :name="viewing.secret"
+      @close="viewing = null"
+    />
   </div>
 </template>
 

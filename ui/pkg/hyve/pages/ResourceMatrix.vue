@@ -10,6 +10,7 @@ import {
   allClusterStates, allItems, clusterResourceObject, helmEntry, problem, stateColor, stateOn, validate
 } from '../utils/resources';
 import EnvironmentPicker from '../components/EnvironmentPicker.vue';
+import ViewDialog from '../components/ViewDialog.vue';
 
 function emptyForm() {
   return {
@@ -24,7 +25,7 @@ function emptyForm() {
 export default {
   name:       'HyveResourceMatrix',
   components: {
-    Loading, LabeledSelect, LabeledInput, RadioGroup, Banner, EnvironmentPicker
+    Loading, LabeledSelect, LabeledInput, RadioGroup, Banner, EnvironmentPicker, ViewDialog
   },
 
   async fetch() {
@@ -44,6 +45,7 @@ export default {
       form:             emptyForm(),
       errors:           [],
       saving:           false,
+      viewing:          null,
     };
   },
 
@@ -117,6 +119,40 @@ export default {
       return stateOn(r.it, this.states[`${ c.metadata.namespace }/${ c.metadata.name }`] || null) || this.t('hyve.matrix.waiting');
     },
     stateColor,
+    // What's behind a row: the resource as its template or cluster has it
+    // (a shared Resource's spec too, when it refers to one), and the Fleet
+    // object hyve made from it.
+    async view(r) {
+      const it = r.it;
+      const ns = it.model.metadata.namespace;
+      const sections = [];
+      let entry = null;
+
+      if (it.ownerKind === 'ClusterTemplate') {
+        const tpl = this.templates.find((x) => x.metadata.name === it.owner && x.metadata.namespace === ns);
+
+        entry = (tpl?.spec?.resources || []).find((e) => (e.name || e.ref) === it.name) || null;
+        if (entry) {
+          sections.push({ label: `${ this.t('hyve.view.entry') } (template ${ it.owner })`, object: entry });
+        }
+      } else {
+        const cr = this.clusterResources.find((x) => x.metadata.name === it.owner && x.metadata.namespace === ns);
+
+        if (cr) {
+          entry = cr.spec || null;
+          sections.push({ label: `${ this.t('hyve.view.entry') } (ClusterResource ${ ns }/${ it.owner })`, object: cr });
+        }
+      }
+      if (entry?.ref) {
+        try {
+          const shared = await this.$store.dispatch('management/find', { type: HYVE.RESOURCE, id: `${ entry.refNamespace || ns }/${ entry.ref }` });
+
+          sections.push({ label: `Resource ${ entry.refNamespace || ns }/${ entry.ref }`, object: shared });
+        } catch (e) {}
+      }
+      sections.push({ label: this.t('hyve.view.delivered', { kind: it.kind }), object: it.model });
+      this.viewing = { title: it.name, sections };
+    },
     clusterRoute(c) {
       return {
         name:   `${ PRODUCT }-c-cluster-resource-namespace-id`,
@@ -392,6 +428,13 @@ export default {
               <button
                 type="button"
                 class="btn btn-sm role-link"
+                @click="view(r)"
+              >
+                {{ t('hyve.view.view') }}
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm role-link"
                 @click="remove(r)"
               >
                 {{ t('generic.remove') }}
@@ -401,6 +444,12 @@ export default {
         </tbody>
       </table>
     </div>
+    <ViewDialog
+      v-if="viewing"
+      :title="viewing.title"
+      :sections="viewing.sections"
+      @close="viewing = null"
+    />
   </div>
 </template>
 

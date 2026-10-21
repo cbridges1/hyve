@@ -37,7 +37,7 @@ func SecretsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "secrets",
 		Aliases: []string{"secret"},
-		Short:   "Which Secrets resources need, and whether they exist (names only)",
+		Short:   "Which Secrets resources need, whether they exist, and what's in one",
 	}
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
@@ -48,7 +48,8 @@ func SecretsCmd() *cobra.Command {
 		Short:   "List the Secrets templates and extras copy to clusters, and which are missing",
 		Long: `Lists, by name only, the Secrets that template resources (in the template
 namespace) and cluster extras (in the environment) have Fleet copy to their
-clusters, and whether each exists. hyve never reads or prints values.
+clusters, and whether each exists, with their keys; it never reads values
+('hyve secrets show NAME --reveal' does).
 Create missing ones however your install manages secrets: kubectl, an
 operator such as Infisical's or External Secrets, sealed-secrets.`,
 		Args: cobra.NoArgs,
@@ -128,7 +129,7 @@ operator such as Infisical's or External Secrets, sealed-secrets.`,
 			return w.Flush()
 		},
 	}
-	cmd.AddCommand(list)
+	cmd.AddCommand(list, secretsShowCmd())
 	return cmd
 }
 

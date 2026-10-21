@@ -382,7 +382,8 @@ func expiresAt(c *unstructured.Unstructured) string {
 }
 
 func clusterShowCmd() *cobra.Command {
-	return &cobra.Command{
+	var output string
+	cmd := &cobra.Command{
 		Use:   "show NAME",
 		Short: "Show a cluster's spec, Fleet and Rancher state, resources and conditions",
 		Args:  cobra.ExactArgs(1),
@@ -395,6 +396,12 @@ func clusterShowCmd() *cobra.Command {
 			c, err := s.getCluster(ctx, args[0])
 			if err != nil {
 				return err
+			}
+			if err := checkOutput(output); err != nil {
+				return err
+			}
+			if output != "" {
+				return printObjects(output, tidy(c))
 			}
 			topo := func(f ...string) string {
 				v, _, _ := unstructured.NestedFieldNoCopy(c.Object, append([]string{"spec", "topology"}, f...)...)
@@ -465,6 +472,8 @@ func clusterShowCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOutputFlag(cmd, &output)
+	return cmd
 }
 
 func clusterDeleteCmd() *cobra.Command {

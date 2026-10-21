@@ -55,11 +55,11 @@ export default {
 
 <template>
   <div>
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div class="header">
       <h1 class="mb-0">
         Clusters
       </h1>
-      <div class="flex items-center gap-2">
+      <div class="header-right">
         <EnvironmentPicker v-model:value="environment" />
         <router-link
           class="btn role-primary"

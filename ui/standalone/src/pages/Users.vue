@@ -3,6 +3,7 @@ import Loading from '../shims/Loading.vue';
 import Modal from '../components/Modal.vue';
 import Pill from '../components/Pill.vue';
 import ConfirmButton from '../components/ConfirmButton.vue';
+import ViewDialog from '@pkg/components/ViewDialog.vue';
 import { auth } from '../api';
 import { session } from '../session';
 
@@ -20,7 +21,7 @@ function emptyForm() {
 export default {
   name:       'HyveUsers',
   components: {
-    Loading, Modal, Pill, ConfirmButton
+    Loading, Modal, Pill, ConfirmButton, ViewDialog
   },
 
   async fetch() {
@@ -29,7 +30,7 @@ export default {
 
   data() {
     return {
-      users: [], adding: false, form: emptyForm(), error: '', formError: '', busy: false, passwordFor: '', newPassword: '', session
+      users: [], adding: false, form: emptyForm(), error: '', formError: '', busy: false, viewing: null, passwordFor: '', newPassword: '', session
     };
   },
 
@@ -122,7 +123,7 @@ export default {
 
 <template>
   <div>
-    <div class="mb-4 flex items-center justify-between">
+    <div class="header">
       <h1 class="mb-0">
         Users
       </h1>
@@ -187,30 +188,36 @@ export default {
               {{ u.spec?.displayName ? `${ u.spec.displayName } · ` : '' }}{{ lastLogin(u) }}
             </div>
           </div>
-          <div
-            v-if="u.metadata.name !== session.user.username"
-            class="flex shrink-0 items-center gap-1"
-          >
+          <div class="flex shrink-0 items-center gap-1">
             <button
               type="button"
               class="btn role-tertiary btn-sm"
-              @click="passwordFor = u.metadata.name; newPassword = ''; formError = ''"
+              @click="viewing = u"
             >
-              Set password
+              View
             </button>
-            <button
-              type="button"
-              class="btn role-tertiary btn-sm"
-              :disabled="busy"
-              @click="setDisabled(u, !u.spec?.disabled)"
-            >
-              {{ u.spec?.disabled ? 'Enable' : 'Disable' }}
-            </button>
-            <ConfirmButton
-              label="Delete"
-              :confirm="`Delete ${ u.metadata.name }?`"
-              @confirm="remove(u)"
-            />
+            <template v-if="u.metadata.name !== session.user.username">
+              <button
+                type="button"
+                class="btn role-tertiary btn-sm"
+                @click="passwordFor = u.metadata.name; newPassword = ''; formError = ''"
+              >
+                Set password
+              </button>
+              <button
+                type="button"
+                class="btn role-tertiary btn-sm"
+                :disabled="busy"
+                @click="setDisabled(u, !u.spec?.disabled)"
+              >
+                {{ u.spec?.disabled ? 'Enable' : 'Disable' }}
+              </button>
+              <ConfirmButton
+                label="Delete"
+                :confirm="`Delete ${ u.metadata.name }?`"
+                @confirm="remove(u)"
+              />
+            </template>
           </div>
         </div>
       </div>
@@ -322,5 +329,11 @@ export default {
         </div>
       </form>
     </Modal>
+    <ViewDialog
+      v-if="viewing"
+      :title="`User ${ viewing.metadata.name }`"
+      :sections="[{ label: 'User', object: viewing }]"
+      @close="viewing = null"
+    />
   </div>
 </template>

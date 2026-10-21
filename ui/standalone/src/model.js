@@ -12,6 +12,11 @@ export function setModelContext(c) {
 export default class Model {
   constructor(data, type) {
     Object.assign(this, JSON.parse(JSON.stringify(data)));
+    // type is the store's (Rancher's) type; an object's own type field (a
+    // Secret's) is kept as _type, as Rancher's models do.
+    Object.defineProperty(this, '_type', {
+      value: typeof this.type === 'string' ? this.type : undefined, enumerable: false, writable: true, configurable: true
+    });
     delete this.type;
     Object.defineProperty(this, 'type', {
       value: type, enumerable: false, writable: true, configurable: true
@@ -49,7 +54,7 @@ export default class Model {
   }
 
   toJSON() {
-    return { ...this };
+    return this._type ? { ...this, type: this._type } : { ...this };
   }
 
   replaceWith(data) {

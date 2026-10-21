@@ -48,7 +48,7 @@ export default {
 
 <template>
   <div>
-    <div class="mb-4 flex items-center justify-between">
+    <div class="header">
       <h1 class="mb-0">
         Templates
       </h1>
