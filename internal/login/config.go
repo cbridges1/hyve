@@ -113,6 +113,14 @@ func (c *Config) Get(name string) (*Server, error) {
 	if name == "" {
 		return nil, errors.New("not signed in anywhere; run 'hyve login <url>'")
 	}
+	// A URL names the server saved for it: the UI's kubeconfigs do, not
+	// knowing what the CLI called it.
+	if strings.Contains(name, "://") {
+		if s := c.FindByURL(strings.TrimRight(name, "/")); s != nil {
+			return s, nil
+		}
+		return nil, fmt.Errorf("not signed in to %s; run 'hyve login %s'", name, name)
+	}
 	for i := range c.Servers {
 		if c.Servers[i].Name == name {
 			return &c.Servers[i], nil

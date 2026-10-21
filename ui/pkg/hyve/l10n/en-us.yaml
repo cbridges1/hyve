@@ -51,8 +51,12 @@ hyve:
     schedulePlaceholder: e.g. 0 20 * * 5
     scheduleHint: Cron (5 fields). Each cluster expires at the next run of the schedule after it is created.
     resources: Resources
-    resourcesHint: Delivered by Fleet to every cluster made from this template, now and later; hyve-controller keeps the Fleet objects in step. Secrets named here must exist in this namespace; Fleet copies them to each cluster. Manifest bundles are managed with the CLI (hyve template resource add --path).
-    bundleRow: "{source} (managed with the CLI)"
+    resourcesHint: Delivered by Fleet to every cluster made from this template, now and later; hyve-controller keeps the Fleet objects in step. Secrets named here must exist in this namespace; Fleet copies them to each cluster.
+    addResource: Add resource
+    newResource: New resource
+    editResource: Edit {name}
+    applyResource: Done
+    dupResource: There's already a resource named {name}.
     labels: Cluster labels
     labelsHint: Added to every cluster; Fleet sees them through CAAPF.
   createCluster:
@@ -88,9 +92,7 @@ hyve:
     kind: Kind
     source: Source
     state: State here
-    addHelm: Add Helm chart
-    addGit: Add git repo
-    addRef: Add shared resource
+    addExtra: Add resource to this cluster
     ref: Shared resource
     secrets: Secrets to copy
     secretsPlaceholder: comma-separated Secret names in this namespace
@@ -102,7 +104,7 @@ hyve:
     paths: Paths (comma-separated)
     name: Name
     namespace: Target namespace
-    cliHint: "Also: hyve cluster resource add {name} --helm/--git/--path/--ref"
+    cliHint: "CLI: hyve cluster resource add {name} --helm/--git/--path/--ref"
   detail:
     overview: Overview
     controlPlane: Control plane
@@ -157,23 +159,85 @@ hyve:
     notReady: "Not ready ({state})"
     none: No Cluster API providers installed.
     cliHint: "Add a provider with 'hyve provider add NAME' (in local mode, hyve adds known ones when first needed)."
+    hint: "The Cluster API providers on this cluster and their controllers' health. Adding one does what 'hyve provider add' does: in Rancher a Turtles CAPIProvider, otherwise through the Cluster API Operator or, in local mode, hyve's own manifests."
+    typeDefault: "default (infrastructure)"
+    versionPlaceholder: "default: the latest"
+    providerName: clusterctl name
+    fetchURL: Components URL
+    variables: Variables
+    variablesHint: "What the provider's clusterctl configuration reads: credentials and feature flags. hyve keeps them in the Secret NAME-variables."
+    varKey: Variable
+    addVariable: Add variable
+    fromFileName: "from {name}"
+    adding: Adding…
+    added: "{message}. It shows here once its controller is running."
+    badName: "Name: lowercase letters, digits and dashes"
+    badURL: The components URL must be http(s).
+    confirmRemove: "Remove {name}? Delete its clusters first."
+    noRemove: Installed with local mode's manifests; it stays until 'hyve local down'.
   secrets:
     title: Secrets
-    hint: The Secrets resources copy to clusters. View shows a Secret's keys, with values hidden until you reveal them; create and change Secrets with kubectl or your secrets tooling, in the namespace shown.
+    hint: Secrets in the template and environment namespaces, and the ones resources copy to clusters. Values stay hidden until you reveal them. Clusters get a change the next time Fleet copies the Secret.
+    create: Create Secret
+    createTitle: Create a Secret
+    editTitle: Edit Secret {name}
     exists: Exists
     present: Present
     missing: Missing
     neededBy: Needed by
     deliveredTo: Delivered to
-    none: No resource copies Secrets.
+    none: No Secrets here, and no resource copies one.
     type: Type
+    keys: Keys
     key: Key
     value: Value
     noKeys: This Secret has no keys.
-    reveal: Reveal
+    reveal: Show
     hide: Hide
+    fromFile: From file
+    binary: "Binary file ({size} bytes)"
+    addKey: Add key
+    labels: Labels
+    addLabel: Add label
     notFound: This Secret doesn't exist yet.
     forbidden: You can't read this Secret.
+    badName: "Name: lowercase letters, digits, '-' and '.', starting and ending with a letter or digit"
+    needNamespace: Pick a namespace.
+    badKey: "Key {key}: letters, digits, '-', '_' and '.'"
+    dupKey: Key {key} is given twice.
+    needKey: Give at least one key.
+    confirmDelete: Delete {name}?
+    unused: not used by any resource
+  sharedResource:
+    hint: Templates and clusters refer to this by name, and can override its Helm values. Changes reach every cluster that has it.
+  form:
+    kindLabel: Kind
+    kind:
+      helm: Helm chart
+      git: Git repository
+      bundle: Manifests
+      ref: Shared resource
+    namespacePlaceholder: "default: the chart's or manifests' own"
+    releaseName: Release name
+    revision: Revision (commit or tag)
+    values: Helm values (YAML)
+    valueOverrides: Helm value overrides (YAML)
+    badValues: Helm values must be a YAML map.
+    manifestsHint: Kubernetes manifests, sent to clusters as they are. One file can hold several documents separated by ---.
+    fileName: File name
+    addFile: Add file
+    loadFiles: Load files
+    needManifests: Give at least one manifest.
+    badManifest: "{name}: {error}"
+    ref: Shared resource
+    correctDrift: Undo changes made on clusters
+  apply:
+    title: Apply YAML
+    hint: "Creates or updates ClusterTemplates, shared Resources and ClusterResources (hyve.io), as 'hyve template apply -f' does. Without a namespace, templates and Resources go in the template namespace and a ClusterResource in the default environment."
+    apply: Apply
+    empty: There's nothing to apply.
+    created: created
+    updated: updated
   view:
     view: View
     copy: Copy
@@ -191,7 +255,12 @@ hyve:
     branch: Branch
     paths: Paths
     pathsPlaceholder: comma-separated directories with a fleet.yaml (default the root)
-    privateHint: "Private repos need credentials: 'hyve repo add NAME --repo URL --username USER --token-env VAR' creates them."
+    privateHint: A private repo needs a username and a token; hyve keeps them in a basic-auth Secret (NAME-git-auth) in the workspace, which the GitRepo uses.
+    editTitle: Edit {name}
+    username: Git username
+    token: Git token
+    tokenKeep: leave empty to keep the saved one
+    needUsername: A token needs a username.
     bundles: Bundles ready
     state: State
     badName: "Name: lowercase letters, digits and dashes"

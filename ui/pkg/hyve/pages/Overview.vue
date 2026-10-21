@@ -10,6 +10,7 @@ import {
 } from '../utils/resources';
 import { classOf, providerOfClass } from '../utils/providers';
 import EnvironmentPicker from '../components/EnvironmentPicker.vue';
+import ApplyYaml from '../components/ApplyYaml.vue';
 
 const SOON_HOURS = 24;
 const RANCHER_CLUSTER = 'provisioning.cattle.io.cluster';
@@ -26,7 +27,7 @@ function isoSeconds(d) {
 export default {
   name:       'HyveOverview',
   components: {
-    Loading, Banner, EnvironmentPicker
+    Loading, Banner, EnvironmentPicker, ApplyYaml
   },
 
   async fetch() {
@@ -36,6 +37,7 @@ export default {
   data() {
     return {
       environment: '',
+      applying:    false,
       clusters:    [],
       templates:   [],
       classes:     [],
@@ -169,8 +171,22 @@ export default {
   <div v-else>
     <div class="header">
       <h1>{{ t('hyve.overview.title') }}</h1>
-      <EnvironmentPicker v-model:value="environment" />
+      <div class="header-right">
+        <EnvironmentPicker v-model:value="environment" />
+        <button
+          type="button"
+          class="btn role-secondary"
+          @click="applying = true"
+        >
+          {{ t('hyve.apply.title') }}
+        </button>
+      </div>
     </div>
+    <ApplyYaml
+      v-if="applying"
+      @close="applying = false"
+      @applied="load"
+    />
     <Banner
       v-for="(e, i) in errors"
       :key="i"
@@ -304,6 +320,12 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .header {
   display: flex;
   align-items: center;

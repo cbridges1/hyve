@@ -9,7 +9,7 @@ import ClusterResources from '@pkg/components/ClusterResources.vue';
 import {
   ANNOTATIONS, CAPI_CLUSTER, LABELS, NEVER, PRODUCT
 } from '@pkg/config/types';
-import { detailRoute } from '../util';
+import { detailRoute, download, kubeconfig } from '../util';
 import { clusterStatus, expiry } from '../status';
 
 const EXTEND_HOURS = 8;
@@ -19,7 +19,8 @@ function isoSeconds(d) {
 }
 
 // A cluster, the console's way: its fields, conditions and resources in
-// cards, with scale, expiry, YAML and delete.
+// cards, with scale (control plane and each worker pool), expiry, a
+// kubeconfig, YAML and delete: what 'hyve cluster' does.
 export default {
   name:       'HyveClusterDetail',
   components: {
@@ -36,7 +37,7 @@ export default {
 
   data() {
     return {
-      value: null, workers: '', errors: [], busy: false, back: { name: `${ PRODUCT }-c-cluster-resource`, params: { cluster: '_', resource: CAPI_CLUSTER } }
+      value: null, controlPlane: '', sizes: [], expireAt: '', errors: [], busy: false, back: { name: `${ PRODUCT }-c-cluster-resource`, params: { cluster: '_', resource: CAPI_CLUSTER } }
     };
   },
 
@@ -70,11 +71,15 @@ export default {
         ['Workers', this.pools.map((w) => `${ w.replicas } × ${ w.class }`).join(', ') || '—'],
         ['Expires', !this.expires || this.expires === NEVER ? 'Never' : new Date(this.expires).toLocaleString()],
         ['Created by', v.metadata?.annotations?.[ANNOTATIONS.CREATOR] || '—'],
-        ['kubectl', `hyve cluster kubeconfig ${ v.metadata.name } -e ${ v.metadata.namespace }`],
+        ['CLI', `hyve cluster kubeconfig ${ v.metadata.name } -e ${ v.metadata.namespace }`],
       ];
     },
     variables() {
       return (this.topo.variables || []).map((x) => [x.name, JSON.stringify(x.value)]);
+    },
+    sizeChanged() {
+      return (this.topo.controlPlane && this.controlPlane !== '' && Number(this.controlPlane) !== this.topo.controlPlane.replicas) ||
+        this.pools.some((w, i) => this.sizes[i] !== '' && Number(this.sizes[i]) !== w.replicas);
     },
     conditions() {
       return (this.value?.status?.conditions || []).filter((c) => c.status !== 'True' && c.message && c.type !== 'Paused' && c.type !== 'Deleting');
@@ -84,7 +89,12 @@ export default {
   methods: {
     async load() {
       this.value = await this.$store.dispatch('management/find', { type: CAPI_CLUSTER, id: this.id });
-      this.workers = String(this.pools[0]?.replicas ?? '');
+      this.controlPlane = String(this.topo.controlPlane?.replicas ?? '');
+      this.sizes = this.pools.map((w) => String(w.replicas ?? ''));
+      const at = Date.parse(this.expires);
+
+      // datetime-local wants local time, without seconds' zone.
+      this.expireAt = isNaN(at) ? '' : new Date(at - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
     },
     async act(fn) {
       this.errors = [];
@@ -112,9 +122,37 @@ export default {
     },
     scale() {
       return this.act(async() => {
-        this.pools[0].replicas = Number(this.workers);
+        if (this.controlPlane !== '' && this.topo.controlPlane) {
+          this.topo.controlPlane.replicas = Number(this.controlPlane);
+        }
+        this.pools.forEach((w, i) => {
+          if (this.sizes[i] !== '') {
+            w.replicas = Number(this.sizes[i]);
+          }
+        });
         await this.value.save();
       });
+    },
+    setExpiryAt() {
+      const t = new Date(this.expireAt);
+
+      if (isNaN(t)) {
+        this.errors = ['Pick a date and time'];
+
+        return;
+      }
+
+      return this.setExpiry(isoSeconds(t));
+    },
+    async downloadKubeconfig() {
+      this.errors = [];
+      try {
+        const m = this.value.metadata;
+
+        download(`${ m.namespace }-${ m.name }.kubeconfig`, await kubeconfig(`${ m.namespace }.${ m.name }`));
+      } catch (e) {
+        this.errors.push(e.message);
+      }
     },
     remove() {
       return this.act(async() => {
@@ -156,6 +194,14 @@ export default {
           <Pill v-bind="status" />
         </div>
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="btn role-secondary"
+            title="A kubeconfig that runs 'hyve token' for your CLI session; it holds no secret"
+            @click="downloadKubeconfig"
+          >
+            Kubeconfig
+          </button>
           <router-link
             class="btn role-secondary"
             :to="yamlRoute()"
@@ -187,7 +233,7 @@ export default {
             :key="k"
             :label="k"
           >
-            <code v-if="k === 'kubectl'">{{ v }}</code>
+            <code v-if="k === 'CLI'">{{ v }}</code>
             <template v-else>
               {{ v }}
             </template>
@@ -195,33 +241,68 @@ export default {
         </Card>
       </div>
       <div class="space-y-4">
-        <Card
-          v-if="pools.length"
-          title="Workers"
-        >
+        <Card title="Size">
           <form
-            class="flex gap-2"
+            class="space-y-3"
             @submit.prevent="scale"
           >
-            <input
-              v-model="workers"
-              type="number"
-              min="0"
-              aria-label="Worker replicas"
+            <label
+              v-if="topo.controlPlane"
+              class="flex items-center justify-between gap-3 text-sm"
             >
+              <span>Control plane</span>
+              <input
+                v-model="controlPlane"
+                class="w-24!"
+                type="number"
+                min="1"
+                aria-label="Control-plane replicas"
+              >
+            </label>
+            <label
+              v-for="(w, i) in pools"
+              :key="w.name"
+              class="flex items-center justify-between gap-3 text-sm"
+            >
+              <span class="truncate">Workers: {{ w.name }} <span class="text-neutral-500">({{ w.class }})</span></span>
+              <input
+                v-model="sizes[i]"
+                class="w-24!"
+                type="number"
+                min="0"
+                :aria-label="`${ w.name } replicas`"
+              >
+            </label>
             <button
               type="submit"
-              class="btn role-primary"
-              :disabled="busy || workers === '' || Number(workers) === pools[0].replicas"
+              class="btn role-primary w-full"
+              :disabled="busy || !sizeChanged"
             >
               Scale
             </button>
           </form>
         </Card>
-        <Card
-          v-if="expires && expires !== 'never'"
-          title="Expiry"
-        >
+        <Card title="Expiry">
+          <p class="mb-3 text-sm">
+            {{ !expires || expires === 'never' ? 'Never expires.' : `Deleted at ${ new Date(expires).toLocaleString() }.` }}
+          </p>
+          <form
+            class="mb-3 flex gap-2"
+            @submit.prevent="setExpiryAt"
+          >
+            <input
+              v-model="expireAt"
+              type="datetime-local"
+              aria-label="Expires at"
+            >
+            <button
+              type="submit"
+              class="btn role-secondary"
+              :disabled="busy || !expireAt"
+            >
+              Set
+            </button>
+          </form>
           <div class="flex flex-wrap gap-2">
             <button
               type="button"
@@ -229,9 +310,10 @@ export default {
               :disabled="busy"
               @click="extend"
             >
-              Extend 8 hours
+              {{ !expires || expires === 'never' ? 'Expire in 8 hours' : 'Extend 8 hours' }}
             </button>
             <button
+              v-if="expires && expires !== 'never'"
               type="button"
               class="btn role-tertiary btn-sm"
               :disabled="busy"

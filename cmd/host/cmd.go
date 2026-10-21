@@ -25,6 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/hostapi"
+	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/signin"
 	"github.com/cbridges1/hyve/internal/tunnel"
 	"github.com/cbridges1/hyve/internal/webui"
@@ -131,9 +133,11 @@ func run(ctx context.Context) error {
 	children := &tunnel.Proxy{Server: tun, Authenticate: func(r *http.Request) (tunnel.Identity, bool) {
 		return srv.SessionIdentity(r)
 	}}
+	api := &hostapi.API{Config: cfg, Identify: srv.SessionIdentity, DefaultTemplateNamespace: install.DefaultTemplateNamespace}
 	srv.Routes = func(mux *http.ServeMux) {
 		tun.Register(mux)
 		mux.Handle("/k8s/clusters/", children)
+		api.Register(mux)
 	}
 	if serveUI {
 		if !webui.Built() {

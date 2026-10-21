@@ -2,6 +2,7 @@
 import { CAPI_CLUSTER, HYVE } from '@pkg/config/types';
 import ClusterDetail from './ClusterDetail.vue';
 import TemplatePage from './TemplatePage.vue';
+import SharedResourcePage from './SharedResourcePage.vue';
 import YamlEditor from '../components/YamlEditor.vue';
 
 export default {
@@ -23,7 +24,7 @@ export default {
         return YamlEditor;
       }
 
-      return { [CAPI_CLUSTER]: ClusterDetail, [HYVE.TEMPLATE]: TemplatePage }[this.type] || YamlEditor;
+      return { [CAPI_CLUSTER]: ClusterDetail, [HYVE.TEMPLATE]: TemplatePage, [HYVE.RESOURCE]: SharedResourcePage }[this.type] || YamlEditor;
     },
   },
 };

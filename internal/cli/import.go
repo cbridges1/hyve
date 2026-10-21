@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -112,30 +111,13 @@ template's resources and locks.`,
 				ns = DefaultTemplateNamespace
 			}
 
-			// Names: the old name, or namespace-name when asked or when two
-			// would collide.
-			count := map[string]int{}
-			for _, o := range objs {
-				count[o.GetName()]++
-			}
-			sort.Slice(objs, func(i, j int) bool {
-				return objs[i].GetNamespace()+"/"+objs[i].GetName() < objs[j].GetNamespace()+"/"+objs[j].GetName()
-			})
 			var out []string
 			imported, skipped := 0, 0
-			for _, o := range objs {
-				name := o.GetName()
-				if o.GetNamespace() != "" && (prefixNS || count[name] > 1) {
-					name = o.GetNamespace() + "-" + name
-				}
-				var r *hyveimport.Result
-				if hyveimport.IsHerdTemplate(o) {
-					r = hyveimport.ConvertHerd(o, ns)
-					if r.Template != nil {
-						r.Template.Name = name
-					}
-				} else {
-					r = hyveimport.Convert(o, name, ns)
+			for _, r := range hyveimport.ConvertAll(objs, ns, prefixNS) {
+				o := r.Object
+				name := ""
+				if r.Template != nil {
+					name = r.Template.Name
 				}
 				src := strings.TrimPrefix(r.Source, "/")
 				if r.Skipped != "" {
@@ -157,7 +139,7 @@ template's resources and locks.`,
 						continue
 					}
 					logf("imported %s → ClusterTemplate %s/%s", src, ns, name)
-					if relabel && hyveimport.IsHerdTemplate(o) {
+					if relabel && r.Herd {
 						if err := relabelHerdClusters(ctx, s, o, r.Template); err != nil {
 							return err
 						}

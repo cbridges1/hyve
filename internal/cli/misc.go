@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,23 +19,23 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/cbridges1/hyve/internal/clusters"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/operator"
+	"github.com/cbridges1/hyve/internal/render"
 	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
 )
 
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
-// SecretsCmd is `hyve secrets`. hyve holds no secret values: resources name
-// the Kubernetes Secrets Fleet copies to their clusters, and whatever
-// fills those Secrets is up to the install (HYVE-PROPOSAL.md, "Secrets").
+// SecretsCmd is `hyve secrets`: resources name the Kubernetes Secrets Fleet
+// copies to their clusters. hyve can make and change them, or the install
+// can fill them some other way (HYVE-PROPOSAL.md, "Secrets").
 func SecretsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "secrets",
 		Aliases: []string{"secret"},
-		Short:   "Which Secrets resources need, whether they exist, and what's in one",
+		Short:   "Create, change, list and delete the Secrets resources copy to clusters",
 	}
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
@@ -50,8 +48,9 @@ func SecretsCmd() *cobra.Command {
 namespace) and cluster extras (in the environment) have Fleet copy to their
 clusters, and whether each exists, with their keys; it never reads values
 ('hyve secrets show NAME --reveal' does).
-Create missing ones however your install manages secrets: kubectl, an
-operator such as Infisical's or External Secrets, sealed-secrets.`,
+Create missing ones with 'hyve secrets create', or however your install
+manages secrets: an operator such as Infisical's or External Secrets,
+sealed-secrets.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s, err := newSession()
@@ -129,7 +128,7 @@ operator such as Infisical's or External Secrets, sealed-secrets.`,
 			return w.Flush()
 		},
 	}
-	cmd.AddCommand(list, secretsShowCmd())
+	cmd.AddCommand(list, secretsShowCmd(), secretsCreateCmd(), secretsSetCmd(), secretsDeleteCmd())
 	return cmd
 }
 
@@ -152,96 +151,45 @@ can't be filled in.`,
 		Example: `  hyve render -f fleet/capi/templates/civo.yaml -f fleet/capi/classes/civo.yaml --name demo -e ci`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			var tpls []*templates.Template
-			tplDir := map[*templates.Template]string{}
-			shared := map[string]*resources.Entry{}
-			classes := map[string]*unstructured.Unstructured{}
+			var objs []*unstructured.Unstructured
+			dirs := map[string]string{}
 			for _, f := range files {
 				raw, err := os.ReadFile(f)
 				if err != nil {
 					return err
 				}
-				objs, err := kube.Decode(raw)
+				found, err := kube.Decode(raw)
 				if err != nil {
 					return fmt.Errorf("%s: %w", f, err)
 				}
-				for _, o := range objs {
-					switch o.GetKind() {
-					case "ClusterTemplate":
-						if o.GetNamespace() == "" {
-							o.SetNamespace(DefaultTemplateNamespace)
-						}
-						t, err := templates.FromUnstructured(o)
-						if err != nil {
-							return err
-						}
-						tpls = append(tpls, t)
-						tplDir[t] = filepath.Dir(f)
-					case "Resource":
-						e, err := resources.EntryFromSpec(o)
-						if err != nil {
-							return err
-						}
-						shared[o.GetName()] = &e
-					case "ClusterClass":
-						classes[o.GetName()] = o
+				for _, o := range found {
+					if o.GetKind() == "ClusterTemplate" {
+						dirs[o.GetName()] = filepath.Dir(f)
 					}
 				}
+				objs = append(objs, found...)
 			}
-			var t *templates.Template
-			for _, x := range tpls {
-				if tname == "" || x.Name == tname {
-					if t != nil && tname == "" {
-						return errors.New("the files hold more than one ClusterTemplate; pick one with --template")
-					}
-					t = x
-				}
-			}
-			if t == nil {
-				return errors.New("no ClusterTemplate found in the files")
-			}
-			if err := inlineBundlePaths(t.Spec.Resources, tplDir[t]); err != nil {
-				return err
-			}
-			if err := templates.Validate(t); err != nil {
-				return err
-			}
-			class, ok := classes[t.Spec.ClusterClassRef.Name]
-			if !ok {
-				logf("note: ClusterClass %s isn't among the files; class defaults are left out", t.Spec.ClusterClassRef.Name)
-				class = &unstructured.Unstructured{Object: map[string]any{}}
-			}
-			c := clusters.New(name, env)
 			set, err := parseKV(sets, true)
 			if err != nil {
 				return err
 			}
-			if err := clusters.SetVariables(c, set); err != nil {
+			res, err := render.Render(cmd.Context(), objs, render.Options{
+				Template: tname, Name: name, Env: env, Variables: set, TemplateNamespace: DefaultTemplateNamespace,
+				Prepare: func(t *templates.Template) error { return inlineBundlePaths(t.Spec.Resources, dirs[t.Name]) },
+			})
+			if err != nil {
+				if strings.Contains(err.Error(), "more than one ClusterTemplate") {
+					return errors.New("the files hold more than one ClusterTemplate; pick one with --template")
+				}
 				return err
 			}
-			templates.Label(c, t)
-			if err := templates.Fill(c, t, class, time.Now()); err != nil {
+			for _, n := range res.Notes {
+				logf("note: %s", n)
+			}
+			if err := printYAML(res.Cluster.Object); err != nil {
 				return err
 			}
-			if err := printYAML(c.Object); err != nil {
-				return err
-			}
-			lookup := func(_ context.Context, _, n string) (*resources.Entry, error) {
-				if e, ok := shared[n]; ok {
-					return e, nil
-				}
-				return nil, fmt.Errorf("Resource %s isn't among the files", n)
-			}
-			owner := resources.Owner{Kind: resources.OwnerTemplate, Name: t.Name, Namespace: t.Namespace}
-			for _, e := range t.Spec.Resources {
-				r, err := resources.Resolve(cmd.Context(), e, t.Namespace, lookup)
-				if err != nil {
-					return err
-				}
-				obj, err := resources.Object(r, owner)
-				if err != nil {
-					return err
-				}
+			for _, obj := range res.Fleet {
 				fmt.Println("---")
 				if err := printYAML(obj.Object); err != nil {
 					return err

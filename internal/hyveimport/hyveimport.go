@@ -578,3 +578,45 @@ func ConvertHerd(u *unstructured.Unstructured, ns string) *Result {
 	r.Template = t
 	return r
 }
+
+// Converted is one object's conversion, named for the template namespace.
+type Converted struct {
+	*Result
+	// Object is what was converted.
+	Object *unstructured.Unstructured
+	// Herd says Object is a herd ClusterTemplate: the clusters herd made
+	// from it carry herd.io/template=<its name> in its namespace.
+	Herd bool
+}
+
+// ConvertAll converts old hyve Templates and herd ClusterTemplates into
+// ClusterTemplates in ns. Each keeps its old name, or becomes
+// <old namespace>-<name> when prefixNS is set or two names would collide.
+func ConvertAll(objs []*unstructured.Unstructured, ns string, prefixNS bool) []Converted {
+	count := map[string]int{}
+	for _, o := range objs {
+		count[o.GetName()]++
+	}
+	sorted := append([]*unstructured.Unstructured(nil), objs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].GetNamespace()+"/"+sorted[i].GetName() < sorted[j].GetNamespace()+"/"+sorted[j].GetName()
+	})
+	var out []Converted
+	for _, o := range sorted {
+		name := o.GetName()
+		if o.GetNamespace() != "" && (prefixNS || count[name] > 1) {
+			name = o.GetNamespace() + "-" + name
+		}
+		c := Converted{Object: o, Herd: IsHerdTemplate(o)}
+		if c.Herd {
+			c.Result = ConvertHerd(o, ns)
+			if c.Template != nil {
+				c.Template.Name = name
+			}
+		} else {
+			c.Result = Convert(o, name, ns)
+		}
+		out = append(out, c)
+	}
+	return out
+}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -24,11 +22,7 @@ import (
 // API Operator's provider kinds, one per provider type.
 var (
 	turtlesProviderGVR = schema.GroupVersionResource{Group: "turtles-capi.cattle.io", Version: "v1alpha1", Resource: "capiproviders"}
-	operatorKinds      = map[string]string{
-		"core": "CoreProvider", "bootstrap": "BootstrapProvider", "controlPlane": "ControlPlaneProvider",
-		"infrastructure": "InfrastructureProvider", "addon": "AddonProvider", "ipam": "IPAMProvider",
-		"runtimeExtension": "RuntimeExtensionProvider",
-	}
+	operatorKinds      = install.OperatorKinds
 )
 
 func operatorGVR(kind string) schema.GroupVersionResource {
@@ -74,17 +68,7 @@ func providerAddCmd() *cobra.Command {
 				return err
 			}
 			name := args[0]
-			if providerName == "" {
-				providerName = name
-			}
-			if namespace == "" {
-				namespace = name + "-system"
-			}
-			// ClusterClasses need ClusterTopology; --variable can override.
 			data := map[string]any{}
-			for k, v := range install.FeatureVariables {
-				data[k] = v
-			}
 			for _, kv := range vars {
 				k, v, ok := strings.Cut(kv, "=")
 				if !ok {
@@ -114,75 +98,21 @@ func providerAddCmd() *cobra.Command {
 				}
 				data[k] = v
 			}
-			ctx := cmd.Context()
-			objs := []*unstructured.Unstructured{{Object: map[string]any{
-				"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": namespace},
-			}}}
-			secret := ""
-			if len(data) > 0 {
-				secret = name + "-variables"
-				objs = append(objs, &unstructured.Unstructured{Object: map[string]any{
-					"apiVersion": "v1", "kind": "Secret",
-					"metadata":   map[string]any{"name": secret, "namespace": namespace},
-					"stringData": data,
-				}})
+			r := install.ProviderRequest{
+				Name: name, Version: version, Namespace: namespace, ProviderName: providerName, FetchURL: fetchURL,
+				Variables: map[string]string{},
 			}
-			spec := map[string]any{}
-			if version != "" {
-				spec["version"] = version
+			if cmd.Flags().Changed("type") {
+				r.Type = typ
 			}
-			if fetchURL != "" {
-				spec["fetchConfig"] = map[string]any{"url": fetchURL}
+			for k, v := range data {
+				r.Variables[k] = fmt.Sprint(v)
 			}
-			if install.DetectCAPI(s.kube) == install.CAPILean {
-				return leanProviderAdd(ctx, s, name, fetchURL, data)
+			msg, err := install.AddProvider(cmd.Context(), s.kube, r)
+			if err != nil {
+				return err
 			}
-			// The providers hyve knows (docker, kubeadm) go in as local mode
-			// adds them: every type they need (kubeadm is a bootstrap and a
-			// control-plane provider), at core Cluster API's version.
-			if known, err := install.ProviderObjects(name); err == nil && !s.turtles() && !cmd.Flags().Changed("type") && version == "" && fetchURL == "" && len(vars)+len(varFiles)+len(varB64Files) == 0 {
-				for _, o := range known {
-					if err := s.kube.ApplyObject(ctx, o); err != nil {
-						return err
-					}
-				}
-				logf("Applied Cluster API provider %s (%s); 'hyve provider list' shows when it's ready", name, install.CAPIVersion)
-				return nil
-			}
-			var obj *unstructured.Unstructured
-			if s.turtles() {
-				spec["name"], spec["type"] = providerName, typ
-				if secret != "" {
-					spec["configSecret"] = map[string]any{"name": secret}
-				}
-				obj = &unstructured.Unstructured{Object: map[string]any{
-					"apiVersion": "turtles-capi.cattle.io/v1alpha1", "kind": "CAPIProvider",
-					"metadata": map[string]any{"name": name, "namespace": namespace}, "spec": spec,
-				}}
-			} else {
-				kind, ok := operatorKinds[typ]
-				if !ok {
-					return fmt.Errorf("--type %q: want one of core, bootstrap, controlPlane, infrastructure, addon, ipam, runtimeExtension", typ)
-				}
-				if !s.kube.HasKind("operator.cluster.x-k8s.io", "v1alpha2", kind) {
-					return fmt.Errorf("neither Rancher Turtles nor the Cluster API Operator is installed; the hyve chart installs the operator")
-				}
-				if secret != "" {
-					spec["configSecret"] = map[string]any{"name": secret, "namespace": namespace}
-				}
-				// The operator names a provider after its object.
-				obj = &unstructured.Unstructured{Object: map[string]any{
-					"apiVersion": "operator.cluster.x-k8s.io/v1alpha2", "kind": kind,
-					"metadata": map[string]any{"name": providerName, "namespace": namespace}, "spec": spec,
-				}}
-			}
-			objs = append(objs, obj)
-			for _, o := range objs {
-				if err := s.kube.ApplyObject(ctx, o); err != nil {
-					return err
-				}
-			}
-			logf("Applied %s %s/%s; 'hyve provider list' shows when it's ready", obj.GetKind(), namespace, obj.GetName())
+			logf("%s; 'hyve provider list' shows when it's ready", msg)
 			return nil
 		},
 	}
@@ -238,52 +168,6 @@ func leanProviders(ctx context.Context, s *session) ([]providerRow, error) {
 		rows = append(rows, providerRow{d.GetNamespace(), name, typ, full, version, phase})
 	}
 	return rows, nil
-}
-
-// leanProviderAdd adds a provider to a lean install (local mode), which
-// has no CAPI Operator: from the manifests hyve embeds, or the release
-// manifest at fetchURL, with the variables substituted the way clusterctl
-// does.
-func leanProviderAdd(ctx context.Context, s *session, name, fetchURL string, data map[string]any) error {
-	vars := map[string]string{}
-	for k, v := range data {
-		vars[k] = fmt.Sprint(v)
-	}
-	o := install.LeanOptions{Variables: vars, Log: logf}
-	if fetchURL == "" {
-		if _, ok := install.LeanProviders[name]; !ok {
-			return fmt.Errorf("hyve doesn't carry provider %q: give its components manifest with --fetch-url", name)
-		}
-		if err := install.LeanInstall(ctx, s.kube, []string{name}, o); err != nil {
-			return err
-		}
-	} else {
-		raw, err := fetchManifest(ctx, fetchURL)
-		if err != nil {
-			return err
-		}
-		if err := install.LeanInstallManifest(ctx, s.kube, name, raw, o); err != nil {
-			return err
-		}
-	}
-	logf("Added Cluster API provider %s", name)
-	return nil
-}
-
-func fetchManifest(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching %s: %s", url, resp.Status)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
 type providerRow struct {

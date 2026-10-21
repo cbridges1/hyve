@@ -115,8 +115,11 @@ func openUI(ctx context.Context, o uiOptions) error {
 		return err
 	}
 	// The fragment never reaches a server: the page posts it to the host,
-	// which sets its cookie, and drops it from the address bar.
-	fragment := "#session=" + url.QueryEscape(browser.Token)
+	// which sets its cookie, and drops it from the address bar. The saved
+	// server's name and URL go with it, for the kubeconfigs the UI offers
+	// (the page may be on this command's proxy, not the host).
+	fragment := "#session=" + url.QueryEscape(browser.Token) +
+		"&server=" + url.QueryEscape(s.Name) + "&url=" + url.QueryEscape(strings.TrimSuffix(s.URL, "/"))
 
 	if s.CACertFile == "" && !s.InsecureSkipVerify {
 		return open(strings.TrimSuffix(s.URL, "/") + "/" + fragment)

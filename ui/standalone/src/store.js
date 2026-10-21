@@ -56,11 +56,16 @@ export function createStore(t) {
 
   const forbidden = (e) => e instanceof ApiError && e.status === 403;
 
-  async function list(type) {
+  // One namespace's objects when namespace is set (Rancher's
+  // opt.namespaced), else every namespace's.
+  async function list(type, namespace) {
     const s = schemaOrThrow(type);
     const apiVersion = s.group ? `${ s.group }/${ s.version }` : s.version;
     const wrap = (items) => items.map((o) => model(type, { apiVersion, kind: s.kind, ...o }));
 
+    if (namespace && s.namespaced) {
+      return wrap((await request('GET', urlFor(s, namespace))).items || []);
+    }
     try {
       return wrap((await request('GET', urlFor(s))).items || []);
     } catch (e) {
@@ -91,15 +96,16 @@ export function createStore(t) {
 
   const actions = {
     'management/findAll'({ type, opt }) {
-      const hit = lists.get(type);
+      const key = opt?.namespaced ? `${ type }@${ opt.namespaced }` : type;
+      const hit = lists.get(key);
 
       if (hit && !opt?.force && Date.now() - hit.at < LIST_TTL) {
         return hit.promise;
       }
-      const promise = list(type);
+      const promise = list(type, opt?.namespaced);
 
-      lists.set(type, { at: Date.now(), promise });
-      promise.catch(() => lists.delete(type));
+      lists.set(key, { at: Date.now(), promise });
+      promise.catch(() => lists.delete(key));
 
       return promise;
     },
@@ -124,6 +130,10 @@ export function createStore(t) {
     'management/request'({ url, method = 'GET', data }) {
       return request(method, url, data);
     },
+    // The host's API for what needs hyve's own code (internal/hostapi).
+    'hyve/host'({ path, data }) {
+      return request('POST', `/v1/hyve/${ path }`, data);
+    },
   };
 
   const store = {
@@ -131,7 +141,7 @@ export function createStore(t) {
       schemas = await discover();
     },
     forget(type) {
-      lists.delete(type);
+      [...lists.keys()].filter((k) => k === type || k.startsWith(`${ type }@`)).forEach((k) => lists.delete(k));
     },
     get schemas() {
       return schemas;
@@ -150,6 +160,8 @@ export function createStore(t) {
     },
     getters: {
       'management/schemaFor': (type) => schemas[type],
+      // On hyve's host, not in Rancher: 'hyve/host' is there.
+      'hyve/onHost':          true,
       'i18n/t':               (key, args) => t(key, args),
     },
   };

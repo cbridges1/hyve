@@ -6,6 +6,7 @@ import Logo from './components/Logo.vue';
 import Icon from './components/Icon.vue';
 import ThemeToggle from './components/ThemeToggle.vue';
 import ChangePassword from './components/ChangePassword.vue';
+import { download, kubeconfig } from './util';
 
 const USER = 'hyve.io.user';
 
@@ -60,6 +61,7 @@ export default {
           items: [
             list(USER, 'Users', 'users'),
             { label: 'Environments', icon: 'environments', to: { name: 'hyve-environments' }, page: 'hyve-environments' },
+            { label: 'Access', icon: 'access', to: { name: 'hyve-access' }, page: 'hyve-access' },
           ],
         },
       ].map((g) => ({ ...g, items: g.items.filter(served) })).filter((g) => g.items.length);
@@ -78,6 +80,14 @@ export default {
   },
 
   methods: {
+    async downloadKubeconfig() {
+      this.menuOpen = false;
+      try {
+        download('hyve-local.kubeconfig', await kubeconfig('local'));
+      } catch (e) {
+        this.session.error = e.message;
+      }
+    },
     async signOut() {
       try {
         await auth.logout();
@@ -176,6 +186,14 @@ export default {
                 @click="menuOpen = false; changingPassword = true"
               >
                 Change password
+              </button>
+              <button
+                type="button"
+                class="w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100"
+                title="A kubeconfig for the management cluster that runs 'hyve token'; it holds no secret"
+                @click="downloadKubeconfig"
+              >
+                Download kubeconfig
               </button>
               <button
                 type="button"

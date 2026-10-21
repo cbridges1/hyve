@@ -66,7 +66,7 @@ export default defineConfig({
   },
   server: {
     // `npm run dev` against a host: HYVE_HOST=https://127.0.0.1:30444
-    proxy: process.env.HYVE_HOST ? Object.fromEntries(['/v1', '/v1-public', '/k8s'].map((p) => [p, { target: process.env.HYVE_HOST, secure: false, changeOrigin: true }])) : undefined,
+    proxy: process.env.HYVE_HOST ? Object.fromEntries(['/v1', '/v1-public', '/v3', '/k8s'].map((p) => [p, { target: process.env.HYVE_HOST, secure: false, changeOrigin: true }])) : undefined,
     fs:    { allow: [here('..')] },
   },
 });

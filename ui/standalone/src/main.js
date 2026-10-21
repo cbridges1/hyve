@@ -9,7 +9,7 @@ import { createStore } from './store';
 import { setModelContext } from './model';
 import { auth, setUnauthorizedHandler } from './api';
 import { t } from './i18n';
-import { session } from './session';
+import { session, rememberCLIServer } from './session';
 import './styles.css';
 
 
@@ -52,6 +52,12 @@ async function signInFromFragment() {
 
   if (!m) {
     return;
+  }
+  const server = /(?:^#|&)server=([^&]+)/.exec(window.location.hash);
+  const url = /(?:^#|&)url=([^&]+)/.exec(window.location.hash);
+
+  if (server && url) {
+    rememberCLIServer(decodeURIComponent(server[1]), decodeURIComponent(url[1]));
   }
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
   try {

@@ -8,10 +8,11 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import { Checkbox } from '@components/Form/Checkbox';
 import { Banner } from '@components/Banner';
 import { _VIEW } from '@shell/config/query-params';
-import { CAPI_CLUSTER_CLASS, DEFAULT_TEMPLATE_NAMESPACE } from '../config/types';
+import { CAPI_CLUSTER_CLASS, DEFAULT_TEMPLATE_NAMESPACE, HYVE } from '../config/types';
 import { nextRun } from '../utils/cron';
 import { describe, kindOf, validate } from '../utils/resources';
 import ViewDialog from '../components/ViewDialog.vue';
+import ResourceForm from '../components/ResourceForm.vue';
 
 // A variable's value as text: JSON for anything but plain strings.
 function toText(v) {
@@ -38,12 +39,18 @@ export default {
   name:         'CruClusterTemplate',
   inheritAttrs: false,
   components:   {
-    CruResource, NameNsDescription, LabeledSelect, LabeledInput, Checkbox, KeyValue, Banner, ViewDialog
+    CruResource, NameNsDescription, LabeledSelect, LabeledInput, Checkbox, KeyValue, Banner, ViewDialog, ResourceForm
   },
   mixins: [CreateEditView],
 
   async fetch() {
-    this.classes = await this.$store.dispatch('management/findAll', { type: CAPI_CLUSTER_CLASS });
+    const [classes, shared] = await Promise.all([
+      this.$store.dispatch('management/findAll', { type: CAPI_CLUSTER_CLASS }),
+      this.$store.dispatch('management/findAll', { type: HYVE.RESOURCE }).catch(() => []),
+    ]);
+
+    this.classes = classes;
+    this.shared = shared.map((r) => ({ name: r.metadata.name, namespace: r.metadata.namespace }));
   },
 
   data() {
@@ -65,21 +72,13 @@ export default {
         name, value: toText(v), locked: locked.includes(name)
       })),
       labels:    { ...(spec.labels || {}) },
-      // Each entry is Fleet's own spec; the form edits the common fields
-      // and keeps the rest (Helm values, options) as they are.
-      resources: (spec.resources || []).map((r) => ({
-        name:      r.name,
-        namespace: r.namespace || '',
-        type:      ({
-          HelmOp: 'helm', GitRepo: 'git', Ref: 'ref', Bundle: 'bundle'
-        })[kindOf(r)] || 'helm',
-        repo:      r.helmOp?.helm?.repo || r.gitRepo?.repo || r.ref || '',
-        chart:     r.helmOp?.helm?.chart || '',
-        version:   r.helmOp?.helm?.version || r.gitRepo?.branch || '',
-        paths:     (r.gitRepo?.paths || []).join(','),
-        secrets:   (r.secrets || []).join(','),
-        orig:      r,
-      })),
+      // Each entry is Fleet's own spec (or a ref), edited whole in the
+      // resource form.
+      resources: JSON.parse(JSON.stringify(spec.resources || [])),
+      shared:    [],
+      // The entry being edited: its index, -1 for a new one, null for none.
+      editing:   null,
+      formError: '',
     };
   },
 
@@ -122,74 +121,34 @@ export default {
         }
       });
     },
-    addResource(type) {
-      this.resources.push({
-        name: '', namespace: '', type, repo: '', chart: '', version: '', paths: '', secrets: '', orig: null
-      });
+    startEdit(i) {
+      this.formError = '';
+      this.editing = i;
+    },
+    saveEntry() {
+      this.formError = '';
+      try {
+        const e = this.$refs.rform.entry();
+        const clash = this.resources.findIndex((r, j) => r.name === e.name && j !== this.editing);
+
+        if (clash >= 0) {
+          throw new Error(this.t('hyve.template.dupResource', { name: e.name }));
+        }
+        if (this.editing < 0) {
+          this.resources.push(e);
+        } else {
+          this.resources.splice(this.editing, 1, e);
+        }
+        this.editing = null;
+      } catch (err) {
+        this.formError = err.message;
+      }
     },
     removeResource(i) {
       this.resources.splice(i, 1);
     },
     describe,
-    // Back to entries: Fleet's specs with the form's fields set, everything
-    // else kept from the original.
-    resourceSources() {
-      return this.resources.filter((r) => r.name || r.chart || r.repo).map((r) => {
-        if (r.type === 'bundle') {
-          return r.orig;
-        }
-        const orig = JSON.parse(JSON.stringify(r.orig || {}));
-        const out = { name: r.name || r.chart || r.repo };
-
-        if (r.namespace) {
-          out.namespace = r.namespace;
-        }
-        const secrets = r.secrets.split(',').map((x) => x.trim()).filter(Boolean);
-
-        if (secrets.length) {
-          out.secrets = secrets;
-        }
-        if (r.type === 'helm') {
-          const helmOp = orig.helmOp || {};
-          const helm = { ...(helmOp.helm || {}) };
-
-          ['repo', 'chart', 'version'].forEach((k) => {
-            if (r[k]) {
-              helm[k] = r[k];
-            } else {
-              delete helm[k];
-            }
-          });
-          out.helmOp = { ...helmOp, helm };
-        } else if (r.type === 'git') {
-          const g = { ...(orig.gitRepo || {}), repo: r.repo };
-
-          if (r.version) {
-            g.branch = r.version;
-          } else {
-            delete g.branch;
-          }
-          const paths = r.paths.split(',').map((p) => p.trim()).filter(Boolean);
-
-          if (paths.length) {
-            g.paths = paths;
-          } else {
-            delete g.paths;
-          }
-          out.gitRepo = g;
-        } else if (r.type === 'ref') {
-          out.ref = r.repo;
-          if (orig.refNamespace) {
-            out.refNamespace = orig.refNamespace;
-          }
-          if (orig.values) {
-            out.values = orig.values;
-          }
-        }
-
-        return out;
-      });
-    },
+    kindOf,
     addRow() {
       this.rows.push({
         name: '', value: '', locked: false
@@ -218,9 +177,7 @@ export default {
       if (!spec.lockedVariables.length) {
         delete spec.lockedVariables;
       }
-      const resources = this.resourceSources();
-
-      spec.resources = resources.length ? resources : undefined;
+      spec.resources = this.resources.length ? JSON.parse(JSON.stringify(this.resources)) : undefined;
     },
     async save(buttonDone) {
       this.errors = [];
@@ -398,146 +355,103 @@ export default {
       color="info"
       :label="t('hyve.template.resourcesHint')"
     />
-    <div
-      v-for="(r, i) in resources"
-      :key="i"
-      class="row mb-10 var-row"
+    <table
+      v-if="resources.length"
+      class="sortable-table hyve-rtable mb-10"
     >
-      <template v-if="r.type === 'bundle'">
-        <div class="col span-11">
-          <b>{{ r.name }}</b> — {{ t('hyve.template.bundleRow', { source: describe(r.orig) }) }}
-          <button
-            type="button"
-            class="btn btn-sm role-link"
-            @click="viewing = r"
-          >
-            {{ t('hyve.view.view') }}
-          </button>
-        </div>
-      </template>
-      <template v-else-if="r.type === 'ref'">
-        <div class="col span-3">
-          <LabeledInput
-            v-model:value="r.name"
-            :mode="mode"
-            :label="t('hyve.resources.name')"
-            :placeholder="r.repo"
-          />
-        </div>
-        <div class="col span-3">
-          <LabeledInput
-            v-model:value="r.repo"
-            :mode="mode"
-            :label="t('hyve.resources.ref')"
-          />
-        </div>
-        <div class="col span-5">
-          <LabeledInput
-            v-model:value="r.secrets"
-            :mode="mode"
-            :label="t('hyve.resources.secrets')"
-          />
-        </div>
-      </template>
-      <template v-else>
-        <div class="col span-2">
-          <LabeledInput
-            v-model:value="r.name"
-            :mode="mode"
-            :label="t('hyve.resources.name')"
-            :placeholder="r.chart"
-          />
-        </div>
-        <div class="col span-4">
-          <LabeledInput
-            v-model:value="r.repo"
-            :mode="mode"
-            :label="r.type === 'helm' ? t('hyve.resources.repo') : t('hyve.resources.gitRepo')"
-          />
-        </div>
-        <div
-          v-if="r.type === 'helm'"
-          class="col span-2"
+      <thead>
+        <tr>
+          <th>{{ t('hyve.resources.name') }}</th>
+          <th>{{ t('hyve.form.kindLabel') }}</th>
+          <th>{{ t('hyve.resources.source') }}</th>
+          <th>{{ t('hyve.resources.namespace') }}</th>
+          <th>{{ t('hyve.resources.secrets') }}</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="(r, i) in resources"
+          :key="r.name || i"
         >
-          <LabeledInput
-            v-model:value="r.chart"
-            :mode="mode"
-            :label="t('hyve.resources.chart')"
-          />
-        </div>
-        <div
-          v-else
-          class="col span-2"
-        >
-          <LabeledInput
-            v-model:value="r.paths"
-            :mode="mode"
-            :label="t('hyve.resources.paths')"
-          />
-        </div>
-        <div class="col span-1">
-          <LabeledInput
-            v-model:value="r.version"
-            :mode="mode"
-            :label="r.type === 'helm' ? t('hyve.resources.version') : t('hyve.resources.branch')"
-          />
-        </div>
-        <div class="col span-2">
-          <LabeledInput
-            v-model:value="r.namespace"
-            :mode="mode"
-            :label="t('hyve.resources.namespace')"
-          />
-        </div>
-        <div
-          v-if="r.type === 'helm'"
-          class="col span-12 mt-10"
-        >
-          <LabeledInput
-            v-model:value="r.secrets"
-            :mode="mode"
-            :label="t('hyve.resources.secrets')"
-            :placeholder="t('hyve.resources.secretsPlaceholder')"
-          />
-        </div>
-      </template>
-      <div
-        v-if="!isView"
-        class="col span-1"
+          <td>{{ r.name }}</td>
+          <td>{{ kindOf(r) }}</td>
+          <td class="hyve-rsource">
+            {{ describe(r) }}
+          </td>
+          <td>{{ r.namespace || '-' }}</td>
+          <td>{{ (r.secrets || []).join(', ') || '-' }}</td>
+          <td class="text-right hyve-ractions">
+            <button
+              type="button"
+              class="btn btn-sm role-link"
+              @click="viewing = r"
+            >
+              {{ t('hyve.view.view') }}
+            </button>
+            <template v-if="!isView">
+              <button
+                type="button"
+                class="btn btn-sm role-link"
+                @click="startEdit(i)"
+              >
+                {{ t('generic.edit') }}
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm role-link"
+                @click="removeResource(i)"
+              >
+                {{ t('generic.remove') }}
+              </button>
+            </template>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div
+      v-if="editing !== null"
+      class="add mb-20"
+    >
+      <h3 class="hyve-rform-title">
+        {{ editing < 0 ? t('hyve.template.newResource') : t('hyve.template.editResource', { name: resources[editing].name }) }}
+      </h3>
+      <ResourceForm
+        ref="rform"
+        :key="editing"
+        :value="editing < 0 ? null : resources[editing]"
+        :shared="shared"
+      />
+      <Banner
+        v-if="formError"
+        color="error"
+        :label="formError"
+      />
+      <button
+        type="button"
+        class="btn role-primary mr-10"
+        @click="saveEntry"
       >
-        <button
-          type="button"
-          class="btn role-link"
-          @click="removeResource(i)"
-        >
-          {{ t('generic.remove') }}
-        </button>
-      </div>
+        {{ editing < 0 ? t('generic.add') : t('hyve.template.applyResource') }}
+      </button>
+      <button
+        type="button"
+        class="btn role-secondary"
+        @click="editing = null"
+      >
+        {{ t('generic.cancel') }}
+      </button>
     </div>
     <div
-      v-if="!isView"
+      v-else-if="!isView"
       class="mb-20"
     >
       <button
         type="button"
-        class="btn role-tertiary mr-10"
-        @click="addResource('helm')"
-      >
-        {{ t('hyve.resources.addHelm') }}
-      </button>
-      <button
-        type="button"
-        class="btn role-tertiary mr-10"
-        @click="addResource('git')"
-      >
-        {{ t('hyve.resources.addGit') }}
-      </button>
-      <button
-        type="button"
         class="btn role-tertiary"
-        @click="addResource('ref')"
+        @click="startEdit(-1)"
       >
-        {{ t('hyve.resources.addRef') }}
+        {{ t('hyve.template.addResource') }}
       </button>
     </div>
 
@@ -552,7 +466,7 @@ export default {
     <ViewDialog
       v-if="viewing"
       :title="viewing.name"
-      :sections="[{ label: t('hyve.view.entry'), object: viewing.orig }]"
+      :sections="[{ label: t('hyve.view.entry'), object: viewing }]"
       @close="viewing = null"
     />
   </CruResource>
@@ -566,4 +480,11 @@ export default {
   display: flex;
   align-items: center;
 }
+.hyve-rtable {
+  width: 100%;
+  th, td { padding: 8px; text-align: left; vertical-align: top; }
+}
+.hyve-rsource { word-break: break-all; }
+.hyve-ractions { white-space: nowrap; }
+.hyve-rform-title { margin-top: 0; }
 </style>

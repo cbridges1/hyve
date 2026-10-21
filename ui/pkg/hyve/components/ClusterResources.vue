@@ -1,11 +1,12 @@
 <script>
 import Loading from '@shell/components/Loading';
-import { LabeledInput } from '@components/Form/LabeledInput';
 import { Banner } from '@components/Banner';
 import { CAPI_CLUSTER, HYVE, LABELS } from '../config/types';
 import {
-  clusterItems, clusterResourceObject, clusterStates, helmEntry, stateOn, validate
+  clusterItems, clusterResourceObject, clusterStates, stateOn
 } from '../utils/resources';
+import ResourceForm from './ResourceForm.vue';
+import ViewDialog from './ViewDialog.vue';
 
 const TURTLES_OWNER = 'cluster-api.cattle.io/capi-cluster-owner';
 const TURTLES_OWNER_NS = 'cluster-api.cattle.io/capi-cluster-owner-ns';
@@ -14,9 +15,12 @@ const TURTLES_OWNER_NS = 'cluster-api.cattle.io/capi-cluster-owner-ns';
 // resources and its own extras) with Fleet's state there. Works on a CAPI
 // Cluster (hyve's Clusters page) and on a Rancher provisioning cluster
 // (Cluster Management), through the CAPI cluster Turtles imported it from.
+// Extras can be added, edited and removed here ('hyve cluster resource').
 export default {
   name:       'HyveClusterResources',
-  components: { Loading, LabeledInput, Banner },
+  components: {
+    Loading, Banner, ResourceForm, ViewDialog
+  },
   props:      {
     resource: {
       type:     Object,
@@ -34,10 +38,12 @@ export default {
       items:  [],
       states: null,
       errors: [],
-      adding: false,
-      form:   {
-        name: '', repo: '', chart: '', version: '', namespace: '', secrets: ''
-      },
+      // null, or { cr, entry } for the extra being added (cr null) or
+      // edited.
+      editing: null,
+      formKey: 0,
+      shared:  [],
+      viewing: null,
     };
   },
 
@@ -65,37 +71,86 @@ export default {
       if (!this.capi) {
         return;
       }
-      this.items = await clusterItems(this.$store, this.capi);
-      this.states = await clusterStates(this.$store, this.capi.metadata.namespace, this.capi.metadata.name);
+      const [items, states, shared] = await Promise.all([
+        clusterItems(this.$store, this.capi),
+        clusterStates(this.$store, this.capi.metadata.namespace, this.capi.metadata.name),
+        this.$store.dispatch('management/findAll', { type: HYVE.RESOURCE }).catch(() => []),
+      ]);
+
+      this.items = items;
+      this.states = states;
+      this.shared = shared.map((x) => ({ name: x.metadata.name, namespace: x.metadata.namespace }));
+    },
+    // An extra's Fleet object is owned by its ClusterResource.
+    findCR(it) {
+      return this.$store.dispatch('management/find', { type: HYVE.CLUSTER_RESOURCE, id: `${ it.model.metadata.namespace }/${ it.owner }`, opt: { force: true } });
+    },
+    startAdd() {
+      this.errors = [];
+      this.formKey++;
+      this.editing = { cr: null, entry: null };
+    },
+    async startEdit(it) {
+      this.errors = [];
+      try {
+        const cr = await this.findCR(it);
+        const { clusterName, ...entry } = cr.spec || {};
+
+        this.formKey++;
+        this.editing = { cr, entry: { ...entry, name: it.name } };
+      } catch (e) {
+        this.errors.push(e?.message || String(e));
+      }
+    },
+    async view(it) {
+      const sections = [];
+
+      if (it.ownerKind === 'ClusterResource') {
+        const cr = await this.findCR(it).catch(() => null);
+
+        if (cr) {
+          sections.push({ label: `${ this.t('hyve.view.entry') } (ClusterResource)`, object: cr });
+        }
+      } else {
+        const tpl = await this.$store.dispatch('management/find', { type: HYVE.TEMPLATE, id: `${ it.model.metadata.namespace }/${ it.owner }` }).catch(() => null);
+        const entry = (tpl?.spec?.resources || []).find((e) => (e.name || e.ref) === it.name);
+
+        if (entry) {
+          sections.push({ label: `${ this.t('hyve.view.entry') } (template ${ it.owner })`, object: entry });
+        }
+      }
+      sections.push({ label: this.t('hyve.view.delivered', { kind: it.kind }), object: it.model });
+      this.viewing = { title: it.name, sections };
     },
     state(it) {
       return stateOn(it, this.states) || '-';
     },
-    async add() {
+    async save() {
       this.errors = [];
-      const e = helmEntry({
-        name:      this.form.name || undefined,
-        repo:      this.form.repo,
-        chart:     this.form.chart,
-        version:   this.form.version,
-        namespace: this.form.namespace,
-        secrets:   this.form.secrets.split(',').map((s) => s.trim()).filter(Boolean),
-      });
-      const err = validate(e);
-
-      if (err) {
-        this.errors.push(err);
-
-        return;
-      }
       try {
-        const model = await this.$store.dispatch('management/create', clusterResourceObject(this.capi, e));
+        const e = this.$refs.rform.entry();
+        const want = clusterResourceObject(this.capi, e);
+        const cr = this.editing.cr;
 
-        await model.save();
-        this.adding = false;
-        this.form = {
-          name: '', repo: '', chart: '', version: '', namespace: '', secrets: ''
-        };
+        // Renamed: the ClusterResource's name and label follow the
+        // resource's, so make the new one and drop the old.
+        if (cr && cr.metadata.name === want.metadata.name) {
+          cr.spec = want.spec;
+          await cr.save();
+        } else {
+          const taken = this.items.some((it) => it.ownerKind === 'ClusterResource' && it.name === e.name);
+
+          if (taken && !cr) {
+            throw new Error(this.t('hyve.template.dupResource', { name: e.name }));
+          }
+          const model = await this.$store.dispatch('management/create', want);
+
+          await model.save();
+          if (cr) {
+            await cr.remove();
+          }
+        }
+        this.editing = null;
         await this.load();
       } catch (e) {
         this.errors.push(e?.message || String(e));
@@ -105,7 +160,7 @@ export default {
       this.errors = [];
       try {
         // An extra's Fleet object is owned by its ClusterResource.
-        const cr = await this.$store.dispatch('management/find', { type: HYVE.CLUSTER_RESOURCE, id: `${ it.model.metadata.namespace }/${ it.owner }` });
+        const cr = await this.findCR(it);
 
         await cr.remove();
         await this.load();
@@ -163,80 +218,57 @@ export default {
             <td>{{ it.kind }}</td>
             <td>{{ it.source }}</td>
             <td>{{ state(it) }}</td>
-            <td class="text-right">
+            <td class="text-right actions">
               <button
-                v-if="it.ownerKind === 'ClusterResource'"
                 type="button"
                 class="btn btn-sm role-link"
-                @click="remove(it)"
+                @click="view(it)"
               >
-                {{ t('generic.remove') }}
+                {{ t('hyve.view.view') }}
               </button>
+              <template v-if="it.ownerKind === 'ClusterResource'">
+                <button
+                  type="button"
+                  class="btn btn-sm role-link"
+                  @click="startEdit(it)"
+                >
+                  {{ t('generic.edit') }}
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm role-link"
+                  @click="remove(it)"
+                >
+                  {{ t('generic.remove') }}
+                </button>
+              </template>
             </td>
           </tr>
         </tbody>
       </table>
 
       <div
-        v-if="adding"
+        v-if="editing"
         class="mt-20"
       >
-        <h3>{{ t('hyve.resources.addHelm') }}</h3>
-        <div class="row mb-10">
-          <div class="col span-6">
-            <LabeledInput
-              v-model:value="form.repo"
-              :label="t('hyve.resources.repo')"
-              placeholder="https://charts.example.com"
-            />
-          </div>
-          <div class="col span-3">
-            <LabeledInput
-              v-model:value="form.chart"
-              :label="t('hyve.resources.chart')"
-              :required="true"
-            />
-          </div>
-          <div class="col span-3">
-            <LabeledInput
-              v-model:value="form.version"
-              :label="t('hyve.resources.version')"
-            />
-          </div>
-        </div>
-        <div class="row mb-10">
-          <div class="col span-3">
-            <LabeledInput
-              v-model:value="form.name"
-              :label="t('hyve.resources.name')"
-              :placeholder="form.chart"
-            />
-          </div>
-          <div class="col span-3">
-            <LabeledInput
-              v-model:value="form.namespace"
-              :label="t('hyve.resources.namespace')"
-            />
-          </div>
-          <div class="col span-6">
-            <LabeledInput
-              v-model:value="form.secrets"
-              :label="t('hyve.resources.secrets')"
-              :placeholder="t('hyve.resources.secretsPlaceholder')"
-            />
-          </div>
-        </div>
+        <h3>{{ editing.cr ? t('hyve.template.editResource', { name: editing.entry.name }) : t('hyve.resources.addExtra') }}</h3>
+        <ResourceForm
+          ref="rform"
+          :key="formKey"
+          :value="editing.entry"
+          :shared="shared"
+        />
         <button
           type="button"
           class="btn role-primary mr-10"
-          @click="add"
+          @click="save"
         >
-          {{ t('generic.add') }}
+          {{ editing.cr ? t('generic.save') : t('generic.add') }}
         </button>
         <button
           type="button"
           class="btn role-secondary"
-          @click="adding = false"
+          @click="editing = null"
         >
           {{ t('generic.cancel') }}
         </button>
@@ -245,14 +277,20 @@ export default {
         v-else
         type="button"
         class="btn role-tertiary mt-20"
-        @click="adding = true"
+        @click="startAdd"
       >
-        {{ t('hyve.resources.addHelm') }}
+        {{ t('hyve.resources.addExtra') }}
       </button>
       <p class="text-muted mt-10">
         {{ t('hyve.resources.cliHint', { name: capi.metadata.name }) }}
       </p>
     </template>
+    <ViewDialog
+      v-if="viewing"
+      :title="viewing.title"
+      :sections="viewing.sections"
+      @close="viewing = null"
+    />
   </div>
 </template>
 
@@ -260,5 +298,6 @@ export default {
 .resources {
   width: 100%;
   th, td { padding: 8px; text-align: left; }
+  .actions { white-space: nowrap; }
 }
 </style>

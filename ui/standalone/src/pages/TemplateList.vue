@@ -2,19 +2,22 @@
 import Loading from '../shims/Loading.vue';
 import Pill from '../components/Pill.vue';
 import ConfirmButton from '../components/ConfirmButton.vue';
+import ApplyYaml from '@pkg/components/ApplyYaml.vue';
 import { HYVE } from '@pkg/config/types';
 import { createRoute, detailRoute } from '../util';
 
 export default {
   name:       'HyveTemplateList',
-  components: { Loading, Pill, ConfirmButton },
+  components: {
+    Loading, Pill, ConfirmButton, ApplyYaml
+  },
 
   async fetch() {
     await this.load();
   },
 
   data() {
-    return { templates: [], error: '' };
+    return { templates: [], error: '', applying: false };
   },
 
   methods: {
@@ -52,13 +55,33 @@ export default {
       <h1 class="mb-0">
         Templates
       </h1>
-      <router-link
-        class="btn role-primary"
-        :to="create()"
-      >
-        New template
-      </router-link>
+      <div class="header-right">
+        <router-link
+          class="btn role-secondary"
+          :to="{ name: 'hyve-import' }"
+        >
+          Import
+        </router-link>
+        <button
+          type="button"
+          class="btn role-secondary"
+          @click="applying = true"
+        >
+          Apply YAML
+        </button>
+        <router-link
+          class="btn role-primary"
+          :to="create()"
+        >
+          New template
+        </router-link>
+      </div>
     </div>
+    <ApplyYaml
+      v-if="applying"
+      @close="applying = false"
+      @applied="load"
+    />
     <p
       v-if="error"
       class="mb-4 text-sm text-red-600 dark:text-red-400"

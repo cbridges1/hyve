@@ -1,6 +1,7 @@
 <script>
 import { CAPI_CLUSTER, HYVE, PRODUCT } from '@pkg/config/types';
 import TemplatePage from './TemplatePage.vue';
+import SharedResourcePage from './SharedResourcePage.vue';
 import YamlEditor from '../components/YamlEditor.vue';
 
 export default {
@@ -16,7 +17,7 @@ export default {
       return this.$route.params.resource;
     },
     page() {
-      return this.type === HYVE.TEMPLATE ? TemplatePage : YamlEditor;
+      return { [HYVE.TEMPLATE]: TemplatePage, [HYVE.RESOURCE]: SharedResourcePage }[this.type] || YamlEditor;
     },
   },
 };

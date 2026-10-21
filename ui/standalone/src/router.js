@@ -7,6 +7,8 @@ import Repos from '@pkg/pages/Repos.vue';
 import { HYVE, PRODUCT } from '@pkg/config/types';
 import Login from './pages/Login.vue';
 import Environments from './pages/Environments.vue';
+import Access from './pages/Access.vue';
+import ImportPage from './pages/ImportPage.vue';
 import CreateClusterPage from './pages/CreateClusterPage.vue';
 import ResourceList from './pages/ResourceList.vue';
 import ResourceDetail from './pages/ResourceDetail.vue';
@@ -29,6 +31,8 @@ export function createHyveRouter(session, store) {
       page(HYVE.REPOS, Repos),
       page(HYVE.CREATE_CLUSTER, CreateClusterPage),
       { name: 'hyve-environments', path: '/environments', component: Environments },
+      { name: 'hyve-access', path: '/access', component: Access },
+      { name: 'hyve-import', path: '/import', component: ImportPage },
       { name: `${ PRODUCT }-c-cluster-resource`, path: '/c/:cluster/:resource', component: ResourceList },
       { name: `${ PRODUCT }-c-cluster-resource-create`, path: '/c/:cluster/:resource/create', component: ResourceCreate },
       { name: `${ PRODUCT }-c-cluster-resource-id`, path: '/c/:cluster/:resource/:id', component: ResourceDetail },

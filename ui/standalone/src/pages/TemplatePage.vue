@@ -3,6 +3,7 @@ import Loading from '../shims/Loading.vue';
 import BackLink from '../components/BackLink.vue';
 import Card from '../components/Card.vue';
 import CruClusterTemplate from '@pkg/edit/hyve.io.clustertemplate.vue';
+import RenderDialog from '../components/RenderDialog.vue';
 import { DEFAULT_TEMPLATE_NAMESPACE, HYVE, PRODUCT } from '@pkg/config/types';
 import { detailRoute } from '../util';
 
@@ -11,7 +12,7 @@ import { detailRoute } from '../util';
 export default {
   name:       'HyveTemplatePage',
   components: {
-    Loading, BackLink, Card, CruClusterTemplate
+    Loading, BackLink, Card, CruClusterTemplate, RenderDialog
   },
   props: {
     type: { type: String, default: HYVE.TEMPLATE },
@@ -30,7 +31,7 @@ export default {
   },
 
   data() {
-    return { value: null, back: { name: `${ PRODUCT }-c-cluster-resource`, params: { cluster: '_', resource: HYVE.TEMPLATE } } };
+    return { value: null, previewing: false, back: { name: `${ PRODUCT }-c-cluster-resource`, params: { cluster: '_', resource: HYVE.TEMPLATE } } };
   },
 
   computed: {
@@ -56,6 +57,13 @@ export default {
         v-if="mode === 'view'"
         class="flex items-center gap-2"
       >
+        <button
+          type="button"
+          class="btn role-secondary"
+          @click="previewing = true"
+        >
+          Preview
+        </button>
         <router-link
           class="btn role-secondary"
           :to="yamlRoute"
@@ -71,6 +79,11 @@ export default {
         </button>
       </div>
     </div>
+    <RenderDialog
+      v-if="previewing"
+      :template="value"
+      @close="previewing = false"
+    />
     <Card>
       <CruClusterTemplate
         :value="value"
