@@ -28,6 +28,13 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["list"]
+  # A cluster whose agent can't reach the host (push delivery) is proxied
+  # to directly with its CAPI kubeconfig, <name>-kubeconfig in its
+  # environment (internal/tunnel/proxy.go, Direct). Read one at a time,
+  # never listed or cached; no more trust than impersonation already is.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
   # Checks whether a caller may set someone else's password, and which
   # namespaces they can work in.
   - apiGroups: ["authorization.k8s.io"]

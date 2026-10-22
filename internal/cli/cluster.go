@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/yaml"
 
 	"github.com/cbridges1/hyve/internal/clusters"
@@ -39,7 +40,7 @@ func ClusterCmd() *cobra.Command {
 	addEnvFlag(cmd)
 	addTemplateNSFlag(cmd)
 	cmd.AddCommand(clusterCreateCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(),
-		clusterKubeconfigCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterResourceCmd())
+		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterResourceCmd())
 	return cmd
 }
 
@@ -224,7 +225,7 @@ By default waits until the cluster is ACTIVE and registered with Fleet.`,
 			if err := waitReady(ctx, s, c.GetNamespace(), c.GetName(), timeout); err != nil {
 				return err
 			}
-			logf("Cluster %s is ready. 'hyve cluster kubeconfig %s' gives kubectl access.", c.GetName(), c.GetName())
+			logf("Cluster %s is ready. 'hyve cluster auth %s' points kubectl at it.", c.GetName(), c.GetName())
 			return nil
 		},
 	}
@@ -288,38 +289,11 @@ func clusterKubeconfigCmd() *cobra.Command {
 		Long: `Prints a kubeconfig for <url>/k8s/clusters/<id> on the signed-in server:
 the same proxy and the same sign-in as the management cluster, so kubectl
 runs under your own permissions. It holds no secret; it runs 'hyve token'.
-The cluster's admin credentials are never handed out.`,
+The cluster's admin credentials are never handed out. 'hyve cluster auth'
+adds it to your kubeconfig instead.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := newSession()
-			if err != nil {
-				return err
-			}
-			if s.server == nil {
-				return errors.New("needs a signed-in server ('hyve login'), not --kubeconfig")
-			}
-			ctx := cmd.Context()
-			c, err := s.getCluster(ctx, args[0])
-			if err != nil {
-				return err
-			}
-			var id string
-			switch s.server.Kind {
-			case login.KindRancher:
-				if id, err = rancherClusterID(ctx, s.server, c.GetNamespace(), c.GetName()); err != nil {
-					return err
-				}
-			default:
-				// hyve's host serves child clusters through the agent's tunnel
-				// once it's connected (HYVE-PROPOSAL.md, "hyve as the Rancher
-				// host"); its ID is <environment>.<name>.
-				id = c.GetNamespace() + "." + c.GetName()
-			}
-			bin, err := os.Executable()
-			if err != nil {
-				return errors.New("can't find the hyve binary's path for the exec credential")
-			}
-			out, err := login.Kubeconfig(s.server, id, bin, ExplicitHome())
+			out, err := clusterKubeconfig(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
@@ -327,6 +301,84 @@ The cluster's admin credentials are never handed out.`,
 			return err
 		},
 	}
+}
+
+func clusterAuthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "auth NAME",
+		Short: "Add a cluster to your kubeconfig and switch kubectl to it",
+		Long: `Adds the kubeconfig 'hyve cluster kubeconfig' prints to your kubeconfig
+($KUBECONFIG, or ~/.kube/config) and makes it the current context, so
+kubectl reaches the cluster through the signed-in server's proxy, as you.
+Running it again refreshes the entry. Like that kubeconfig, it holds no
+secret: the credential is 'hyve token'.`,
+		Example: `  hyve cluster auth demo
+  hyve cluster auth web -e prod`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := clusterKubeconfig(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			add, err := clientcmd.Load(out)
+			if err != nil {
+				return err
+			}
+			po := clientcmd.NewDefaultPathOptions()
+			cfg, err := po.GetStartingConfig()
+			if err != nil {
+				return err
+			}
+			for k, v := range add.Clusters {
+				cfg.Clusters[k] = v
+			}
+			for k, v := range add.AuthInfos {
+				cfg.AuthInfos[k] = v
+			}
+			for k, v := range add.Contexts {
+				cfg.Contexts[k] = v
+			}
+			cfg.CurrentContext = add.CurrentContext
+			if err := clientcmd.ModifyConfig(po, *cfg, true); err != nil {
+				return err
+			}
+			logf("Switched kubectl to context %s (in %s)", add.CurrentContext, po.GetDefaultFilename())
+			return nil
+		},
+	}
+}
+
+// clusterKubeconfig is the kubeconfig for a cluster through the signed-in
+// server's proxy.
+func clusterKubeconfig(ctx context.Context, name string) ([]byte, error) {
+	s, err := newSession()
+	if err != nil {
+		return nil, err
+	}
+	if s.server == nil {
+		return nil, errors.New("needs a signed-in server ('hyve login'), not --kubeconfig")
+	}
+	c, err := s.getCluster(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	var id string
+	switch s.server.Kind {
+	case login.KindRancher:
+		if id, err = rancherClusterID(ctx, s.server, c.GetNamespace(), c.GetName()); err != nil {
+			return nil, err
+		}
+	default:
+		// hyve's host serves child clusters through the agent's tunnel
+		// once it's connected (HYVE-PROPOSAL.md, "hyve as the Rancher
+		// host"); its ID is <environment>.<name>.
+		id = c.GetNamespace() + "." + c.GetName()
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return nil, errors.New("can't find the hyve binary's path for the exec credential")
+	}
+	return login.Kubeconfig(s.server, id, bin, ExplicitHome())
 }
 
 func clusterListCmd() *cobra.Command {

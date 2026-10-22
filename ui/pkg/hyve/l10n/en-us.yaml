@@ -14,8 +14,8 @@ typeLabel:
     }
   hyve.io.resource: |-
     {count, plural,
-      one { Shared Resource }
-      other { Shared Resources }
+      one { Resource }
+      other { Resources }
     }
   hyve.io.clusterresource: |-
     {count, plural,
@@ -93,7 +93,7 @@ hyve:
     source: Source
     state: State here
     addExtra: Add resource to this cluster
-    ref: Shared resource
+    ref: Existing resource
     secrets: Secrets to copy
     secretsPlaceholder: comma-separated Secret names in this namespace
     repo: Helm repository URL
@@ -221,7 +221,7 @@ hyve:
       helm: Helm chart
       git: Git repository
       bundle: Manifests
-      ref: Shared resource
+      ref: Existing resource
     namespacePlaceholder: "default: the chart's or manifests' own"
     releaseName: Release name
     revision: Revision (commit or tag)
@@ -234,7 +234,7 @@ hyve:
     loadFiles: Load files
     needManifests: Give at least one manifest.
     badManifest: "{name}: {error}"
-    ref: Shared resource
+    ref: Existing resource
     correctDrift: Undo changes made on clusters
   apply:
     title: Apply YAML

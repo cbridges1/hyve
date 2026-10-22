@@ -65,7 +65,7 @@ export function validate(e: Entry): string {
   const kinds = [e.helmOp, e.bundle, e.gitRepo, e.ref].filter(Boolean).length;
 
   if (kinds !== 1) {
-    return `Resource ${ name }: give exactly one of a Helm chart, git repo or shared resource`;
+    return `Resource ${ name }: give exactly one of a Helm chart, git repo or existing resource`;
   }
   if (e.helmOp) {
     const h = e.helmOp.helm || {};

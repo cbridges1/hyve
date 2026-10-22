@@ -23,13 +23,14 @@ export function age(ts) {
   return `${ Math.floor(s / 86400) }d`;
 }
 
-export function detailRoute(type, m, query) {
+// A detail page, or one of its tabs (a namespaced object's only).
+export function detailRoute(type, m, query, tab) {
   const md = m.metadata;
 
   return {
     name:   md.namespace ? `${ PRODUCT }-c-cluster-resource-namespace-id` : `${ PRODUCT }-c-cluster-resource-id`,
     params: {
-      cluster: '_', resource: type, ...(md.namespace ? { namespace: md.namespace } : {}), id: md.name
+      cluster: '_', resource: type, ...(md.namespace ? { namespace: md.namespace } : {}), id: md.name, ...(tab ? { tab } : {})
     },
     query,
   };

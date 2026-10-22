@@ -7,7 +7,9 @@
 //   - template resources: each ClusterTemplate's resources become Fleet
 //     objects aimed at its clusters, and each ClusterResource one aimed at
 //     its cluster;
-//   - expiry: Clusters whose hyve.io/expires-at has passed are deleted.
+//   - expiry: Clusters whose hyve.io/expires-at has passed are deleted;
+//   - push delivery: for a child whose fleet-agent can't reach this
+//     cluster, BundleDeployments are deployed from here (push.go).
 package operator
 
 import (
@@ -19,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,6 +69,9 @@ type Options struct {
 	// LazyProviders adds known Cluster API providers when something first
 	// needs them (local mode).
 	LazyProviders bool
+	// FleetImage runs push delivery's `fleet` commands; empty means the
+	// image fleet-controller runs.
+	FleetImage string
 }
 
 // Run runs hyve-controller until ctx ends.
@@ -102,6 +108,18 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 	}
 	if err := setupResources(mgr, dc); err != nil {
 		return err
+	}
+	// Push delivery, for children whose agent can't reach this cluster.
+	if kc, err := kube.New(cfg); err == nil && kc.HasKind("fleet.cattle.io", "v1alpha1", "BundleDeployment") {
+		cs, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return err
+		}
+		if err := setupPush(mgr, cs, o.FleetImage); err != nil {
+			return err
+		}
+	} else {
+		lg.Info("Fleet isn't installed: push delivery is off")
 	}
 	if o.LazyProviders {
 		kc, err := kube.New(cfg)

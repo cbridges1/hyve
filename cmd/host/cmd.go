@@ -15,12 +15,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -138,6 +145,18 @@ func run(ctx context.Context) error {
 	tun := tunnel.NewServer(&tunnel.Registry{Client: c, Namespace: namespace}, caCerts)
 	children := &tunnel.Proxy{Server: tun, Authenticate: func(r *http.Request) (tunnel.Identity, bool) {
 		return srv.SessionIdentity(r)
+	}, Direct: func(ctx context.Context, id string) (*rest.Config, error) {
+		// <environment>.<name>: the CAPI kubeconfig, for clusters whose
+		// agent can't reach this host (push delivery).
+		ns, name, ok := strings.Cut(id, ".")
+		if !ok {
+			return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "clusters"}, id)
+		}
+		var sec corev1.Secret
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: name + "-kubeconfig"}, &sec); err != nil {
+			return nil, err
+		}
+		return clientcmd.RESTConfigFromKubeConfig(sec.Data["value"])
 	}}
 	api := &hostapi.API{Config: cfg, Identify: srv.SessionIdentity, DefaultTemplateNamespace: install.DefaultTemplateNamespace}
 	srv.Routes = func(mux *http.ServeMux) {

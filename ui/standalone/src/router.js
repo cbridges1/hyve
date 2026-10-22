@@ -36,7 +36,7 @@ export function createHyveRouter(session, store) {
       { name: `${ PRODUCT }-c-cluster-resource`, path: '/c/:cluster/:resource', component: ResourceList },
       { name: `${ PRODUCT }-c-cluster-resource-create`, path: '/c/:cluster/:resource/create', component: ResourceCreate },
       { name: `${ PRODUCT }-c-cluster-resource-id`, path: '/c/:cluster/:resource/:id', component: ResourceDetail },
-      { name: `${ PRODUCT }-c-cluster-resource-namespace-id`, path: '/c/:cluster/:resource/:namespace/:id', component: ResourceDetail },
+      { name: `${ PRODUCT }-c-cluster-resource-namespace-id`, path: '/c/:cluster/:resource/:namespace/:id/:tab(resources)?', component: ResourceDetail },
       { path: '/:rest(.*)', redirect: `/c/_/${ HYVE.OVERVIEW }` },
     ],
   });

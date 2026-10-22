@@ -46,11 +46,11 @@ export default {
   <div v-else-if="value">
     <BackLink
       :to="back"
-      label="Shared resources"
+      label="Resources"
     />
     <div class="header">
       <h1 class="mb-0">
-        {{ mode === 'create' ? 'New shared resource' : value.metadata.name }}
+        {{ mode === 'create' ? 'New resource' : value.metadata.name }}
       </h1>
       <router-link
         v-if="yamlRoute"

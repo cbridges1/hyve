@@ -49,8 +49,7 @@ export default {
         {
           label: 'Configuration',
           items: [
-            page(HYVE.MATRIX, 'Resources', 'resources'),
-            list(HYVE.RESOURCE, 'Shared resources', 'shared'),
+            list(HYVE.RESOURCE, 'Resources', 'resources'),
             page(HYVE.SECRETS, 'Secrets', 'secrets'),
             page(HYVE.REPOS, 'Repos', 'repos'),
             page(HYVE.PROVIDERS, 'Providers', 'providers'),
@@ -65,6 +64,13 @@ export default {
           ],
         },
       ].map((g) => ({ ...g, items: g.items.filter(served) })).filter((g) => g.items.length);
+    },
+    // A page's tabs (a cluster's Resources) are one view: switching them
+    // doesn't load it again.
+    viewKey() {
+      const r = this.$route;
+
+      return r.params.tab ? r.fullPath.replace(`/${ r.params.tab }`, '') : r.fullPath;
     },
     initial() {
       return (this.session.user?.username || '?').slice(0, 1).toUpperCase();
@@ -291,7 +297,7 @@ export default {
           >
             {{ session.error }}
           </p>
-          <router-view :key="$route.fullPath" />
+          <router-view :key="viewKey" />
         </div>
       </main>
     </div>

@@ -338,8 +338,11 @@ func applyFleetConfig(ctx context.Context, kc *kube.Client, o Options, logf func
 	// class's ClusterGroup) with patchResource on.
 	// bootstrapLocalCluster registers the management cluster itself with
 	// Fleet (fleet-local), so repos can deploy to it: ClusterClasses and
-	// their templates, for one.
-	spec := map[string]any{"config": map[string]any{"server": server, "bootstrapLocalCluster": true}, "cluster": map[string]any{"hostNetwork": true, "applyClassGroup": true, "patchResource": true, "selector": map[string]any{}, "namespaceSelector": map[string]any{}}, "clusterClass": map[string]any{"patchResource": true}}
+	// their templates, for one. setOwnerReferences makes the CAPI Cluster
+	// own its Fleet cluster, which is how a Fleet cluster is deleted with
+	// it: CAAPF's own cleanup doesn't, and its default of true only applies
+	// when the whole cluster section is left out.
+	spec := map[string]any{"config": map[string]any{"server": server, "bootstrapLocalCluster": true}, "cluster": map[string]any{"hostNetwork": true, "applyClassGroup": true, "patchResource": true, "setOwnerReferences": true, "selector": map[string]any{}, "namespaceSelector": map[string]any{}}, "clusterClass": map[string]any{"patchResource": true, "setOwnerReferences": true}}
 	// CAAPF installs Fleet if it's missing. Once it has, keep asking it to,
 	// or a re-run's apply would drop the field.
 	existing, err := kc.Dynamic.Resource(fleetAddonConfigGVR).Get(ctx, "fleet-addon-config", getOpts)

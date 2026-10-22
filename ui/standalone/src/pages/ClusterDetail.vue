@@ -18,9 +18,10 @@ function isoSeconds(d) {
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-// A cluster, the console's way: its fields, conditions and resources in
-// cards, with scale (control plane and each worker pool), expiry, a
-// kubeconfig, YAML and delete: what 'hyve cluster' does.
+// A cluster, the console's way: its fields and conditions in cards, with
+// scale (control plane and each worker pool), expiry, a kubeconfig, YAML
+// and delete: what 'hyve cluster' does. What runs on it (its template's
+// resources and its extras) is its Resources tab, .../<name>/resources.
 export default {
   name:       'HyveClusterDetail',
   components: {
@@ -54,6 +55,15 @@ export default {
   },
 
   computed: {
+    tab() {
+      return this.$route.params.tab || 'overview';
+    },
+    tabs() {
+      return [
+        { id: 'overview', label: 'Overview', to: detailRoute(CAPI_CLUSTER, this.value) },
+        { id: 'resources', label: 'Resources', to: detailRoute(CAPI_CLUSTER, this.value, undefined, 'resources') },
+      ];
+    },
     topo() {
       return this.value?.spec?.topology || {};
     },
@@ -238,134 +248,149 @@ export default {
       {{ e }}
     </p>
 
-    <div class="grid gap-4 lg:grid-cols-3">
-      <div class="lg:col-span-2">
-        <Card title="Details">
-          <Field
-            v-for="[k, v] in fields"
-            :key="k"
-            :label="k"
-          >
-            <code v-if="k === 'CLI'">{{ v }}</code>
-            <template v-else>
-              {{ v }}
-            </template>
-          </Field>
-        </Card>
-      </div>
-      <div class="space-y-4">
-        <Card title="Size">
-          <form
-            class="space-y-3"
-            @submit.prevent="scale"
-          >
-            <label
-              v-if="topo.controlPlane"
-              class="flex items-center justify-between gap-3 text-sm"
-            >
-              <span>Control plane</span>
-              <input
-                v-model="controlPlane"
-                class="w-24!"
-                type="number"
-                min="1"
-                aria-label="Control-plane replicas"
-              >
-            </label>
-            <label
-              v-for="(w, i) in pools"
-              :key="w.name"
-              class="flex items-center justify-between gap-3 text-sm"
-            >
-              <span class="truncate">Workers: {{ w.name }} <span class="text-neutral-500">({{ w.class }})</span></span>
-              <input
-                v-model="sizes[i]"
-                class="w-24!"
-                type="number"
-                min="0"
-                :aria-label="`${ w.name } replicas`"
-              >
-            </label>
-            <button
-              type="submit"
-              class="btn role-primary w-full"
-              :disabled="busy || !sizeChanged"
-            >
-              Scale
-            </button>
-          </form>
-        </Card>
-        <Card title="Expiry">
-          <p class="mb-3 text-sm">
-            {{ !expires || expires === 'never' ? 'Never expires.' : `Deleted at ${ new Date(expires).toLocaleString() }.` }}
-          </p>
-          <form
-            class="mb-3 flex gap-2"
-            @submit.prevent="setExpiryAt"
-          >
-            <input
-              v-model="expireAt"
-              type="datetime-local"
-              aria-label="Expires at"
-            >
-            <button
-              type="submit"
-              class="btn role-secondary"
-              :disabled="busy || !expireAt"
-            >
-              Set
-            </button>
-          </form>
-          <div class="flex flex-wrap gap-2">
-            <button
-              type="button"
-              class="btn role-secondary btn-sm"
-              :disabled="busy"
-              @click="extend"
-            >
-              {{ !expires || expires === 'never' ? 'Expire in 8 hours' : 'Extend 8 hours' }}
-            </button>
-            <button
-              v-if="expires && expires !== 'never'"
-              type="button"
-              class="btn role-tertiary btn-sm"
-              :disabled="busy"
-              @click="setExpiry('never')"
-            >
-              Never expire
-            </button>
-          </div>
-        </Card>
-        <Card
-          v-if="variables.length"
-          title="Variables"
-        >
-          <Field
-            v-for="[k, v] in variables"
-            :key="k"
-            :label="k"
-          >
-            <code>{{ v }}</code>
-          </Field>
-        </Card>
-      </div>
-    </div>
-
-    <Card
-      v-if="conditions.length"
-      title="Conditions"
-    >
-      <Field
-        v-for="c in conditions"
-        :key="c.type"
-        :label="c.type"
+    <nav class="flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
+      <router-link
+        v-for="t in tabs"
+        :key="t.id"
+        :to="t.to"
+        :aria-current="tab === t.id ? 'page' : undefined"
+        :class="['-mb-px border-b-2 px-3 py-2 text-sm font-medium no-underline hover:no-underline', tab === t.id ? 'border-neutral-900 text-neutral-900 dark:border-white dark:text-white' : 'border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100']"
       >
-        {{ c.message }}
-      </Field>
-    </Card>
+        {{ t.label }}
+      </router-link>
+    </nav>
 
-    <Card title="Resources">
+    <Card v-if="tab === 'resources'">
       <ClusterResources :resource="value" />
     </Card>
+
+    <template v-else>
+      <div class="grid gap-4 lg:grid-cols-3">
+        <div class="lg:col-span-2">
+          <Card title="Details">
+            <Field
+              v-for="[k, v] in fields"
+              :key="k"
+              :label="k"
+            >
+              <code v-if="k === 'CLI'">{{ v }}</code>
+              <template v-else>
+                {{ v }}
+              </template>
+            </Field>
+          </Card>
+        </div>
+        <div class="space-y-4">
+          <Card title="Size">
+            <form
+              class="space-y-3"
+              @submit.prevent="scale"
+            >
+              <label
+                v-if="topo.controlPlane"
+                class="flex items-center justify-between gap-3 text-sm"
+              >
+                <span>Control plane</span>
+                <input
+                  v-model="controlPlane"
+                  class="w-24!"
+                  type="number"
+                  min="1"
+                  aria-label="Control-plane replicas"
+                >
+              </label>
+              <label
+                v-for="(w, i) in pools"
+                :key="w.name"
+                class="flex items-center justify-between gap-3 text-sm"
+              >
+                <span class="truncate">Workers: {{ w.name }} <span class="text-neutral-500">({{ w.class }})</span></span>
+                <input
+                  v-model="sizes[i]"
+                  class="w-24!"
+                  type="number"
+                  min="0"
+                  :aria-label="`${ w.name } replicas`"
+                >
+              </label>
+              <button
+                type="submit"
+                class="btn role-primary w-full"
+                :disabled="busy || !sizeChanged"
+              >
+                Scale
+              </button>
+            </form>
+          </Card>
+          <Card title="Expiry">
+            <p class="mb-3 text-sm">
+              {{ !expires || expires === 'never' ? 'Never expires.' : `Deleted at ${ new Date(expires).toLocaleString() }.` }}
+            </p>
+            <form
+              class="mb-3 flex gap-2"
+              @submit.prevent="setExpiryAt"
+            >
+              <input
+                v-model="expireAt"
+                type="datetime-local"
+                aria-label="Expires at"
+              >
+              <button
+                type="submit"
+                class="btn role-secondary"
+                :disabled="busy || !expireAt"
+              >
+                Set
+              </button>
+            </form>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="btn role-secondary btn-sm"
+                :disabled="busy"
+                @click="extend"
+              >
+                {{ !expires || expires === 'never' ? 'Expire in 8 hours' : 'Extend 8 hours' }}
+              </button>
+              <button
+                v-if="expires && expires !== 'never'"
+                type="button"
+                class="btn role-tertiary btn-sm"
+                :disabled="busy"
+                @click="setExpiry('never')"
+              >
+                Never expire
+              </button>
+            </div>
+          </Card>
+          <Card
+            v-if="variables.length"
+            title="Variables"
+          >
+            <Field
+              v-for="[k, v] in variables"
+              :key="k"
+              :label="k"
+            >
+              <code>{{ v }}</code>
+            </Field>
+          </Card>
+        </div>
+      </div>
+
+      <Card
+        v-if="conditions.length"
+        title="Conditions"
+      >
+        <Field
+          v-for="c in conditions"
+          :key="c.type"
+          :label="c.type"
+        >
+          {{ c.message }}
+        </Field>
+      </Card>
+
+    </template>
   </div>
 </template>

@@ -49,7 +49,7 @@ export default {
   <div>
     <div class="header">
       <h1 class="mb-0">
-        Shared resources
+        Resources
       </h1>
       <div class="header-right">
         <button
@@ -63,7 +63,7 @@ export default {
           class="btn role-primary"
           :to="create()"
         >
-          New shared resource
+          New resource
         </router-link>
       </div>
     </div>
@@ -90,7 +90,7 @@ export default {
         v-if="!rows.length"
         class="p-6 text-center text-sm text-neutral-500"
       >
-        No shared resources yet.
+        No resources yet.
       </p>
       <div class="divide-y divide-neutral-100 dark:divide-neutral-800">
         <div
