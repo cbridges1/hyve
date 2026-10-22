@@ -24,6 +24,7 @@ function hidden(s) {
 // secrets create/set/delete'.
 export default {
   name:       'HyveSecrets',
+  live:       true,
   components: {
     Loading, Banner, EnvironmentPicker, SecretView, SecretEdit
   },

@@ -59,6 +59,9 @@ export const auth = {
     type: 'localProvider', responseType: 'cookie', username, password, ...(newPassword ? { newPassword } : {})
   }, { quiet401: true }),
   redeem:   (token) => request('POST', '/v1-public/ui-session', { token }, { quiet401: true }),
+  // Local mode: the host signs a browser on its machine in without a
+  // password (404 elsewhere).
+  local:    () => request('POST', '/v1-public/local-session', {}, { quiet401: true }),
   logout:   () => request('POST', '/v1/logout', {}, { quiet401: true }),
   password: (username, currentPassword, newPassword) => request('PUT', `/v1/users/${ encodeURIComponent(username) }/password`, { currentPassword, newPassword }),
 };

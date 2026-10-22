@@ -27,6 +27,7 @@ function emptyForm() {
 // changes a row's resource where it's defined.
 export default {
   name:       'HyveResourceMatrix',
+  live:       true,
   components: {
     Loading, LabeledSelect, RadioGroup, Banner, EnvironmentPicker, ViewDialog, ResourceForm
   },

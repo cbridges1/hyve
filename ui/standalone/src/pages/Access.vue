@@ -22,6 +22,7 @@ const ROLES = [
 // environment and the template namespace.
 export default {
   name:       'HyveAccess',
+  live:       true,
   components: {
     Loading, Modal, ConfirmButton, ViewDialog
   },

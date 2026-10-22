@@ -8,6 +8,7 @@ const KEY = 'hyve-environment';
 // pages show, or all of them; remembered in the browser.
 export default {
   name:       'HyveEnvironmentPicker',
+  live:       true,
   components: { LabeledSelect },
   emits:      ['update:value'],
   props:      {

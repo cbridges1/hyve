@@ -8,6 +8,7 @@ import { createRoute, detailRoute } from '../util';
 
 export default {
   name:       'HyveTemplateList',
+  live:       true,
   components: {
     Loading, Pill, ConfirmButton, ApplyYaml
   },

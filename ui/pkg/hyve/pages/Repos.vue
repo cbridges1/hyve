@@ -22,6 +22,7 @@ function emptyForm() {
 // basic-auth Secret the GitRepo names).
 export default {
   name:       'HyveRepos',
+  live:       true,
   components: {
     Loading, LabeledInput, Checkbox, Banner, ViewDialog
   },

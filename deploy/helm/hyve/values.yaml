@@ -66,6 +66,9 @@ host:
   # Secret (in namespace) with the first admin's bootstrapPassword. If it
   # doesn't exist, the host generates one and logs how to read it.
   bootstrapSecret: bootstrap-secret
+  # Local mode only: browsers at 127.0.0.1 or localhost are signed in as
+  # this user without a password. Never set it on a host others can reach.
+  localUser: ""
   # The host's address as child clusters reach it (https://...). Set, the
   # controller installs Rancher's cattle-cluster-agent on every cluster,
   # pointed here, and kubectl reaches clusters through it at

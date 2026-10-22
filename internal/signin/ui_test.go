@@ -171,3 +171,46 @@ func TestNamespacesEndpoint(t *testing.T) {
 	rec = uiRequest(t, h, http.MethodGet, "/v1/namespaces", "", nil, true)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
+
+func TestLocalSession(t *testing.T) {
+	s, _ := newStore(t, nil)
+	addUser(t, s, "admin", "correct-horse-battery", "ops")
+	local := func(srv *Server, host string, noHeader bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1-public/local-session", nil)
+		req.Host = host
+		if !noHeader {
+			req.Header.Set(UIHeader, "1")
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Off unless the host was started with a local user.
+	off := NewServer(s, nil, "test")
+	assert.Equal(t, http.StatusNotFound, local(off, "127.0.0.1:30444", false).Code)
+
+	srv := NewServer(s, nil, "test")
+	srv.LocalUser = "admin"
+	// A cross-site page can't add the UI's header.
+	assert.Equal(t, http.StatusForbidden, local(srv, "127.0.0.1:30444", true).Code)
+	// A name that resolves to 127.0.0.1 (DNS rebinding) isn't a loopback Host.
+	assert.Equal(t, http.StatusForbidden, local(srv, "evil.example:30444", false).Code)
+	assert.Equal(t, http.StatusForbidden, local(srv, "192.168.1.5:30444", false).Code)
+
+	for _, host := range []string{"127.0.0.1:30444", "localhost:5173", "[::1]:30444", "127.0.0.1"} {
+		rec := local(srv, host, false)
+		require.Equal(t, http.StatusCreated, rec.Code, host+": "+rec.Body.String())
+		c := sessionCookie(t, rec)
+		require.NotNil(t, c, host)
+		assert.Equal(t, http.SameSiteStrictMode, c.SameSite)
+
+		rec = uiRequest(t, srv.Handler(), http.MethodGet, "/v1/me", c.Value, nil, true)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var me MeResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &me))
+		assert.Equal(t, "admin", me.Username)
+		assert.Equal(t, []string{"ops"}, me.Groups)
+		assert.True(t, me.AutoSignIn)
+	}
+}

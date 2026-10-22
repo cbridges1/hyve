@@ -19,6 +19,8 @@ const LIST_TTL = 3000;
 export function createStore(t) {
   let schemas = {};
   const lists = new Map();
+  // Told of each read, for live updates (live.js); set by main.js.
+  let onRead = () => {};
 
   function schemaOrThrow(type) {
     const s = schemas[type];
@@ -96,6 +98,7 @@ export function createStore(t) {
 
   const actions = {
     'management/findAll'({ type, opt }) {
+      onRead(type, opt?.namespaced);
       const key = opt?.namespaced ? `${ type }@${ opt.namespaced }` : type;
       const hit = lists.get(key);
 
@@ -112,6 +115,8 @@ export function createStore(t) {
     async 'management/find'({ type, id }) {
       const s = schemaOrThrow(type);
       const [ns, name] = s.namespaced ? id.split('/') : [undefined, id];
+
+      onRead(type, ns, name);
       const o = await request('GET', urlFor(s, ns, name));
 
       return model(type, o);
@@ -140,6 +145,10 @@ export function createStore(t) {
     async load() {
       schemas = await discover();
     },
+    onRead(fn) {
+      onRead = fn;
+    },
+    myNamespaces,
     forget(type) {
       [...lists.keys()].filter((k) => k === type || k.startsWith(`${ type }@`)).forEach((k) => lists.delete(k));
     },

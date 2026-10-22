@@ -133,6 +133,9 @@ spec:
             {{- if .Values.ui.enabled }}
             - --ui
             {{- end }}
+            {{- if .Values.host.localUser }}
+            - --local-user={{ .Values.host.localUser }}
+            {{- end }}
             {{- if .Values.host.caCertsConfigMap }}
             - --cacerts=/etc/hyve/cacerts/ca.crt
             {{- end }}

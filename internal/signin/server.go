@@ -33,6 +33,9 @@ type Server struct {
 	// UI, if set, serves hyve's own UI at / (everything no other route
 	// takes).
 	UI http.Handler
+	// LocalUser, if set, is who a browser on this machine is signed in as
+	// without a password (local mode; see handleLocalSession).
+	LocalUser string
 
 	userLimit *limiter
 	addrLimit *limiter
@@ -66,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
 	mux.HandleFunc("POST /v1/ui-sessions", s.handleNewUISession)
 	mux.HandleFunc("POST /v1-public/ui-session", s.handleUISession)
+	mux.HandleFunc("POST /v1-public/local-session", s.handleLocalSession)
 	mux.HandleFunc("PUT /v1/users/{name}/password", s.handleSetPassword)
 	if s.Proxy != nil {
 		mux.Handle("/k8s/clusters/local/", s.Proxy)

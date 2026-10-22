@@ -221,7 +221,9 @@ func Up(ctx context.Context, o Options) error {
 		HostURL: hostURL, HostTLSSecret: "hyve-host-tls", HostCACerts: string(caPEM),
 		Lean: !o.Full, GOGC: o.GOGC,
 		Values: map[string]any{
-			"host":       map[string]any{"service": map[string]any{"type": "NodePort", "nodePort": o.Port}},
+			// Published on 127.0.0.1 only, where anything that reaches it
+			// can already use Docker: the UI opens signed in as admin.
+			"host":       map[string]any{"service": map[string]any{"type": "NodePort", "nodePort": o.Port}, "localUser": "admin"},
 			"controller": map[string]any{"lazyProviders": true},
 		},
 		Log: o.Log,

@@ -43,6 +43,7 @@ var (
 	sessionTTL      time.Duration
 	bootstrapSecret string
 	caCertsFile     string
+	localUser       string
 	serveUI         bool
 )
 
@@ -85,6 +86,7 @@ func init() {
 	runCmd.Flags().DurationVar(&sessionTTL, "session-ttl", signin.DefaultSessionTTL, "how long a sign-in lasts")
 	runCmd.Flags().StringVar(&bootstrapSecret, "bootstrap-secret", "bootstrap-secret", "Secret holding the first admin's bootstrapPassword")
 	runCmd.Flags().BoolVar(&serveUI, "ui", false, "serve hyve's own UI at / (built into the binary with 'task ui')")
+	runCmd.Flags().StringVar(&localUser, "local-user", "", "sign browsers at 127.0.0.1 or localhost in as this user without a password (local mode only: never on a host others can reach)")
 	runCmd.Flags().StringVar(&caCertsFile, "cacerts", "", "PEM CA the host's certificate chains to, for agents to pin (leave unset for a publicly trusted certificate)")
 	Cmd.AddCommand(runCmd)
 }
@@ -121,6 +123,10 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("building the /k8s/clusters/local proxy: %w", err)
 	}
 	srv := signin.NewServer(store, proxy, Version)
+	srv.LocalUser = localUser
+	if localUser != "" {
+		log.Printf("host: browsers at 127.0.0.1 or localhost are signed in as %s without a password", localUser)
+	}
 	caCerts := ""
 	if caCertsFile != "" {
 		b, err := os.ReadFile(caCertsFile)

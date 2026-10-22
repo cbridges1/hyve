@@ -6,6 +6,7 @@ import { createApp } from 'vue';
 import App from './App.vue';
 import { createHyveRouter } from './router';
 import { createStore } from './store';
+import { createLive, liveMixin } from './live';
 import { setModelContext } from './model';
 import { auth, setUnauthorizedHandler } from './api';
 import { t } from './i18n';
@@ -72,17 +73,37 @@ async function start() {
   await signInFromFragment();
   const store = createStore(t);
   const router = createHyveRouter(session, store);
+  const live = createLive(store);
 
-  setModelContext({ store, router, t });
-  setUnauthorizedHandler(() => {
-    if (session.user) {
-      session.user = null;
-      router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } });
+  store.onRead((type, namespace, name) => live.interest(type, namespace, name));
+  // Each page watches what it reads (a query change, such as the
+  // environment picker's, keeps the page and its watches).
+  router.beforeEach((to, from) => {
+    if (to.path !== from.path) {
+      live.reset();
     }
   });
 
+  setModelContext({ store, router, t });
+  setUnauthorizedHandler(async() => {
+    if (!session.user) {
+      return;
+    }
+    // Local mode: the session ran out; start another and reload.
+    if (session.user.autoSignIn && await auth.local().then(() => true, () => false)) {
+      window.location.reload();
+
+      return;
+    }
+    session.user = null;
+    live.stop();
+    router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } });
+  });
+
   try {
-    const me = await auth.me();
+    // Local mode signs in without a password; elsewhere this 404s and the
+    // sign-in page shows.
+    const me = await auth.me().catch((e) => auth.local().catch(() => Promise.reject(e)));
 
     session.user = me;
     session.version = me.version;
@@ -96,6 +117,7 @@ async function start() {
   app.config.globalProperties.$store = store;
   app.config.globalProperties.t = t;
   app.mixin(fetchMixin);
+  app.mixin(liveMixin(live));
   app.use(router);
   app.mount('#app');
 }

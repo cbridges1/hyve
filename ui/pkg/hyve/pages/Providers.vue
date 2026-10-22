@@ -18,6 +18,7 @@ const TYPES = ['infrastructure', 'bootstrap', 'control-plane', 'addon', 'ipam', 
 // Adding and removing do what 'hyve provider add/remove' do.
 export default {
   name:       'HyveProviders',
+  live:       true,
   components: {
     Loading, Banner, ViewDialog, ProviderAdd
   },

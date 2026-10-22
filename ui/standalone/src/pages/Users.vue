@@ -20,6 +20,7 @@ function emptyForm() {
 // API, its password through the host.
 export default {
   name:       'HyveUsers',
+  live:       true,
   components: {
     Loading, Modal, Pill, ConfirmButton, ViewDialog
   },

@@ -4,6 +4,7 @@ import { age, createRoute, detailRoute } from '../util';
 
 export default {
   name:       'HyveGenericList',
+  live:       true,
   components: { Loading },
   props:      { type: { type: String, required: true } },
 

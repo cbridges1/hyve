@@ -35,9 +35,21 @@ export default {
     await this.load();
   },
 
+  // A change on the cluster: show it, but keep inputs the user has edited.
+  async liveRefresh() {
+    const edited = this.controlPlane !== this.pristine.controlPlane || this.expireAt !== this.pristine.expireAt ||
+      this.sizes.some((v, i) => v !== this.pristine.sizes[i]);
+
+    if (edited) {
+      this.value = await this.$store.dispatch('management/find', { type: CAPI_CLUSTER, id: this.id });
+    } else {
+      await this.load();
+    }
+  },
+
   data() {
     return {
-      value: null, controlPlane: '', sizes: [], expireAt: '', errors: [], busy: false, back: { name: `${ PRODUCT }-c-cluster-resource`, params: { cluster: '_', resource: CAPI_CLUSTER } }
+      value: null, controlPlane: '', sizes: [], expireAt: '', pristine: { controlPlane: '', sizes: [], expireAt: '' }, errors: [], busy: false, back: { name: `${ PRODUCT }-c-cluster-resource`, params: { cluster: '_', resource: CAPI_CLUSTER } }
     };
   },
 
@@ -95,6 +107,7 @@ export default {
 
       // datetime-local wants local time, without seconds' zone.
       this.expireAt = isNaN(at) ? '' : new Date(at - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      this.pristine = { controlPlane: this.controlPlane, sizes: [...this.sizes], expireAt: this.expireAt };
     },
     async act(fn) {
       this.errors = [];

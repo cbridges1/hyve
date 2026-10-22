@@ -180,7 +180,10 @@ export default {
                 <span class="mb-1.5 block text-xs font-medium text-neutral-500">Theme</span>
                 <ThemeToggle />
               </div>
+              <!-- Local mode signs the browser in by itself; its admin's
+                   password is the CLI's to keep. -->
               <button
+                v-if="!session.user?.autoSignIn"
                 type="button"
                 class="mt-3 w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100"
                 @click="menuOpen = false; changingPassword = true"
@@ -190,12 +193,14 @@ export default {
               <button
                 type="button"
                 class="w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100"
+                :class="{ 'mt-3': session.user?.autoSignIn }"
                 title="A kubeconfig for the management cluster that runs 'hyve token'; it holds no secret"
                 @click="downloadKubeconfig"
               >
                 Download kubeconfig
               </button>
               <button
+                v-if="!session.user?.autoSignIn"
                 type="button"
                 class="w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100"
                 @click="signOut"

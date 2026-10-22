@@ -12,6 +12,7 @@ import { clusterStatus, expiry } from '../status';
 // expiry and state as pills; a row opens the cluster.
 export default {
   name:       'HyveClusterList',
+  live:       true,
   components: { Loading, Pill, EnvironmentPicker },
 
   async fetch() {

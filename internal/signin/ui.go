@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -79,6 +81,9 @@ type MeResponse struct {
 	Username string   `json:"username"`
 	Groups   []string `json:"groups"`
 	Version  string   `json:"version"`
+	// AutoSignIn: this host signs browsers on its machine in without a
+	// password (local mode), so signing out means nothing.
+	AutoSignIn bool `json:"autoSignIn,omitempty"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +95,63 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if groups == nil {
 		groups = []string{}
 	}
-	writeJSON(w, http.StatusOK, MeResponse{Username: ident.Username, Groups: groups, Version: s.Version})
+	writeJSON(w, http.StatusOK, MeResponse{Username: ident.Username, Groups: groups, Version: s.Version, AutoSignIn: s.LocalUser != ""})
+}
+
+// handleLocalSession signs the browser in as LocalUser without a password,
+// for local mode, where the host is published on 127.0.0.1 only and
+// anything that can reach it can already use Docker, which is more than
+// hyve's admin. Two checks keep web pages out, the only callers a password
+// stopped there:
+//
+//   - UIHeader is required, which a cross-site page can't add without a
+//     CORS preflight the host never answers.
+//   - The Host header must be a loopback address, so a site whose name
+//     resolves to 127.0.0.1 (DNS rebinding) is refused.
+func (s *Server) handleLocalSession(w http.ResponseWriter, r *http.Request) {
+	if s.LocalUser == "" {
+		writeError(w, http.StatusNotFound, "NotFound", "this host doesn't sign browsers in without a password")
+		return
+	}
+	if !fromUI(r) {
+		writeError(w, http.StatusForbidden, "Forbidden", "missing the "+UIHeader+" header")
+		return
+	}
+	if !loopbackHost(r.Host) {
+		writeError(w, http.StatusForbidden, "Forbidden", "signing in without a password only works at 127.0.0.1 or localhost")
+		return
+	}
+	token, expiresAt, err := s.Store.NewSession(r.Context(), Identity{Username: s.LocalUser})
+	if err != nil {
+		log.Printf("signin: local session for %s: %v", s.LocalUser, err)
+		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start a session")
+		return
+	}
+	setSessionCookie(w, r, token, expiresAt)
+	ident, err := s.Store.Lookup(r.Context(), token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start a session")
+		return
+	}
+	groups := ident.Groups
+	if groups == nil {
+		groups = []string{}
+	}
+	writeJSON(w, http.StatusCreated, MeResponse{Username: ident.Username, Groups: groups, Version: s.Version, AutoSignIn: true})
+}
+
+// loopbackHost reports whether a Host header names this machine: localhost
+// or a loopback IP, with or without a port.
+func loopbackHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // UISessionResponse is POST /v1/ui-sessions: a new session for the

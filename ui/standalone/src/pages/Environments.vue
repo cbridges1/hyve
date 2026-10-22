@@ -12,6 +12,7 @@ const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 // `hyve env create` makes them; clusters live in them.
 export default {
   name:       'HyveEnvironments',
+  live:       true,
   components: {
     Loading, Modal, Pill, ConfirmButton, ViewDialog
   },

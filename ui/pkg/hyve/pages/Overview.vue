@@ -26,6 +26,7 @@ function isoSeconds(d) {
 // expiry; resources failing anywhere; and clusters expiring soon.
 export default {
   name:       'HyveOverview',
+  live:       true,
   components: {
     Loading, Banner, EnvironmentPicker, ApplyYaml
   },

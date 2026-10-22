@@ -2,7 +2,8 @@
 // Kubernetes API alone, because it's hyve's own Go code: adding a Cluster
 // API provider (which may mean applying hyve's embedded manifests),
 // rendering a template, and converting old templates. The same code runs
-// for 'hyve provider add', 'hyve render' and 'hyve import'.
+// for 'hyve provider add', 'hyve render' and 'hyve import'. It also streams
+// change notifications for the UI's live updates (watch.go).
 //
 // Requests are authenticated with the hyve session, as the
 // /k8s/clusters/local proxy does. Adding a provider runs as the signed-in
@@ -20,6 +21,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
@@ -43,6 +45,9 @@ type API struct {
 	Identify func(*http.Request) (signin.Identity, bool)
 	// DefaultTemplateNamespace is where templates without a namespace go.
 	DefaultTemplateNamespace string
+	// Dynamic, when set, replaces the impersonating client watches use
+	// (tests).
+	Dynamic func(signin.Identity) (dynamic.Interface, error)
 }
 
 // Register adds the routes.
@@ -50,6 +55,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/hyve/providers", a.authed(a.addProvider))
 	mux.HandleFunc("POST /v1/hyve/render", a.authed(a.render))
 	mux.HandleFunc("POST /v1/hyve/import", a.authed(a.importTemplates))
+	mux.HandleFunc("GET /v1/hyve/watch", a.authed(a.watchStream))
 }
 
 func (a *API) authed(h func(http.ResponseWriter, *http.Request, signin.Identity)) http.HandlerFunc {

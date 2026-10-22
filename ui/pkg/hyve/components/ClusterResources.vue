@@ -18,6 +18,7 @@ const TURTLES_OWNER_NS = 'cluster-api.cattle.io/capi-cluster-owner-ns';
 // Extras can be added, edited and removed here ('hyve cluster resource').
 export default {
   name:       'HyveClusterResources',
+  live:       true,
   components: {
     Loading, Banner, ResourceForm, ViewDialog
   },
