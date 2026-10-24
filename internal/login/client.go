@@ -54,95 +54,22 @@ func HTTPClient(caCertFile string, insecure bool) (*http.Client, error) {
 	return &http.Client{Transport: tr, Timeout: 30 * time.Second}, nil
 }
 
-// Detect tells a hyve host from Rancher. Only hyve's host answers
+// Detect checks that base is a hyve host: only hyve's host answers
 // /v1-public/hyve.
-func Detect(ctx context.Context, c *http.Client, base string) (string, error) {
+func Detect(ctx context.Context, c *http.Client, base string) error {
 	resp, body, err := do(ctx, c, http.MethodGet, base+"/v1-public/hyve", nil, "")
 	if err != nil {
-		return "", err
+		return err
 	}
 	if resp.StatusCode == http.StatusOK {
 		var info struct {
 			Kind string `json:"kind"`
 		}
 		if json.Unmarshal(body, &info) == nil && info.Kind == "hyve-host" {
-			return KindHyve, nil
+			return nil
 		}
 	}
-	// Rancher answers /ping with "pong" too, so check its providers list.
-	resp, _, err = do(ctx, c, http.MethodGet, base+"/v1-public/authproviders", nil, "")
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s is neither a hyve host nor Rancher (GET /v1-public/authproviders: %s)", base, resp.Status)
-	}
-	return KindRancher, nil
-}
-
-// Provider is one auth provider a server offers.
-type Provider struct {
-	ID            string   `json:"id"`
-	Type          string   `json:"type"`
-	ClientID      string   `json:"clientId,omitempty"`
-	Scopes        []string `json:"scopes,omitempty"`
-	AuthURL       string   `json:"authUrl,omitempty"`
-	DeviceAuthURL string   `json:"deviceAuthUrl,omitempty"`
-	TokenURL      string   `json:"tokenUrl,omitempty"`
-}
-
-// Flow is how the CLI signs in with a provider.
-type Flow int
-
-const (
-	FlowPassword Flow = iota // username and password
-	FlowSAML                 // Rancher's request-ID handoff
-	FlowOAuth                // device code or auth code, then the ID token
-	FlowBrowser              // the hyve extension's CLI sign-in page
-)
-
-// FlowFor returns the flow for a provider type, as Rancher's CLI chooses it;
-// FlowBrowser is for the providers Rancher's CLI doesn't support.
-func FlowFor(providerType string) Flow {
-	switch providerType {
-	case "localProvider", "openLdapProvider", "freeIpaProvider", "activeDirectoryProvider":
-		return FlowPassword
-	case "pingProvider", "adfsProvider", "keyCloakProvider", "oktaProvider", "shibbolethProvider":
-		return FlowSAML
-	case "azureADProvider":
-		return FlowOAuth
-	default:
-		return FlowBrowser
-	}
-}
-
-// ListProviders returns the server's enabled auth providers, local first.
-func ListProviders(ctx context.Context, c *http.Client, base string) ([]Provider, error) {
-	resp, body, err := do(ctx, c, http.MethodGet, base+"/v1-public/authproviders", nil, "")
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("listing auth providers: %s", resp.Status)
-	}
-	var list struct {
-		Data []Provider `json:"data"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("listing auth providers: %w", err)
-	}
-	out := make([]Provider, 0, len(list.Data))
-	for _, p := range list.Data {
-		if p.Type == "" {
-			continue
-		}
-		if p.Type == "localProvider" {
-			out = append([]Provider{p}, out...)
-		} else {
-			out = append(out, p)
-		}
-	}
-	return out, nil
+	return fmt.Errorf("%s isn't a hyve host (GET /v1-public/hyve: %s)", base, resp.Status)
 }
 
 // do sends a request and reads the whole response.
@@ -175,7 +102,7 @@ func do(ctx context.Context, c *http.Client, method, url string, body any, token
 	return resp, data, err
 }
 
-// apiError extracts Rancher's (and hyve's) error code from a body.
+// apiError extracts the host's error code from a body.
 func apiError(body []byte) (code, message string) {
 	var e struct {
 		Code    string `json:"code"`
@@ -185,57 +112,37 @@ func apiError(body []byte) (code, message string) {
 	return e.Code, e.Message
 }
 
-// parseSession reads a login response: Rancher's v3-style
-// {token, expiresAt, userId}, or its ext.cattle.io/v1 Token.
+// parseSession reads a login response: {token, expiresAt, userId}.
 func parseSession(body []byte) (Session, error) {
 	var t struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-		Token      string `json:"token"`
-		ExpiresAt  string `json:"expiresAt"`
-		UserID     string `json:"userId"`
-		Spec       struct {
-			UserID string `json:"userID"`
-		} `json:"spec"`
-		Status struct {
-			BearerToken string `json:"bearerToken"`
-			ExpiresAt   string `json:"expiresAt"`
-		} `json:"status"`
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expiresAt"`
+		UserID    string `json:"userId"`
 	}
 	if err := json.Unmarshal(body, &t); err != nil {
 		return Session{}, fmt.Errorf("reading the sign-in response: %w", err)
 	}
 	s := Session{Token: t.Token, UserID: t.UserID}
-	expires := t.ExpiresAt
-	if t.APIVersion == "ext.cattle.io/v1" && t.Kind == "Token" {
-		s = Session{Token: t.Status.BearerToken, UserID: t.Spec.UserID}
-		expires = t.Status.ExpiresAt
-	}
 	if s.Token == "" {
 		return Session{}, errors.New("the sign-in response had no token")
 	}
-	if expires != "" {
-		ts, err := time.Parse(time.RFC3339, expires)
+	if t.ExpiresAt != "" {
+		ts, err := time.Parse(time.RFC3339, t.ExpiresAt)
 		if err != nil {
-			return Session{}, fmt.Errorf("reading the session expiry %q: %w", expires, err)
+			return Session{}, fmt.Errorf("reading the session expiry %q: %w", t.ExpiresAt, err)
 		}
 		s.ExpiresAt = ts
 	}
 	return s, nil
 }
 
-// responseType is what the CLI asks Rancher for: a kubeconfig token, as
-// Rancher's own CLI does. hyve's host ignores it.
-const responseType = "kubeconfig"
-
 // PasswordLogin signs in with a username and password. newPassword is sent
 // only when the server said the password must change.
-func PasswordLogin(ctx context.Context, c *http.Client, base, providerType, username, password, newPassword string) (Session, error) {
+func PasswordLogin(ctx context.Context, c *http.Client, base, username, password, newPassword string) (Session, error) {
 	body := map[string]any{
-		"type":         providerType,
-		"responseType": responseType,
-		"username":     username,
-		"password":     password,
+		"type":     "localProvider",
+		"username": username,
+		"password": password,
 	}
 	if newPassword != "" {
 		body["newPassword"] = newPassword
@@ -264,14 +171,9 @@ func PasswordLogin(ctx context.Context, c *http.Client, base, providerType, user
 	}
 }
 
-// Logout ends the session on the server. Rancher's equivalent is the
-// tokens logout action its UI uses.
+// Logout ends the session on the server.
 func Logout(ctx context.Context, c *http.Client, s *Server) error {
-	url := s.URL + "/v1/logout"
-	if s.Kind == KindRancher {
-		url = s.URL + "/v3/tokens?action=logout"
-	}
-	resp, _, err := do(ctx, c, http.MethodPost, url, map[string]any{}, s.Token)
+	resp, _, err := do(ctx, c, http.MethodPost, s.URL+"/v1/logout", map[string]any{}, s.Token)
 	if err != nil {
 		return err
 	}
@@ -284,9 +186,6 @@ func Logout(ctx context.Context, c *http.Client, s *Server) error {
 // SetPassword changes a hyve User's password through the host. current is
 // needed only when changing your own.
 func SetPassword(ctx context.Context, c *http.Client, s *Server, username, current, newPassword string) error {
-	if s.Kind != KindHyve {
-		return errors.New("passwords for Rancher users are managed in Rancher")
-	}
 	resp, data, err := do(ctx, c, http.MethodPut, s.URL+"/v1/users/"+neturl.PathEscape(username)+"/password",
 		map[string]string{"currentPassword": current, "newPassword": newPassword}, s.Token)
 	if err != nil {
@@ -304,9 +203,6 @@ func SetPassword(ctx context.Context, c *http.Client, s *Server, username, curre
 // UISession asks a hyve host for a new session for the browser, as the
 // same user (`hyve ui`).
 func UISession(ctx context.Context, c *http.Client, s *Server) (Session, error) {
-	if s.Kind != KindHyve {
-		return Session{}, errors.New("only a hyve host serves hyve's own UI")
-	}
 	resp, data, err := do(ctx, c, http.MethodPost, s.URL+"/v1/ui-sessions", map[string]any{}, s.Token)
 	if err != nil {
 		return Session{}, err

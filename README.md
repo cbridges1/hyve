@@ -4,7 +4,7 @@
 
 # Hyve
 
-Kubernetes clusters from templates. A **ClusterTemplate** is a Cluster API ClusterClass with defaults, locked variables, an expiry schedule and the resources every cluster made from it gets. hyve makes clusters from templates with [Cluster API](https://cluster-api.sigs.k8s.io/) and delivers their resources with [Fleet](https://fleet.rancher.io/). It runs alongside Rancher, or acts as the Rancher host itself when Rancher isn't installed.
+Kubernetes clusters from templates. A **ClusterTemplate** is a Cluster API ClusterClass with defaults, locked variables, an expiry schedule and the resources every cluster made from it gets. hyve makes clusters from templates with [Cluster API](https://cluster-api.sigs.k8s.io/) and delivers their resources with [Fleet](https://fleet.rancher.io/). Its host endpoint is what users sign in to and what each cluster's agent connects to, so it replaces Rancher for the clusters it makes.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -14,17 +14,16 @@ Kubernetes clusters from templates. A **ClusterTemplate** is a Cluster API Clust
 - **Templates** live beside their ClusterClass. Each template resource is Fleet's own `HelmOp`, `Bundle` or `GitRepo` spec. hyve-controller turns it into a Fleet object aimed at the template's clusters, and CAAPF carries it to every environment. A cluster can also have its own extras (`ClusterResource`s).
 - **Secrets** are plain Kubernetes Secrets. A resource names the Secrets it needs, and Fleet copies them to its clusters. hyve holds no values, so fill the Secrets however your install manages them.
 - **Expiry**: hyve-controller deletes a cluster when its `hyve.io/expires-at` passes, set from the template's schedule or `--ttl`.
-- **Signing in**: `hyve login <url>` works against a hyve host or Rancher. Every command then reaches the management cluster through `<url>/k8s/clusters/local` as you, and `hyve cluster kubeconfig` gives kubectl access to a cluster the same way.
+- **Signing in**: `hyve login <url>` signs in to the hyve host. Every command then reaches the management cluster through `<url>/k8s/clusters/local` as you, and `hyve cluster kubeconfig` gives kubectl access to a cluster the same way.
 
 ## Install
 
 ```bash
 go install github.com/cbridges1/hyve@latest
-helm install hyve deploy/helm/hyve -n hyve-system --create-namespace    # hyve-controller
-# without Rancher, also the host endpoint:  --set host.enabled=true
+hyve install --host-url https://hyve.example.com --host-tls-cert tls.crt --host-tls-key tls.key
 ```
 
-The management cluster needs Cluster API, Fleet and CAAPF (Rancher with Turtles brings all three).
+`hyve install` puts hyve-controller and the host endpoint on the cluster your kubeconfig points at, with whatever's missing of cert-manager, Cluster API (through the CAPI Operator), CAAPF and Fleet. `hyve local up` does the same on a kind cluster on your machine.
 
 ## Quick start
 
@@ -39,14 +38,14 @@ hyve cluster kubeconfig demo > demo.yaml
 hyve ui                                   # the web UI, signed in
 ```
 
-`hyve ui` opens hyve's own UI for a hyve host or local mode (served through the CLI at `http://127.0.0.1:30445` when the host's certificate is from a private CA), or Rancher's dashboard at the hyve extension for a Rancher context.
+`hyve ui` opens the UI, served by the host (or through the CLI at `http://127.0.0.1:30445` when the host's certificate is from a private CA).
 
 `hyve render -f template.yaml -f class.yaml` prints what a template produces without touching a cluster. `hyve import` converts old hyve Templates and herd ClusterTemplates.
 
 ## Development
 
 ```bash
-task ui             # build hyve's own UI (ui/standalone) for the binary to embed
+task ui             # build the UI for the binary to embed
 task build          # build the binary
 task check          # go vet + tests
 task local          # build the binary and a hyve:dev image (which builds the UI), then hyve local up with them

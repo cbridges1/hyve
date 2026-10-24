@@ -75,7 +75,7 @@ func mapParams(r *Result, params map[string]string, m paramMap, vars map[string]
 		lockMap[k] = target[0]
 	}
 	if rancher {
-		r.note("RANCHER_* params dropped: clusters get their agents automatically (and with Rancher, Turtles imports them), no registration step")
+		r.note("RANCHER_* params dropped: clusters get their agents automatically, no registration step")
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)

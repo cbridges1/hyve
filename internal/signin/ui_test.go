@@ -214,3 +214,16 @@ func TestLocalSession(t *testing.T) {
 		assert.True(t, me.AutoSignIn)
 	}
 }
+
+func TestWebSocketCookieNeedsSameOrigin(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "https://hyve.example.com/k8s/clusters/x/api/v1/namespaces/a/pods/p/exec", nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookie, Value: "hs-a:b"})
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Origin", "https://evil.example")
+	_, ok := sessionToken(r)
+	assert.False(t, ok)
+	r.Header.Set("Origin", "https://hyve.example.com")
+	tok, ok := sessionToken(r)
+	assert.True(t, ok)
+	assert.Equal(t, "hs-a:b", tok)
+}

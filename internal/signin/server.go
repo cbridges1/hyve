@@ -16,8 +16,8 @@ import (
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 )
 
-// LocalProviderType is the only auth provider hyve's host offers. The name
-// is Rancher's, so the CLI handles hyve and Rancher's local users alike.
+// LocalProviderType is the password provider's type, named as Rancher
+// names its own.
 const LocalProviderType = "localProvider"
 
 // Server serves the sign-in API and the /k8s/clusters/local proxy.
@@ -36,6 +36,11 @@ type Server struct {
 	// LocalUser, if set, is who a browser on this machine is signed in as
 	// without a password (local mode; see handleLocalSession).
 	LocalUser string
+	// OIDC, if set, signs users in through an identity provider.
+	OIDC *OIDC
+	// NoPasswords turns password sign-in off (the chart's
+	// auth.passwords=false), leaving only the identity provider.
+	NoPasswords bool
 
 	userLimit *limiter
 	addrLimit *limiter
@@ -63,6 +68,12 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /v1-public/hyve", s.handleInfo)
 	mux.HandleFunc("GET /v1-public/authproviders", s.handleProviders)
+	mux.HandleFunc("GET /v1-public/auth-methods", s.handleAuthMethods)
+	if s.OIDC != nil {
+		mux.HandleFunc("GET /v1-public/oidc/start", s.handleOIDCStart)
+		mux.HandleFunc("GET /v1-public/oidc/callback", s.handleOIDCCallback)
+	}
+	mux.HandleFunc("POST /v1/cli-sessions", s.handleCLISession)
 	mux.HandleFunc("POST /v1-public/login", s.handleLogin)
 	mux.HandleFunc("POST /v1/logout", s.handleLogout)
 	mux.HandleFunc("GET /v1/me", s.handleMe)
@@ -103,8 +114,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// handleInfo lets the CLI tell a hyve host from Rancher, which has no such
-// path.
+// handleInfo lets the CLI check that a URL is a hyve host.
 func (s *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"kind": "hyve-host", "version": s.Version})
 }
@@ -152,6 +162,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Type != "" && req.Type != LocalProviderType {
 		writeError(w, http.StatusBadRequest, "InvalidFormat", "unsupported auth provider "+req.Type)
+		return
+	}
+	if s.NoPasswords {
+		writeError(w, http.StatusForbidden, "PasswordsDisabled", "password sign-in is turned off on this host; use single sign-on")
 		return
 	}
 	if req.ResponseType == "cookie" && !fromUI(r) {

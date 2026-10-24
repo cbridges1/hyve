@@ -1,15 +1,6 @@
 // Package login is the client side of `hyve login`: signing in to a hyve
-// host or to Rancher, keeping the session, and building kubeconfigs that
-// use it (HYVE-PROPOSAL.md, "Signing in: one URL, a username and a
-// password").
-//
-// hyve's host speaks the part of Rancher's /v1-public login API the CLI
-// needs, so one client signs in to both. For Rancher it does what Rancher's
-// own CLI does for each auth provider (rancher/cli cmd/kubectl_token.go):
-// a username and password for local and LDAP users, the request-ID handoff
-// for SAML, the device code for Azure AD. For providers Rancher's CLI
-// can't sign in (GitHub, Google, OIDC), it uses the hyve extension's CLI
-// sign-in page (browser.go).
+// host, keeping the session, and building kubeconfigs that use it
+// (HYVE-PROPOSAL.md, "Signing in: one URL, a username and a password").
 package login
 
 import (
@@ -25,18 +16,15 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Kinds of server.
-const (
-	KindHyve    = "hyve"
-	KindRancher = "rancher"
-)
+// KindHyve is the only kind of server. Configs from before revision 15 can
+// still hold Rancher servers (kind "rancher"), which Get refuses.
+const KindHyve = "hyve"
 
 // Server is one place the CLI has signed in to.
 type Server struct {
 	Name     string `json:"name"`
 	URL      string `json:"url"`
 	Kind     string `json:"kind"`
-	Provider string `json:"provider,omitempty"`
 	Username string `json:"username,omitempty"`
 	// Token is the session. The file is written 0600, like a kubeconfig.
 	Token     string    `json:"token,omitempty"`
@@ -117,16 +105,35 @@ func (c *Config) Get(name string) (*Server, error) {
 	// knowing what the CLI called it.
 	if strings.Contains(name, "://") {
 		if s := c.FindByURL(strings.TrimRight(name, "/")); s != nil {
-			return s, nil
+			return s.usable()
 		}
 		return nil, fmt.Errorf("not signed in to %s; run 'hyve login %s'", name, name)
 	}
 	for i := range c.Servers {
 		if c.Servers[i].Name == name {
-			return &c.Servers[i], nil
+			return c.Servers[i].usable()
 		}
 	}
 	return nil, fmt.Errorf("no saved server %q; run 'hyve login <url>'", name)
+}
+
+// usable refuses servers hyve can no longer use: Rancher, saved by older
+// versions of hyve.
+func (s *Server) usable() (*Server, error) {
+	if s.Kind != "" && s.Kind != KindHyve {
+		return nil, fmt.Errorf("%s is a Rancher server, and hyve no longer works with Rancher; remove it with 'hyve logout --server %s --forget'", s.Name, s.Name)
+	}
+	return s, nil
+}
+
+// Find returns the named server whatever its kind, or nil.
+func (c *Config) Find(name string) *Server {
+	for i := range c.Servers {
+		if c.Servers[i].Name == name {
+			return &c.Servers[i]
+		}
+	}
+	return nil
 }
 
 // FindByURL returns the server saved for url, if any.

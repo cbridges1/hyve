@@ -64,7 +64,7 @@ type Options struct {
 	MutatingWebhookName, ValidatingWebhook string
 	// NoWebhook runs only the reconcilers.
 	NoWebhook bool
-	// Agent registration, when hyve is the Rancher host.
+	// Agent registration: hyve is the host child clusters' agents dial.
 	Agents AgentOptions
 	// LazyProviders adds known Cluster API providers when something first
 	// needs them (local mode).
@@ -130,21 +130,7 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 			return err
 		}
 	}
-	if probe, err := client.New(cfg, client.Options{}); err == nil && RancherInstalled(ctx, probe) {
-		lg.Info("Rancher is installed: using Rancher's users and roles, filling Turtles' gaps")
-		if err := setupRancher(ctx, mgr); err != nil {
-			return err
-		}
-		// Rancher added to a standalone install: its agents are Rancher's now.
-		if o.Agents.Namespace != "" {
-			if err := ctrl.NewControllerManagedBy(mgr).Named("hyve-release-agents").For(object(clusterGVK)).
-				Complete(&ReleaseAgents{Client: mgr.GetClient(), Namespace: o.Agents.Namespace}); err != nil {
-				return err
-			}
-		}
-	} else if o.Agents.HostURL != "" {
-		// Without Rancher, hyve keeps access too (with Rancher, Rancher's
-		// cluster role bindings do).
+	if o.Agents.HostURL != "" {
 		if err := setupAccess(mgr); err != nil {
 			return err
 		}
@@ -154,7 +140,7 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 			return err
 		}
 	} else {
-		lg.Info("agent registration is off (no host URL); with Rancher, Rancher installs the agents")
+		lg.Info("agent registration and access are off (no host URL)")
 	}
 	if !o.NoWebhook {
 		mgr.GetWebhookServer().Register("/mutate-cluster", &webhook.Admission{Handler: &FillCluster{Client: mgr.GetClient(), Now: time.Now}})

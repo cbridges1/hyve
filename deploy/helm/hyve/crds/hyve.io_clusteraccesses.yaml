@@ -1,6 +1,6 @@
 # ClusterAccess: a role for a hyve user or group on one cluster, or every
 # cluster in its environment; hyve's equivalent of Rancher's
-# ClusterRoleTemplateBinding, for installs without Rancher. hyve-controller
+# ClusterRoleTemplateBinding. hyve-controller
 # writes the role to each cluster it covers and binds hyve:<user> or
 # hyve:<group> there. It grants nothing on the management cluster beyond
 # reading (or, for owners, changing) the cluster's own CAPI Cluster.

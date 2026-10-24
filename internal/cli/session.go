@@ -2,7 +2,7 @@
 // resources, environments, providers, repos and the controller
 // (HYVE-PROPOSAL.md, "Commands"). Every command reaches the management
 // cluster the same way: through the signed-in server's /k8s/clusters/local
-// proxy, a hyve host or Rancher alike.
+// proxy.
 package cli
 
 import (

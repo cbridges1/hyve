@@ -38,13 +38,9 @@ go.work.sum
 
 # GoReleaser output
 /dist/
-# The standalone UI's build, embedded by internal/webui; only its
+# The UI's build, embedded by internal/webui; only its
 # placeholder is checked in (go:embed needs something there to build).
 internal/webui/dist/*
 !internal/webui/dist/PLACEHOLDER
 # The UI's dependencies and build output.
 ui/node_modules/
-ui/standalone/node_modules/
-ui/pkg/hyve/node_modules/
-ui/dist-pkg/
-ui/dist/

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -254,4 +255,33 @@ func TestPushLeavesAgentClustersAlone(t *testing.T) {
 	if err != nil || called || res.RequeueAfter != agentStale {
 		t.Errorf("err=%v child=%v requeue=%v", err, called, res.RequeueAfter)
 	}
+}
+
+func TestChartAuthFlags(t *testing.T) {
+	assert.Equal(t, "", chartAuthFlags(nil, false))
+	assert.Equal(t, " --helm-insecure-skip-tls", chartAuthFlags(nil, true))
+	sec := &corev1.Secret{Data: map[string][]byte{"username": []byte("u"), "password": []byte("p"), "cacerts": []byte("pem"), "basicHTTP": []byte("true")}}
+	got := chartAuthFlags(sec, false)
+	assert.Contains(t, got, `--username "$(cat /auth/username)"`)
+	assert.Contains(t, got, "--password-file /auth/password")
+	assert.Contains(t, got, "--cacerts-file /auth/cacerts")
+	assert.Contains(t, got, "--helm-repo-url-regex '.*'")
+	assert.Contains(t, got, "--helm-basic-http")
+	assert.NotContains(t, got, "--helm-insecure-skip-tls")
+	// A username without a password isn't credentials.
+	assert.NotContains(t, chartAuthFlags(&corev1.Secret{Data: map[string][]byte{"username": []byte("u")}}, false), "--username")
+}
+
+func TestDriftDue(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	r := &Push{Now: func() time.Time { return now }}
+	bd := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"name": "b", "uid": "u1"}, "spec": map[string]any{}}}
+	assert.False(t, r.driftDue(bd), "without correctDrift")
+	_ = unstructured.SetNestedField(bd.Object, true, "spec", "correctDrift", "enabled")
+	assert.False(t, r.driftDue(bd), "first seen: wait an interval")
+	now = now.Add(pushResync / 2)
+	assert.False(t, r.driftDue(bd))
+	now = now.Add(pushResync / 2)
+	assert.True(t, r.driftDue(bd))
+	assert.False(t, r.driftDue(bd), "just redeployed")
 }

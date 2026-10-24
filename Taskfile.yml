@@ -15,15 +15,15 @@ tasks:
     cmd: go build {{.BUILD_FLAGS}} -o {{.BINARY}}{{.EXT}} .
 
   ui:
-    desc: Build hyve's own UI into internal/webui/dist, for the binary to embed
-    dir: ui/standalone
+    desc: Build the UI into internal/webui/dist, for the binary to embed
+    dir: ui
     cmds:
       - npm ci --no-audit --no-fund
       - npm run build
 
   ui:dev:
     desc: "Serve the UI with hot reload against a host (HYVE_HOST=https://127.0.0.1:30444 task ui:dev)"
-    dir: ui/standalone
+    dir: ui
     cmd: npm run dev
 
   run:

@@ -40,8 +40,8 @@ webhooks:
         resources: ["clusters"]
         operations: ["CREATE"]
   # Records who created a Cluster in an environment (hyve.io/creator), from
-  # the API server's view of the request, so they become its owner: a
-  # ClusterAccess without Rancher, a cluster-owner CRTB with it.
+  # the API server's view of the request, so they become its owner through
+  # a ClusterAccess.
   - name: creator.clusters.hyve.io
     admissionReviewVersions: ["v1"]
     sideEffects: None

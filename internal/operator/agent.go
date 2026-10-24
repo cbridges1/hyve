@@ -32,12 +32,11 @@ const DefaultAgentImage = "rancher/rancher-agent:v2.14.3"
 // applied to its cluster.
 const annotAgentManifest = "hyve.io/agent-manifest"
 
-// AgentOptions configure agent registration, for installs where hyve is
-// the Rancher host.
+// AgentOptions configure agent registration: hyve is the host its child
+// clusters' agents connect to.
 type AgentOptions struct {
 	// HostURL is the host endpoint's address as child clusters reach it
-	// (CATTLE_SERVER). Empty turns agent registration off: with Rancher,
-	// Turtles and Rancher install the agent.
+	// (CATTLE_SERVER). Empty turns agent registration off.
 	HostURL string
 	// CACerts is the PEM CA the host's certificate chains to, when it
 	// isn't publicly trusted; agents pin its checksum.

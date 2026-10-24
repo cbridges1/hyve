@@ -64,7 +64,6 @@ type Spec struct {
 	Schedule        string            `json:"schedule,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
 	Resources       []resources.Entry `json:"resources,omitempty"`
-	Rancher         *Rancher          `json:"rancher,omitempty"`
 }
 
 type ClassRef struct {
@@ -80,12 +79,6 @@ type Workers struct {
 	Type  string `json:"type,omitempty"`
 	Class string `json:"class,omitempty"`
 	Count *int64 `json:"count,omitempty"`
-}
-
-// Rancher holds settings that only matter with Rancher installed.
-type Rancher struct {
-	// AutoImport false stops Turtles importing the clusters into Rancher.
-	AutoImport *bool `json:"autoImport,omitempty"`
 }
 
 // ClassNamespace is where the template's ClusterClass lives: the
@@ -217,6 +210,12 @@ func Fill(c *unstructured.Unstructured, t *Template, class *unstructured.Unstruc
 	vars := clusters.Variables(c)
 	var locked []string
 	for _, l := range t.Spec.LockedVariables {
+		if l == LockVersion {
+			if v, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "version"); v != t.Spec.Version {
+				locked = append(locked, l)
+			}
+			continue
+		}
 		want, ok := t.Spec.Variables[l]
 		if !ok || want == nil {
 			continue
@@ -264,11 +263,6 @@ func Fill(c *unstructured.Unstructured, t *Template, class *unstructured.Unstruc
 	if _, ok := labels[clusters.LabelManagedBy]; !ok {
 		labels[clusters.LabelManagedBy] = clusters.ManagedBy
 	}
-	if t.Spec.Rancher == nil || t.Spec.Rancher.AutoImport == nil || *t.Spec.Rancher.AutoImport {
-		if _, ok := labels[clusters.LabelAutoImport]; !ok {
-			labels[clusters.LabelAutoImport] = "true"
-		}
-	}
 	c.SetLabels(labels)
 
 	ann := c.GetAnnotations()
@@ -292,6 +286,12 @@ func CheckLocked(t *Template, c *unstructured.Unstructured) []string {
 	have := clusters.Variables(c)
 	var bad []string
 	for _, l := range t.Spec.LockedVariables {
+		if l == LockVersion {
+			if v, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "version"); t.Spec.Version != "" && v != t.Spec.Version {
+				bad = append(bad, l)
+			}
+			continue
+		}
 		want, ok := t.Spec.Variables[l]
 		if !ok || want == nil {
 			continue
@@ -310,6 +310,14 @@ func ChangedVariables(old, new *unstructured.Unstructured, names []string) []str
 	ov, nv := clusters.Variables(old), clusters.Variables(new)
 	var out []string
 	for _, n := range names {
+		if n == LockVersion {
+			o, _, _ := unstructured.NestedString(old.Object, "spec", "topology", "version")
+			v, _, _ := unstructured.NestedString(new.Object, "spec", "topology", "version")
+			if o != v {
+				out = append(out, n)
+			}
+			continue
+		}
 		if !JSONEqual(ov[n], nv[n]) {
 			out = append(out, n)
 		}
@@ -383,12 +391,23 @@ func Validate(t *Template) error {
 		seen[r.Name] = true
 	}
 	for _, l := range t.Spec.LockedVariables {
+		if l == LockVersion {
+			if t.Spec.Version == "" {
+				return fmt.Errorf("%s is locked, but kubernetesVersion isn't set", LockVersion)
+			}
+			continue
+		}
 		if _, ok := t.Spec.Variables[l]; !ok {
 			return fmt.Errorf("locked variable %q has no value in variables", l)
 		}
 	}
 	return nil
 }
+
+// LockVersion in lockedVariables locks the Kubernetes version to the
+// template's kubernetesVersion, as a variable is locked: clusters made from
+// the template can't be upgraded (or created) at another version.
+const LockVersion = "kubernetesVersion"
 
 // IsLocked reports whether a template locks a variable.
 func (t *Template) IsLocked(name string) bool {

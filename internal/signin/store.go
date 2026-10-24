@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +39,9 @@ const (
 	labelSessionFor  = "hyve.io/session-for"
 	keyHash          = "hash"
 	keyExpiresAt     = "expiresAt"
+	// keyGroups on a session: the identity provider's groups at sign-in,
+	// one per line, added to the User's own.
+	keyGroups        = "groups"
 	keyBootstrap     = "bootstrapPassword"
 	identityCacheTTL = 30 * time.Second
 	bcryptCost       = 12
@@ -212,17 +217,22 @@ func (s *Store) Login(ctx context.Context, username, password, newPassword strin
 			return "", time.Time{}, err
 		}
 	}
-	token, expiresAt, err = s.createSession(ctx, u)
+	token, expiresAt, err = s.createSessionWithGroups(ctx, u, nil)
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	s.recordLogin(ctx, u)
+	return token, expiresAt, nil
+}
+
+// recordLogin sets the User's last sign-in time.
+func (s *Store) recordLogin(ctx context.Context, u *hyvev1alpha1.User) {
 	now := metav1.NewTime(s.now())
 	patch := client.MergeFrom(u.DeepCopy())
 	u.Status.LastLogin = &now
 	if err := s.Client.Status().Patch(ctx, u, patch); err != nil {
-		log.Printf("signin: recording last login for %s: %v", username, err)
+		log.Printf("signin: recording last login for %s: %v", u.Name, err)
 	}
-	return token, expiresAt, nil
 }
 
 // SetPassword stores a new bcrypt hash for username and clears
@@ -280,10 +290,23 @@ func (s *Store) NewSession(ctx context.Context, ident Identity) (string, time.Ti
 	if u.Spec.Disabled {
 		return "", time.Time{}, ErrInvalidSession
 	}
-	return s.createSession(ctx, u)
+	// Keep the identity provider's groups the first session came with.
+	own := map[string]bool{}
+	for _, g := range u.Spec.Groups {
+		own[g] = true
+	}
+	var extra []string
+	for _, g := range ident.Groups {
+		if !own[g] {
+			extra = append(extra, g)
+		}
+	}
+	return s.createSessionWithGroups(ctx, u, extra)
 }
 
-func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User) (string, time.Time, error) {
+// createSessionWithGroups starts a session for u; groups (from the
+// identity provider) are added to the User's own for its lifetime.
+func (s *Store) createSessionWithGroups(ctx context.Context, u *hyvev1alpha1.User, groups []string) (string, time.Time, error) {
 	token, id, hash, err := newSessionToken()
 	if err != nil {
 		return "", time.Time{}, err
@@ -301,6 +324,9 @@ func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User) (string
 			keyHash:      []byte(hash),
 			keyExpiresAt: []byte(expiresAt.Format(time.RFC3339)),
 		},
+	}
+	if len(groups) > 0 {
+		sec.Data[keyGroups] = []byte(strings.Join(groups, "\n"))
 	}
 	if err := s.Client.Create(ctx, sec); err != nil {
 		return "", time.Time{}, err
@@ -351,6 +377,11 @@ func (s *Store) Lookup(ctx context.Context, token string) (Identity, error) {
 		return Identity{}, ErrInvalidSession
 	}
 	ident := Identity{Username: u.Name, Groups: append([]string(nil), u.Spec.Groups...), SessionID: id}
+	for _, g := range strings.Split(string(sec.Data[keyGroups]), "\n") {
+		if g != "" && !slices.Contains(ident.Groups, g) {
+			ident.Groups = append(ident.Groups, g)
+		}
+	}
 
 	until := now.Add(identityCacheTTL)
 	if expiresAt.Before(until) {

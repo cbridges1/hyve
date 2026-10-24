@@ -27,22 +27,15 @@ func InstallCmd() *cobra.Command {
 		Short: "Install hyve on a management cluster, with whatever it needs that's missing",
 		Long: `Installs hyve on the cluster your kubeconfig points at.
 
-With Rancher installed, that's hyve-controller: Rancher brings Cluster API
-(through Turtles) and Fleet, and its agents connect to Rancher. hyve also
-adds CAAPF through Turtles if it's missing, and turns on Turtles' use-caapf
-(in cattle-system/rancher-config), so CAAPF alone registers clusters with
-Fleet. Turning it on reinstalls fleet-agent on clusters Turtles already
-imported.
-
-Without Rancher, it also installs what's missing of cert-manager, the
-Cluster API Operator with core Cluster API, and CAAPF (which installs
-Fleet), and hyve's host endpoint: the server users sign in to and the
-child clusters' agents connect to. --host-url is where both reach it.
+That's hyve-controller and hyve's host endpoint, the server users sign in
+to and the child clusters' agents connect to (--host-url is where both
+reach it), plus what's missing of cert-manager, the Cluster API Operator
+with core Cluster API, and CAAPF (which installs Fleet). On a cluster that
+still runs Rancher, hyve uses the Cluster API and Fleet already there.
 
 Run it as a cluster admin. Safe to re-run.`,
-		Example: `  hyve install --host-url https://hyve.example.com --host-tls-cert tls.crt --host-tls-key tls.key
-  hyve install --kubeconfig rancher.yaml          # alongside Rancher`,
-		Args: cobra.NoArgs,
+		Example: `  hyve install --host-url https://hyve.example.com --host-tls-cert tls.crt --host-tls-key tls.key`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (tlsCert == "") != (tlsKey == "") {
 				return errors.New("--host-tls-cert and --host-tls-key go together")
@@ -105,13 +98,10 @@ Run it as a cluster admin. Safe to re-run.`,
 				o.HostTLSSecret = "hyve-host-tls"
 			}
 			o.Log = logf
-			res, err := install.Install(ctx, kc, o)
-			if err != nil {
+			if _, err := install.Install(ctx, kc, o); err != nil {
 				return err
 			}
 			switch {
-			case res.Rancher:
-				logf("\nhyve is installed alongside Rancher. Sign in with 'hyve login <your Rancher URL>'.")
 			case o.HostURL != "":
 				logf("\nhyve is installed. Sign in as admin:")
 				logf("  kubectl -n %s get secret bootstrap-secret -o jsonpath='{.data.bootstrapPassword}' | base64 -d", o.Namespace)
@@ -128,12 +118,12 @@ Run it as a cluster admin. Safe to re-run.`,
 	f.StringVarP(&o.Namespace, "namespace", "n", "hyve-system", "namespace for hyve")
 	f.StringVar(&o.Image, "image", "", "hyve image (default: the release's)")
 	f.StringVar(&o.PullPolicy, "image-pull-policy", "", "image pull policy")
-	f.StringVar(&o.HostURL, "host-url", "", "without Rancher: the host endpoint's URL, as users and child clusters reach it")
+	f.StringVar(&o.HostURL, "host-url", "", "the host endpoint's URL, as users and child clusters reach it")
 	f.StringVar(&tlsCert, "host-tls-cert", "", "certificate for the host to serve (default: plain HTTP, for a TLS-terminating proxy in front)")
 	f.StringVar(&tlsKey, "host-tls-key", "", "key for --host-tls-cert")
 	f.StringVar(&caFile, "host-cacerts", "", "PEM CA the host's certificate chains to, when it isn't publicly trusted")
 	f.StringVarP(&valuesFile, "values", "f", "", "extra chart values (YAML)")
-	f.BoolVar(&o.OnlyHyve, "only-hyve", false, "install hyve's chart only, not cert-manager, Cluster API, CAAPF or Fleet (with Rancher: leave CAAPF and use-caapf alone)")
+	f.BoolVar(&o.OnlyHyve, "only-hyve", false, "install hyve's chart only, not cert-manager, Cluster API, CAAPF or Fleet")
 	f.DurationVar(&timeout, "timeout", 20*time.Minute, "how long to wait")
 	return cmd
 }

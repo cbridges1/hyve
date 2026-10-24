@@ -18,12 +18,9 @@ import (
 	"github.com/cbridges1/hyve/internal/install"
 )
 
-// With Rancher, providers are Turtles CAPIProviders; without, the Cluster
-// API Operator's provider kinds, one per provider type.
-var (
-	turtlesProviderGVR = schema.GroupVersionResource{Group: "turtles-capi.cattle.io", Version: "v1alpha1", Resource: "capiproviders"}
-	operatorKinds      = install.OperatorKinds
-)
+// Providers are the Cluster API Operator's provider kinds, one per provider
+// type (or release manifests on a lean install).
+var operatorKinds = install.OperatorKinds
 
 func operatorGVR(kind string) schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: "operator.cluster.x-k8s.io", Version: "v1alpha2", Resource: strings.ToLower(kind) + "s"}
@@ -35,18 +32,13 @@ func ProviderCmd() *cobra.Command {
 		Use:     "provider",
 		Aliases: []string{"providers"},
 		Short:   "Add, list and remove Cluster API providers",
-		Long: `Installs Cluster API providers on the management cluster: as Rancher Turtles
-CAPIProviders when Rancher is installed, otherwise through the Cluster API
-Operator. Variables are what the provider's clusterctl configuration reads:
+		Long: `Installs Cluster API providers on the management cluster, through the
+Cluster API Operator (or from release manifests in local mode). Variables are what the provider's clusterctl configuration reads:
 credentials and feature flags.`,
 	}
 	AddGlobalFlags(cmd)
 	cmd.AddCommand(providerAddCmd(), providerListCmd(), providerShowCmd(), providerRemoveCmd())
 	return cmd
-}
-
-func (s *session) turtles() bool {
-	return s.kube.HasKind("turtles-capi.cattle.io", "v1alpha1", "CAPIProvider")
 }
 
 func providerAddCmd() *cobra.Command {
@@ -181,17 +173,6 @@ func listProviders(cmd *cobra.Command, s *session) ([]providerRow, error) {
 		v, _, _ := unstructured.NestedString(u.Object, f...)
 		return v
 	}
-	if s.turtles() {
-		list, err := s.kube.Dynamic.Resource(turtlesProviderGVR).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		for i := range list.Items {
-			p := &list.Items[i]
-			rows = append(rows, providerRow{p.GetNamespace(), p.GetName(), get(p, "spec", "type"), get(p, "spec", "name"), get(p, "status", "installedVersion"), get(p, "status", "phase")})
-		}
-		return rows, nil
-	}
 	if install.DetectCAPI(s.kube) == install.CAPILean {
 		return leanProviders(ctx, s)
 	}
@@ -269,10 +250,7 @@ func providerRemoveCmd() *cobra.Command {
 				if r.name != args[0] {
 					continue
 				}
-				gvr := turtlesProviderGVR
-				if !s.turtles() {
-					gvr = operatorGVR(operatorKinds[r.typ])
-				}
+				gvr := operatorGVR(operatorKinds[r.typ])
 				if err := s.kube.Dynamic.Resource(gvr).Namespace(r.ns).Delete(cmd.Context(), r.name, metav1.DeleteOptions{}); err != nil {
 					return err
 				}

@@ -1,9 +1,8 @@
 // Package install puts hyve on a management cluster (HYVE-PROPOSAL.md,
-// "Three ways to run, one model"): with Rancher, just hyve-controller;
-// without it, also what Rancher would have brought, each only if missing:
-// cert-manager, the Cluster API Operator with core Cluster API, CAAPF
-// (which installs Fleet), and hyve's host endpoint, the Rancher host the
-// child clusters' agents dial.
+// "Two ways to run, one model"): hyve-controller, hyve's host endpoint (the
+// host the child clusters' agents dial), and whatever else is missing:
+// cert-manager, the Cluster API Operator with core Cluster API, and CAAPF
+// (which installs Fleet).
 package install
 
 import (
@@ -94,12 +93,11 @@ var ErrNoImage = errors.New("this hyve is a development build, which has no publ
 
 // Result says what Install found and did.
 type Result struct {
-	Rancher   bool
 	Installed []string
 }
 
-// Install installs hyve and, without Rancher, whatever it needs that's
-// missing. Safe to re-run.
+// Install installs hyve and whatever it needs that's missing. Safe to
+// re-run.
 func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	if o.Image == "" && IsDevBuild() {
 		return nil, ErrNoImage
@@ -112,25 +110,12 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		logf = func(string, ...any) {}
 	}
 	res := &Result{}
-	res.Rancher = hasCRD(ctx, kc, "clusters.management.cattle.io")
-	if res.Rancher {
-		logf("Rancher is installed: it brings Cluster API (Turtles) and Fleet, and is the agents' host")
-		if !hasCRD(ctx, kc, "clusters.cluster.x-k8s.io") {
-			return nil, fmt.Errorf("Rancher is installed but Cluster API isn't: install Rancher Turtles first")
-		}
-		if !o.OnlyHyve {
-			// Before anything that gets Turtles' Cluster API ready.
-			if err := skipKeyRotationMigration(ctx, kc); err != nil {
-				return res, err
-			}
-			if err := adoptIntoTurtles(ctx, kc, logf); err != nil {
-				return res, fmt.Errorf("handing Cluster API to Turtles: %w", err)
-			}
-			if err := ensureRancherCAAPF(ctx, kc, logf); err != nil {
-				return res, err
-			}
-		}
-	} else if o.OnlyHyve {
+	if hasCRD(ctx, kc, "clusters.management.cattle.io") {
+		// Moving a host off Rancher (HYVE-PROPOSAL.md, open question 3):
+		// Rancher's Cluster API and Fleet are already there and stay.
+		logf("Rancher is installed: hyve installs next to it, and uses the Cluster API and Fleet already there. Remove Rancher once the clusters' agents have moved to hyve.")
+	}
+	if o.OnlyHyve {
 		logf("Installing only hyve; cert-manager, Cluster API, CAAPF and Fleet are left to you")
 	} else {
 		type step struct {
@@ -189,13 +174,6 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		if err := applyFleetConfig(ctx, kc, o, logf); err != nil {
 			return res, err
 		}
-		// For Rancher added later: Turtles reads use-caapf when Rancher
-		// installs it, and imports this install's clusters straight away.
-		// Rancher registers a cluster with Fleet itself if it imports it
-		// before use-caapf is on, and can't be made to stop, so set it now.
-		if err := prepareForRancher(ctx, kc); err != nil {
-			return res, err
-		}
 	}
 
 	values := map[string]any{}
@@ -214,10 +192,7 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		values["image"] = img
 	}
 	values["namespace"] = o.Namespace
-	if res.Rancher {
-		values["rancher"] = map[string]any{"enabled": true}
-	}
-	if !res.Rancher && o.HostURL != "" {
+	if o.HostURL != "" {
 		host := map[string]any{"enabled": true, "agentURL": o.HostURL}
 		if o.HostTLSSecret != "" {
 			host["tlsSecret"] = o.HostTLSSecret
@@ -246,11 +221,6 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	if err := applyRetrying(ctx, kc, manifest, logf); err != nil {
 		return res, err
 	}
-	if res.Rancher {
-		if err := pruneStandalone(ctx, kc, o.Namespace, values, logf); err != nil {
-			return res, err
-		}
-	}
 	if err := ensureDefaultNamespaces(ctx, kc); err != nil {
 		return res, err
 	}
@@ -275,7 +245,7 @@ func caConfigMap(ns, pem string) *unstructured.Unstructured {
 
 // FeatureVariables are the clusterctl variables every provider hyve
 // installs gets: ClusterClasses need ClusterTopology, and managed clusters
-// (GKE, AKS) need machine pools. Rancher Turtles sets the same.
+// (GKE, AKS) need machine pools.
 var FeatureVariables = map[string]string{
 	"CLUSTER_TOPOLOGY":         "true",
 	"EXP_MACHINE_POOL":         "true",
@@ -307,9 +277,12 @@ spec:
 `, ns, name, ns, vars, kind, name, ns, version, name, ns)
 }
 
+// AgentNamespace is where CAAPF puts each cluster's fleet-agent, the same
+// namespace Rancher used, so clusters registered under Rancher keep theirs.
+const AgentNamespace = "cattle-fleet-system"
+
 // applyFleetConfig points CAAPF at the right Fleet server and has it
-// install Fleet when it's missing. Without Rancher, child clusters'
-// fleet-agents reach the management cluster through the host's
+// install Fleet when it's missing. Child clusters' fleet-agents reach the management cluster through the host's
 // /k8s/clusters/local, which passes their service-account tokens through
 // (open question 6), so only the host needs to be reachable.
 func applyFleetConfig(ctx context.Context, kc *kube.Client, o Options, logf func(string, ...any)) error {
@@ -347,9 +320,10 @@ func applyFleetConfig(ctx context.Context, kc *kube.Client, o Options, logf func
 	// or a re-run's apply would drop the field.
 	existing, err := kc.Dynamic.Resource(fleetAddonConfigGVR).Get(ctx, "fleet-addon-config", getOpts)
 	_, installedByCAAPF, _ := unstructured.NestedMap(existingObject(existing, err), "spec", "install")
-	// Agents go where Turtles puts them, so adding Rancher later doesn't
-	// move them; an install from before keeps CAAPF's default
-	// (agentNamespaceOf).
+	// The agent namespace never changes once clusters are registered: Fleet
+	// records it in the ownership of everything an agent deploys. A new
+	// config gets AgentNamespace; an existing one keeps what it has, or
+	// CAAPF's default when it never set one.
 	if apierrors.IsNotFound(err) {
 		spec["cluster"].(map[string]any)["agentNamespace"] = AgentNamespace
 	} else if ns, _, _ := unstructured.NestedString(existingObject(existing, err), "spec", "cluster", "agentNamespace"); ns != "" {

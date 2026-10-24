@@ -17,10 +17,9 @@ import (
 )
 
 var (
-	ClusterGVR        = schema.GroupVersionResource{Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusters"}
-	ClusterClassGVR   = schema.GroupVersionResource{Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusterclasses"}
-	FleetClusterGVR   = schema.GroupVersionResource{Group: "fleet.cattle.io", Version: "v1alpha1", Resource: "clusters"}
-	RancherClusterGVR = schema.GroupVersionResource{Group: "management.cattle.io", Version: "v3", Resource: "clusters"}
+	ClusterGVR      = schema.GroupVersionResource{Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusters"}
+	ClusterClassGVR = schema.GroupVersionResource{Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusterclasses"}
+	FleetClusterGVR = schema.GroupVersionResource{Group: "fleet.cattle.io", Version: "v1alpha1", Resource: "clusters"}
 )
 
 const (
@@ -28,9 +27,6 @@ const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	// ManagedBy is LabelManagedBy's value.
 	ManagedBy = "hyve"
-	// LabelAutoImport asks Rancher Turtles to import the cluster into
-	// Rancher. Harmless without Rancher.
-	LabelAutoImport = "cluster-api.cattle.io/rancher-auto-import"
 
 	// AnnotationClusterLabels on a ClusterClass: "k=v,k2=v2" labels every
 	// Cluster of the class gets (e.g. the one a CNI ClusterResourceSet
@@ -44,10 +40,6 @@ const (
 	// ClusterClasses written for herd keep working.
 	legacyClusterLabels  = "herd.io/cluster-labels"
 	legacyDefaultVersion = "herd.io/default-version"
-
-	// Turtles' labels on the Rancher cluster naming its CAPI cluster.
-	turtlesOwner   = "cluster-api.cattle.io/capi-cluster-owner"
-	turtlesOwnerNS = "cluster-api.cattle.io/capi-cluster-owner-ns"
 )
 
 // Worker types.
@@ -263,37 +255,6 @@ func FleetReady(fc *unstructured.Unstructured) bool {
 	return ok && r == t && t != "0"
 }
 
-// RancherCluster finds the Rancher cluster Turtles imported the CAPI
-// cluster ns/name as; nil when it hasn't been imported, or Rancher isn't
-// installed.
-func RancherCluster(ctx context.Context, dc dynamic.Interface, ns, name string) (*unstructured.Unstructured, error) {
-	list, err := dc.Resource(RancherClusterGVR).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", turtlesOwner, name, turtlesOwnerNS, ns),
-	})
-	if apierrors.IsNotFound(err) {
-		return nil, nil // no Rancher
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(list.Items) > 0 {
-		return &list.Items[0], nil
-	}
-	return nil, nil
-}
-
-// RancherState summarises a Rancher cluster: "", "pending", "connected".
-func RancherState(rc *unstructured.Unstructured) string {
-	switch {
-	case rc == nil:
-		return ""
-	case ConditionStatus(rc, "Ready") == "True" && ConditionStatus(rc, "Connected") == "True":
-		return "connected"
-	default:
-		return "pending"
-	}
-}
-
 // Age formats the time since t like kubectl does.
 func Age(t time.Time) string {
 	d := time.Since(t)
@@ -312,7 +273,7 @@ func Age(t time.Time) string {
 // FillDefaults completes a Cluster from its ClusterClass alone, for
 // clusters made without a template: version, control plane, workers,
 // network and the class's labels. Whatever the Cluster sets is kept.
-func FillDefaults(c, class *unstructured.Unstructured, autoImport bool) error {
+func FillDefaults(c, class *unstructured.Unstructured) error {
 	if v, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "version"); v == "" {
 		v = DefaultVersion(class)
 		if v == "" {
@@ -347,9 +308,6 @@ func FillDefaults(c, class *unstructured.Unstructured, autoImport bool) error {
 	}
 	if _, ok := labels[LabelManagedBy]; !ok {
 		labels[LabelManagedBy] = ManagedBy
-	}
-	if _, ok := labels[LabelAutoImport]; !ok && autoImport {
-		labels[LabelAutoImport] = "true"
 	}
 	c.SetLabels(labels)
 	return nil

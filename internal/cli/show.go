@@ -127,7 +127,7 @@ func repoShowCmd() *cobra.Command {
 }
 
 // providerShowCmd shows a provider: the object it was installed from
-// (Turtles' or the CAPI Operator's), when there is one, and its controller.
+// (the CAPI Operator's), when there is one, and its controller.
 func providerShowCmd() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
@@ -154,8 +154,6 @@ func providerShowCmd() *cobra.Command {
 				}
 				var gvr schema.GroupVersionResource
 				switch {
-				case s.turtles():
-					gvr = turtlesProviderGVR
 				case operatorKinds[r.typ] != "":
 					gvr = operatorGVR(operatorKinds[r.typ])
 				}

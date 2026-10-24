@@ -136,12 +136,39 @@ spec:
             - --listen=:8080
             - --namespace={{ .Values.namespace }}
             - --session-ttl={{ .Values.host.sessionTTL }}
+            {{- if not .Values.host.auditLog }}
+            - --audit-log=false
+            {{- end }}
             - --bootstrap-secret={{ .Values.host.bootstrapSecret }}
             {{- if .Values.ui.enabled }}
             - --ui
             {{- end }}
             {{- if .Values.host.localUser }}
             - --local-user={{ .Values.host.localUser }}
+            {{- end }}
+            {{- with .Values.auth.oidc }}
+            {{- if .issuer }}
+            - --public-url={{ required "auth.oidc needs host.agentURL, the host's public address" $.Values.host.agentURL }}
+            - --oidc-issuer={{ .issuer }}
+            - --oidc-client-id={{ required "auth.oidc.clientID is required" .clientID }}
+            {{- if .displayName }}
+            - --oidc-display-name={{ .displayName }}
+            {{- end }}
+            {{- if .scopes }}
+            - --oidc-scopes={{ join "," .scopes }}
+            {{- end }}
+            - --oidc-groups-claim={{ .groupsClaim }}
+            - --oidc-username-claim={{ .usernameClaim }}
+            {{- if .allowedDomains }}
+            - --oidc-allowed-domains={{ join "," .allowedDomains }}
+            {{- end }}
+            {{- if .allowedGroups }}
+            - --oidc-allowed-groups={{ join "," .allowedGroups }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if not .Values.auth.passwords }}
+            - --no-passwords
             {{- end }}
             {{- if .Values.host.caCertsConfigMap }}
             - --cacerts=/etc/hyve/cacerts/ca.crt
@@ -150,6 +177,14 @@ spec:
             - --tls-cert=/etc/hyve/tls/tls.crt
             - --tls-key=/etc/hyve/tls/tls.key
             {{- end }}
+          {{- if and .Values.auth.oidc.issuer .Values.auth.oidc.clientSecret.name }}
+          env:
+            - name: HYVE_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.oidc.clientSecret.name }}
+                  key: {{ .Values.auth.oidc.clientSecret.key }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8080

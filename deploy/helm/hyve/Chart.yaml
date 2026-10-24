@@ -1,6 +1,6 @@
 apiVersion: v2
 name: hyve
-description: hyve, clusters from Cluster API templates delivered to with Fleet. hyve-controller, and the host endpoint for installs without Rancher.
+description: hyve, clusters from Cluster API templates delivered to with Fleet. hyve-controller and the host endpoint.
 type: application
 # version/appVersion here are placeholders for local use — the release
 # workflow packages the chart with both set to the release's own version

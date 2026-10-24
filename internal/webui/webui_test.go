@@ -14,7 +14,7 @@ func TestHandler(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		return rec
 	}
-	rec := get("/c/_/hyve-overview")
+	rec := get("/clusters/dev/web")
 	if rec.Header().Get("X-Frame-Options") != "DENY" || !strings.Contains(rec.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Errorf("missing security headers: %v", rec.Header())
 	}
@@ -26,7 +26,7 @@ func TestHandler(t *testing.T) {
 		return
 	}
 	// The app's own routes get index.html; missing assets don't.
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<div id="app">`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<div id="root">`) {
 		t.Errorf("app route: got %d", rec.Code)
 	}
 	if rec := get("/assets/nope.js"); rec.Code != http.StatusNotFound {

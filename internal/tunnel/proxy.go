@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cbridges1/hyve/internal/audit"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/rest"
 )
@@ -64,13 +65,19 @@ func writeStatus(w http.ResponseWriter, code int, reason, msg string) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, clustersPrefix)
-	id, path, _ := strings.Cut(rest, "/")
 	ident, ok := p.Authenticate(r)
 	if !ok {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "sign in with 'hyve login' first")
 		return
 	}
+	p.serveAs(w, r, ident)
+}
+
+func (p *Proxy) serveAs(w http.ResponseWriter, r *http.Request, ident Identity) {
+	rest := strings.TrimPrefix(r.URL.Path, clustersPrefix)
+	id, path, _ := strings.Cut(rest, "/")
+	w, done := audit.Start(w, r, ident.KubeUser(), ident.KubeGroups(), id)
+	defer done()
 	agent, err := p.Server.Registry.Get(r.Context(), id)
 	if (apierrors.IsNotFound(err) || (err == nil && (agent.Address == "" || !p.Server.Connected(id)))) && p.Direct != nil {
 		if cfg, derr := p.Direct(r.Context(), id); derr == nil {

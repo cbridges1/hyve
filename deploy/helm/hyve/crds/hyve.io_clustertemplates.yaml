@@ -134,12 +134,6 @@ spec:
                         type: object
                         description: Fleet's GitRepo spec, without targets.
                         x-kubernetes-preserve-unknown-fields: true
-                rancher:
-                  type: object
-                  properties:
-                    autoImport:
-                      type: boolean
-                      description: With Rancher, whether Turtles imports the clusters (default true).
             status:
               type: object
               properties:

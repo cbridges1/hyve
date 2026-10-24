@@ -1,6 +1,6 @@
 # hyve's chart: hyve-controller (templates, template resources, expiry)
-# and, for installs without Rancher, hyve's host endpoint (sign-in and the
-# /k8s/clusters proxy). See HYVE-PROPOSAL.md in nexus-config.
+# and hyve's host endpoint (sign-in, the agent tunnel, the /k8s/clusters
+# proxy and the UI). See HYVE-PROPOSAL.md in nexus-config.
 
 image:
   # Published with every hyve release. tag defaults to the chart's
@@ -30,39 +30,47 @@ controller:
     limits:
       memory: 256Mi
 
-# Rancher mode. hyve install sets enabled when it finds Rancher.
-rancher:
-  enabled: false
-  # Make each cluster's creator its Cluster Owner once Turtles imports it,
-  # as Rancher does for clusters it provisions. Rancher only lets someone
-  # who holds every right of Cluster Owner grant it, so this binds
-  # hyve-controller to cluster-admin on the management cluster, trusted
-  # like Rancher's own controllers. Turn it off to grant owners by hand.
-  creatorOwner: true
+# How people sign in to the host (HYVE-PROPOSAL.md, "Signing in").
+auth:
+  # Username and password sign-in for hyve's own Users. Turn it off only
+  # with oidc set: the bootstrap admin signs in with a password.
+  passwords: true
+  # Single sign-in through an OpenID Connect provider (Google, Keycloak,
+  # Authentik, Okta, Entra ID, or GitHub through Dex). Set issuer to turn it
+  # on; the provider's redirect URI is <host.agentURL>/v1-public/oidc/callback.
+  oidc:
+    issuer: ""
+    clientID: ""
+    # A Secret in namespace holding the client secret, and its key.
+    clientSecret:
+      name: ""
+      key: client-secret
+    # Shown as "Sign in with <displayName>".
+    displayName: ""
+    # Scopes besides openid (default profile and email).
+    scopes: []
+    groupsClaim: groups
+    usernameClaim: preferred_username
+    # Admit only verified emails in these domains, or users in these groups.
+    allowedDomains: []
+    allowedGroups: []
 
-# hyve's UI. With Rancher, the extension is installed into Rancher (a
-# UIPlugin served by the image below). Without Rancher, the host serves the
-# same pages itself at / (built into hyve's binary, so nothing more is
-# installed); open it with `hyve ui`.
+# hyve's UI: the host serves it at / (built into hyve's binary, so nothing
+# more is installed); open it with `hyve ui`.
 ui:
   enabled: true
-  # The extension's version (ui/pkg/hyve/package.json); Rancher mode only.
-  version: "0.1.0"
-  image:
-    repository: ghcr.io/cbridges1/hyve-ui
-    tag: ""
-    pullPolicy: IfNotPresent
 
-# host is hyve's host endpoint (`hyve host run`): username-and-password
-# sign-in for installs without Rancher, and the management cluster's API at
-# /k8s/clusters/local as the signed-in user (HYVE-PROPOSAL.md, "Signing
-# in"). Off by default; never enable it alongside Rancher, which signs
-# users in itself.
+# host is hyve's host endpoint (`hyve host run`): sign-in, and the
+# management cluster's API at /k8s/clusters/local as the signed-in user
+# (HYVE-PROPOSAL.md, "Signing in"). `hyve install --host-url` turns it on.
 host:
   enabled: false
   replicaCount: 1
   # How long a sign-in lasts (Rancher's default is 16h).
   sessionTTL: 16h
+  # One JSON line on the host's stdout per request it proxies to a cluster
+  # as a user: who, which cluster, verb, path and status.
+  auditLog: true
   # Secret (in namespace) with the first admin's bootstrapPassword. If it
   # doesn't exist, the host generates one and logs how to read it.
   bootstrapSecret: bootstrap-secret

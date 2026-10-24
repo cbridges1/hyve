@@ -18,21 +18,18 @@ var (
 	roleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
 )
 
-// AccessCmd is `hyve access`: who may use which clusters, on installs
-// without Rancher (with Rancher, grant access in Rancher).
+// AccessCmd is `hyve access`: who may use which clusters.
 func AccessCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "access",
-		Short: "Grant hyve users access to clusters and environments (without Rancher)",
+		Short: "Grant hyve users access to clusters and environments",
 		Long: `Grants a hyve user or group a role on clusters, as Rancher's cluster role
 bindings do: owner (everything), member (see the cluster, create namespaces)
 or read-only (read everything but Secrets). Without --cluster it covers every
 cluster in the environment, now and later. A cluster's creator is its owner
 automatically.
 
---env-member lets them create and manage clusters in the environment.
-
-With Rancher installed, grant access in Rancher instead; hyve uses Rancher's.`,
+--env-member lets them create and manage clusters in the environment.`,
 	}
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
@@ -67,9 +64,6 @@ func accessGrantCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
-			if s.rancher() {
-				return rancherGrant(ctx, s, user, group, role, cluster, envMember)
-			}
 			subjectKind, subject, who := "User", "hyve:"+user, "user "+user
 			if group != "" {
 				subjectKind, subject, who = "Group", "hyve:"+group, "group "+group
@@ -147,9 +141,6 @@ func accessListCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
-			if s.rancher() {
-				return rancherAccessList(ctx, s)
-			}
 			list, err := s.kube.Dynamic.Resource(accessGVR).Namespace(s.env()).List(ctx, metav1.ListOptions{})
 			if err != nil {
 				return notInstalled(err)
@@ -195,9 +186,6 @@ func accessRevokeCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
-			if s.rancher() {
-				return rancherRevoke(ctx, s, args[0])
-			}
 			if strings.HasPrefix(args[0], "hyve-member-") {
 				for _, ns := range []string{s.env(), s.templateNS()} {
 					if err := s.kube.Dynamic.Resource(roleBindingGVR).Namespace(ns).Delete(ctx, args[0], metav1.DeleteOptions{}); err != nil && ns == s.env() {

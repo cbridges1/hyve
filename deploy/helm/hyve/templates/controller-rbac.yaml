@@ -78,43 +78,15 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # With Rancher: creators become Cluster Owners (CRTBs), each CRTB reaches
-  # its CAPI Cluster, and environments get FleetWorkspaces and Projects.
-  # Deleting a Rancher cluster finishes a CAPI Cluster's deletion when
-  # Turtles can't (internal/operator/rancher.go, finishTurtlesDelete).
-  # Ignored without Rancher.
-  - apiGroups: ["management.cattle.io"]
-    resources: ["clusters"]
-    verbs: ["get", "list", "watch", "delete"]
-  - apiGroups: ["management.cattle.io"]
-    resources: ["clusterroletemplatebindings"]
-    verbs: ["get", "list", "watch", "create"]
-  - apiGroups: ["management.cattle.io"]
-    resources: ["roletemplates"]
-    verbs: ["get", "list", "watch", "create", "patch", "update", "bind", "escalate"]
-  - apiGroups: ["management.cattle.io"]
-    resources: ["projects"]
-    verbs: ["get", "list", "watch", "create", "updatepsa", "manage-namespaces"]
-  - apiGroups: ["management.cattle.io"]
-    resources: ["fleetworkspaces"]
-    verbs: ["get", "create"]
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "patch"]
-  # Whether Turtles' use-caapf feature is on (read once, uncached).
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["list"]
   # The controller makes its own webhook certificate and sets the CA here.
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
     resourceNames: ["hyve-controller"]
     verbs: ["get", "update"]
-{{- if or (and .Values.host.enabled .Values.host.agentURL) .Values.rancher.enabled }}
+{{- if and .Values.host.enabled .Values.host.agentURL }}
 ---
 # Agent registration: each child cluster's registration token and what its
-# agent reports live in the host's namespace. With Rancher, the controller
-# deletes them as it hands each agent to Rancher (internal/operator/release.go).
+# agent reports live in the host's namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

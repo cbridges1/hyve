@@ -31,13 +31,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # GoReleaser's before hook builds hyve's own UI with npm.
+      # GoReleaser's before hook builds the UI with npm.
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: ui/standalone/package-lock.json
+          cache-dependency-path: ui/package-lock.json
 
       - name: Set up Helm
         uses: azure/setup-helm@v4

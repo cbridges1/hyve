@@ -7,15 +7,12 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,21 +59,23 @@ func TestConfigRoundTrip(t *testing.T) {
 	assert.Empty(t, again.Current)
 }
 
+func TestRancherServerRefused(t *testing.T) {
+	cfg, err := Load(t.TempDir())
+	require.NoError(t, err)
+	cfg.Put(Server{Name: "rancher-example-com", URL: "https://rancher.example.com", Kind: "rancher"})
+	_, err = cfg.Get("rancher-example-com")
+	assert.ErrorContains(t, err, "no longer works with Rancher")
+	_, err = cfg.Get("https://rancher.example.com")
+	assert.Error(t, err)
+	assert.NotNil(t, cfg.Find("rancher-example-com"))
+}
+
 func TestNormalizeURL(t *testing.T) {
 	u, err := NormalizeURL("hyve.example.com/")
 	require.NoError(t, err)
 	assert.Equal(t, "https://hyve.example.com", u)
 	_, err = NormalizeURL("ftp://x")
 	assert.Error(t, err)
-}
-
-func TestFlowFor(t *testing.T) {
-	assert.Equal(t, FlowPassword, FlowFor("localProvider"))
-	assert.Equal(t, FlowPassword, FlowFor("activeDirectoryProvider"))
-	assert.Equal(t, FlowSAML, FlowFor("oktaProvider"))
-	assert.Equal(t, FlowOAuth, FlowFor("azureADProvider"))
-	assert.Equal(t, FlowBrowser, FlowFor("githubProvider"))
-	assert.Equal(t, FlowBrowser, FlowFor("genericOIDCProvider"))
 }
 
 // hyveHost runs the real sign-in server on a fake cluster. It returns
@@ -106,19 +105,15 @@ func TestAgainstHyveHost(t *testing.T) {
 	ctx := context.Background()
 	hc := srv.Client()
 
-	kind, err := Detect(ctx, hc, srv.URL)
-	require.NoError(t, err)
-	assert.Equal(t, KindHyve, kind)
+	require.NoError(t, Detect(ctx, hc, srv.URL))
+	other := httptest.NewServer(http.NotFoundHandler())
+	defer other.Close()
+	assert.Error(t, Detect(ctx, other.Client(), other.URL))
 
-	providers, err := ListProviders(ctx, hc, srv.URL)
-	require.NoError(t, err)
-	require.Len(t, providers, 1)
-	assert.Equal(t, FlowPassword, FlowFor(providers[0].Type))
-
-	_, err = PasswordLogin(ctx, hc, srv.URL, "localProvider", "alice", "wrong-wrong-wrong", "")
+	_, err := PasswordLogin(ctx, hc, srv.URL, "alice", "wrong-wrong-wrong", "")
 	assert.ErrorIs(t, err, ErrInvalidCredentials)
 
-	sess, err := PasswordLogin(ctx, hc, srv.URL, "localProvider", "alice", pw, "")
+	sess, err := PasswordLogin(ctx, hc, srv.URL, "alice", pw, "")
 	require.NoError(t, err)
 	assert.True(t, signin.IsSessionToken(sess.Token))
 	assert.False(t, sess.ExpiresAt.IsZero())
@@ -126,7 +121,7 @@ func TestAgainstHyveHost(t *testing.T) {
 	// Change it, then sign out.
 	s := &Server{URL: srv.URL, Kind: KindHyve, Username: "alice", Token: sess.Token}
 	require.NoError(t, SetPassword(ctx, hc, s, "alice", pw, "brand-new-password"))
-	_, err = PasswordLogin(ctx, hc, srv.URL, "localProvider", "alice", "brand-new-password", "")
+	_, err = PasswordLogin(ctx, hc, srv.URL, "alice", "brand-new-password", "")
 	require.NoError(t, err)
 	require.NoError(t, Logout(ctx, hc, s))
 	err = SetPassword(ctx, hc, s, "alice", "brand-new-password", "another-new-password")
@@ -137,112 +132,13 @@ func TestMustChangePasswordAgainstHyveHost(t *testing.T) {
 	srv, _, adminPW := hyveHost(t)
 	ctx := context.Background()
 	hc := srv.Client()
-	_, err := PasswordLogin(ctx, hc, srv.URL, "localProvider", "admin", adminPW, "")
+	_, err := PasswordLogin(ctx, hc, srv.URL, "admin", adminPW, "")
 	assert.ErrorIs(t, err, ErrMustChangePassword)
-	_, err = PasswordLogin(ctx, hc, srv.URL, "localProvider", "admin", adminPW, "too-short")
+	_, err = PasswordLogin(ctx, hc, srv.URL, "admin", adminPW, "too-short")
 	assert.ErrorContains(t, err, "at least 12")
-	sess, err := PasswordLogin(ctx, hc, srv.URL, "localProvider", "admin", adminPW, "the-admins-own-password")
+	sess, err := PasswordLogin(ctx, hc, srv.URL, "admin", adminPW, "the-admins-own-password")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sess.Token)
-}
-
-// fakeRancher serves the bits of Rancher's /v1-public API the client uses.
-type fakeRancher struct {
-	*httptest.Server
-	providers string
-	logins    []map[string]any
-	authToken atomic.Value // string: base64 ciphertext, once "stored"
-	deleted   atomic.Bool
-	polls     atomic.Int32
-}
-
-func newFakeRancher(t *testing.T, providers string) *fakeRancher {
-	t.Helper()
-	f := &fakeRancher{providers: providers}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1-public/hyve", http.NotFound)
-	mux.HandleFunc("GET /v1-public/authproviders", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, f.providers)
-	})
-	mux.HandleFunc("POST /v1-public/login", func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		f.logins = append(f.logins, body)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"token":"kubeconfig-u-abc:secret","expiresAt":"2026-11-15T00:00:00Z","userId":"u-abc"}`)
-	})
-	mux.HandleFunc("GET /v1-public/authtokens/{id}", func(w http.ResponseWriter, r *http.Request) {
-		f.polls.Add(1)
-		tok, _ := f.authToken.Load().(string)
-		if tok == "" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": tok, "expiresAt": "2026-11-15T00:00:00Z", "userId": "u-saml"})
-	})
-	mux.HandleFunc("DELETE /v1-public/authtokens/{id}", func(w http.ResponseWriter, _ *http.Request) {
-		f.deleted.Store(true)
-	})
-	f.Server = httptest.NewServer(mux)
-	t.Cleanup(f.Close)
-	return f
-}
-
-func TestDetectRancher(t *testing.T) {
-	r := newFakeRancher(t, `{"data":[{"id":"local","type":"localProvider"},{"id":"github","type":"githubProvider"},{"id":"openldap","type":"openLdapProvider"}]}`)
-	ctx := context.Background()
-	kind, err := Detect(ctx, r.Client(), r.URL)
-	require.NoError(t, err)
-	assert.Equal(t, KindRancher, kind)
-
-	providers, err := ListProviders(ctx, r.Client(), r.URL)
-	require.NoError(t, err)
-	require.Len(t, providers, 3)
-	assert.Equal(t, "localProvider", providers[0].Type, "local first")
-
-	sess, err := PasswordLogin(ctx, r.Client(), r.URL, "openLdapProvider", "bob", "pw", "")
-	require.NoError(t, err)
-	assert.Equal(t, "kubeconfig-u-abc:secret", sess.Token)
-	assert.Equal(t, "u-abc", sess.UserID)
-	assert.Equal(t, "openLdapProvider", r.logins[0]["type"])
-	assert.Equal(t, "kubeconfig", r.logins[0]["responseType"])
-}
-
-func TestSAMLLogin(t *testing.T) {
-	r := newFakeRancher(t, `{"data":[{"type":"oktaProvider"}]}`)
-	var opened string
-	open := func(u string) error {
-		opened = u
-		parsed, err := url.Parse(u)
-		require.NoError(t, err)
-		q := parsed.Query()
-		assert.Equal(t, "/dashboard/auth/login", parsed.Path)
-		assert.Equal(t, "true", q.Get("cli"))
-		assert.Len(t, q.Get("requestId"), 32)
-		assert.Equal(t, "kubeconfig", q.Get("responseType"))
-
-		// Do what Rancher does after the IdP returns: encrypt the token
-		// with the CLI's key and store it under the request ID.
-		raw, err := base64.StdEncoding.DecodeString(q.Get("publicKey"))
-		require.NoError(t, err)
-		var pub rsa.PublicKey
-		require.NoError(t, json.Unmarshal(raw, &pub))
-		go func() {
-			time.Sleep(30 * time.Millisecond) // the first poll finds nothing
-			ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &pub, []byte("kubeconfig-u-saml:secret"), nil)
-			if err == nil {
-				r.authToken.Store(base64.StdEncoding.EncodeToString(ct))
-			}
-		}()
-		return nil
-	}
-	sess, err := SAMLLogin(context.Background(), r.Client(), r.URL, open, io.Discard, SAMLOptions{PollInterval: 10 * time.Millisecond, Timeout: 5 * time.Second})
-	require.NoError(t, err)
-	assert.NotEmpty(t, opened)
-	assert.Equal(t, "kubeconfig-u-saml:secret", sess.Token)
-	assert.Equal(t, "u-saml", sess.UserID)
-	assert.True(t, r.deleted.Load(), "the stored token is deleted")
-	assert.Greater(t, r.polls.Load(), int32(1))
 }
 
 func TestBrowserLogin(t *testing.T) {
@@ -294,41 +190,6 @@ func TestBrowserLoginCancelled(t *testing.T) {
 	}
 	_, err := BrowserLogin(context.Background(), "https://rancher.example.com", open, io.Discard, BrowserOptions{Timeout: 5 * time.Second})
 	assert.ErrorContains(t, err, "cancelled")
-}
-
-func TestOAuthDeviceCode(t *testing.T) {
-	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/device":
-			_, _ = io.WriteString(w, `{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://microsoft.com/devicelogin","expires_in":300,"interval":1}`)
-		case "/token":
-			_, _ = io.WriteString(w, `{"access_token":"at","token_type":"Bearer","id_token":"the-id-token","expires_in":3600}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer idp.Close()
-	r := newFakeRancher(t, `{"data":[]}`)
-	p := Provider{Type: "azureADProvider", ClientID: "cid", Scopes: []string{"openid"}, DeviceAuthURL: idp.URL + "/device", TokenURL: idp.URL + "/token"}
-
-	var out strings.Builder
-	sess, err := OAuthLogin(context.Background(), r.Client(), r.URL, p, OAuthDeviceCode, nil, &out)
-	require.NoError(t, err)
-	assert.Contains(t, out.String(), "ABCD-EFGH")
-	assert.Equal(t, "kubeconfig-u-abc:secret", sess.Token)
-	require.Len(t, r.logins, 1)
-	assert.Equal(t, "the-id-token", r.logins[0]["id_token"])
-	assert.Equal(t, "azureADProvider", r.logins[0]["type"])
-}
-
-func TestParseExtToken(t *testing.T) {
-	s, err := parseSession([]byte(`{"apiVersion":"ext.cattle.io/v1","kind":"Token","spec":{"userID":"u-1"},"status":{"bearerToken":"ext/abc:def","expiresAt":"2026-11-01T00:00:00Z"}}`))
-	require.NoError(t, err)
-	assert.Equal(t, "ext/abc:def", s.Token)
-	assert.Equal(t, "u-1", s.UserID)
-	_, err = parseSession([]byte(`{}`))
-	assert.Error(t, err)
 }
 
 func TestKubeconfigHoldsNoSecret(t *testing.T) {

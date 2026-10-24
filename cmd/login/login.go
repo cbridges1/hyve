@@ -1,6 +1,5 @@
 // Package logincmd holds `hyve login`, `logout`, `token`, `kubeconfig` and
-// `user`: signing in to a hyve host or to Rancher with one URL, and using
-// that sign-in (HYVE-PROPOSAL.md, "Signing in: one URL, a username and a
+// `user`: signing in to a hyve host with one URL, and using that sign-in (HYVE-PROPOSAL.md, "Signing in: one URL, a username and a
 // password"). These are separate from `hyve context login`, which signs in
 // to the old hyve-api.
 package logincmd
@@ -13,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,11 +27,7 @@ import (
 var (
 	loginName          string
 	loginUsername      string
-	loginProvider      string
 	loginPasswordStdin bool
-	loginTokenStdin    bool
-	loginBrowser       bool
-	loginAuthFlow      string
 	loginCACert        string
 	loginInsecure      bool
 )
@@ -41,21 +35,13 @@ var (
 // LoginCmd is `hyve login`.
 var LoginCmd = &cobra.Command{
 	Use:   "login URL",
-	Short: "Sign in to a hyve host or to Rancher",
-	Long: `Signs in to a hyve host (a standalone install) or to Rancher, and saves it
-as the server later commands use. The same command works for both.
+	Short: "Sign in to a hyve host",
+	Long: `Signs in to a hyve host and saves it as the server later commands use.
 
-hyve hosts sign in with a username and password. With Rancher, hyve signs
-in the way Rancher's own CLI does for the auth provider in use:
-
-  local, OpenLDAP, FreeIPA, Active Directory   username and password
-  SAML (Okta, Ping, ADFS, Keycloak, Shibboleth) in the browser
-  Azure AD                                      a device code (--auth-flow authcode for a browser)
-  GitHub, Google, OIDC and others               in the browser, through the hyve UI extension
-
---browser uses the hyve UI extension's sign-in page with any provider.
---token-stdin takes an existing Rancher API key, for when there's no
-other way (no extension, or no browser on this machine).
+It opens the host's sign-in page in your browser: sign in there with your
+password or the identity provider, and the CLI gets the session. Unattended
+runs (CI, scripts) and machines without a browser sign in with
+--username and --password-stdin instead.
 
   hyve login https://hyve.example.com
   echo "$PW" | hyve login https://hyve.example.com --username ci --password-stdin`,
@@ -66,12 +52,8 @@ other way (no extension, or no browser on this machine).
 func init() {
 	f := LoginCmd.Flags()
 	f.StringVar(&loginName, "name", "", "name to save the server under (default: from the host name)")
-	f.StringVarP(&loginUsername, "username", "u", "", "username (prompted for when needed)")
-	f.StringVar(&loginProvider, "provider", "", "Rancher auth provider type, e.g. activeDirectoryProvider (asked when there are several)")
+	f.StringVarP(&loginUsername, "username", "u", "", "username (with --password-stdin; otherwise filled in on the sign-in page)")
 	f.BoolVar(&loginPasswordStdin, "password-stdin", false, "read the password from stdin (first line; a second line is the new password when one is required)")
-	f.BoolVar(&loginTokenStdin, "token-stdin", false, "read an existing Rancher API key from stdin instead of signing in")
-	f.BoolVar(&loginBrowser, "browser", false, "sign in to Rancher in the browser through the hyve UI extension")
-	f.StringVar(&loginAuthFlow, "auth-flow", "", "Azure AD only: devicecode (default) or authcode")
 	f.StringVar(&loginCACert, "ca-cert", "", "PEM CA certificate to trust for this server")
 	f.BoolVar(&loginInsecure, "insecure-skip-tls-verify", false, "don't verify the server's certificate (testing only)")
 }
@@ -83,7 +65,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if strings.HasPrefix(base, "http://") {
-		fmt.Fprintln(os.Stderr, "warning: signing in over plain HTTP sends your password unencrypted; use the host's https:// URL")
+		fmt.Fprintln(os.Stderr, "warning: over plain HTTP your session (and with --password-stdin, your password) travels unencrypted; use the host's https:// URL")
 	}
 	cfg, err := login.Load(shared.HyveHome())
 	if err != nil {
@@ -111,23 +93,16 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if srv.Kind, err = login.Detect(ctx, hc, base); err != nil {
+	if err := login.Detect(ctx, hc, base); err != nil {
 		return err
 	}
+	srv.Kind = login.KindHyve
 	if loginUsername != "" {
 		srv.Username = loginUsername
 	}
-	if loginProvider != "" {
-		srv.Provider = loginProvider
-	}
 
 	in := newInput(os.Stdin)
-	sess, err := signIn(ctx, hc, &srv, in, signInOptions{
-		passwordStdin: loginPasswordStdin,
-		tokenStdin:    loginTokenStdin,
-		browser:       loginBrowser,
-		authFlow:      loginAuthFlow,
-	})
+	sess, err := signIn(ctx, hc, &srv, in, signInOptions{passwordStdin: loginPasswordStdin})
 	if err != nil {
 		return err
 	}
@@ -143,7 +118,15 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	who := whoAmI(ctx, &srv)
-	fmt.Fprintf(os.Stderr, "Signed in to %s (%s) as %s.\n", srv.Name, srv.Kind, who)
+	// A browser sign-in doesn't say who: ask the cluster.
+	if srv.Username == "" && strings.HasPrefix(who, "hyve:") {
+		srv.Username = strings.TrimPrefix(who, "hyve:")
+		cfg.Put(srv)
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Signed in to %s as %s.\n", srv.Name, who)
 	if !srv.ExpiresAt.IsZero() {
 		fmt.Fprintf(os.Stderr, "The session lasts until %s.\n", srv.ExpiresAt.Local().Format(time.DateTime))
 	}
@@ -152,96 +135,40 @@ func runLogin(cmd *cobra.Command, args []string) error {
 
 type signInOptions struct {
 	passwordStdin bool
-	tokenStdin    bool
-	browser       bool
-	authFlow      string
 }
 
-// signIn runs whichever sign-in the server and its provider need. It's
-// shared by `hyve login` and by `hyve token` when a session has expired.
+// signIn signs in to srv: in the browser, or with a password on stdin for
+// unattended runs. It's shared by `hyve login` and by `hyve token` when a
+// session has expired.
 func signIn(ctx context.Context, hc *http.Client, srv *login.Server, in *input, opts signInOptions) (login.Session, error) {
-	out := os.Stderr
-	if opts.tokenStdin {
-		tok, err := in.line()
-		if err != nil {
-			return login.Session{}, fmt.Errorf("reading the token: %w", err)
-		}
-		if tok == "" {
-			return login.Session{}, errors.New("no token on stdin")
-		}
-		return login.Session{Token: tok}, nil
+	if opts.passwordStdin {
+		return passwordSignIn(ctx, hc, srv, in)
 	}
-	if opts.browser {
-		if srv.Kind != login.KindRancher {
-			return login.Session{}, errors.New("--browser is for Rancher; hyve hosts sign in with a username and password")
-		}
-		return login.BrowserLogin(ctx, srv.URL, login.OpenBrowser, out, login.BrowserOptions{})
-	}
-
-	providers, err := login.ListProviders(ctx, hc, srv.URL)
-	if err != nil {
-		return login.Session{}, err
-	}
-	p, err := pickProvider(providers, srv.Provider, in)
-	if err != nil {
-		return login.Session{}, err
-	}
-	srv.Provider = p.Type
-
-	switch login.FlowFor(p.Type) {
-	case login.FlowSAML:
-		return login.SAMLLogin(ctx, hc, srv.URL, login.OpenBrowser, out, login.SAMLOptions{})
-	case login.FlowOAuth:
-		return login.OAuthLogin(ctx, hc, srv.URL, p, opts.authFlow, login.OpenBrowser, out)
-	case login.FlowBrowser:
-		fmt.Fprintf(out, "Rancher's %s users can't sign in with a password from a CLI; using the hyve UI extension.\n", p.Type)
-		return login.BrowserLogin(ctx, srv.URL, login.OpenBrowser, out, login.BrowserOptions{})
-	}
-	return passwordSignIn(ctx, hc, srv, p.Type, in, opts.passwordStdin)
+	return login.BrowserLogin(ctx, srv.URL, login.OpenBrowser, os.Stderr, login.BrowserOptions{Username: srv.Username})
 }
 
-func passwordSignIn(ctx context.Context, hc *http.Client, srv *login.Server, providerType string, in *input, passwordStdin bool) (login.Session, error) {
+// passwordSignIn reads the password (and, when the server wants it
+// changed, a new one on a second line) from stdin: unattended sign-in.
+func passwordSignIn(ctx context.Context, hc *http.Client, srv *login.Server, in *input) (login.Session, error) {
 	if srv.Username == "" {
-		if passwordStdin {
-			return login.Session{}, errors.New("--password-stdin needs --username")
-		}
-		u, err := in.prompt("Username: ")
-		if err != nil {
-			return login.Session{}, err
-		}
-		srv.Username = u
+		return login.Session{}, errors.New("--password-stdin needs --username")
 	}
-	var (
-		password string
-		err      error
-	)
-	if passwordStdin {
-		password, err = in.line()
-	} else {
-		password, err = in.secret(fmt.Sprintf("Password for %s: ", srv.Username))
-	}
+	password, err := in.line()
 	if err != nil {
 		return login.Session{}, err
 	}
-
-	sess, err := login.PasswordLogin(ctx, hc, srv.URL, providerType, srv.Username, password, "")
+	sess, err := login.PasswordLogin(ctx, hc, srv.URL, srv.Username, password, "")
 	if !errors.Is(err, login.ErrMustChangePassword) {
 		return sess, err
 	}
-	var newPassword string
-	if passwordStdin {
-		if newPassword, err = in.line(); err != nil || newPassword == "" {
-			return login.Session{}, errors.New("the password must be changed: put the new password on a second line of stdin, or sign in interactively")
-		}
-	} else {
-		fmt.Fprintln(os.Stderr, "The password must be changed before signing in.")
-		if newPassword, err = newPasswordPrompt(in); err != nil {
-			return login.Session{}, err
-		}
+	newPassword, err := in.line()
+	if err != nil || newPassword == "" {
+		return login.Session{}, errors.New("the password must be changed: put the new password on a second line of stdin, or sign in in the browser")
 	}
-	return login.PasswordLogin(ctx, hc, srv.URL, providerType, srv.Username, password, newPassword)
+	return login.PasswordLogin(ctx, hc, srv.URL, srv.Username, password, newPassword)
 }
 
+// newPasswordPrompt asks for a new password twice (`hyve user`).
 func newPasswordPrompt(in *input) (string, error) {
 	pw, err := in.secret("New password: ")
 	if err != nil {
@@ -255,36 +182,6 @@ func newPasswordPrompt(in *input) (string, error) {
 		return "", errors.New("the passwords don't match")
 	}
 	return pw, nil
-}
-
-func pickProvider(providers []login.Provider, want string, in *input) (login.Provider, error) {
-	if len(providers) == 0 {
-		return login.Provider{}, errors.New("the server offers no auth providers")
-	}
-	if want != "" {
-		for _, p := range providers {
-			if p.Type == want {
-				return p, nil
-			}
-		}
-		return login.Provider{}, fmt.Errorf("the server has no %s auth provider", want)
-	}
-	if len(providers) == 1 {
-		return providers[0], nil
-	}
-	fmt.Fprintln(os.Stderr, "Auth providers:")
-	for i, p := range providers {
-		fmt.Fprintf(os.Stderr, "  %d  %s\n", i, p.Type)
-	}
-	choice, err := in.prompt("Sign in with: ")
-	if err != nil {
-		return login.Provider{}, err
-	}
-	i, err := strconv.Atoi(choice)
-	if err != nil || i < 0 || i >= len(providers) {
-		return login.Provider{}, fmt.Errorf("%q isn't one of the numbers listed", choice)
-	}
-	return providers[i], nil
 }
 
 // whoAmI asks the management cluster, through the proxy, who the session

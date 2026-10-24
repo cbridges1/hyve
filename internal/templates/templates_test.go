@@ -71,7 +71,7 @@ func TestFillFromTemplateInAnotherNamespace(t *testing.T) {
 		t.Error("a nil variable should be left to the ClusterClass")
 	}
 	l := c.GetLabels()
-	if l[LabelTemplate] != "gke-small" || l[LabelTemplateNamespace] != "capi-clusters" || l["hyve.io/team"] != "web" || l["cni"] != "flannel" || l[clusters.LabelAutoImport] != "true" {
+	if l[LabelTemplate] != "gke-small" || l[LabelTemplateNamespace] != "capi-clusters" || l["hyve.io/team"] != "web" || l["cni"] != "flannel" || l["cluster-api.cattle.io/rancher-auto-import"] != "" {
 		t.Errorf("labels = %v", l)
 	}
 	if got := c.GetAnnotations()[AnnotationExpiresAt]; got != "2026-10-10T17:00:00Z" {
@@ -170,5 +170,34 @@ func TestValidate(t *testing.T) {
 	tp.Spec.LockedVariables = []string{"missing"}
 	if err := Validate(tp); err == nil {
 		t.Error("locking a variable with no value must fail")
+	}
+}
+
+func TestLockedVersion(t *testing.T) {
+	tp := tmpl()
+	tp.Spec.LockedVariables = []string{LockVersion}
+	if err := Validate(tp); err != nil {
+		t.Fatal(err)
+	}
+	c := clusters.New("x", "prod")
+	_ = unstructured.SetNestedField(c.Object, "v1.35.8", "spec", "topology", "version")
+	if bad := CheckLocked(tp, c); len(bad) != 0 {
+		t.Errorf("at the template's version: bad = %v", bad)
+	}
+	up := c.DeepCopy()
+	_ = unstructured.SetNestedField(up.Object, "v1.36.0", "spec", "topology", "version")
+	if bad := CheckLocked(tp, up); len(bad) != 1 || bad[0] != LockVersion {
+		t.Errorf("upgraded: bad = %v", bad)
+	}
+	if ch := ChangedVariables(c, up, []string{LockVersion}); len(ch) != 1 {
+		t.Errorf("changed = %v", ch)
+	}
+	var locked *LockedError
+	if err := Fill(up, tp, class(false), now); !errors.As(err, &locked) {
+		t.Errorf("Fill at another version: %v", err)
+	}
+	tp.Spec.Version = ""
+	if err := Validate(tp); err == nil {
+		t.Error("a locked version needs kubernetesVersion")
 	}
 }

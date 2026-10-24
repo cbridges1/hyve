@@ -33,7 +33,7 @@ var (
 // UserCmd is `hyve user`.
 var UserCmd = &cobra.Command{
 	Use:   "user",
-	Short: "Manage a hyve host's users (standalone installs; with Rancher, use Rancher's)",
+	Short: "Manage a hyve host's users",
 	Long: `Manages hyve.io User objects on the signed-in hyve host. Users sign in with
 a username and password; Kubernetes sees them as hyve:<username>, in groups
 hyve:<group>. Grant them access with RBAC on those names.
@@ -57,9 +57,6 @@ func newUserContext() (*userContext, error) {
 	s, err := cfg.Get(serverFlag)
 	if err != nil {
 		return nil, err
-	}
-	if s.Kind != login.KindHyve {
-		return nil, fmt.Errorf("%s is Rancher; manage its users in Rancher", s.Name)
 	}
 	if !s.SignedIn(time.Now()) {
 		return nil, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.URL)

@@ -2,6 +2,7 @@ package install
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -66,6 +67,13 @@ func RenderChart(namespace string, values map[string]any) ([]byte, error) {
 			var b bytes.Buffer
 			err := tpl.ExecuteTemplate(&b, name, d)
 			return b.String(), err
+		},
+		// Helm's required: the value, or an error with msg when it's empty.
+		"required": func(msg string, v any) (any, error) {
+			if v == nil || v == "" {
+				return nil, errors.New(msg)
+			}
+			return v, nil
 		},
 		"toYaml": func(v any) string {
 			b, err := yaml.Marshal(v)

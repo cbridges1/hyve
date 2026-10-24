@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -40,7 +38,7 @@ func ClusterCmd() *cobra.Command {
 	addEnvFlag(cmd)
 	addTemplateNSFlag(cmd)
 	cmd.AddCommand(clusterCreateCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(),
-		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterResourceCmd())
+		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterUpgradeCmd(), clusterResourceCmd())
 	return cmd
 }
 
@@ -192,7 +190,7 @@ By default waits until the cluster is ACTIVE and registered with Fleet.`,
 			if t != nil {
 				err = templates.Fill(c, t, cls, time.Now())
 			} else {
-				err = clusters.FillDefaults(c, cls, true)
+				err = clusters.FillDefaults(c, cls)
 			}
 			if err != nil {
 				return err
@@ -362,18 +360,10 @@ func clusterKubeconfig(ctx context.Context, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var id string
-	switch s.server.Kind {
-	case login.KindRancher:
-		if id, err = rancherClusterID(ctx, s.server, c.GetNamespace(), c.GetName()); err != nil {
-			return nil, err
-		}
-	default:
-		// hyve's host serves child clusters through the agent's tunnel
-		// once it's connected (HYVE-PROPOSAL.md, "hyve as the Rancher
-		// host"); its ID is <environment>.<name>.
-		id = c.GetNamespace() + "." + c.GetName()
-	}
+	// The host serves child clusters through the agent's tunnel, or its
+	// direct path (HYVE-PROPOSAL.md, "hyve as the Rancher host"); a
+	// cluster's ID is <environment>.<name>.
+	id := c.GetNamespace() + "." + c.GetName()
 	bin, err := os.Executable()
 	if err != nil {
 		return nil, errors.New("can't find the hyve binary's path for the exec credential")
@@ -437,7 +427,7 @@ func clusterShowCmd() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "show NAME",
-		Short: "Show a cluster's spec, Fleet and Rancher state, resources and conditions",
+		Short: "Show a cluster's spec, Fleet state, resources and conditions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
@@ -505,9 +495,6 @@ func clusterShowCmd() *cobra.Command {
 				default:
 					fmt.Println("Fleet:         agent not ready")
 				}
-			}
-			if rc, err := clusters.RancherCluster(ctx, s.kube.Dynamic, c.GetNamespace(), c.GetName()); err == nil && rc != nil {
-				fmt.Printf("Rancher:       %s (%s)\n", rc.GetName(), clusters.RancherState(rc))
 			}
 			var keys []string
 			for k := range c.GetLabels() {
@@ -680,6 +667,53 @@ func clusterScaleCmd() *cobra.Command {
 	return cmd
 }
 
+func clusterUpgradeCmd() *cobra.Command {
+	var version string
+	cmd := &cobra.Command{
+		Use:   "upgrade NAME --version VERSION",
+		Short: "Change a cluster's Kubernetes version",
+		Long: `Sets the cluster's Kubernetes version (spec.topology.version). Cluster API
+rolls the control plane to it, then the workers, one machine at a time.
+The ClusterClass's providers must support the version; Cluster API refuses
+skipping a minor version or going back. A template that locks
+kubernetesVersion keeps its clusters at its own.`,
+		Example: `  hyve cluster upgrade demo --version v1.35.2`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if version == "" {
+				return errors.New("give --version")
+			}
+			if !strings.HasPrefix(version, "v") {
+				version = "v" + version
+			}
+			s, err := newSession()
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			c, err := s.getCluster(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			cur, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "version")
+			if cur == version {
+				logf("Cluster %s is already at %s", c.GetName(), version)
+				return nil
+			}
+			if err := unstructured.SetNestedField(c.Object, version, "spec", "topology", "version"); err != nil {
+				return err
+			}
+			if _, err := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(c.GetNamespace()).Update(ctx, c, metav1.UpdateOptions{FieldManager: kube.FieldManager}); err != nil {
+				return err
+			}
+			logf("Upgrading cluster %s from %s to %s; 'hyve cluster show %s' follows it", c.GetName(), cur, version, c.GetName())
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&version, "version", "", "the Kubernetes version, e.g. v1.35.2")
+	return cmd
+}
+
 // secretsFromEnv creates or updates, in the template's namespace, each
 // Secret the template's resources name for which an environment variable
 // of the same name (upper case, '-' as '_') is set. Values are never
@@ -722,41 +756,4 @@ func secretsFromEnv(ctx context.Context, s *session, t *templates.Template) erro
 		}
 	}
 	return nil
-}
-
-// rancherClusterID finds the Rancher cluster Turtles imported a CAPI
-// cluster as, through Rancher's Steve API, which lists only the clusters
-// the user can see (listing them through the Kubernetes API needs rights
-// on all of them).
-func rancherClusterID(ctx context.Context, srv *login.Server, ns, name string) (string, error) {
-	hc, err := login.HTTPClient(srv.CACertFile, srv.InsecureSkipVerify)
-	if err != nil {
-		return "", err
-	}
-	q := url.Values{"labelSelector": {"cluster-api.cattle.io/capi-cluster-owner=" + name + ",cluster-api.cattle.io/capi-cluster-owner-ns=" + ns}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/management.cattle.io.clusters?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+srv.Token)
-	resp, err := hc.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("looking up cluster %s in Rancher: %s", name, resp.Status)
-	}
-	var out struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if len(out.Data) == 0 {
-		return "", fmt.Errorf("cluster %s isn't imported into Rancher yet, or you have no access to it there", name)
-	}
-	return out.Data[0].ID, nil
 }

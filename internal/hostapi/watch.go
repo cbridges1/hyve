@@ -49,7 +49,7 @@ type watchEvent struct {
 	Error string `json:"error,omitempty"`
 }
 
-// watchStream is GET /v1/hyve/watch?w=...: Kubernetes watches, run as the
+// watchStream is GET /v1/hyve/watch?w=...[&c=<cluster id>]: Kubernetes watches, run as the
 // signed-in user, multiplexed onto one server-sent event stream, so the UI
 // learns of changes with a single connection (a browser allows six per
 // host over HTTP/1.1). Event types are ADDED, MODIFIED, DELETED, RESYNC
@@ -75,7 +75,22 @@ func (a *API) watchStream(w http.ResponseWriter, r *http.Request, ident signin.I
 		writeError(w, http.StatusInternalServerError, "streaming isn't supported here")
 		return
 	}
-	dc, err := a.dynamicAs(ident)
+	var dc dynamic.Interface
+	var err error
+	if c := r.URL.Query().Get("c"); c != "" && c != "local" {
+		// A child cluster's objects (the cluster explorer).
+		if a.Child == nil {
+			writeError(w, http.StatusNotFound, "this host can't watch child clusters")
+			return
+		}
+		cfg, cerr := a.Child(c, ident)
+		if cerr == nil {
+			dc, cerr = dynamic.NewForConfig(cfg)
+		}
+		err = cerr
+	} else {
+		dc, err = a.dynamicAs(ident)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

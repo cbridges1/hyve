@@ -17,7 +17,10 @@ import (
 
 var metav1CreateOptions = metav1.CreateOptions{}
 
-var serverFlag string
+var (
+	serverFlag   string
+	logoutForget bool
+)
 
 func addServerFlag(c *cobra.Command) {
 	c.Flags().StringVar(&serverFlag, "server", "", "saved server to use (default: the one last signed in to)")
@@ -26,12 +29,25 @@ func addServerFlag(c *cobra.Command) {
 // LogoutCmd is `hyve logout`.
 var LogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "End the session with a hyve host or Rancher",
-	Args:  cobra.NoArgs,
+	Short: "End the session with a hyve host",
+	Long: `Ends the session with a saved server. --forget also removes the server from
+hyve's saved logins, which is the way to drop Rancher servers saved by older
+versions of hyve.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := login.Load(shared.HyveHome())
 		if err != nil {
 			return err
+		}
+		if logoutForget && serverFlag != "" {
+			if raw := cfg.Find(serverFlag); raw != nil && raw.Kind != login.KindHyve && raw.Kind != "" {
+				cfg.Remove(raw.Name)
+				if err := cfg.Save(); err != nil {
+					return err
+				}
+				fmt.Fprintf(os.Stderr, "Removed %s.\n", raw.Name)
+				return nil
+			}
 		}
 		s, err := cfg.Get(serverFlag)
 		if err != nil {
@@ -47,10 +63,18 @@ var LogoutCmd = &cobra.Command{
 			}
 		}
 		s.Token, s.ExpiresAt = "", time.Time{}
+		name := s.Name
+		if logoutForget {
+			cfg.Remove(name)
+		}
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Signed out of %s.\n", s.Name)
+		if logoutForget {
+			fmt.Fprintf(os.Stderr, "Signed out of %s and removed it.\n", name)
+		} else {
+			fmt.Fprintf(os.Stderr, "Signed out of %s.\n", name)
+		}
 		return nil
 	},
 }
@@ -118,7 +142,7 @@ available, it signs in again first, prompting on stderr.`,
 // KubeconfigCmd is `hyve kubeconfig`.
 var KubeconfigCmd = &cobra.Command{
 	Use:   "kubeconfig [CLUSTER-ID]",
-	Short: "Print a kubeconfig that reaches a cluster through the hyve host or Rancher",
+	Short: "Print a kubeconfig that reaches a cluster through the hyve host",
 	Long: `Prints a kubeconfig whose server is <url>/k8s/clusters/<id> on the saved
 server: the management cluster for "local" (the default), or a child
 cluster's ID. Requests go through the proxy as you, so kubectl, helm, k9s,
@@ -158,6 +182,7 @@ session.`,
 
 func init() {
 	addServerFlag(LogoutCmd)
+	LogoutCmd.Flags().BoolVar(&logoutForget, "forget", false, "also remove the server from the saved logins")
 	addServerFlag(TokenCmd)
 	addServerFlag(KubeconfigCmd)
 	// Errors here are about sign-in, not about how the command was typed.

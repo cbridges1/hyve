@@ -106,14 +106,11 @@ const (
 	CAPINone     CAPIInstall = ""
 	CAPILean     CAPIInstall = "lean"     // release manifests (local mode)
 	CAPIOperator CAPIInstall = "operator" // the CAPI Operator
-	CAPITurtles  CAPIInstall = "turtles"  // Rancher Turtles' CAPIProviders
 )
 
 // DetectCAPI says how the cluster's Cluster API was installed.
 func DetectCAPI(kc *kube.Client) CAPIInstall {
 	switch {
-	case kc.HasKind("turtles-capi.cattle.io", "v1alpha1", "CAPIProvider"):
-		return CAPITurtles
 	case kc.HasKind("operator.cluster.x-k8s.io", "v1alpha2", "CoreProvider"):
 		return CAPIOperator
 	case kc.ServesKind(schema.GroupKind{Group: "cluster.x-k8s.io", Kind: "Cluster"}):
@@ -123,8 +120,8 @@ func DetectCAPI(kc *kube.Client) CAPIInstall {
 }
 
 // EnsureProviders adds the known providers serving any of kinds that the
-// cluster doesn't serve yet, the way its Cluster API was installed (not
-// with Turtles, whose providers Rancher's admins manage). It returns what
+// cluster doesn't serve yet, the way its Cluster API was installed. It
+// returns what
 // it added, and the missing kinds no known provider serves.
 func EnsureProviders(ctx context.Context, kc *kube.Client, kinds []schema.GroupKind, o LeanOptions) (added []string, unknown []schema.GroupKind, err error) {
 	// One at a time, so a second caller needing the same provider finds

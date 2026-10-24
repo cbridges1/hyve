@@ -1,6 +1,5 @@
 // Package host is `hyve host`: hyve's host endpoint, the server that stands
-// in for Rancher's when Rancher isn't installed (HYVE-PROPOSAL.md, "hyve as
-// the Rancher host"): sign-in, the management cluster's API at
+// in for Rancher's (HYVE-PROPOSAL.md, "hyve as the Rancher host"): sign-in, the management cluster's API at
 // /k8s/clusters/local, the tunnel child clusters' cattle-cluster-agents
 // dial (/v3/connect), their APIs through it at /k8s/clusters/<id>, and
 // hyve's own UI at / (--ui).
@@ -32,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/audit"
 	"github.com/cbridges1/hyve/internal/hostapi"
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/signin"
@@ -52,12 +52,15 @@ var (
 	caCertsFile     string
 	localUser       string
 	serveUI         bool
+	publicURL       string
+	oidcCfg         signin.OIDCConfig
+	noPasswords     bool
 )
 
 // Cmd is `hyve host`.
 var Cmd = &cobra.Command{
 	Use:   "host",
-	Short: "hyve's host endpoint (standalone installs, without Rancher)",
+	Short: "hyve's host endpoint: sign-in, the agent tunnel, the proxy and the UI",
 }
 
 var runCmd = &cobra.Command{
@@ -65,7 +68,8 @@ var runCmd = &cobra.Command{
 	Short: "Serve sign-in, the agent tunnel and the /k8s/clusters proxy",
 	Long: `Runs hyve's host endpoint. Users sign in with a username and password
 (hyve.io User objects; password hashes and sessions are Secrets in
---namespace), and the CLI and UI reach the management cluster through
+--namespace), or through an OpenID Connect provider with --oidc-issuer
+(the client secret comes from $HYVE_OIDC_CLIENT_SECRET), and the CLI and UI reach the management cluster through
 /k8s/clusters/local as the signed-in user, impersonated as hyve:<username>.
 
 On first start it creates the User "admin", with the password in the
@@ -94,6 +98,18 @@ func init() {
 	runCmd.Flags().StringVar(&bootstrapSecret, "bootstrap-secret", "bootstrap-secret", "Secret holding the first admin's bootstrapPassword")
 	runCmd.Flags().BoolVar(&serveUI, "ui", false, "serve hyve's own UI at / (built into the binary with 'task ui')")
 	runCmd.Flags().StringVar(&localUser, "local-user", "", "sign browsers at 127.0.0.1 or localhost in as this user without a password (local mode only: never on a host others can reach)")
+	f := runCmd.Flags()
+	f.StringVar(&publicURL, "public-url", "", "the host's address as browsers reach it (needed for single sign-in's callback)")
+	f.StringVar(&oidcCfg.Issuer, "oidc-issuer", "", "turns on single sign-in: the OpenID Connect issuer URL")
+	f.StringVar(&oidcCfg.ClientID, "oidc-client-id", "", "the OIDC client ID")
+	f.StringVar(&oidcCfg.DisplayName, "oidc-display-name", "", `the provider's name on the sign-in page ("Sign in with ...")`)
+	f.StringSliceVar(&oidcCfg.Scopes, "oidc-scopes", nil, "scopes besides openid (default profile,email)")
+	f.StringVar(&oidcCfg.GroupsClaim, "oidc-groups-claim", "groups", "the ID token claim holding the user's groups")
+	f.StringVar(&oidcCfg.UsernameClaim, "oidc-username-claim", "preferred_username", "the ID token claim a new user's name comes from (then the email's local part)")
+	f.StringSliceVar(&oidcCfg.AllowedDomains, "oidc-allowed-domains", nil, "admit only verified emails in these domains")
+	f.StringSliceVar(&oidcCfg.AllowedGroups, "oidc-allowed-groups", nil, "admit only users in at least one of these groups")
+	f.BoolVar(&audit.Enabled, "audit-log", true, "write a JSON line to stdout for each request proxied to a cluster (user, groups, cluster, verb, path, status)")
+	f.BoolVar(&noPasswords, "no-passwords", false, "turn password sign-in off, leaving single sign-in (the bootstrap admin then can't sign in)")
 	runCmd.Flags().StringVar(&caCertsFile, "cacerts", "", "PEM CA the host's certificate chains to, for agents to pin (leave unset for a publicly trusted certificate)")
 	Cmd.AddCommand(runCmd)
 }
@@ -131,6 +147,19 @@ func run(ctx context.Context) error {
 	}
 	srv := signin.NewServer(store, proxy, Version)
 	srv.LocalUser = localUser
+	srv.NoPasswords = noPasswords
+	if oidcCfg.Issuer != "" {
+		if oidcCfg.ClientID == "" || publicURL == "" {
+			return errors.New("--oidc-issuer needs --oidc-client-id and --public-url")
+		}
+		// From the environment, so it's never on the command line.
+		oidcCfg.ClientSecret = os.Getenv("HYVE_OIDC_CLIENT_SECRET")
+		oidcCfg.PublicURL = publicURL
+		srv.OIDC = &signin.OIDC{Config: oidcCfg, Store: store}
+		log.Printf("host: single sign-in through %s", oidcCfg.Issuer)
+	} else if noPasswords {
+		return errors.New("--no-passwords needs single sign-in (--oidc-issuer): nobody could sign in")
+	}
 	if localUser != "" {
 		log.Printf("host: browsers at 127.0.0.1 or localhost are signed in as %s without a password", localUser)
 	}
@@ -158,7 +187,10 @@ func run(ctx context.Context) error {
 		}
 		return clientcmd.RESTConfigFromKubeConfig(sec.Data["value"])
 	}}
-	api := &hostapi.API{Config: cfg, Identify: srv.SessionIdentity, DefaultTemplateNamespace: install.DefaultTemplateNamespace}
+	api := &hostapi.API{Config: cfg, Identify: srv.SessionIdentity, DefaultTemplateNamespace: install.DefaultTemplateNamespace,
+		Child: func(id string, ident signin.Identity) (*rest.Config, error) {
+			return children.RESTConfig(id, ident), nil
+		}}
 	srv.Routes = func(mux *http.ServeMux) {
 		tun.Register(mux)
 		mux.Handle("/k8s/clusters/", children)

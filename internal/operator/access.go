@@ -29,8 +29,8 @@ import (
 )
 
 // ClusterAccess is hyve's equivalent of Rancher's
-// ClusterRoleTemplateBinding, for installs without Rancher
-// (HYVE-PROPOSAL.md, "Without Rancher: the same mechanism"): a role for a
+// ClusterRoleTemplateBinding (HYVE-PROPOSAL.md, "Access to child
+// clusters"): a role for a
 // hyve user or group on one cluster, or every cluster in an environment.
 //
 // For each cluster it covers, hyve-controller writes the role's rules as a

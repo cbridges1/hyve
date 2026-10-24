@@ -16,10 +16,10 @@ var rootCmd = &cobra.Command{
 	Short: "Clusters from Cluster API templates, delivered to with Fleet",
 	Long: `hyve makes Kubernetes clusters from ClusterTemplates (a Cluster API
 ClusterClass with defaults, locked variables, expiry and resources) and
-puts things on them with Fleet. It runs with Rancher, or acts as the
-Rancher host itself when Rancher isn't installed.
+puts things on them with Fleet. Its host endpoint is the server users sign
+in to and child clusters' agents connect to.
 
-Sign in with 'hyve login <url>' (a hyve host or Rancher), then:
+Sign in with 'hyve login <url>', then:
 
   hyve template list                     templates in the template namespace
   hyve cluster create demo -t capd-small a cluster in the current environment
@@ -42,8 +42,7 @@ func init() {
 	rootCmd.AddCommand(cli.ClusterCmd(), cli.TemplateCmd(), cli.ResourceCmd(), cli.EnvCmd(), cli.AccessCmd(),
 		cli.ProviderCmd(), cli.RepoCmd(), cli.SecretsCmd(), cli.RenderCmd(), cli.ImportCmd(), cli.InstallCmd(), cli.LocalCmd(), cli.UICmd())
 
-	// Signing in (HYVE-PROPOSAL.md, "Signing in"): one URL, a hyve host or
-	// Rancher.
+	// Signing in (HYVE-PROPOSAL.md, "Signing in"): one URL, the hyve host.
 	rootCmd.AddCommand(logincmd.LoginCmd, logincmd.LogoutCmd, cli.ContextCmd(),
 		logincmd.TokenCmd, logincmd.KubeconfigCmd, logincmd.UserCmd)
 

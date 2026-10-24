@@ -1,0 +1,118 @@
+/* hyve's UI: the old hyve console's look. Inter, a neutral palette, rounded
+   cards and pills, light/dark/system themes. Pages use Tailwind directly;
+   the few classes below are the ones nearly every page repeats. */
+@import "tailwindcss";
+
+/* Inter, woff2 only (every browser hyve supports reads it). */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('@fontsource/inter/files/inter-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('@fontsource/inter/files/inter-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('@fontsource/inter/files/inter-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('@fontsource/inter/files/inter-latin-700-normal.woff2') format('woff2');
+}
+
+
+/* A .dark class on <html> (lib/theme.ts), so an explicit choice can
+   override the OS preference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  @apply bg-neutral-50 text-neutral-800 dark:bg-neutral-950 dark:text-neutral-200;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(212 212 216 / 0.8); border-radius: 9999px; }
+:root.dark ::-webkit-scrollbar-thumb { background: rgb(63 63 70 / 0.8); }
+
+@layer base {
+  h1 { @apply mb-4 text-lg font-semibold text-neutral-900 dark:text-neutral-100; }
+  h2 { @apply mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100; }
+  h3 { @apply mt-5 mb-2 text-sm font-semibold text-neutral-900 dark:text-neutral-100; }
+  a { @apply text-neutral-900 underline-offset-2 hover:underline dark:text-neutral-100; }
+  code, pre { @apply font-mono text-xs; }
+  /* Every control is h-9 (36px), buttons included, so controls side by
+     side line up. */
+  input:not([type=checkbox]):not([type=radio]):not([type=file]), select { @apply h-9; }
+  input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea {
+    @apply w-full rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:ring-white/10;
+  }
+  input[type=checkbox], input[type=radio] { @apply accent-neutral-900 dark:accent-white; }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-transparent px-3.5 py-0 text-sm font-medium whitespace-nowrap no-underline transition-colors hover:no-underline disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-sm { @apply h-7 px-2.5; }
+  .btn-primary { @apply bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200; }
+  .btn-secondary { @apply border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700; }
+  .btn-tertiary { @apply text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800; }
+  .btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
+
+  .banner { @apply mb-3 rounded-lg px-3 py-2 text-sm; }
+  .banner-info { @apply bg-sky-50 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300; }
+  .banner-success { @apply bg-green-50 text-green-800 dark:bg-green-950/60 dark:text-green-300; }
+  .banner-warning { @apply bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300; }
+  .banner-error { @apply bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300; }
+
+  .text-muted { @apply text-neutral-500; }
+  .text-success { @apply text-green-700 dark:text-green-400; }
+  .text-warning { @apply text-amber-700 dark:text-amber-400; }
+  .text-error { @apply text-red-600 dark:text-red-400; }
+
+  /* Tables, as the console's list cards. */
+  .table {
+    @apply w-full border-separate border-spacing-0 overflow-hidden rounded-xl border border-neutral-200 bg-white text-sm shadow-sm dark:border-neutral-800 dark:bg-neutral-900;
+  }
+  .table th {
+    @apply border-b border-neutral-200 bg-neutral-50/60 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap text-neutral-500 uppercase dark:border-neutral-800 dark:bg-neutral-900;
+  }
+  .table th, .table td { @apply px-4 py-2.5; }
+  .table td { @apply border-t border-neutral-100 align-top text-neutral-800 dark:border-neutral-800 dark:text-neutral-200; }
+  .table tbody tr:first-child td { @apply border-t-0; }
+  .table tbody tr:hover td { @apply bg-neutral-50 dark:bg-neutral-800/40; }
+
+  .label { @apply mb-1 block text-sm text-neutral-600 dark:text-neutral-400; }
+  .hint { @apply mt-1 block text-xs text-neutral-500; }
+  .preview { @apply rounded-lg bg-neutral-50 p-3 font-mono text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300; }
+}
+
+/* YAML token colours for the code editor (prismjs). */
+.token.key, .token.atrule { color: rgb(79 70 229); }
+:root.dark .token.key, :root.dark .token.atrule { color: rgb(165 180 252); }
+.token.string, .token.scalar { color: rgb(5 150 105); }
+:root.dark .token.string, :root.dark .token.scalar { color: rgb(110 231 183); }
+.token.number, .token.boolean, .token.null, .token.datetime { color: rgb(180 83 9); }
+:root.dark .token.number, :root.dark .token.boolean, :root.dark .token.null, :root.dark .token.datetime { color: rgb(252 211 77); }
+.token.comment { color: rgb(163 163 163); font-style: italic; }
+:root.dark .token.comment { color: rgb(115 115 115); }
+.token.punctuation { color: rgb(115 115 115); }
+:root.dark .token.punctuation { color: rgb(163 163 163); }
+.token.tag, .token.directive, .token.important { color: rgb(220 38 38); }
+:root.dark .token.tag, :root.dark .token.directive, :root.dark .token.important { color: rgb(248 113 113); }

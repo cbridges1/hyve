@@ -258,16 +258,15 @@ func signIn(ctx context.Context, o Options, dir, password string) error {
 	// Wait for the host to answer before trying passwords: failed sign-ins
 	// count towards its lockout.
 	if err := retry(ctx, 2*time.Minute, func() error {
-		_, err := login.Detect(ctx, hc, base)
-		return err
+		return login.Detect(ctx, hc, base)
 	}); err != nil {
 		return fmt.Errorf("the local host endpoint isn't answering: %w", err)
 	}
 	// The kept password, or on a fresh install the bootstrap one, changed
 	// to the kept one.
-	sess, err := login.PasswordLogin(ctx, hc, base, "localProvider", "admin", password, "")
+	sess, err := login.PasswordLogin(ctx, hc, base, "admin", password, "")
 	if err != nil {
-		sess, err = login.PasswordLogin(ctx, hc, base, "localProvider", "admin", "hyve-local-"+password, password)
+		sess, err = login.PasswordLogin(ctx, hc, base, "admin", "hyve-local-"+password, password)
 	}
 	if err != nil {
 		return fmt.Errorf("signing in to the local host: %w", err)
@@ -276,7 +275,7 @@ func signIn(ctx context.Context, o Options, dir, password string) error {
 	if err != nil {
 		return err
 	}
-	s := login.Server{Name: ContextName, URL: base, Kind: login.KindHyve, Provider: "localProvider", Username: "admin", CACertFile: caFile}
+	s := login.Server{Name: ContextName, URL: base, Kind: login.KindHyve, Username: "admin", CACertFile: caFile}
 	if old := cfg.FindByURL(base); old != nil {
 		s.Environment, s.TemplateNamespace = old.Environment, old.TemplateNamespace
 	}

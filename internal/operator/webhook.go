@@ -78,7 +78,7 @@ func (h *FillCluster) Handle(ctx context.Context, req admission.Request) admissi
 }
 
 // LockedVariables rejects a Cluster labelled with a ClusterTemplate whose
-// locked variables differ from the template's, so the Rancher UI and
+// locked variables differ from the template's, so the UI and
 // kubectl can't get around what the template sets.
 type LockedVariables struct {
 	Client client.Client
@@ -133,9 +133,8 @@ func (h *RecordCreator) Handle(_ context.Context, req admission.Request) admissi
 	want := ""
 	switch req.Operation {
 	case admissionv1.Create:
-		// A hyve user (standalone), or a Rancher user ID as Rancher's proxy
-		// impersonates it (with Rancher).
-		if u := req.UserInfo.Username; strings.HasPrefix(u, "hyve:") || IsRancherUser(u) {
+		// A hyve user, as the host impersonates it.
+		if u := req.UserInfo.Username; strings.HasPrefix(u, "hyve:") {
 			want = u
 		}
 	case admissionv1.Update:

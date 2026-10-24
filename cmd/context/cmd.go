@@ -57,7 +57,7 @@ var Cmd = &cobra.Command{
 local directory of cluster definitions. See subcommands to create, list,
 switch, show, or remove contexts.
 
-Signing in to a hyve host or Rancher is 'hyve login'.`,
+Signing in to a hyve host is 'hyve login'.`,
 }
 
 var currentCmd = &cobra.Command{

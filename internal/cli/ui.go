@@ -33,11 +33,8 @@ func UICmd() *cobra.Command {
 		Short: "Open the web UI for the current context, signed in",
 		Long: `Opens hyve's web UI in the browser, signed in as you.
 
-  - Local mode and standalone installs: hyve's own UI, served by the host.
-    The browser gets a session of its own, made from the CLI's, so there's
-    no password to type.
-  - Rancher: Rancher's dashboard, at the hyve extension's Overview. Rancher
-    signs you in itself.
+The UI is served by the host. The browser gets a session of its own, made
+from the CLI's, so there's no password to type.
 
 When the host's certificate comes from a CA the browser doesn't trust
 (local mode's, or a private one given to 'hyve login --ca-cert'), the UI is
@@ -89,7 +86,7 @@ func openUI(ctx context.Context, o uiOptions) error {
 	}
 	s := sess.server
 	if s == nil {
-		return errors.New("--kubeconfig has no UI; sign in to a hyve host or Rancher with 'hyve login'")
+		return errors.New("--kubeconfig has no UI; sign in to a hyve host with 'hyve login'")
 	}
 	open := func(u string) error {
 		if o.noBrowser {
@@ -100,10 +97,6 @@ func openUI(ctx context.Context, o uiOptions) error {
 			logf("Couldn't open a browser (%v); open %s", err, u)
 		}
 		return nil
-	}
-
-	if s.Kind == login.KindRancher {
-		return open(strings.TrimSuffix(s.URL, "/") + "/dashboard/hyve/c/_/hyve-overview")
 	}
 
 	hc, err := login.HTTPClient(s.CACertFile, s.InsecureSkipVerify)
@@ -146,6 +139,12 @@ func serveUI(ctx context.Context, o uiOptions, s *login.Server, hc *http.Client,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
+			// The host accepts a cookie on a WebSocket (the UI's shell)
+			// only from its own origin. This page is ours (the handler
+			// checked its Host), so vouch for it.
+			if o := pr.In.Header.Get("Origin"); o == "http://"+addr || o == "http://"+strings.Replace(addr, "127.0.0.1", "localhost", 1) {
+				pr.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
+			}
 		},
 		Transport:     hc.Transport,
 		FlushInterval: -1,

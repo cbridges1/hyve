@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/cbridges1/hyve/internal/audit"
 	"k8s.io/client-go/rest"
 )
 
@@ -102,6 +103,9 @@ func singleJoin(a, b string) string {
 	return strings.TrimSuffix(a, "/") + "/" + strings.TrimPrefix(b, "/")
 }
 
+// LocalClusterID is the management cluster's ID in proxy paths.
+const LocalClusterID = "local"
+
 func (p *LocalProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token, ok := sessionToken(r)
 	if !ok {
@@ -139,5 +143,7 @@ func (p *LocalProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, g := range ident.KubeGroups() {
 		r.Header.Add("Impersonate-Group", g)
 	}
+	w, done := audit.Start(w, r, ident.KubeUser(), ident.KubeGroups(), LocalClusterID)
+	defer done()
 	p.impersonate.ServeHTTP(w, r)
 }

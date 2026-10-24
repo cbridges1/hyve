@@ -1,6 +1,6 @@
-// Package tunnel is the server side of Rancher's agent tunnel, so hyve can
-// be the Rancher host for its child clusters when Rancher isn't installed
-// (HYVE-PROPOSAL.md, "hyve as the Rancher host").
+// Package tunnel is the server side of Rancher's agent tunnel, so hyve is
+// the host its child clusters' Rancher agents connect to (HYVE-PROPOSAL.md,
+// "hyve as the Rancher host").
 //
 // Each child cluster runs Rancher's own cattle-cluster-agent, with its
 // multi-cluster-management feature off so it only keeps the tunnel open. It

@@ -2,14 +2,12 @@
 # GoReleaser from the cross-compiled binary (Dockerfile.release); keep the
 # runtime stage the same as that one.
 
-# hyve's own UI (ui/standalone, which builds the extension's pages in
-# ui/pkg/hyve), embedded in the binary by internal/webui.
+# The UI (ui/), embedded in the binary by internal/webui.
 FROM node:24-alpine AS ui
-WORKDIR /src/ui/standalone
-COPY ui/standalone/package.json ui/standalone/package-lock.json ./
+WORKDIR /src/ui
+COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY ui/pkg/hyve /src/ui/pkg/hyve
-COPY ui/standalone /src/ui/standalone
+COPY ui /src/ui
 RUN mkdir -p /src/internal/webui/dist && npm run build
 
 FROM golang:1.26-alpine AS builder

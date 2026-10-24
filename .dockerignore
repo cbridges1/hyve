@@ -5,8 +5,5 @@
 /dist
 /hyve
 ui/node_modules
-ui/standalone/node_modules
-ui/pkg/hyve/node_modules
-ui/dist-pkg
 internal/webui/dist/assets
 internal/webui/dist/index.html

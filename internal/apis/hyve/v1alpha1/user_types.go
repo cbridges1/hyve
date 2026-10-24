@@ -5,7 +5,7 @@ import (
 )
 
 // UserSpec is a person who signs in to hyve's host endpoint with a username
-// and password when Rancher isn't installed (HYVE-PROPOSAL.md, "Signing in").
+// and password (HYVE-PROPOSAL.md, "Signing in").
 // metadata.name is the username. The password never lives here: its bcrypt
 // hash is a Secret in the host's namespace, owned by this User, the way
 // Rancher keeps local passwords in cattle-local-user-passwords — see
@@ -26,6 +26,15 @@ type UserSpec struct {
 	// it's given a session. Set on the bootstrap admin and by
 	// `hyve user add` without --no-password-change.
 	MustChangePassword bool `json:"mustChangePassword,omitempty"`
+
+	// Provider is "oidc" for a user who signs in through the identity
+	// provider (and has no password); empty for a password user.
+	Provider string `json:"provider,omitempty"`
+	// Subject is the identity provider's ID for the user (the ID token's
+	// sub claim).
+	Subject string `json:"subject,omitempty"`
+	// Email is the address the identity provider gave at the last sign-in.
+	Email string `json:"email,omitempty"`
 }
 
 // UserStatus is written by the host endpoint.
@@ -43,8 +52,7 @@ type UserStatus struct {
 // +kubebuilder:printcolumn:name="Last Login",type=date,JSONPath=`.status.lastLogin`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// User is a hyve account for standalone and local installs. With Rancher
-// installed, Rancher's users are used instead and no Users exist.
+// User is a hyve account.
 type User struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

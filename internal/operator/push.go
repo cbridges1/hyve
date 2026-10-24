@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -91,6 +93,37 @@ type Push struct {
 	// image fleet-controller runs.
 	FleetImage string
 	Now        func() time.Time
+
+	// driftAt is when each BundleDeployment with correctDrift was last
+	// deployed again, to put back changes made on the child.
+	driftMu sync.Mutex
+	driftAt map[types.UID]time.Time
+}
+
+// driftDue reports whether bd corrects drift and is due to be deployed
+// again, and if so, records that it is now.
+func (r *Push) driftDue(bd *unstructured.Unstructured) bool {
+	if on, _, _ := unstructured.NestedBool(bd.Object, "spec", "correctDrift", "enabled"); !on {
+		return false
+	}
+	r.driftMu.Lock()
+	defer r.driftMu.Unlock()
+	if r.driftAt == nil {
+		r.driftAt = map[types.UID]time.Time{}
+	}
+	now := r.Now()
+	last, seen := r.driftAt[bd.GetUID()]
+	if !seen {
+		// Just deployed (or the controller restarted): wait a whole interval.
+		r.driftAt[bd.GetUID()] = now
+		return false
+	}
+	// A little early is fine: the cluster is looked at every pushResync.
+	if now.Sub(last) < pushResync*9/10 {
+		return false
+	}
+	r.driftAt[bd.GetUID()] = now
+	return true
 }
 
 func setupPush(mgr manager.Manager, cs kubernetes.Interface, fleetImage string) error {
@@ -197,11 +230,19 @@ func (r *Push) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.
 	}
 
 	jobsByName := map[string]*batchv1.Job{}
+	// Drift corrections, by BundleDeployment: their Jobs' names aren't
+	// the deployment's.
+	driftJobs := map[string]*batchv1.Job{}
 	active := 0
 	for i := range jobs.Items {
 		j := &jobs.Items[i]
 		jobsByName[j.Name] = j
-		if j.Labels[labelPushKind] == "deploy" && !jobDone(j) {
+		if j.Labels[labelPushKind] == "drift" {
+			if cur := driftJobs[j.Annotations[annotPushBD]]; cur == nil || cur.CreationTimestamp.Before(&j.CreationTimestamp) {
+				driftJobs[j.Annotations[annotPushBD]] = j
+			}
+		}
+		if (j.Labels[labelPushKind] == "deploy" || j.Labels[labelPushKind] == "drift") && !jobDone(j) {
 			active++
 		}
 	}
@@ -234,14 +275,31 @@ func (r *Push) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.
 			continue
 		}
 		_, has := installed[bd.GetName()]
+		kind := "deploy"
 		if id == applied && has {
-			continue
+			if j := driftJobs[bd.GetName()]; j != nil {
+				if !jobDone(j) {
+					busy = true
+					continue
+				}
+				if err := r.report(ctx, child, bd, j); err != nil {
+					return reconcile.Result{}, err
+				}
+			}
+			if !r.driftDue(bd) {
+				continue
+			}
+			// correctDrift: deploy the same thing again, which puts back
+			// what was changed on the child, as fleet-agent's drift
+			// correction does.
+			kind = "drift"
+			name = pushJobName("hyve-drift", name, r.Now().UTC().Format(time.RFC3339))
 		}
 		if active >= maxPushJobs {
 			busy = true
 			continue
 		}
-		ok, err := r.deploy(ctx, fc, child, bd, name)
+		ok, err := r.deploy(ctx, fc, child, bd, name, kind)
 		if err != nil {
 			lg.Error(err, "push", "cluster", req.NamespacedName, "bundleDeployment", bd.GetName())
 			if err := r.writeStatus(ctx, bd, false, "", err.Error()); err != nil {
@@ -289,7 +347,7 @@ func (r *Push) isPush(ctx context.Context, fc *unstructured.Unstructured) (bool,
 
 // deploy starts a Job that deploys bd; false (and no error) means it's
 // waiting for its chart to be packaged first.
-func (r *Push) deploy(ctx context.Context, fc *unstructured.Unstructured, child Child, bd *unstructured.Unstructured, name string) (bool, error) {
+func (r *Push) deploy(ctx context.Context, fc *unstructured.Unstructured, child Child, bd *unstructured.Unstructured, name, kind string) (bool, error) {
 	ns := fc.GetNamespace()
 	image, err := r.fleetImage(ctx)
 	if err != nil {
@@ -304,8 +362,19 @@ func (r *Push) deploy(ctx context.Context, fc *unstructured.Unstructured, child 
 	// The content: Fleet's Content object, or for a HelmOp (whose chart
 	// fleet-agent downloads itself) the chart, packaged once per version.
 	var content *unstructured.Unstructured
-	if _, isHelmOp, _ := unstructured.NestedMap(bd.Object, "spec", "helmChartOptions"); isHelmOp {
-		c, err := r.chartContent(ctx, ns, fc.GetName(), image, opts)
+	if hco, isHelmOp, _ := unstructured.NestedMap(bd.Object, "spec", "helmChartOptions"); isHelmOp {
+		// The HelmOp's repository credentials: Fleet copies its
+		// helmSecretName into the BundleDeployment's namespace, where
+		// fleet-agent reads it.
+		var auth *corev1.Secret
+		if sn, _ := hco["helmOpSecretName"].(string); sn != "" {
+			auth = &corev1.Secret{}
+			if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: bd.GetNamespace(), Name: sn}, auth); err != nil {
+				return false, fmt.Errorf("the HelmOp's credentials %s: %w", sn, err)
+			}
+		}
+		insecure, _ := hco["helmOpInsecureSkipTLSVerify"].(bool)
+		c, err := r.chartContent(ctx, ns, fc.GetName(), image, opts, auth, insecure)
 		if err != nil || c == nil {
 			return false, err
 		}
@@ -345,7 +414,7 @@ func (r *Push) deploy(ctx context.Context, fc *unstructured.Unstructured, child 
 	if target == "" {
 		target = "default"
 	}
-	job := pushJob(name, ns, fc.GetName(), image, "deploy", []string{
+	job := pushJob(name, ns, fc.GetName(), image, kind, []string{
 		"fleet", "deploy", "-i", "/in/input.yaml", "-a", fleetAgentNamespace, "-n", target, "--kubeconfig", "/kubeconfig/value",
 	})
 	job.Annotations = map[string]string{annotPushBD: bd.GetName(), annotPushDeploy: id}
@@ -377,7 +446,7 @@ func (r *Push) deploy(ctx context.Context, fc *unstructured.Unstructured, child 
 
 // chartContent is a HelmOp's chart as a Fleet Content, from the cache
 // Secret; nil while the Job packaging it runs.
-func (r *Push) chartContent(ctx context.Context, ns, cluster, image string, opts map[string]any) (*unstructured.Unstructured, error) {
+func (r *Push) chartContent(ctx context.Context, ns, cluster, image string, opts map[string]any, auth *corev1.Secret, insecure bool) (*unstructured.Unstructured, error) {
 	chart, _, _ := unstructured.NestedString(opts, "helm", "chart")
 	repo, _, _ := unstructured.NestedString(opts, "helm", "repo")
 	version, _, _ := unstructured.NestedString(opts, "helm", "version")
@@ -407,11 +476,36 @@ func (r *Push) chartContent(ctx context.Context, ns, cluster, image string, opts
 		// -o - never uses it, and exits without a word if it finds no
 		// config ($KUBECONFIG; its --kubeconfig flag isn't read there): it
 		// gets a kubeconfig for nowhere rather than a service account token.
-		j := pushJob(key, ns, cluster, image, "chart", []string{"sh", "-c", `mkdir -p /tmp/src && printf '%s' "$FLEET_YAML" > /tmp/src/fleet.yaml && printf '%s' "$NOWHERE" > /tmp/kubeconfig && cd /tmp/src && exec fleet apply -o - chart .`})
+		flags := chartAuthFlags(auth, insecure)
+		j := pushJob(key, ns, cluster, image, "chart", []string{"sh", "-c", `mkdir -p /tmp/src && printf '%s' "$FLEET_YAML" > /tmp/src/fleet.yaml && printf '%s' "$NOWHERE" > /tmp/kubeconfig && cd /tmp/src && exec fleet apply -o -` + flags + ` chart .`})
 		j.Annotations = map[string]string{annotPushChart: chart + ":" + repo + ":" + version}
 		j.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "FLEET_YAML", Value: string(src)}, {Name: "NOWHERE", Value: nowhereKubeconfig}, {Name: "KUBECONFIG", Value: "/tmp/kubeconfig"}}
+		if auth != nil {
+			// The credentials go in a Secret next to the Job (a pod can't
+			// mount one from the BundleDeployment's namespace), owned by
+			// it so they go when it does.
+			j.Spec.Template.Spec.Volumes = []corev1.Volume{{Name: "auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: key + "-auth"}}}}
+			j.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "auth", MountPath: "/auth", ReadOnly: true}}
+		}
 		if err := r.Client.Create(ctx, j); err != nil && !apierrors.IsAlreadyExists(err) {
 			return nil, err
+		}
+		if auth != nil {
+			sec := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: key + "-auth", Namespace: ns, Labels: map[string]string{labelPushCluster: cluster, labelPushKind: "chart-auth"},
+					OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: j.Name, UID: j.UID}},
+				},
+				Data: map[string][]byte{},
+			}
+			for _, k := range []string{corev1.BasicAuthUsernameKey, corev1.BasicAuthPasswordKey, "cacerts"} {
+				if v, ok := auth.Data[k]; ok {
+					sec.Data[k] = v
+				}
+			}
+			if err := r.Client.Create(ctx, sec); err != nil && !apierrors.IsAlreadyExists(err) {
+				return nil, err
+			}
 		}
 		return nil, nil
 	} else if err != nil {
@@ -440,6 +534,39 @@ func (r *Push) chartContent(ctx context.Context, ns, cluster, image string, opts
 	}
 	_ = r.Client.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground))
 	return contentFromSecret(sec)
+}
+
+// chartAuthFlags are `fleet apply`'s flags for a HelmOp's repository
+// credentials (mounted at /auth), as fleet-agent would use them.
+func chartAuthFlags(auth *corev1.Secret, insecure bool) string {
+	var f []string
+	if auth != nil {
+		_, user := auth.Data[corev1.BasicAuthUsernameKey]
+		_, pass := auth.Data[corev1.BasicAuthPasswordKey]
+		if user && pass {
+			f = append(f, `--username "$(cat /auth/username)"`, "--password-file /auth/password")
+		}
+		if _, ok := auth.Data["cacerts"]; ok {
+			f = append(f, "--cacerts-file /auth/cacerts")
+		}
+		if len(f) > 0 {
+			// fleet apply only uses credentials for repos matching this.
+			f = append(f, "--helm-repo-url-regex '.*'")
+		}
+		if v, _ := strconv.ParseBool(string(auth.Data["insecureSkipVerify"])); v {
+			insecure = true
+		}
+		if v, _ := strconv.ParseBool(string(auth.Data["basicHTTP"])); v {
+			f = append(f, "--helm-basic-http")
+		}
+	}
+	if insecure {
+		f = append(f, "--helm-insecure-skip-tls")
+	}
+	if len(f) == 0 {
+		return ""
+	}
+	return " " + strings.Join(f, " ")
 }
 
 // chartSecret turns `fleet apply -o -` output (a Bundle carrying the chart

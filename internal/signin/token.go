@@ -1,5 +1,5 @@
 // Package signin is the server side of hyve's username-and-password
-// sign-in for installs without Rancher (HYVE-PROPOSAL.md, "Signing in: one
+// sign-in (HYVE-PROPOSAL.md, "Signing in: one
 // URL, a username and a password"). It runs inside `hyve host run`:
 //
 //   - Users are hyve.io User objects. Each password is a bcrypt hash in a
@@ -7,8 +7,8 @@
 //   - Signing in trades the password for a session token. Only the token's
 //     SHA-256 is stored, in a Secret owned by the User, so deleting a User
 //     removes its password and sessions.
-//   - The HTTP API mirrors the subset of Rancher's /v1-public login API that
-//     the CLI uses, so `hyve login` speaks one protocol to hyve and Rancher.
+//   - The HTTP API follows the shape of Rancher's /v1-public login API, the
+//     subset the CLI uses.
 //   - /k8s/clusters/local proxies the management cluster's API as the
 //     signed-in user, impersonated as "hyve:<username>".
 package signin

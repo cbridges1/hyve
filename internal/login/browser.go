@@ -19,33 +19,31 @@ import (
 	"time"
 )
 
-// CLILoginPath is the hyve extension's CLI sign-in page in Rancher's UI.
-// It has no /c/<cluster>/ part: Rancher's UI loads the cluster in a path,
-// and sends users who can't see it (most can't see local) to its home page.
+// CLILoginPath is the host's CLI sign-in page (the UI's /cli-login).
 //
-// The page contract, which the extension implements:
+// The page contract:
 //
-//   - Query: port (the CLI's localhost port), state (opaque, echoed back)
-//     and publicKey (base64url of an RSA SPKI DER public key, usable with
-//     WebCrypto's importKey("spki", …, {name: "RSA-OAEP", hash: "SHA-256"})).
-//   - After Rancher's own sign-in and the user's confirmation, the page
-//     creates a Rancher API key for the user (as Account & API Keys does),
-//     encrypts the bearer token with RSA-OAEP/SHA-256, and redirects to
-//     http://127.0.0.1:<port>/callback?state=…&token=<base64url>&expiresAt=<RFC 3339>
-//     (expiresAt empty for no expiry), or with error=<reason> if the user
-//     cancels.
-const CLILoginPath = "/dashboard/hyve/cli-login"
+//   - Query: port (the CLI's localhost port), state (opaque, echoed back),
+//     publicKey (base64url of an RSA SPKI DER public key, usable with
+//     WebCrypto's importKey("spki", …, {name: "RSA-OAEP", hash: "SHA-256"}))
+//     and optionally username (to fill in).
+//   - The user signs in there as anywhere in the UI (a password, or the
+//     identity provider) and confirms. The page then asks the host for a
+//     new session for the CLI (POST /v1/cli-sessions), encrypts it with
+//     RSA-OAEP/SHA-256, and redirects to
+//     http://127.0.0.1:<port>/callback?state=…&token=<base64url>&expiresAt=<RFC 3339>,
+//     or with error=<reason> if the user cancels.
+const CLILoginPath = "/cli-login"
 
 // BrowserOptions tunes BrowserLogin.
 type BrowserOptions struct {
-	Timeout time.Duration // default 5m
+	Timeout  time.Duration // default 5m
+	Username string        // filled in on the page
 }
 
-// BrowserLogin signs in through the hyve extension's CLI sign-in page.
-// It works with every Rancher auth provider, and is the only way to sign
-// the CLI in for those Rancher's own CLI can't (GitHub, Google, OIDC):
-// they finish sign-in on Rancher's own URL, so the CLI borrows the
-// browser's Rancher session instead.
+// BrowserLogin signs in through the host's CLI sign-in page, the same
+// sign-in the UI uses, so the CLI never handles a password and single
+// sign-in works the same way.
 func BrowserLogin(ctx context.Context, base string, open func(string) error, out io.Writer, opts BrowserOptions) (Session, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 5 * time.Minute
@@ -124,12 +122,15 @@ func BrowserLogin(ctx context.Context, base string, open func(string) error, out
 	q.Set("port", strconv.Itoa(port))
 	q.Set("state", state)
 	q.Set("publicKey", base64.RawURLEncoding.EncodeToString(spki))
+	if opts.Username != "" {
+		q.Set("username", opts.Username)
+	}
 	u.RawQuery = q.Encode()
 
-	fmt.Fprintf(out, "Sign in to Rancher in your browser:\n  %s\n", u)
+	fmt.Fprintf(out, "Sign in in your browser:\n  %s\n", u)
 	if open != nil {
 		if err := open(u.String()); err != nil {
-			fmt.Fprintln(out, "(couldn't open a browser; open the link yourself on this machine)")
+			fmt.Fprintln(out, "(couldn't open a browser; open the link yourself on this machine, or sign in with --username and --password-stdin)")
 		}
 	}
 
@@ -139,7 +140,7 @@ func BrowserLogin(ctx context.Context, base string, open func(string) error, out
 	case r := <-resCh:
 		return r.s, r.err
 	case <-ctx.Done():
-		return Session{}, errors.New("timed out waiting for the browser sign-in (is the hyve UI extension installed?)")
+		return Session{}, errors.New("timed out waiting for the browser sign-in; without a browser on this machine, use --username and --password-stdin")
 	}
 }
 
@@ -163,4 +164,19 @@ func OpenBrowser(rawURL string) error {
 	default:
 		return fmt.Errorf("no browser opener for %s", runtime.GOOS)
 	}
+}
+
+func trySend[T any](ch chan T, v T) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func randomState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

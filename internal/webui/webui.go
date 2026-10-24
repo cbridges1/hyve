@@ -1,7 +1,6 @@
-// Package webui is hyve's own UI for installs without Rancher
-// (HYVE-PROPOSAL.md, "UI: on or off at install"): the hyve extension's
-// pages in a small shell (ui/standalone), built into dist and embedded in
-// the binary, so the host serves it with no image or files of its own.
+// Package webui is hyve's UI (HYVE-PROPOSAL.md, "UI: on or off at
+// install"): the React app in ui/, built into dist and embedded in the
+// binary, so the host serves it with no image or files of its own.
 //
 // A plain `go build` embeds only dist/PLACEHOLDER (checked in, so the
 // embed has something to hold), and Handler serves a page saying so;
@@ -20,8 +19,7 @@ import (
 var dist embed.FS
 
 const notBuilt = `hyve's UI isn't built into this binary. Build it with 'task ui' (npm in
-ui/standalone) before 'go build'; hyve's image and releases do this
-themselves.
+ui/) before 'go build'; hyve's image and releases do this themselves.
 `
 
 // Built reports whether the UI was built into this binary.

@@ -38,8 +38,8 @@ type ProviderRequest struct {
 }
 
 // AddProvider installs a Cluster API provider the way the management
-// cluster installs them: as a Turtles CAPIProvider with Rancher, a CAPI
-// Operator provider object without, or from manifests on a lean install
+// cluster installs them: as a CAPI Operator provider object, or from
+// manifests on a lean install
 // (local mode). It returns what it did, for the user.
 func AddProvider(ctx context.Context, kc *kube.Client, r ProviderRequest) (string, error) {
 	if r.Name == "" {
@@ -68,11 +68,10 @@ func AddProvider(ctx context.Context, kc *kube.Client, r ProviderRequest) (strin
 	if DetectCAPI(kc) == CAPILean {
 		return leanProviderAdd(ctx, kc, r.Name, r.FetchURL, data)
 	}
-	turtles := DetectCAPI(kc) == CAPITurtles
 	// The providers hyve knows (docker, kubeadm) go in as local mode adds
 	// them: every type they need (kubeadm is a bootstrap and a
 	// control-plane provider), at core Cluster API's version.
-	if known, err := ProviderObjects(r.Name); err == nil && !turtles && r.Type == "" && r.Version == "" && r.FetchURL == "" && len(r.Variables) == 0 {
+	if known, err := ProviderObjects(r.Name); err == nil && r.Type == "" && r.Version == "" && r.FetchURL == "" && len(r.Variables) == 0 {
 		for _, o := range known {
 			if err := kc.ApplyObject(ctx, o); err != nil {
 				return "", err
@@ -96,29 +95,19 @@ func AddProvider(ctx context.Context, kc *kube.Client, r ProviderRequest) (strin
 	if r.FetchURL != "" {
 		spec["fetchConfig"] = map[string]any{"url": r.FetchURL}
 	}
-	var obj *unstructured.Unstructured
-	if turtles {
-		spec["name"], spec["type"] = providerName, typ
-		spec["configSecret"] = map[string]any{"name": secret}
-		obj = &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "turtles-capi.cattle.io/v1alpha1", "kind": "CAPIProvider",
-			"metadata": map[string]any{"name": r.Name, "namespace": namespace}, "spec": spec,
-		}}
-	} else {
-		kind, ok := OperatorKinds[typ]
-		if !ok {
-			return "", fmt.Errorf("provider type %q: want one of core, bootstrap, controlPlane, infrastructure, addon, ipam, runtimeExtension", typ)
-		}
-		if !kc.HasKind("operator.cluster.x-k8s.io", "v1alpha2", kind) {
-			return "", fmt.Errorf("neither Rancher Turtles nor the Cluster API Operator is installed; the hyve chart installs the operator")
-		}
-		spec["configSecret"] = map[string]any{"name": secret, "namespace": namespace}
-		// The operator names a provider after its object.
-		obj = &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "operator.cluster.x-k8s.io/v1alpha2", "kind": kind,
-			"metadata": map[string]any{"name": providerName, "namespace": namespace}, "spec": spec,
-		}}
+	kind, ok := OperatorKinds[typ]
+	if !ok {
+		return "", fmt.Errorf("provider type %q: want one of core, bootstrap, controlPlane, infrastructure, addon, ipam, runtimeExtension", typ)
 	}
+	if !kc.HasKind("operator.cluster.x-k8s.io", "v1alpha2", kind) {
+		return "", fmt.Errorf("the Cluster API Operator isn't installed; 'hyve install' installs it")
+	}
+	spec["configSecret"] = map[string]any{"name": secret, "namespace": namespace}
+	// The operator names a provider after its object.
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "operator.cluster.x-k8s.io/v1alpha2", "kind": kind,
+		"metadata": map[string]any{"name": providerName, "namespace": namespace}, "spec": spec,
+	}}
 	objs = append(objs, obj)
 	for _, o := range objs {
 		if err := kc.ApplyObject(ctx, o); err != nil {

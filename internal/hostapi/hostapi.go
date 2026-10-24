@@ -48,6 +48,9 @@ type API struct {
 	// Dynamic, when set, replaces the impersonating client watches use
 	// (tests).
 	Dynamic func(signin.Identity) (dynamic.Interface, error)
+	// Child, when set, reaches a child cluster as the user (through the
+	// host's /k8s/clusters/<id> proxy), for watches with c=<id>.
+	Child func(id string, ident signin.Identity) (*rest.Config, error)
 }
 
 // Register adds the routes.

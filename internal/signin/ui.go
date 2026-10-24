@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -40,7 +41,23 @@ func sessionToken(r *http.Request) (token string, ok bool) {
 	if !safeMethod(r.Method) && !fromUI(r) {
 		return "", false
 	}
+	// A WebSocket (the UI's shell into a pod) can't carry UIHeader, and
+	// browsers send cookies on cross-site WebSocket handshakes more often
+	// than on other requests: accept the cookie only from this host's own
+	// pages.
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && !sameOrigin(r) {
+		return "", false
+	}
 	return c.Value, true
+}
+
+// sameOrigin reports whether the request's Origin is this host.
+func sameOrigin(r *http.Request) bool {
+	o, err := url.Parse(r.Header.Get("Origin"))
+	if err != nil || o.Host == "" {
+		return false
+	}
+	return strings.EqualFold(o.Host, r.Host)
 }
 
 // secure reports whether the browser reached the host over HTTPS, itself
@@ -180,6 +197,32 @@ func (s *Server) handleNewUISession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("signin: UI session for %s: %v", ident.Username, err)
+		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start a session")
+		return
+	}
+	writeJSON(w, http.StatusCreated, UISessionResponse{Token: token, ExpiresAt: expiresAt.Format(time.RFC3339)})
+}
+
+// handleCLISession is the browser half of `hyve login`: the CLI sign-in
+// page (signed in with the UI's cookie) asks for a new session for the
+// CLI, as the same user, and hands it to the CLI encrypted to the CLI's
+// key. Only the UI can ask: a cross-site page can't add UIHeader.
+func (s *Server) handleCLISession(w http.ResponseWriter, r *http.Request) {
+	if !fromUI(r) || bearer(r) != "" {
+		writeError(w, http.StatusForbidden, "Forbidden", "only the sign-in page can start a CLI session")
+		return
+	}
+	ident, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+	token, expiresAt, err := s.Store.NewSession(r.Context(), ident)
+	if errors.Is(err, ErrInvalidSession) {
+		writeError(w, http.StatusUnauthorized, "Unauthorized", err.Error())
+		return
+	}
+	if err != nil {
+		log.Printf("signin: CLI session for %s: %v", ident.Username, err)
 		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start a session")
 		return
 	}
