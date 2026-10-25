@@ -1,4 +1,5 @@
-// The cluster explorer's view of a child cluster (HYVE-PROPOSAL.md,
+// The cluster explorer's view of a cluster, a child or the management
+// cluster (HYVE-PROPOSAL.md,
 // "Cluster explorer"): everything goes through the host's
 // /k8s/clusters/<id> as the signed-in user, so the child's RBAC decides
 // what each person sees. The Kubernetes API does the work: discovery for
@@ -6,6 +7,9 @@
 import { dump } from 'js-yaml'
 import { ApiError, request } from './api'
 import { discover, urlFor, type Obj, type Schema } from './kube'
+
+// The management cluster's ID in proxy paths and the watch stream.
+export const LOCAL_CLUSTER = 'local'
 
 export const clusterBase = (id: string) => `/k8s/clusters/${encodeURIComponent(id)}`
 
@@ -171,7 +175,7 @@ export function execURL(id: string, namespace: string, pod: string, container: s
   return `${proto}//${window.location.host}${clusterBase(id)}/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(pod)}/exec?${q}`
 }
 
-// Changes on a child cluster, through the host's watch stream (c=<id>):
+// Changes on a cluster, through the host's watch stream (c=<id>):
 // calls onChange (debounced) whenever the watched list changes.
 export function watchList(id: string, s: Schema, namespace: string | undefined, onChange: () => void): () => void {
   const w = `${s.group}/${s.version}/${s.resource}/${s.namespaced ? namespace || '' : ''}/`

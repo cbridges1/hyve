@@ -3,7 +3,9 @@
 import { useSyncExternalStore } from 'react'
 import type { Me } from './api'
 
-export type Session = { user: Me | null; version: string }
+// canExplore: the user may list the management cluster's namespaces, so
+// its explorer is worth a place in the sidebar.
+export type Session = { user: Me | null; version: string; canExplore?: boolean }
 
 let current: Session = { user: null, version: '' }
 const listeners = new Set<() => void>()

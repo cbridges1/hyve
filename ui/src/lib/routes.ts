@@ -25,6 +25,7 @@ export const paths = {
   environments: '/environments',
   access: '/access',
   import: '/import',
+  explorer: '/explorer',
   // Any kind, as a list or as YAML.
   list: (type: string) => `/list/${enc(type)}`,
   yaml: (type: string, namespace: string | undefined, name: string, edit = false) =>

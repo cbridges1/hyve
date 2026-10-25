@@ -15,7 +15,9 @@ import { Logo } from './Logo'
 import { ThemeToggle } from './ThemeToggle'
 import { ErrorBanner } from './ui'
 
-type Item = { label: string; icon: string; to: string; type?: string }
+// type: shown only when the management cluster serves it; explore: only
+// when the user may browse the management cluster.
+type Item = { label: string; icon: string; to: string; type?: string; explore?: boolean }
 
 const groups: { label: string; items: Item[] }[] = [
   {
@@ -42,6 +44,7 @@ const groups: { label: string; items: Item[] }[] = [
       { label: 'Users', icon: 'users', to: paths.users, type: TYPES.USER },
       { label: 'Environments', icon: 'environments', to: paths.environments },
       { label: 'Access', icon: 'access', to: paths.access },
+      { label: 'Explorer', icon: 'search', to: paths.explorer, explore: true },
     ],
   },
 ]
@@ -54,8 +57,9 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
   }`
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+  const { canExplore } = useSession()
   const visible = groups
-    .map((g) => ({ ...g, items: g.items.filter((i) => !i.type || schemaFor(i.type)) }))
+    .map((g) => ({ ...g, items: g.items.filter((i) => (!i.type || schemaFor(i.type)) && (!i.explore || canExplore)) }))
     .filter((g) => g.items.length)
   return (
     <nav className="w-full flex-1 space-y-3 overflow-y-auto px-2.5 pb-3">

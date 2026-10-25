@@ -17,6 +17,7 @@ import CreateCluster from './pages/CreateCluster'
 import Environments from './pages/Environments'
 import GenericList from './pages/GenericList'
 import ImportPage from './pages/ImportPage'
+import ManagementExplorer from './pages/ManagementExplorer'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
 import Providers from './pages/Providers'
@@ -116,6 +117,7 @@ export default function App() {
           <Route path="environments" element={<Environments />} />
           <Route path="access" element={<Access />} />
           <Route path="import" element={<ImportPage />} />
+          <Route path="explorer" element={<ManagementExplorer />} />
           <Route path="list/:type" element={<GenericList />} />
           <Route path="yaml/:type/new" element={<YamlPage />} />
           <Route path="yaml/:type/:namespace/:name" element={<YamlPage />} />

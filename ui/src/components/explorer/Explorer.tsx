@@ -17,14 +17,15 @@ export function Explorer({ clusterId }: { clusterId: string }) {
   const typeId = query.get('type') || 'pod'
   const ns = query.get('ns') || ''
   const obj = query.get('obj')
-  const set = (p: Record<string, string | null>) => {
+  const withParams = (p: Record<string, string | null>) => {
     const q = new URLSearchParams(query)
     for (const [k, v] of Object.entries(p)) {
       if (v) q.set(k, v)
       else q.delete(k)
     }
-    setQuery(q)
+    return q
   }
+  const set = (p: Record<string, string | null>) => setQuery(withParams(p))
 
   const { data: schemas, error, loading } = useLoad(() => discoverCluster(clusterId), [clusterId], { live: false })
   const { data: namespaces } = useLoad(
@@ -67,7 +68,7 @@ export function Explorer({ clusterId }: { clusterId: string }) {
             namespace={ns}
             namespaces={namespaces || []}
             onNamespace={(n) => set({ ns: n || null })}
-            onOpen={(name, n) => set({ obj: name, ns: n || ns, view: null })}
+            hrefFor={(name, n) => `?${withParams({ obj: name, ns: n || ns, view: null })}`}
           />
         )}
       </div>
@@ -128,14 +129,15 @@ function ResourceTable({
   namespace,
   namespaces,
   onNamespace,
-  onOpen,
+  hrefFor,
 }: {
   clusterId: string
   schema: Schema
   namespace: string
   namespaces: string[]
   onNamespace: (n: string) => void
-  onOpen: (name: string, namespace?: string) => void
+  // An object's address, so its link opens in a new tab too.
+  hrefFor: (name: string, namespace?: string) => string
 }) {
   const [selector, setSelector] = useState('')
   const [applied, setApplied] = useState('')
@@ -247,13 +249,7 @@ function ResourceTable({
                       {cols.map((c) => (
                         <td key={c.i} className={c.format === 'name' ? 'whitespace-nowrap' : ''}>
                           {c.format === 'name' ? (
-                            <Link
-                              to="#"
-                              onClick={(e) => {
-                                e.preventDefault()
-                                onOpen(md.name, md.namespace)
-                              }}
-                            >
+                            <Link to={hrefFor(md.name, md.namespace)}>
                               {cellText(r.cells[c.i])}
                             </Link>
                           ) : c.name === 'Age' ? (
