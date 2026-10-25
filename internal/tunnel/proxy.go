@@ -226,3 +226,39 @@ func (p *Proxy) transport(a *Agent) (http.RoundTripper, error) {
 	p.transports[a.ClusterID] = cachedTransport{key: key, rt: rt}
 	return rt, nil
 }
+
+// AdminConfig reaches child cluster id as the host itself, not as a user:
+// through its agent's tunnel with the agent's service account, or
+// directly with its CAPI kubeconfig when the agent isn't connected. It's
+// for what the host does on a user's behalf after checking they may (the
+// kubectl shell's pod); never hand it to a user's request.
+func (p *Proxy) AdminConfig(ctx context.Context, id string) (*rest.Config, error) {
+	agent, err := p.Server.Registry.Get(ctx, id)
+	if err == nil && agent.Address != "" && p.Server.Connected(id) {
+		dial := p.Server.Dialer(id)
+		return &rest.Config{
+			Host:            "https://" + agent.Address,
+			BearerToken:     agent.ServiceAccountToken,
+			TLSClientConfig: rest.TLSClientConfig{CAData: agent.CACert, NextProtos: []string{"http/1.1"}},
+			Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dial(ctx, network, addr)
+			},
+		}, nil
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	if p.Direct != nil {
+		cfg, derr := p.Direct(ctx, id)
+		if derr == nil {
+			return cfg, nil
+		}
+		if !apierrors.IsNotFound(derr) {
+			return nil, derr
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("cluster %s's agent isn't connected", id)
+}

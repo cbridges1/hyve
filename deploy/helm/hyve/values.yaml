@@ -87,6 +87,11 @@ host:
   caCertsConfigMap: ""
   # The cattle-cluster-agent image hyve is tested against.
   agentImage: rancher/rancher-agent:v2.14.3
+  # The UI's kubectl shell: a short-lived pod with kubectl, helm and k9s on
+  # the cluster, in namespace hyve-shell, that runs as the signed-in user.
+  # Empty turns it off.
+  shell:
+    image: rancher/shell:v0.8.2
   service:
     type: ClusterIP
     port: 80

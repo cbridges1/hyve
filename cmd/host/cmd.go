@@ -34,6 +34,7 @@ import (
 	"github.com/cbridges1/hyve/internal/audit"
 	"github.com/cbridges1/hyve/internal/hostapi"
 	"github.com/cbridges1/hyve/internal/install"
+	"github.com/cbridges1/hyve/internal/shell"
 	"github.com/cbridges1/hyve/internal/signin"
 	"github.com/cbridges1/hyve/internal/tunnel"
 	"github.com/cbridges1/hyve/internal/webui"
@@ -55,6 +56,7 @@ var (
 	publicURL       string
 	oidcCfg         signin.OIDCConfig
 	noPasswords     bool
+	shellImage      string
 )
 
 // Cmd is `hyve host`.
@@ -109,6 +111,7 @@ func init() {
 	f.StringSliceVar(&oidcCfg.AllowedDomains, "oidc-allowed-domains", nil, "admit only verified emails in these domains")
 	f.StringSliceVar(&oidcCfg.AllowedGroups, "oidc-allowed-groups", nil, "admit only users in at least one of these groups")
 	f.BoolVar(&audit.Enabled, "audit-log", true, "write a JSON line to stdout for each request proxied to a cluster (user, groups, cluster, verb, path, status)")
+	f.StringVar(&shellImage, "shell-image", shell.DefaultImage, "image for the UI's kubectl shell (kubectl, helm, k9s; empty turns the shell off)")
 	f.BoolVar(&noPasswords, "no-passwords", false, "turn password sign-in off, leaving single sign-in (the bootstrap admin then can't sign in)")
 	runCmd.Flags().StringVar(&caCertsFile, "cacerts", "", "PEM CA the host's certificate chains to, for agents to pin (leave unset for a publicly trusted certificate)")
 	Cmd.AddCommand(runCmd)
@@ -190,7 +193,12 @@ func run(ctx context.Context) error {
 	api := &hostapi.API{Config: cfg, Identify: srv.SessionIdentity, DefaultTemplateNamespace: install.DefaultTemplateNamespace,
 		Child: func(id string, ident signin.Identity) (*rest.Config, error) {
 			return children.RESTConfig(id, ident), nil
-		}}
+		},
+		ChildAdmin: children.AdminConfig,
+	}
+	if shellImage != "" {
+		api.Shells = &shell.Manager{Image: shellImage}
+	}
 	srv.Routes = func(mux *http.ServeMux) {
 		tun.Register(mux)
 		mux.Handle("/k8s/clusters/", children)

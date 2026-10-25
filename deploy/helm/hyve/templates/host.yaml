@@ -24,10 +24,11 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["users/status"]
     verbs: ["get", "patch", "update"]
-  # Which namespaces a user can work in, for the UI (GET /v1/namespaces).
+  # Which namespaces a user can work in, for the UI (GET /v1/namespaces);
+  # get: the kubectl shell checks its namespace is there.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["list"]
+    verbs: ["get", "list"]
   # A cluster whose agent can't reach the host (push delivery) is proxied
   # to directly with its CAPI kubeconfig, <name>-kubeconfig in its
   # environment (internal/tunnel/proxy.go, Direct). Read one at a time,
@@ -40,6 +41,14 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
+  {{- if .Values.host.shell.image }}
+  # The kubectl shell's pod impersonates its one user through a ClusterRole
+  # and binding made per shell (internal/shell). Kubernetes only lets the
+  # host grant what it holds, impersonation, which it already has.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["create", "list", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -79,6 +88,43 @@ subjects:
     name: hyve-host
     namespace: {{ .Values.namespace }}
 ---
+{{- if .Values.host.shell.image }}
+# The kubectl shell's pods, on the management cluster (internal/shell).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hyve-shell
+  labels:
+    app.kubernetes.io/managed-by: hyve
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hyve-host
+  namespace: hyve-shell
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyve-host
+  namespace: hyve-shell
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hyve-host
+subjects:
+  - kind: ServiceAccount
+    name: hyve-host
+    namespace: {{ .Values.namespace }}
+---
+{{- end }}
 # The bootstrap admin is a cluster admin, as Rancher's admin is.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -140,6 +186,7 @@ spec:
             - --audit-log=false
             {{- end }}
             - --bootstrap-secret={{ .Values.host.bootstrapSecret }}
+            - --shell-image={{ .Values.host.shell.image }}
             {{- if .Values.ui.enabled }}
             - --ui
             {{- end }}

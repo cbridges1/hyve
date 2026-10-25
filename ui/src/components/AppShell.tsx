@@ -1,9 +1,10 @@
 // The console's shell: a full-width header (logo, theme, account menu)
 // over a grouped sidebar and the page.
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { auth, errorMessage } from '../lib/api'
 import { download, kubeconfig } from '../lib/format'
+import { useShellTarget } from '../lib/kubectlShell'
 import { schemaFor } from '../lib/kube'
 import { paths } from '../lib/routes'
 import { setSession, useSession } from '../lib/session'
@@ -17,6 +18,9 @@ import { ErrorBanner } from './ui'
 
 // type: shown only when the management cluster serves it; explore: only
 // when the user may browse the management cluster.
+// The kubectl shell brings xterm.js: loaded when first opened.
+const KubectlShell = lazy(() => import('./KubectlShell').then((m) => ({ default: m.KubectlShell })))
+
 type Item = { label: string; icon: string; to: string; type?: string; explore?: boolean }
 
 const groups: { label: string; items: Item[] }[] = [
@@ -184,6 +188,7 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [error, setError] = useState('')
   const location = useLocation()
+  const shell = useShellTarget()
   useEffect(() => {
     setMobileOpen(false)
     setError('')
@@ -238,7 +243,7 @@ export function AppShell() {
         <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-60 shrink-0 border-r border-neutral-200 bg-white md:flex dark:border-neutral-800 dark:bg-neutral-900">
           <Sidebar />
         </aside>
-        <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
+        <main className={`min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8 ${shell ? 'pb-[calc(40vh+4rem)]' : ''}`}>
           <div className="mx-auto max-w-6xl">
             <ErrorBanner error={error} />
             <ErrorBoundary resetKey={location.pathname}>
@@ -247,6 +252,11 @@ export function AppShell() {
           </div>
         </main>
       </div>
+      {shell && (
+        <Suspense fallback={null}>
+          <KubectlShell key={shell.cluster} target={shell} />
+        </Suspense>
+      )}
     </div>
   )
 }

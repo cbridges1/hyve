@@ -11,6 +11,7 @@ import { clusterStatus, download, expiry, kubeconfig } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { kube, type Obj, patch, remove, save } from '../lib/kube'
 import { paths } from '../lib/routes'
+import { openShell } from '../lib/kubectlShell'
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from '../lib/types'
 
 // The explorer (and xterm.js) load when the tab is opened.
@@ -171,6 +172,14 @@ export default function ClusterDetail() {
             <StatusPill status={clusterStatus(value)} />
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              title="kubectl, helm and k9s in your browser, as you, on this cluster"
+              onClick={() => openShell({ cluster: `${namespace}.${name}`, label: `${namespace}/${name}` })}
+            >
+              Kubectl shell
+            </button>
             <button
               type="button"
               className="btn btn-secondary"

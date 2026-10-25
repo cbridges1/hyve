@@ -12,6 +12,7 @@
 package hostapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/render"
+	"github.com/cbridges1/hyve/internal/shell"
 	"github.com/cbridges1/hyve/internal/signin"
 	"github.com/cbridges1/hyve/internal/templates"
 )
@@ -51,6 +53,11 @@ type API struct {
 	// Child, when set, reaches a child cluster as the user (through the
 	// host's /k8s/clusters/<id> proxy), for watches with c=<id>.
 	Child func(id string, ident signin.Identity) (*rest.Config, error)
+	// ChildAdmin reaches a child cluster as the host, for the kubectl
+	// shell's objects (shell.go).
+	ChildAdmin func(ctx context.Context, id string) (*rest.Config, error)
+	// Shells, when set, serves the kubectl shell.
+	Shells *shell.Manager
 }
 
 // Register adds the routes.
@@ -59,6 +66,10 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/hyve/render", a.authed(a.render))
 	mux.HandleFunc("POST /v1/hyve/import", a.authed(a.importTemplates))
 	mux.HandleFunc("GET /v1/hyve/watch", a.authed(a.watchStream))
+	if a.Shells != nil {
+		mux.HandleFunc("POST /v1/hyve/shells", a.authed(a.startShell))
+		mux.HandleFunc("GET /v1/hyve/shells/{cluster}/{id}/exec", a.authed(a.shellExec))
+	}
 }
 
 func (a *API) authed(h func(http.ResponseWriter, *http.Request, signin.Identity)) http.HandlerFunc {

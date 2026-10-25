@@ -5,13 +5,23 @@
 import { lazy, Suspense } from 'react'
 import { Loading, PageHeader } from '../components/ui'
 import { LOCAL_CLUSTER } from '../lib/explorer'
+import { openShell } from '../lib/kubectlShell'
 
 const Explorer = lazy(() => import('../components/explorer/Explorer').then((m) => ({ default: m.Explorer })))
 
 export default function ManagementExplorer() {
   return (
     <div className="space-y-4">
-      <PageHeader title="Explorer" subtitle="Every resource type the management cluster serves, CRDs included." />
+      <PageHeader title="Explorer" subtitle="Every resource type the management cluster serves, CRDs included.">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          title="kubectl, helm and k9s in your browser, as you, on the management cluster"
+          onClick={() => openShell({ cluster: LOCAL_CLUSTER, label: 'management cluster' })}
+        >
+          Kubectl shell
+        </button>
+      </PageHeader>
       <Suspense fallback={<Loading />}>
         <Explorer clusterId={LOCAL_CLUSTER} />
       </Suspense>
