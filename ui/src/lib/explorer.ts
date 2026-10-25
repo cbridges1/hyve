@@ -6,6 +6,7 @@
 // the types, server-side tables for lists, server-side apply for edits.
 import { dump } from 'js-yaml'
 import { ApiError, request } from './api'
+import type { Tone } from './format'
 import { discover, urlFor, type Obj, type Schema } from './kube'
 
 // The management cluster's ID in proxy paths and the watch stream.
@@ -208,4 +209,27 @@ export function cellText(v: unknown): string {
   if (v === null || v === undefined) return ''
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
+}
+
+// How a status-like cell reads at a glance: a pod's Status, a PVC's
+// Phase, a condition's True/False, a READY count.
+const GOOD = /^(running|ready|true|active|bound|available|succeeded|healthy|deployed|provisioned|established|normal)$/i
+const BUSY = /^(pending|containercreating|podinitializing|terminating|progressing|provisioning|updating|unknown|waiting|init:.*)$/i
+const BAD = /(error|failed|crashloopbackoff|imagepullbackoff|errimagepull|oomkilled|evicted|false|notready|lost|unhealthy|warning)/i
+const STATUS_COLUMNS = /^(status|phase|state|ready|available|conditions?|health)$/i
+
+export function cellTone(column: string, text: string): Tone | null {
+  if (!text || !STATUS_COLUMNS.test(column)) return null
+  const count = /^(\d+)\/(\d+)$/.exec(text)
+  if (count) return count[1] === count[2] ? 'good' : 'busy'
+  if (GOOD.test(text)) return 'good'
+  if (/^completed?$/i.test(text)) return 'idle'
+  if (BUSY.test(text)) return 'busy'
+  if (BAD.test(text)) return 'bad'
+  return 'idle'
+}
+
+// Columns that are short and read best on one line.
+export function isCompactColumn(c: TableColumn): boolean {
+  return c.type === 'integer' || c.type === 'number' || c.type === 'date' || /^(age|ready|restarts|status|phase|type|count)$/i.test(c.name)
 }

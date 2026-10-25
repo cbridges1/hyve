@@ -244,7 +244,7 @@ export function AppShell() {
           <Sidebar />
         </aside>
         <main className={`min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8 ${shell ? 'pb-[calc(40vh+4rem)]' : ''}`}>
-          <div className="mx-auto max-w-6xl">
+          <div className={`mx-auto ${/\/explorer$/.test(location.pathname) ? 'max-w-[1600px]' : 'max-w-6xl'}`}>
             <ErrorBanner error={error} />
             <ErrorBoundary resetKey={location.pathname}>
               <Outlet />

@@ -1,12 +1,14 @@
 // One object on a child cluster: YAML (view, and edit with server-side
 // apply), its events, its owners, and for a pod its logs and a shell.
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { errorMessage } from '../../lib/api'
 import { age } from '../../lib/format'
 import type { Obj, Schema } from '../../lib/kube'
-import { applyYaml, ConflictError, deleteObject, editableYaml, eventsFor, getObject, viewYaml } from '../../lib/explorer'
+import { applyYaml, cellTone, ConflictError, deleteObject, editableYaml, eventsFor, getObject, viewYaml } from '../../lib/explorer'
 import { CodeEditor } from '../CodeEditor'
-import { Banner, Card, ConfirmButton, ErrorBanner, Loading } from '../ui'
+import { Icon } from '../Icon'
+import { Card, ConfirmButton, ErrorBanner, Loading, Pill } from '../ui'
 import { PodLogs } from './PodLogs'
 import { PodShell } from './PodShell'
 
@@ -25,6 +27,8 @@ export function ObjectView({
   view,
   onView,
   onBack,
+  listHref,
+  namespaceHref,
   onOpen,
 }: {
   clusterId: string
@@ -35,6 +39,9 @@ export function ObjectView({
   view: string
   onView: (v: string) => void
   onBack: () => void
+  // The list of this type, all namespaces, and one namespace's.
+  listHref: string
+  namespaceHref: (namespace: string) => string
   onOpen: (type: string, namespace: string | undefined, name: string) => void
 }) {
   const [obj, setObj] = useState<Obj | null>(null)
@@ -45,6 +52,7 @@ export function ObjectView({
   const [busy, setBusy] = useState(false)
   const [showSecrets, setShowSecrets] = useState(false)
   const [events, setEvents] = useState<Obj[] | null>(null)
+  const [allLabels, setAllLabels] = useState(false)
 
   const load = async () => {
     try {
@@ -73,12 +81,14 @@ export function ObjectView({
   const isPod = schema.id === 'pod'
   const containers: string[] = isPod ? [...(obj.spec?.initContainers || []), ...(obj.spec?.containers || [])].map((c: any) => c.name) : []
   const tabs = [
-    { id: 'yaml', label: 'YAML' },
-    ...(schemas.event ? [{ id: 'events', label: 'Events' }] : []),
-    ...(isPod ? [
-      { id: 'logs', label: 'Logs' },
-      { id: 'shell', label: 'Shell' },
-    ] : []),
+    { id: 'yaml', label: 'YAML', icon: 'edit' },
+    ...(schemas.event ? [{ id: 'events', label: 'Events', icon: 'refresh' }] : []),
+    ...(isPod
+      ? [
+          { id: 'logs', label: 'Logs', icon: 'logs' },
+          { id: 'shell', label: 'Shell', icon: 'terminal' },
+        ]
+      : []),
   ]
   const canUpdate = schema.verbs.includes('patch')
   const canDelete = schema.verbs.includes('delete')
@@ -98,59 +108,113 @@ export function ObjectView({
     }
   }
 
+  const md = obj.metadata
+  const labels = Object.entries(md.labels || {})
+  const LABELS_SHOWN = 6
+  const phase: string | undefined = obj.status?.phase
+  const crumb = 'text-neutral-500 no-underline hover:text-neutral-900 hover:no-underline dark:text-neutral-400 dark:hover:text-neutral-100'
+
   return (
-    <div>
-      <button type="button" className="btn btn-tertiary btn-sm mb-2 -ml-2" onClick={onBack}>
-        ← {schema.kind} list
-      </button>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="mb-0 text-base">
-          {schema.kind} {namespace ? `${namespace}/` : ''}
-          {name}
-        </h2>
-        <div className="flex items-center gap-2">
+    <div className="space-y-4">
+      <nav aria-label="Breadcrumb" className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+        <Link to={listHref} className={crumb}>
+          {schema.kind}
+        </Link>
+        {namespace && (
+          <>
+            <Icon name="chevronRight" size={14} className="shrink-0 text-neutral-400" />
+            <Link to={namespaceHref(namespace)} className={crumb}>
+              {namespace}
+            </Link>
+          </>
+        )}
+        <Icon name="chevronRight" size={14} className="shrink-0 text-neutral-400" />
+        <span className="min-w-0 font-medium text-neutral-900 [overflow-wrap:anywhere] dark:text-neutral-100">{name}</span>
+      </nav>
+
+      <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold tracking-wider text-neutral-400 uppercase">
+              {schema.kind}
+              {schema.group ? ` · ${schema.group}` : ''}
+            </div>
+            <h2 className="mt-0.5 mb-0 text-lg [overflow-wrap:anywhere]">{name}</h2>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-neutral-500">
+              {namespace && <Pill tone="env" label={namespace} title="Namespace" />}
+              {phase && <Pill tone={cellTone('phase', phase) || 'idle'} label={phase} />}
+              {md.deletionTimestamp && <Pill tone="busy" label="Being deleted" />}
+              <span title={md.creationTimestamp}>created {age(md.creationTimestamp)} ago</span>
+            </div>
+          </div>
           {canDelete && (
             <ConfirmButton
               label="Delete"
               confirm={`Delete ${name}?`}
-              onConfirm={() =>
-                deleteObject(clusterId, schema, namespace, name).then(onBack, (e) => setError(errorMessage(e)))
-              }
+              onConfirm={() => deleteObject(clusterId, schema, namespace, name).then(onBack, (e) => setError(errorMessage(e)))}
             />
           )}
         </div>
-      </div>
-      {obj.metadata.deletionTimestamp && <Banner tone="warning">Being deleted.</Banner>}
-      {(obj.metadata.ownerReferences || []).length > 0 && (
-        <p className="mb-3 text-sm text-neutral-600 dark:text-neutral-400">
-          Owned by{' '}
-          {obj.metadata.ownerReferences!.map((r, i) => {
-            const t = typeFor(schemas, r.apiVersion, r.kind)
-            return (
-              <span key={r.uid || r.name}>
-                {i > 0 && ', '}
-                {t ? (
-                  <button type="button" className="underline underline-offset-2" onClick={() => onOpen(t, namespace, r.name)}>
-                    {r.kind} {r.name}
-                  </button>
-                ) : (
-                  `${r.kind} ${r.name}`
-                )}
+
+        {(md.ownerReferences || []).length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5 text-sm">
+            <span className="text-muted mr-1">Owned by</span>
+            {md.ownerReferences!.map((r) => {
+              const t = typeFor(schemas, r.apiVersion, r.kind)
+              const chip = 'inline-flex max-w-full items-center gap-1 rounded-md border border-neutral-200 px-2 py-0.5 text-xs dark:border-neutral-700'
+              const body = (
+                <>
+                  <span className="text-neutral-500">{r.kind}</span>
+                  <span className="truncate font-medium">{r.name}</span>
+                </>
+              )
+              return t ? (
+                <button key={r.uid || r.name} type="button" className={`${chip} hover:bg-neutral-100 dark:hover:bg-neutral-800`} onClick={() => onOpen(t, namespace, r.name)}>
+                  {body}
+                </button>
+              ) : (
+                <span key={r.uid || r.name} className={chip}>
+                  {body}
+                </span>
+              )
+            })}
+          </div>
+        )}
+
+        {labels.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {(allLabels ? labels : labels.slice(0, LABELS_SHOWN)).map(([k, v]) => (
+              <span
+                key={k}
+                title={`${k}=${v}`}
+                className="inline-flex max-w-full items-center rounded-md bg-neutral-100 px-2 py-0.5 font-mono text-[11px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+              >
+                <span className="truncate">
+                  {k}
+                  {v ? <span className="text-neutral-400">={v}</span> : null}
+                </span>
               </span>
-            )
-          })}
-        </p>
-      )}
-      <div className="mb-3 flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
+            ))}
+            {labels.length > LABELS_SHOWN && (
+              <button type="button" className="text-xs text-neutral-500 underline-offset-2 hover:underline" onClick={() => setAllLabels((v) => !v)}>
+                {allLabels ? 'Fewer' : `+${labels.length - LABELS_SHOWN} more`}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-1 border-b border-neutral-200 dark:border-neutral-800">
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => onView(t.id)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
+            className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap ${
               view === t.id ? 'border-neutral-900 text-neutral-900 dark:border-white dark:text-white' : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
             }`}
           >
+            <Icon name={t.icon} size={15} />
             {t.label}
           </button>
         ))}
@@ -214,36 +278,26 @@ export function ObjectView({
       {view === 'events' &&
         (events === null ? (
           <Loading />
+        ) : !events.length ? (
+          <div className="rounded-xl border border-dashed border-neutral-300 py-10 text-center text-sm text-neutral-500 dark:border-neutral-700">
+            No events (Kubernetes keeps them for an hour).
+          </div>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Reason</th>
-                <th>Age</th>
-                <th>Count</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!events.length && (
-                <tr>
-                  <td colSpan={5} className="text-muted">
-                    No events (Kubernetes keeps them for an hour).
-                  </td>
-                </tr>
-              )}
-              {events.map((e: any) => (
-                <tr key={e.metadata.uid || e.metadata.name}>
-                  <td className={e.type === 'Warning' ? 'text-warning' : ''}>{e.type}</td>
-                  <td>{e.reason}</td>
-                  <td>{age(e.lastTimestamp || e.eventTime || e.metadata.creationTimestamp)}</td>
-                  <td>{e.count || e.series?.count || 1}</td>
-                  <td className="break-words">{e.message || e.note}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ul className="divide-y divide-neutral-100 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+            {events.map((e: any) => (
+              <li key={e.metadata.uid || e.metadata.name} className="px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <Pill tone={e.type === 'Warning' ? 'bad' : 'idle'} label={e.type || 'Normal'} />
+                  <span className="font-medium">{e.reason}</span>
+                  <span className="text-muted ml-auto text-xs whitespace-nowrap">
+                    {age(e.lastTimestamp || e.eventTime || e.metadata.creationTimestamp)} ago
+                    {(e.count || e.series?.count || 1) > 1 ? ` · ×${e.count || e.series?.count}` : ''}
+                  </span>
+                </div>
+                <p className="mt-1 mb-0 text-sm text-neutral-600 [overflow-wrap:anywhere] dark:text-neutral-400">{e.message || e.note}</p>
+              </li>
+            ))}
+          </ul>
         ))}
 
       {view === 'logs' && isPod && <PodLogs clusterId={clusterId} namespace={namespace!} pod={name} containers={containers} />}

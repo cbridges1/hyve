@@ -32,6 +32,8 @@ const PATHS: Record<string, string[]> = {
   download: ['M12 3v12', 'M7 10l5 5 5-5', 'M5 21h14'],
   edit: ['M4 20h4L19 9l-4-4L4 16z', 'M14 6l4 4'],
   trash: ['M4 7h16', 'M10 11v6M14 11v6', 'M6 7l1 13h10l1-13', 'M9 7V4h6v3'],
+  columns: ['M4 4h16v16H4z', 'M10 4v16M16 4v16'],
+  tag: ['M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z', 'M8 8h.01'],
 }
 
 export function Icon({ name, size = 18, className }: { name: string; size?: number; className?: string }) {
