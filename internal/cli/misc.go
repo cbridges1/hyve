@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/operator"
 	"github.com/cbridges1/hyve/internal/render"
@@ -244,7 +245,7 @@ func ControllerCmd() *cobra.Command {
 	f.StringVar(&o.CertDir, "cert-dir", "/tmp/hyve-webhook", "where the webhook's generated certificate is written")
 	f.StringVar(&o.ServiceName, "service-name", "hyve-controller", "webhook Service name")
 	f.StringVar(&o.ServiceNamespace, "service-namespace", "hyve-system", "webhook Service namespace")
-	f.StringVar(&o.MutatingWebhookName, "mutating-webhook", "hyve-controller", "MutatingWebhookConfiguration to patch the CA into")
+	f.StringVar(&o.MutatingWebhookName, "mutating-webhook", install.MutatingWebhook, "MutatingWebhookConfiguration to patch the CA into")
 	f.StringVar(&o.ValidatingWebhook, "validating-webhook", "hyve-controller", "ValidatingWebhookConfiguration to patch the CA into")
 	f.BoolVar(&o.LazyProviders, "lazy-providers", false, "add known Cluster API providers when a ClusterClass or a Fleet bundle first needs them (local mode)")
 	f.StringVar(&o.FleetImage, "fleet-image", "", "image for push delivery's fleet commands (default: the image fleet-controller runs)")

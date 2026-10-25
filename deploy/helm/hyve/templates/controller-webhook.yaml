@@ -16,10 +16,13 @@ spec:
 # it's created (HYVE-PROPOSAL.md, open question 1, option B). Fails closed:
 # a templated Cluster can't be created while the controller is down, rather
 # than being created half-filled. caBundle is set by the controller.
+# The API server calls mutating webhooks in the order of their
+# configurations' names, and Cluster API's ("capi-…") refuses a Cluster with
+# no class or version, so this one's name sorts first.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
-  name: hyve-controller
+  name: 00-hyve-controller
 webhooks:
   - name: fill.clusters.hyve.io
     admissionReviewVersions: ["v1"]

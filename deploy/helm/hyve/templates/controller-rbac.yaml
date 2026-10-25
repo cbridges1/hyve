@@ -81,7 +81,7 @@ rules:
   # The controller makes its own webhook certificate and sets the CA here.
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
-    resourceNames: ["hyve-controller"]
+    resourceNames: ["00-hyve-controller", "hyve-controller"]
     verbs: ["get", "update"]
 {{- if and .Values.host.enabled .Values.host.agentURL }}
 ---

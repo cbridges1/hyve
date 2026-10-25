@@ -224,6 +224,9 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	if err := ensureDefaultNamespaces(ctx, kc); err != nil {
 		return res, err
 	}
+	if err := removeOldWebhook(ctx, kc); err != nil {
+		return res, err
+	}
 	names := []string{"hyve-controller"}
 	if h, ok := values["host"].(map[string]any); ok && h["enabled"] == true {
 		names = append(names, "hyve-host")
@@ -234,6 +237,24 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	res.Installed = append(res.Installed, "hyve")
 	return res, nil
 }
+
+// MutatingWebhook is the name of hyve-controller's
+// MutatingWebhookConfiguration: it sorts before Cluster API's, whose
+// webhook refuses a Cluster before hyve's could fill it in otherwise.
+const MutatingWebhook = "00-hyve-controller"
+
+// removeOldWebhook deletes the configuration earlier versions
+// made under the old name. Left behind, it would keep a stale CA and,
+// failing closed, refuse every templated Cluster.
+func removeOldWebhook(ctx context.Context, kc *kube.Client) error {
+	err := kc.Dynamic.Resource(mutatingWebhookGVR).Delete(ctx, "hyve-controller", metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("removing the old MutatingWebhookConfiguration hyve-controller: %w", err)
+	}
+	return nil
+}
+
+var mutatingWebhookGVR = schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "mutatingwebhookconfigurations"}
 
 func caConfigMap(ns, pem string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{

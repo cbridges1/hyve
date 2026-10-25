@@ -119,7 +119,11 @@ export default function CreateCluster() {
   const request: Obj | null = (() => {
     const t = template
     if (!t || !name || !environment) return null
-    const topology: any = {}
+    // The class is set here, as the CLI does: Cluster API's defaulting
+    // webhook runs before hyve's (webhooks run in name order) and refuses
+    // a Cluster without one.
+    const classNS = t.spec.clusterClassRef?.namespace || t.metadata.namespace
+    const topology: any = { classRef: { name: t.spec.clusterClassRef?.name, ...(classNS !== environment ? { namespace: classNS } : {}) } }
     const vars = rows.filter((r) => !r.locked && r.value !== r.initial).map((r) => ({ name: r.name, value: fromText(r.value) }))
     if (vars.length) topology.variables = vars
     if (version) topology.version = version
