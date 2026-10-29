@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 )
@@ -31,8 +32,10 @@ const FieldManager = "hyve"
 // (CRDs appear while an install runs).
 type Client struct {
 	Dynamic dynamic.Interface
-	mapper  *restmapper.DeferredDiscoveryRESTMapper
-	cached  discovery.CachedDiscoveryInterface
+	// Core is the typed client, for core objects (Secrets, Pods).
+	Core   kubernetes.Interface
+	mapper *restmapper.DeferredDiscoveryRESTMapper
+	cached discovery.CachedDiscoveryInterface
 }
 
 // New builds a Client for cfg.
@@ -45,8 +48,12 @@ func New(cfg *rest.Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	cached := memory.NewMemCacheClient(disc)
-	return &Client{Dynamic: dc, cached: cached, mapper: restmapper.NewDeferredDiscoveryRESTMapper(cached)}, nil
+	return &Client{Dynamic: dc, Core: cs, cached: cached, mapper: restmapper.NewDeferredDiscoveryRESTMapper(cached)}, nil
 }
 
 // Decode splits multi-document YAML into objects, skipping empty documents.

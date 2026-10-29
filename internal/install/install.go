@@ -71,7 +71,10 @@ type Options struct {
 	// OnlyHyve installs hyve's chart and nothing else (tests, or clusters
 	// whose admins install the rest themselves).
 	OnlyHyve bool
-	Log      func(format string, args ...any)
+	// ReplaceRancher removes Rancher, Turtles and herd first, keeping Fleet
+	// and Cluster API, whose running providers hyve then adopts.
+	ReplaceRancher bool
+	Log            func(format string, args ...any)
 }
 
 // Version is this binary's release version, set by cmd; "dev" (or empty)
@@ -86,6 +89,11 @@ const DevImage = "hyve:dev"
 
 // IsDevBuild says whether this binary was built from source.
 func IsDevBuild() bool { return Version == "" || Version == "dev" }
+
+// ErrRancher is Install's refusal to install next to Rancher.
+var ErrRancher = errors.New("Rancher (with Turtles) manages this cluster's Cluster API, and hyve can't install next to it: " +
+	"re-run with --replace-rancher to remove Rancher, Turtles and herd first. Fleet, Cluster API and the clusters stay, " +
+	"and hyve adopts the providers that are running. Take a backup first (a k3s or etcd snapshot)")
 
 // ErrNoImage is Install's refusal to deploy a dev build without an image.
 var ErrNoImage = errors.New("this hyve is a development build, which has no published image: " +
@@ -110,49 +118,66 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		logf = func(string, ...any) {}
 	}
 	res := &Result{}
-	if hasCRD(ctx, kc, "clusters.management.cattle.io") {
+	if HasRancher(ctx, kc) {
 		// Moving a host off Rancher (HYVE-PROPOSAL.md, open question 3):
-		// Rancher's Cluster API and Fleet are already there and stay.
-		logf("Rancher is installed: hyve installs next to it, and uses the Cluster API and Fleet already there. Remove Rancher once the clusters' agents have moved to hyve.")
+		// Turtles manages Cluster API there, and the CAPI Operator can't
+		// add CAAPF to a core it doesn't own, so Rancher goes first.
+		if !o.ReplaceRancher {
+			return nil, ErrRancher
+		}
+		if err := RemoveRancher(ctx, kc, logf); err != nil {
+			return nil, fmt.Errorf("removing Rancher: %w", err)
+		}
+		res.Installed = append(res.Installed, "removed Rancher")
 	}
 	if o.OnlyHyve {
 		logf("Installing only hyve; cert-manager, Cluster API, CAAPF and Fleet are left to you")
 	} else {
 		type step struct {
 			name, crd string
-			run       func() error
+			// done, when set, replaces the CRD check.
+			done func() bool
+			run  func() error
 		}
 		var steps []step
 		if o.Lean {
 			steps = []step{
-				{"Cluster API " + CAPIVersion, "clusters.cluster.x-k8s.io", func() error {
+				{name: "Cluster API " + CAPIVersion, crd: "clusters.cluster.x-k8s.io", run: func() error {
 					return LeanInstall(ctx, kc, []string{"core"}, LeanOptions{GOGC: o.GOGC, Log: logf})
 				}},
-				{"CAAPF " + CAAPFVersion, "fleetaddonconfigs.addons.cluster.x-k8s.io", func() error {
+				{name: "CAAPF " + CAAPFVersion, crd: "fleetaddonconfigs.addons.cluster.x-k8s.io", run: func() error {
 					return LeanInstall(ctx, kc, []string{"caapf"}, LeanOptions{GOGC: o.GOGC, Log: logf})
 				}},
 			}
 		} else {
 			steps = []step{
-				{"cert-manager", "certificates.cert-manager.io", func() error {
+				{name: "cert-manager", crd: "certificates.cert-manager.io", run: func() error {
 					if err := applyManifest(ctx, kc, certManagerManifest); err != nil {
 						return err
 					}
 					return waitDeployments(ctx, kc, "cert-manager", logf, "cert-manager", "cert-manager-webhook", "cert-manager-cainjector")
 				}},
-				{"the Cluster API Operator", "coreproviders.operator.cluster.x-k8s.io", func() error {
+				{name: "the Cluster API Operator", crd: "coreproviders.operator.cluster.x-k8s.io", run: func() error {
 					if err := applyRetrying(ctx, kc, capiOperatorManifest, logf); err != nil {
 						return err
 					}
 					return waitDeployments(ctx, kc, "capi-operator-system", logf, "capi-operator-controller-manager")
 				}},
-				{"Cluster API " + CAPIVersion, "clusters.cluster.x-k8s.io", func() error {
-					if err := applyRetrying(ctx, kc, []byte(providerManifest("CoreProvider", "cluster-api", "capi-system", CAPIVersion)), logf); err != nil {
+				// Its CRDs alone don't make Cluster API installed: Rancher's
+				// removal leaves them, and its providers running, with no
+				// provider object the operator owns. The core is adopted
+				// where it runs.
+				{name: "Cluster API " + CAPIVersion, done: func() bool { return operatorOwnsCore(ctx, kc) }, run: func() error {
+					ns := runningProviderNamespace(ctx, kc, "cluster-api", "capi-system")
+					if ns != "capi-system" {
+						logf("  adopting the Cluster API core running in %s", ns)
+					}
+					if err := applyRetrying(ctx, kc, []byte(providerManifest("CoreProvider", "cluster-api", ns, CAPIVersion)), logf); err != nil {
 						return err
 					}
 					return waitCRD(ctx, kc, "clusters.cluster.x-k8s.io", logf)
 				}},
-				{"CAAPF " + CAAPFVersion, "fleetaddonconfigs.addons.cluster.x-k8s.io", func() error {
+				{name: "CAAPF " + CAAPFVersion, crd: "fleetaddonconfigs.addons.cluster.x-k8s.io", run: func() error {
 					if err := applyRetrying(ctx, kc, []byte(providerManifest("AddonProvider", "rancher-fleet", "caapf-system", CAAPFVersion)), logf); err != nil {
 						return err
 					}
@@ -161,7 +186,7 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 			}
 		}
 		for _, s := range steps {
-			if hasCRD(ctx, kc, s.crd) {
+			if (s.done != nil && s.done()) || (s.done == nil && hasCRD(ctx, kc, s.crd)) {
 				logf("%s: already installed", s.name)
 				continue
 			}
@@ -173,6 +198,13 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		}
 		if err := applyFleetConfig(ctx, kc, o, logf); err != nil {
 			return res, err
+		}
+		if !o.Lean {
+			adopted, err := adoptProviders(ctx, kc, logf)
+			if err != nil {
+				return res, err
+			}
+			res.Installed = append(res.Installed, adopted...)
 		}
 	}
 

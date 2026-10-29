@@ -30,12 +30,18 @@ func InstallCmd() *cobra.Command {
 That's hyve-controller and hyve's host endpoint, the server users sign in
 to and the child clusters' agents connect to (--host-url is where both
 reach it), plus what's missing of cert-manager, the Cluster API Operator
-with core Cluster API, and CAAPF (which installs Fleet). On a cluster that
-still runs Rancher, hyve uses the Cluster API and Fleet already there.
+with core Cluster API, and CAAPF (which installs Fleet).
+
+A cluster that runs Rancher is refused unless --replace-rancher is given:
+then Rancher, Turtles and herd are removed first (their charts, CRDs,
+webhooks, namespaces and RBAC), while Fleet and Cluster API stay, with
+their objects and running providers, which hyve then adopts. Rancher's
+data (a PVC or host path) is left for you to delete. Take a backup first.
 
 Run it as a cluster admin. Safe to re-run.`,
-		Example: `  hyve install --host-url https://hyve.example.com --host-tls-cert tls.crt --host-tls-key tls.key`,
-		Args:    cobra.NoArgs,
+		Example: `  hyve install --host-url https://hyve.example.com --host-tls-cert tls.crt --host-tls-key tls.key
+  hyve install --replace-rancher --host-url https://hyve.example.com`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (tlsCert == "") != (tlsKey == "") {
 				return errors.New("--host-tls-cert and --host-tls-key go together")
@@ -123,6 +129,7 @@ Run it as a cluster admin. Safe to re-run.`,
 	f.StringVar(&tlsKey, "host-tls-key", "", "key for --host-tls-cert")
 	f.StringVar(&caFile, "host-cacerts", "", "PEM CA the host's certificate chains to, when it isn't publicly trusted")
 	f.StringVarP(&valuesFile, "values", "f", "", "extra chart values (YAML)")
+	f.BoolVar(&o.ReplaceRancher, "replace-rancher", false, "remove Rancher, Turtles and herd first, keeping Fleet and Cluster API")
 	f.BoolVar(&o.OnlyHyve, "only-hyve", false, "install hyve's chart only, not cert-manager, Cluster API, CAAPF or Fleet")
 	f.DurationVar(&timeout, "timeout", 20*time.Minute, "how long to wait")
 	return cmd
