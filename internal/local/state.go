@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -161,6 +162,27 @@ func Save(ctx context.Context, home, dir string) (int, error) {
 			"metadata": map[string]any{"name": ns, "labels": labels},
 		})
 	}
+	// Environments with nothing in them yet have no objects to move, but
+	// are still environments.
+	envs, err := kc.Dynamic.Resource(namespaceGVR).List(ctx, metav1.ListOptions{LabelSelector: install.LabelEnvironment})
+	if err != nil {
+		return 0, err
+	}
+	for _, obj := range envs.Items {
+		if slices.Contains(namespaces, obj.GetName()) {
+			continue
+		}
+		labels := map[string]any{}
+		for k, v := range obj.GetLabels() {
+			if strings.HasPrefix(k, "hyve.io/") {
+				labels[k] = v
+			}
+		}
+		nsObjs = append(nsObjs, map[string]any{
+			"apiVersion": "v1", "kind": "Namespace",
+			"metadata": map[string]any{"name": obj.GetName(), "labels": labels},
+		})
+	}
 	raw, err := yaml.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": nsObjs})
 	if err != nil {
 		return 0, err
@@ -217,7 +239,7 @@ func HasState(dir string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if e.Name() != namespacesFile && strings.HasSuffix(e.Name(), ".yaml") {
+		if strings.HasSuffix(e.Name(), ".yaml") {
 			return true
 		}
 	}
@@ -257,6 +279,9 @@ func Restore(ctx context.Context, home, dir string, logf func(string, ...any)) (
 				}
 			}
 		}
+	}
+	if len(objs) == 0 {
+		return 0, nil // only empty environments
 	}
 	var kinds []schema.GroupKind
 	for _, o := range objs {

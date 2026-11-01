@@ -308,7 +308,12 @@ func addProviders(ctx context.Context, kc *kube.Client, o Options) error {
 		return nil
 	}
 	if !o.Full {
-		return install.LeanInstall(ctx, kc, o.Providers, install.LeanOptions{GOGC: o.GOGC, Log: o.Log})
+		if err := install.LeanInstall(ctx, kc, o.Providers, install.LeanOptions{GOGC: o.GOGC, Log: o.Log}); err != nil {
+			return err
+		}
+		// Asked for up front, they're about to be used: a ClusterClass
+		// applied straight after needs their kinds.
+		return install.WaitProviders(ctx, kc, o.Log)
 	}
 	for _, p := range o.Providers {
 		objs, err := install.ProviderObjects(p)
