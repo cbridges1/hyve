@@ -71,6 +71,10 @@ dockers_v2:
       org.opencontainers.image.source: https://github.com/cbridges1/hyve
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
+    # ghcr links a multi-arch image to its repository (the repo's Packages
+    # sidebar, and Actions access) from the index's annotation, not a label.
+    annotations:
+      org.opencontainers.image.source: https://github.com/cbridges1/hyve
     tags:
       - "{{ .Version }}"
       - "latest"
