@@ -90,6 +90,9 @@ brews:
       owner: cbridges1
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Prereleases (v1.0.0-rc.1) aren't pushed to the tap, so they don't
+    # need the tap's token either.
+    skip_upload: auto
     directory: Formula
     homepage: "https://github.com/cbridges1/hyve"
     description: "Clusters from Cluster API templates, delivered to with Fleet"
