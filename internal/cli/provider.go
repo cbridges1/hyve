@@ -52,7 +52,7 @@ func providerAddCmd() *cobra.Command {
 		Example: `  hyve provider add docker --version v1.12.0
   hyve provider add gcp --variable-b64-file GCP_B64ENCODED_CREDENTIALS=./key.json --variable EXP_CAPG_GKE=true
   hyve provider add civo --fetch-url https://github.com/cbridges1/cluster-api-provider-civo/releases/latest/download/infrastructure-components.yaml \
-      --variable-env CIVO_API_KEY`,
+      --variable CIVO_API_KEY`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()

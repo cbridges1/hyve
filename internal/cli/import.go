@@ -54,7 +54,7 @@ non-variables) is listed on stderr.
 each herd template with the new hyve.io/template labels, so they get the
 template's resources and locks.`,
 		Example: `  hyve import -f ./templates                                # print
-  hyve import --from-cluster --kubeconfig unraid.yaml --apply --relabel-clusters`,
+  hyve import --from-cluster --source-kubeconfig old.yaml --kubeconfig new.yaml --apply --relabel-clusters`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (len(files) > 0) == fromCluster {
