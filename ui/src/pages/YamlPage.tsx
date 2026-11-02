@@ -4,6 +4,7 @@ import { load } from 'js-yaml'
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { CodeEditor } from '../components/CodeEditor'
+import { FleetManaged } from '../components/FleetManaged'
 import { BackLink, Banner, Card, ConfirmButton, ErrorBanner, Loading, PageHeader } from '../components/ui'
 import { toYaml } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -84,6 +85,7 @@ export default function YamlPage() {
           </>
         )}
       </PageHeader>
+      {!creating && <FleetManaged obj={model} />}
       <ErrorBanner error={error || loadError} />
       {model.metadata.deletionTimestamp && <Banner tone="warning">Being deleted.</Banner>}
       <Card>

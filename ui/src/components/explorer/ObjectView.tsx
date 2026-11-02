@@ -7,6 +7,7 @@ import { age } from '../../lib/format'
 import type { Obj, Schema } from '../../lib/kube'
 import { applyYaml, cellTone, ConflictError, deleteObject, editableYaml, eventsFor, getObject, viewYaml } from '../../lib/explorer'
 import { CodeEditor } from '../CodeEditor'
+import { FleetManaged } from '../FleetManaged'
 import { Icon } from '../Icon'
 import { Card, ConfirmButton, ErrorBanner, Loading, Pill } from '../ui'
 import { PodLogs } from './PodLogs'
@@ -131,6 +132,7 @@ export function ObjectView({
         <Icon name="chevronRight" size={14} className="shrink-0 text-neutral-400" />
         <span className="min-w-0 font-medium text-neutral-900 [overflow-wrap:anywhere] dark:text-neutral-100">{name}</span>
       </nav>
+      <FleetManaged obj={obj} />
 
       <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="flex flex-wrap items-start justify-between gap-3">

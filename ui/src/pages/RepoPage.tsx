@@ -11,33 +11,8 @@ import { age, type Tone } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { can, patch, typeForKind, type Obj } from '../lib/kube'
 import { FLEET } from '../lib/resources'
+import { bundleMessage, bundleState, fleetTone as tone, REPO_LABEL, shortBundleName } from '../lib/repos'
 import { paths } from '../lib/routes'
-
-const REPO_LABEL = 'fleet.cattle.io/repo-name'
-
-// Fleet's bundle and bundle-deployment states.
-function tone(state: string): Tone {
-  if (!state || state === 'Ready') return 'good'
-  if (/^(Err|Error|Failed)/.test(state)) return 'bad'
-  if (state === 'OutOfSync' || state === 'Modified' || state === 'NotReady') return 'busy'
-  return 'idle'
-}
-
-function bundleState(b: Obj): string {
-  return b.status?.display?.state || (b.status?.summary && b.status.summary.ready === b.status.summary.desiredReady ? 'Ready' : 'Pending')
-}
-
-// Fleet's message (its Ready condition's), without the wrapper it puts
-// around a cluster's: "ErrApplied(1) [Cluster fleet-local/local: …]" or
-// "NotReady(1) [Cluster fleet-local/local]; …".
-function bundleMessage(b: Obj): string {
-  if (bundleState(b) === 'Ready') return ''
-  const m: string = (b.status?.conditions || []).find((c: any) => c.type === 'Ready' && c.status === 'False')?.message || ''
-  return m
-    .replace(/^\w+\(\d+\) \[Cluster [^:\]]+\]; /, '')
-    .replace(/^\w+\(\d+\) \[Cluster [^:\]]+: (.*)\]$/s, '$1')
-    .trim()
-}
 
 type Res = { apiVersion: string; kind: string; namespace?: string; name: string; state: string; message: string; clusters: string[] }
 
@@ -206,13 +181,7 @@ export default function RepoPage() {
       else n.add(id)
       return n
     })
-  // Fleet names a bundle REPO-PATH-DIR (fleet/arr → nexus-config-fleet-arr):
-  // the directory under the repo's path is what tells them apart.
-  const prefixes = [...(repo.spec?.paths || []).map((p: string) => `${name}-${p.replace(/^\/+|\/+$/g, '').replace(/\//g, '-')}-`), `${name}-`]
-  const short = (b: Obj) => {
-    const p = prefixes.find((x) => b.metadata.name.startsWith(x) && b.metadata.name.length > x.length)
-    return p ? b.metadata.name.slice(p.length) : b.metadata.name
-  }
+  const short = (b: Obj) => shortBundleName(repo, b)
 
   return (
     <div>

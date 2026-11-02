@@ -1,5 +1,6 @@
 // Every hyve cluster with its provider, template, environment, phase and
-// expiry; resources failing anywhere; and clusters expiring soon.
+// expiry; resources failing anywhere (hyve's, and bundles from git repos,
+// the management cluster's included); and clusters expiring soon.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApplyYaml } from '../components/ApplyYaml'
@@ -9,6 +10,7 @@ import { classOf, extendExpiry, providerOfClass } from '../lib/clusters'
 import { useEnvironment } from '../lib/environment'
 import { useAction, useLoad } from '../lib/hooks'
 import { idOf, type Obj } from '../lib/kube'
+import { bundleMessage, LOCAL_CLUSTER, repoBundles } from '../lib/repos'
 import { allClusterStates, allItems, problem, stateColor, stateOn } from '../lib/resources'
 import { paths } from '../lib/routes'
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from '../lib/types'
@@ -29,17 +31,18 @@ export default function Overview() {
   const [applying, setApplying] = useState(false)
   const action = useAction()
   const { data, error, loading, reload } = useLoad(async (r) => {
-    const [all, states, classes] = await Promise.all([
+    const [all, states, classes, fromGit] = await Promise.all([
       allItems(r),
       allClusterStates(r),
       r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[]),
+      repoBundles(r),
     ])
-    return { ...all, states, classes, now: Date.now() }
+    return { ...all, states, classes, fromGit, now: Date.now() }
   }, [])
 
   const view = useMemo(() => {
     if (!data) return null
-    const { clusters, templates, classes, items, reaches, states, now } = data
+    const { clusters, templates, classes, items, reaches, states, fromGit, now } = data
     const inEnv = (c: Obj) => !environment || c.metadata.namespace === environment
     const shown = clusters.filter(inEnv)
     const rows = shown.map((c) => {
@@ -71,7 +74,16 @@ export default function Overview() {
         .filter((x) => x.state && x.state !== 'Ready')
       return own || on.length ? [{ it, own, on }] : []
     })
-    return { shown, rows, failing, expiringSoon: rows.filter((r) => r.soon) }
+    // Each failing bundle from a git repo, on the clusters shown and on the
+    // management cluster, whatever the environment.
+    const shownIds = new Set(shown.map(idOf))
+    const gitFailing = fromGit.flatMap((g) => {
+      const on = Object.entries(g.on)
+        .filter(([id, state]) => state !== 'Ready' && (id === LOCAL_CLUSTER || shownIds.has(id)))
+        .map(([id, state]) => ({ id, state, cluster: clusters.find((c) => idOf(c) === id) }))
+      return on.length ? [{ g, on, message: bundleMessage(g.bundle) }] : []
+    })
+    return { shown, rows, failing, gitFailing, expiringSoon: rows.filter((r) => r.soon) }
   }, [data, environment])
 
   if (loading) return <Loading />
@@ -92,11 +104,15 @@ export default function Overview() {
         <>
           <div className="mb-5 flex flex-wrap gap-5">
             <Stat count={view.shown.length} label="clusters" />
-            <Stat count={view.failing.length} label="resources failing" tone={view.failing.length ? 'text-error' : 'text-success'} />
+            <Stat
+              count={view.failing.length + view.gitFailing.length}
+              label="resources failing"
+              tone={view.failing.length + view.gitFailing.length ? 'text-error' : 'text-success'}
+            />
             <Stat count={view.expiringSoon.length} label="expiring within a day" tone={view.expiringSoon.length ? 'text-warning' : ''} />
           </div>
 
-          {view.failing.length > 0 && (
+          {view.failing.length + view.gitFailing.length > 0 && (
             <>
               <h2>Failing resources</h2>
               <table className="table mb-5">
@@ -126,6 +142,31 @@ export default function Overview() {
                             <span className={stateColor(x.state)}>{x.state}</span>
                           </div>
                         ))}
+                      </td>
+                    </tr>
+                  ))}
+                  {view.gitFailing.map((f) => (
+                    <tr key={`git/${idOf(f.g.bundle)}`}>
+                      <td>{f.g.name}</td>
+                      <td>
+                        <Link to={paths.repo(f.g.repo.metadata.namespace!, f.g.repo.metadata.name)}>Repo {f.g.repo.metadata.name}</Link>
+                      </td>
+                      <td>
+                        {f.on.map((x) => (
+                          <div key={x.id}>
+                            {x.cluster ? (
+                              <Link to={paths.cluster(x.cluster.metadata.namespace!, x.cluster.metadata.name)}>{x.id}</Link>
+                            ) : (
+                              <span>{x.id === LOCAL_CLUSTER ? 'Management cluster' : x.id}</span>
+                            )}
+                            : <span className={stateColor(x.state)}>{x.state}</span>
+                          </div>
+                        ))}
+                        {f.message && (
+                          <div className="text-muted line-clamp-2 max-w-xl text-xs" title={f.message}>
+                            {f.message}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}

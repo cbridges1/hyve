@@ -1,10 +1,14 @@
 // A cluster's Resources tab: what hyve delivers to it (its template's
 // resources and its own extras) with Fleet's state there. Extras can be
-// added, edited and removed here ('hyve cluster resource').
+// added, edited and removed here ('hyve cluster resource'). Bundles from
+// git repos that target the cluster are listed after them, read-only.
 import { useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAction, useLoad } from '../lib/hooks'
 import { idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
-import { clusterItems, clusterResourceObject, clusterStates, stateOn, type Entry, type Item } from '../lib/resources'
+import { bundleMessage, repoBundles } from '../lib/repos'
+import { clusterItems, clusterResourceObject, clusterStates, stateColor, stateOn, type Entry, type Item } from '../lib/resources'
+import { paths } from '../lib/routes'
 import { TYPES } from '../lib/types'
 import { ResourceForm, type ResourceFormHandle } from './ResourceForm'
 import { Banner, ErrorBanner, Loading } from './ui'
@@ -20,12 +24,19 @@ export function ClusterResources({ cluster }: { cluster: Obj }) {
   const name = cluster.metadata.name
   const { data, error, loading, reload } = useLoad(
     async (r) => {
-      const [items, states, shared] = await Promise.all([
+      const [items, states, shared, fromGit] = await Promise.all([
         clusterItems(r, cluster),
         clusterStates(r, ns, name),
         r.findAll(TYPES.RESOURCE).catch(() => [] as Obj[]),
+        repoBundles(r),
       ])
-      return { items, states, shared: shared.map((x) => ({ name: x.metadata.name, namespace: x.metadata.namespace! })) }
+      return {
+        items,
+        states,
+        // CAAPF registers the cluster with Fleet under its own namespace and name.
+        fromGit: fromGit.filter((g) => g.on[`${ns}/${name}`]),
+        shared: shared.map((x) => ({ name: x.metadata.name, namespace: x.metadata.namespace! })),
+      }
     },
     // The labels decide the template's resources.
     [ns, name, JSON.stringify(cluster.metadata.labels || {})],
@@ -145,6 +156,44 @@ export function ClusterResources({ cluster }: { cluster: Obj }) {
           ))}
         </tbody>
       </table>
+
+      {!!data?.fromGit.length && (
+        <>
+          <h3 className="mt-6">From git repos</h3>
+          <p className="text-muted mb-2 text-sm">Bundles Fleet makes from git repos that target this cluster. Git owns them; manage them from their repo.</p>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Bundle</th>
+                <th>Repo</th>
+                <th>State here</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.fromGit.map((g) => {
+                const state = g.on[`${ns}/${name}`]
+                const message = state !== 'Ready' ? bundleMessage(g.bundle) : ''
+                return (
+                  <tr key={idOf(g.bundle)}>
+                    <td>{g.name}</td>
+                    <td>
+                      <Link to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)}>{g.repo.metadata.name}</Link>
+                    </td>
+                    <td>
+                      <span className={stateColor(state)}>{state}</span>
+                      {message && (
+                        <div className="text-muted line-clamp-2 max-w-xl text-xs" title={message}>
+                          {message}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
 
       {editing ? (
         <div className="mt-5">

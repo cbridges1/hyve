@@ -2,7 +2,9 @@
 // state for that resource on that cluster, and why it's there (the
 // template, or an extra on the cluster). Adding asks whether a resource
 // goes on a template (every cluster made from it) or one cluster; Edit
-// changes a row's resource where it's defined.
+// changes a row's resource where it's defined. Bundles from git repos that
+// reach these clusters are rows too, read-only: git owns them, and their
+// repo's page is where they're managed.
 import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
@@ -13,6 +15,7 @@ import { ViewDialog, type Section } from '../components/ViewDialog'
 import { useEnvironment } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
 import { forget, idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
+import { repoBundles } from '../lib/repos'
 import { allClusterStates, allItems, clusterResourceObject, problem, stateColor, stateOn, type Entry, type Item } from '../lib/resources'
 import { paths } from '../lib/routes'
 import { LABELS, TYPES } from '../lib/types'
@@ -30,8 +33,13 @@ const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x))
 export default function ResourceMatrix() {
   const [environment] = useEnvironment()
   const { data, error, loading, reload } = useLoad(async (r) => {
-    const [all, states, shared] = await Promise.all([allItems(r), allClusterStates(r), r.findAll(TYPES.RESOURCE).catch(() => [] as Obj[])])
-    return { ...all, states, shared: shared.map((x) => ({ name: x.metadata.name, namespace: x.metadata.namespace! })) }
+    const [all, states, shared, fromGit] = await Promise.all([
+      allItems(r),
+      allClusterStates(r),
+      r.findAll(TYPES.RESOURCE).catch(() => [] as Obj[]),
+      repoBundles(r),
+    ])
+    return { ...all, states, fromGit, shared: shared.map((x) => ({ name: x.metadata.name, namespace: x.metadata.namespace! })) }
   }, [])
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<Form>(emptyForm())
@@ -67,6 +75,13 @@ export default function ResourceMatrix() {
       .map((it) => ({ it, on: new Set(reaches(it).map(idOf)), own: problem(it.model) }))
       .filter((r) => !environment || [...r.on].some((id) => ids.has(id)) || r.it.ownerKind === 'ClusterTemplate')
   }, [data, columns, templates, reaches, environment])
+
+  // Repo bundles on any cluster shown (CAAPF registers a CAPI cluster with
+  // Fleet under the same namespace and name).
+  const gitRows = useMemo(() => {
+    const ids = new Set(columns.map(idOf))
+    return (data?.fromGit || []).filter((g) => Object.keys(g.on).some((id) => ids.has(id)))
+  }, [data, columns])
 
   const templateOptions = templates.map((t) => ({ label: nsName(t), value: idOf(t) }))
   const clusterOptions = columns.map((c) => ({ label: nsName(c), value: idOf(c) }))
@@ -239,7 +254,7 @@ export default function ResourceMatrix() {
     <div>
       <PageHeader
         title="Delivery"
-        subtitle="Every resource hyve delivers, across the clusters it reaches, with Fleet's state on each. A + adds the row's resource to that cluster only."
+        subtitle="Every resource hyve delivers, across the clusters it reaches, with Fleet's state on each, and bundles from git repos that reach them. A + adds the row's resource to that cluster only."
       >
         <EnvironmentPicker />
         <button type="button" className="btn btn-primary" onClick={() => startAdd()}>
@@ -319,7 +334,7 @@ export default function ResourceMatrix() {
             </tr>
           </thead>
           <tbody>
-            {!rows.length && (
+            {!rows.length && !gitRows.length && (
               <tr>
                 <td colSpan={columns.length + 3} className="text-muted">
                   No resources yet.
@@ -365,6 +380,30 @@ export default function ResourceMatrix() {
                     </button>
                     <ConfirmButton label="Remove" confirm="Remove?" onConfirm={() => onRemove(r)} />
                   </div>
+                </td>
+              </tr>
+            ))}
+            {gitRows.map((g) => (
+              <tr key={`git/${idOf(g.bundle)}`}>
+                <td className="whitespace-nowrap">
+                  {g.name}
+                  <div className="text-muted text-xs">Bundle from git, read-only</div>
+                </td>
+                <td className="whitespace-nowrap">
+                  <Link to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)}>Repo {g.repo.metadata.name}</Link>
+                </td>
+                {columns.map((c) => {
+                  const s = g.on[idOf(c)]
+                  return (
+                    <td key={idOf(c)} className="text-center whitespace-nowrap">
+                      {s ? <span className={stateColor(s)}>{s}</span> : <span className="text-muted">-</span>}
+                    </td>
+                  )
+                })}
+                <td className="text-right whitespace-nowrap">
+                  <Link className="btn btn-tertiary btn-sm" to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)} title="Git owns this bundle; it's managed from its repo">
+                    Open repo
+                  </Link>
                 </td>
               </tr>
             ))}
