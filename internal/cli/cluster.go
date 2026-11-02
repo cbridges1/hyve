@@ -43,6 +43,9 @@ func ClusterCmd() *cobra.Command {
 }
 
 func (s *session) getCluster(ctx context.Context, name string) (*unstructured.Unstructured, error) {
+	if isLocal(name) {
+		return nil, errLocal()
+	}
 	c, err := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(s.env()).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) && !strings.Contains(err.Error(), "could not find the requested resource") {
 		return nil, fmt.Errorf("cluster %q not found in environment %q", name, s.env())
@@ -90,6 +93,9 @@ By default waits until the cluster is ACTIVE and registered with Fleet.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if (class == "") == (template == "") {
 				return errors.New("give exactly one of --template or --class")
+			}
+			if isLocal(args[0]) {
+				return fmt.Errorf("%q is the host cluster's name; pick another", args[0])
 			}
 			s, err := newSession()
 			if err != nil {
@@ -288,7 +294,7 @@ func clusterKubeconfigCmd() *cobra.Command {
 the same proxy and the same sign-in as the management cluster, so kubectl
 runs under your own permissions. It holds no secret; it runs 'hyve token'.
 The cluster's admin credentials are never handed out. 'hyve cluster auth'
-adds it to your kubeconfig instead.`,
+adds it to your kubeconfig instead. NAME local is the host cluster.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out, err := clusterKubeconfig(cmd.Context(), args[0])
@@ -309,8 +315,9 @@ func clusterAuthCmd() *cobra.Command {
 ($KUBECONFIG, or ~/.kube/config) and makes it the current context, so
 kubectl reaches the cluster through the signed-in server's proxy, as you.
 Running it again refreshes the entry. Like that kubeconfig, it holds no
-secret: the credential is 'hyve token'.`,
+secret: the credential is 'hyve token'. NAME local is the host cluster.`,
 		Example: `  hyve cluster auth demo
+  hyve cluster auth local
   hyve cluster auth web -e prod`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -356,14 +363,17 @@ func clusterKubeconfig(ctx context.Context, name string) ([]byte, error) {
 	if s.server == nil {
 		return nil, errors.New("needs a signed-in server ('hyve login'), not --kubeconfig")
 	}
-	c, err := s.getCluster(ctx, name)
-	if err != nil {
-		return nil, err
-	}
 	// The host serves child clusters through the agent's tunnel, or its
 	// direct path (HYVE-PROPOSAL.md, "hyve as the Rancher host"); a
-	// cluster's ID is <environment>.<name>.
-	id := c.GetNamespace() + "." + c.GetName()
+	// cluster's ID is <environment>.<name>, and the host's own is local.
+	id := login.LocalCluster
+	if !isLocal(name) {
+		c, err := s.getCluster(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		id = c.GetNamespace() + "." + c.GetName()
+	}
 	bin, err := os.Executable()
 	if err != nil {
 		return nil, errors.New("can't find the hyve binary's path for the exec credential")
@@ -377,7 +387,9 @@ func clusterListCmd() *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List clusters",
-		Args:    cobra.NoArgs,
+		Long: `Lists the environment's clusters, after the host cluster, local, which
+is in no environment.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s, err := newSession()
 			if err != nil {
@@ -401,6 +413,13 @@ func clusterListCmd() *cobra.Command {
 				head = "ENVIRONMENT\t" + head
 			}
 			fmt.Fprintln(w, head)
+			// The host first, whatever the environment: it's in none.
+			l := s.localSummary(cmd.Context())
+			row := fmt.Sprintf("%s\t-\t-\t%s\thost\t-\t%s", login.LocalCluster, l.version, l.age)
+			if all {
+				row = "-\t" + row
+			}
+			fmt.Fprintln(w, row)
 			for i := range list.Items {
 				c := &list.Items[i]
 				class, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "classRef", "name")
@@ -435,6 +454,10 @@ func clusterShowCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
+			if isLocal(args[0]) && output == "" {
+				s.showLocal(ctx)
+				return nil
+			}
 			c, err := s.getCluster(ctx, args[0])
 			if err != nil {
 				return err
@@ -529,6 +552,9 @@ func clusterDeleteCmd() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			ns, name := s.env(), args[0]
+			if isLocal(name) {
+				return errLocal()
+			}
 			ri := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(ns)
 			if err := ri.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 				return err
@@ -590,6 +616,9 @@ func clusterExpireCmd() *cobra.Command {
 			s, err := newSession()
 			if err != nil {
 				return err
+			}
+			if isLocal(args[0]) {
+				return errLocal()
 			}
 			patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]any{templates.AnnotationExpiresAt: value}}})
 			if _, err := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(s.env()).Patch(cmd.Context(), args[0], types.MergePatchType, patch, metav1.PatchOptions{FieldManager: kube.FieldManager}); err != nil {

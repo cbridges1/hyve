@@ -12,12 +12,12 @@ import { startSession } from './lib/start'
 import Access from './pages/Access'
 import CliLogin from './pages/CliLogin'
 import ClusterDetail from './pages/ClusterDetail'
+import LocalCluster from './pages/LocalCluster'
 import ClusterList from './pages/ClusterList'
 import CreateCluster from './pages/CreateCluster'
 import Environments from './pages/Environments'
 import GenericList from './pages/GenericList'
 import ImportPage from './pages/ImportPage'
-import ManagementExplorer from './pages/ManagementExplorer'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
 import Providers from './pages/Providers'
@@ -103,6 +103,7 @@ export default function App() {
           <Route path="overview" element={<Overview />} />
           <Route path="clusters" element={<ClusterList />} />
           <Route path="clusters/new" element={<CreateCluster />} />
+          <Route path="clusters/local/:tab?/*" element={<LocalCluster />} />
           <Route path="clusters/:namespace/:name/:tab?/*" element={<ClusterDetail />} />
           <Route path="templates" element={<TemplateList />} />
           <Route path="templates/new" element={<TemplatePage />} />
@@ -119,7 +120,8 @@ export default function App() {
           <Route path="environments" element={<Environments />} />
           <Route path="access" element={<Access />} />
           <Route path="import" element={<ImportPage />} />
-          <Route path="explorer" element={<ManagementExplorer />} />
+          {/* The host cluster's explorer is a tab of its page now. */}
+          <Route path="explorer" element={<Navigate to={paths.localCluster('explorer')} replace />} />
           <Route path="list/:type" element={<GenericList />} />
           <Route path="yaml/:type/new" element={<YamlPage />} />
           <Route path="yaml/:type/:namespace/:name" element={<YamlPage />} />

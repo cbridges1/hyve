@@ -4,6 +4,7 @@
 import { useRef, useState, type DragEvent } from 'react'
 import EditorModule from 'react-simple-code-editor'
 import Prism from 'prismjs'
+import { useFitHeight } from '../lib/fitHeight'
 import 'prismjs/components/prism-yaml'
 
 // The package is CommonJS: its default export arrives as a module object
@@ -27,6 +28,9 @@ export function CodeEditor({
   label?: string
   upload?: boolean
 }) {
+  // Long YAML scrolls inside the editor, which ends at the window's bottom.
+  const box = useRef<HTMLDivElement>(null)
+  const maxHeight = useFitHeight(box, { min: 320 })
   const [dragOver, setDragOver] = useState(false)
   const file = useRef<HTMLInputElement>(null)
   const highlight = (code: string) =>
@@ -78,7 +82,8 @@ export function CodeEditor({
         className={`overflow-auto rounded-lg border bg-neutral-50 dark:bg-neutral-950 ${
           dragOver ? 'border-dashed border-neutral-500' : 'border-neutral-300 dark:border-neutral-700'
         }`}
-        style={{ maxHeight: '70vh' }}
+        ref={box}
+        style={{ maxHeight }}
       >
         <Editor
           value={value}

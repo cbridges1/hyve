@@ -9,8 +9,8 @@ import { LABELS } from './types'
 
 export const REPO_LABEL = 'fleet.cattle.io/repo-name'
 
-// The Fleet cluster for the management cluster itself.
-export const LOCAL_CLUSTER = 'fleet-local/local'
+// The Fleet cluster the host cluster (local) registers itself as.
+export const LOCAL_FLEET_CLUSTER = 'fleet-local/local'
 
 export function isUserRepo(g: Obj): boolean {
   return !g.metadata.labels?.[LABELS.OWNER_KIND]
@@ -53,7 +53,7 @@ export function shortBundleName(repo: Obj, bundle: Obj): string {
 
 // One bundle from a repo, with its state on each Fleet cluster it targets
 // ("namespace/name": CAAPF registers a CAPI cluster under its own
-// namespace and name; the management cluster is LOCAL_CLUSTER).
+// namespace and name; the host cluster is LOCAL_FLEET_CLUSTER).
 export type RepoBundle = { repo: Obj; bundle: Obj; name: string; on: Record<string, string> }
 
 // Every repo bundle. Its states come from BundleDeployments; without the

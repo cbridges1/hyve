@@ -152,7 +152,8 @@ export default function CreateCluster() {
     }
   })()
 
-  const canCreate = !!request && NAME_RE.test(name) && !action.busy
+  // local is the host cluster's name (lib/routes.ts), as in the CLI.
+  const canCreate = !!request && NAME_RE.test(name) && name !== 'local' && !action.busy
 
   const create = () =>
     action.run(async () => {

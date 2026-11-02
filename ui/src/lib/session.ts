@@ -3,8 +3,8 @@
 import { useSyncExternalStore } from 'react'
 import type { Me } from './api'
 
-// canExplore: the user may list the management cluster's namespaces, so
-// its explorer is worth a place in the sidebar.
+// canExplore: the user may list the host cluster's namespaces, so local
+// is listed with the clusters (and its explorer is worth opening).
 export type Session = { user: Me | null; version: string; canExplore?: boolean }
 
 let current: Session = { user: null, version: '' }

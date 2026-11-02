@@ -14,7 +14,7 @@ Kubernetes clusters from templates. A **ClusterTemplate** is a Cluster API Clust
 - **Templates** live beside their ClusterClass. Each template resource is Fleet's own `HelmOp`, `Bundle` or `GitRepo` spec. hyve-controller turns it into a Fleet object aimed at the template's clusters, and CAAPF carries it to every environment. A cluster can also have its own extras (`ClusterResource`s).
 - **Secrets** are plain Kubernetes Secrets. A resource names the Secrets it needs, and Fleet copies them to its clusters. hyve holds no values, so fill the Secrets however your install manages them.
 - **Expiry**: hyve-controller deletes a cluster when its `hyve.io/expires-at` passes, set from the template's schedule or `--ttl`.
-- **Signing in**: `hyve login <url>` signs in to the hyve host. Every command then reaches the management cluster through `<url>/k8s/clusters/local` as you, and `hyve cluster kubeconfig` gives kubectl access to a cluster the same way.
+- **Signing in**: `hyve login <url>` signs in to the hyve host. Every command then reaches the management cluster through `<url>/k8s/clusters/local` as you, and `hyve cluster auth` gives kubectl access to a cluster the same way: an environment's clusters, or `local`, the host cluster itself, which `hyve cluster list` shows first.
 
 ## Install
 

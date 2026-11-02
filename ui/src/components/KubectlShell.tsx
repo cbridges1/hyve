@@ -33,6 +33,7 @@ export function KubectlShell({ target }: { target: ShellTarget }) {
   return (
     <section
       aria-label="Kubectl shell"
+      data-bottom-panel
       className="fixed inset-x-0 bottom-0 z-30 flex flex-col border-t border-neutral-800 bg-neutral-950 text-neutral-200 shadow-2xl md:left-60"
     >
       <header className="flex h-10 shrink-0 items-center gap-3 px-3 text-sm">

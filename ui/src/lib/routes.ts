@@ -9,6 +9,9 @@ export const paths = {
   clusters: '/clusters',
   cluster: (namespace: string, name: string, tab?: 'resources' | 'explorer') =>
     `/clusters/${enc(namespace)}/${enc(name)}${tab ? `/${tab}` : ''}`,
+  // The host cluster, hyve's management cluster: local, as in the proxy's
+  // paths and the CLI. It's in no environment.
+  localCluster: (tab?: 'resources' | 'explorer') => `/clusters/local${tab ? `/${tab}` : ''}`,
   createCluster: (template?: { namespace: string; name: string }) =>
     `/clusters/new${template ? `?template=${enc(`${template.namespace}/${template.name}`)}` : ''}`,
   templates: '/templates',
@@ -26,7 +29,6 @@ export const paths = {
   environments: '/environments',
   access: '/access',
   import: '/import',
-  explorer: '/explorer',
   // Any kind, as a list or as YAML.
   list: (type: string) => `/list/${enc(type)}`,
   yaml: (type: string, namespace: string | undefined, name: string, edit = false) =>

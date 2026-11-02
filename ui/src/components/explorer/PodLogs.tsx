@@ -1,6 +1,7 @@
 // A container's log, followed as it's written.
 import { useEffect, useRef, useState } from 'react'
 import { followLog } from '../../lib/explorer'
+import { useFitHeight } from '../../lib/fitHeight'
 import { download } from '../../lib/format'
 import { Checkbox } from '../form'
 import { ErrorBanner } from '../ui'
@@ -16,6 +17,7 @@ export function PodLogs({ clusterId, namespace, pod, containers }: { clusterId: 
   const [following, setFollowing] = useState(true)
   const [ended, setEnded] = useState(false)
   const box = useRef<HTMLPreElement>(null)
+  const logHeight = useFitHeight(box, { min: 320 })
   const stick = useRef(true)
 
   useEffect(() => {
@@ -68,7 +70,8 @@ export function PodLogs({ clusterId, namespace, pod, containers }: { clusterId: 
           const el = e.currentTarget
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
-        className="h-[60vh] overflow-auto rounded-lg bg-neutral-950 p-3 font-mono text-xs whitespace-pre-wrap text-neutral-200"
+        style={{ height: logHeight }}
+        className="overflow-auto rounded-lg bg-neutral-950 p-3 font-mono text-xs whitespace-pre-wrap text-neutral-200"
       >
         {text || (error ? '' : ended ? '(no output)' : 'Waiting for output…')}
         {ended && <span className="text-neutral-500">{'\n'}— the log ended —</span>}

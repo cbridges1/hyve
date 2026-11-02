@@ -26,7 +26,7 @@ export function PodShell({ clusterId, namespace, pod, containers }: { clusterId:
           </button>
         )}
       </div>
-      <Terminal url={execURL(clusterId, namespace, pod, container)} attempt={attempt} onState={setState} className="h-[60vh]" />
+      <Terminal url={execURL(clusterId, namespace, pod, container)} attempt={attempt} onState={setState} fit />
     </div>
   )
 }

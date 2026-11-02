@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { errorMessage } from '../../lib/api'
+import { useFitHeight } from '../../lib/fitHeight'
 import { age } from '../../lib/format'
 import { useLoad } from '../../lib/hooks'
 import type { Schema } from '../../lib/kube'
@@ -126,6 +127,8 @@ function TypeList({ schemas, current, onPick }: { schemas: Record<string, Schema
   const [open, setOpen] = useState<Set<string>>(() => new Set(['Recent', 'Common', schemas[current] && !COMMON.includes(current) ? groupLabel(schemas[current]) : '']))
   const f = filter.trim().toLowerCase()
   const nav = useRef<HTMLElement>(null)
+  // Sticky: once it's stuck, nothing's under it but the main area's padding.
+  const navHeight = useFitHeight(nav, { gap: 28 })
 
   // The current type in view when the page opens on it.
   useEffect(() => {
@@ -185,7 +188,11 @@ function TypeList({ schemas, current, onPick }: { schemas: Record<string, Schema
           </span>
           <input placeholder="Find a type" value={filter} onChange={(e) => setFilter(e.target.value)} className="pl-8" aria-label="Find a type" />
         </div>
-        <nav ref={nav} className="max-h-[60vh] overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1.5 shadow-sm lg:max-h-[calc(100vh-11rem)] dark:border-neutral-800 dark:bg-neutral-900">
+        <nav
+          ref={nav}
+          style={{ maxHeight: navHeight }}
+          className="overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1.5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+        >
           {!groups.length && <p className="text-muted px-2 py-3 text-sm">No type matches.</p>}
           {groups.map(([g, ss]) => {
             const expanded = !!f || open.has(g)

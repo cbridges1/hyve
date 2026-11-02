@@ -7,6 +7,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef } from 'react'
+import { useFitHeight } from '../lib/fitHeight'
 
 const enc = new TextEncoder()
 
@@ -25,13 +26,17 @@ export function Terminal({
   attempt = 0,
   onState,
   className = '',
+  fit = false,
 }: {
   url: string
   attempt?: number
   onState?: (s: TerminalState) => void
   className?: string
+  // Fills the window down to its bottom (lib/fitHeight.ts).
+  fit?: boolean
 }) {
   const host = useRef<HTMLDivElement>(null)
+  const fitted = useFitHeight(host, { min: 320 })
   // The latest onState, without reconnecting when it changes.
   const report = useRef(onState)
   useEffect(() => {
@@ -92,5 +97,5 @@ export function Terminal({
     }
   }, [url, attempt])
 
-  return <div ref={host} className={`overflow-hidden rounded-lg bg-neutral-950 p-2 ${className}`} />
+  return <div ref={host} style={fit ? { height: fitted } : undefined} className={`overflow-hidden rounded-lg bg-neutral-950 p-2 ${className}`} />
 }

@@ -1,27 +1,42 @@
-// Resources down the side, clusters across the top: each cell is Fleet's
-// state for that resource on that cluster, and why it's there (the
-// template, or an extra on the cluster). Adding asks whether a resource
-// goes on a template (every cluster made from it) or one cluster; Edit
-// changes a row's resource where it's defined. Bundles from git repos that
-// reach these clusters are rows too, read-only: git owns them, and their
-// repo's page is where they're managed.
-import { useMemo, useRef, useState } from 'react'
+// What's delivered to each cluster, a section per cluster: each resource
+// with Fleet's state there and why it's there (the template, or an extra
+// on the cluster). Adding asks whether a resource goes on a template
+// (every cluster made from it) or one cluster; Edit changes a resource
+// where it's defined. Bundles from git repos are listed too, read-only:
+// git owns them, and their repo's page is where they're managed. The host
+// cluster, local, comes first for whoever can reach it: only git repos
+// deliver to it. A template's resources that reach no cluster yet have a
+// section of their own.
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
-import { RadioGroup, SelectField } from '../components/form'
+import { Checkbox, RadioGroup, SelectField } from '../components/form'
+import { Icon } from '../components/Icon'
 import { ResourceForm, type ResourceFormHandle } from '../components/ResourceForm'
-import { Banner, Card, ConfirmButton, ErrorBanner, Loading, PageHeader } from '../components/ui'
+import { Banner, Card, ConfirmButton, ErrorBanner, Loading, PageHeader, Pill } from '../components/ui'
 import { ViewDialog, type Section } from '../components/ViewDialog'
 import { useEnvironment } from '../lib/environment'
+import type { Tone } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { forget, idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
-import { repoBundles } from '../lib/repos'
+import { bundleMessage, LOCAL_FLEET_CLUSTER, repoBundles, type RepoBundle } from '../lib/repos'
 import { allClusterStates, allItems, clusterResourceObject, problem, stateColor, stateOn, type Entry, type Item } from '../lib/resources'
 import { paths } from '../lib/routes'
+import { useSession } from '../lib/session'
 import { LABELS, TYPES } from '../lib/types'
 
 type Form = { target: 'template' | 'cluster'; template: string; cluster: string; entry: Entry | null; editing: boolean; key: number }
 type Row = { it: Item; on: Set<string>; own: string }
+type DeliverySection = {
+  key: string
+  title: ReactNode
+  pill?: { tone: Tone; label: string }
+  to?: string
+  cluster?: Obj
+  note?: string
+  hyve: { r: Row; state: string }[]
+  git: { g: RepoBundle; state: string }[]
+}
 
 function emptyForm(key = 0): Form {
   return { target: 'template', template: '', cluster: '', entry: null, editing: false, key }
@@ -32,6 +47,7 @@ const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x))
 
 export default function ResourceMatrix() {
   const [environment] = useEnvironment()
+  const { canExplore: showLocal } = useSession()
   const { data, error, loading, reload } = useLoad(async (r) => {
     const [all, states, shared, fromGit] = await Promise.all([
       allItems(r),
@@ -46,6 +62,15 @@ export default function ResourceMatrix() {
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [viewing, setViewing] = useState<{ title: string; sections: Section[] } | null>(null)
+  const [problemsOnly, setProblemsOnly] = useState(false)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const toggle = (key: string) =>
+    setCollapsed((c) => {
+      const n = new Set(c)
+      if (n.has(key)) n.delete(key)
+      else n.add(key)
+      return n
+    })
   const rform = useRef<ResourceFormHandle>(null)
 
   const clusters = useMemo(() => data?.clusters || [], [data])
@@ -76,12 +101,6 @@ export default function ResourceMatrix() {
       .filter((r) => !environment || [...r.on].some((id) => ids.has(id)) || r.it.ownerKind === 'ClusterTemplate')
   }, [data, columns, templates, reaches, environment])
 
-  // Repo bundles on any cluster shown (CAAPF registers a CAPI cluster with
-  // Fleet under the same namespace and name).
-  const gitRows = useMemo(() => {
-    const ids = new Set(columns.map(idOf))
-    return (data?.fromGit || []).filter((g) => Object.keys(g.on).some((id) => ids.has(id)))
-  }, [data, columns])
 
   const templateOptions = templates.map((t) => ({ label: nsName(t), value: idOf(t) }))
   const clusterOptions = columns.map((c) => ({ label: nsName(c), value: idOf(c) }))
@@ -102,6 +121,43 @@ export default function ResourceMatrix() {
     if (!r.on.has(idOf(c))) return ''
     return stateOn(r.it, data?.states[nsName(c)] || null) || 'Waiting'
   }
+
+  // A section per cluster shown, local first; repo bundles are matched by
+  // Fleet cluster (CAAPF registers a CAPI cluster with Fleet under the same
+  // namespace and name).
+  const fromGit = data?.fromGit || []
+  const gitOn = (id: string) => fromGit.filter((g) => g.on[id]).map((g) => ({ g, state: g.on[id] }))
+  const sections: DeliverySection[] = []
+  if (showLocal)
+    sections.push({
+      key: 'local',
+      title: 'local',
+      pill: { tone: 'info', label: 'Host' },
+      to: paths.localCluster(),
+      note: "Only git repos deliver to the host cluster; hyve's resources go to environments' clusters.",
+      hyve: [],
+      git: gitOn(LOCAL_FLEET_CLUSTER),
+    })
+  for (const c of columns)
+    sections.push({
+      key: idOf(c),
+      title: c.metadata.name,
+      pill: { tone: 'env', label: c.metadata.namespace! },
+      to: paths.cluster(c.metadata.namespace!, c.metadata.name),
+      cluster: c,
+      hyve: rows.filter((r) => r.on.has(idOf(c))).map((r) => ({ r, state: cell(r, c) })),
+      git: gitOn(idOf(c)),
+    })
+  const shownIds = new Set(columns.map(idOf))
+  const nowhere = rows.filter((r) => ![...r.on].some((id) => shownIds.has(id)))
+  if (nowhere.length)
+    sections.push({
+      key: 'nowhere',
+      title: 'On no cluster yet',
+      note: "Resources on templates no cluster shown was made from; they're delivered to each cluster made from the template.",
+      hyve: nowhere.map((r) => ({ r, state: '' })),
+      git: [],
+    })
 
   // A row's resource where it's defined: the template, or the cluster's
   // ClusterResource (whose spec is the entry, less its name).
@@ -150,17 +206,12 @@ export default function ResourceMatrix() {
     setViewing({ title: it.name, sections })
   }
 
-  // An empty cell starts adding that row's resource to that cluster, as
-  // an extra.
-  const startAdd = (c?: Obj, r?: Row) => {
+  // A section's Add starts adding an extra to its cluster.
+  const startAdd = (c?: Obj) => {
     const next = emptyForm(form.key + 1)
     if (c) {
       next.target = 'cluster'
       next.cluster = idOf(c)
-    }
-    if (r) {
-      const { entry } = owner(r)
-      next.entry = entry ? clone(entry) : null
     }
     setForm(next)
     setErrors([])
@@ -254,8 +305,9 @@ export default function ResourceMatrix() {
     <div>
       <PageHeader
         title="Delivery"
-        subtitle="Every resource hyve delivers, across the clusters it reaches, with Fleet's state on each, and bundles from git repos that reach them. A + adds the row's resource to that cluster only."
+        subtitle="What's delivered to each cluster, with Fleet's state there: hyve's resources, and bundles from git repos."
       >
+        <Checkbox label="Only not ready" checked={problemsOnly} onChange={setProblemsOnly} />
         <EnvironmentPicker />
         <button type="button" className="btn btn-primary" onClick={() => startAdd()}>
           Add resource
@@ -316,99 +368,125 @@ export default function ResourceMatrix() {
         </Card>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="table min-w-full">
-          <thead>
-            <tr>
-              <th>Resource</th>
-              <th>From</th>
-              {columns.map((c) => (
-                <th key={idOf(c)} className="text-center!">
-                  <Link to={paths.cluster(c.metadata.namespace!, c.metadata.name)} className="normal-case">
-                    {c.metadata.name}
-                  </Link>
-                  <div className="font-normal normal-case">{c.metadata.namespace}</div>
-                </th>
-              ))}
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {!rows.length && !gitRows.length && (
-              <tr>
-                <td colSpan={columns.length + 3} className="text-muted">
-                  No resources yet.
-                </td>
-              </tr>
-            )}
-            {rows.map((r) => (
-              <tr key={`${r.it.kind}/${idOf(r.it.model)}`}>
-                <td className="whitespace-nowrap">
-                  {r.it.name}
-                  <div className="text-muted text-xs">
-                    {r.it.kind} {r.it.source}
-                  </div>
-                  {r.own && <div className="text-error text-xs whitespace-normal">{r.own}</div>}
-                </td>
-                <td className="whitespace-nowrap">{r.it.ownerKind === 'ClusterTemplate' ? `Template ${r.it.owner}` : 'This cluster'}</td>
-                {columns.map((c) => {
-                  const s = cell(r, c)
-                  return (
-                    <td key={idOf(c)} className="text-center whitespace-nowrap">
-                      {s ? (
-                        <span className={stateColor(s)}>{s}</span>
-                      ) : (
-                        <button
-                          type="button"
-                          title="Add to this cluster"
-                          className="px-2 text-neutral-400 opacity-60 hover:text-neutral-900 hover:opacity-100 dark:hover:text-white"
-                          onClick={() => startAdd(c, r)}
-                        >
-                          +
-                        </button>
-                      )}
-                    </td>
-                  )
-                })}
-                <td className="text-right whitespace-nowrap">
-                  <div className="flex justify-end gap-1">
-                    <button type="button" className="btn btn-tertiary btn-sm" onClick={() => view(r)}>
-                      View
+      <div className="space-y-4">
+        {!sections.length && <p className="text-muted text-sm">No resources yet.</p>}
+        {sections.map((sec) => {
+          const hyve = sec.hyve.filter((x) => !problemsOnly || x.state !== 'Ready')
+          const git = sec.git.filter((x) => !problemsOnly || x.state !== 'Ready')
+          const total = sec.hyve.length + sec.git.length
+          const notReady = [...sec.hyve, ...sec.git].filter((x) => x.state !== 'Ready').length
+          const open = !collapsed.has(sec.key)
+          return (
+            <Card key={sec.key}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <button type="button" className="flex min-w-0 items-center gap-2 text-left" aria-expanded={open} onClick={() => toggle(sec.key)}>
+                  <span className={`inline-block transition-transform ${open ? 'rotate-90' : ''}`}>
+                    <Icon name="chevronRight" size={14} />
+                  </span>
+                  <span className="font-medium">{sec.title}</span>
+                  {sec.pill && <Pill tone={sec.pill.tone} label={sec.pill.label} />}
+                  <span className="text-muted text-sm">
+                    {total} resource{total === 1 ? '' : 's'}
+                    {notReady ? (
+                      <>
+                        {' · '}
+                        <span className="text-error">{notReady} not ready</span>
+                      </>
+                    ) : null}
+                  </span>
+                </button>
+                <div className="flex items-center gap-2">
+                  {sec.to && (
+                    <Link className="btn btn-tertiary btn-sm" to={sec.to}>
+                      Open cluster
+                    </Link>
+                  )}
+                  {sec.cluster && (
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => startAdd(sec.cluster)}>
+                      Add resource
                     </button>
-                    <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(r)}>
-                      Edit
-                    </button>
-                    <ConfirmButton label="Remove" confirm="Remove?" onConfirm={() => onRemove(r)} />
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {gitRows.map((g) => (
-              <tr key={`git/${idOf(g.bundle)}`}>
-                <td className="whitespace-nowrap">
-                  {g.name}
-                  <div className="text-muted text-xs">Bundle from git, read-only</div>
-                </td>
-                <td className="whitespace-nowrap">
-                  <Link to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)}>Repo {g.repo.metadata.name}</Link>
-                </td>
-                {columns.map((c) => {
-                  const s = g.on[idOf(c)]
-                  return (
-                    <td key={idOf(c)} className="text-center whitespace-nowrap">
-                      {s ? <span className={stateColor(s)}>{s}</span> : <span className="text-muted">-</span>}
-                    </td>
-                  )
-                })}
-                <td className="text-right whitespace-nowrap">
-                  <Link className="btn btn-tertiary btn-sm" to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)} title="Git owns this bundle; it's managed from its repo">
-                    Open repo
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  )}
+                </div>
+              </div>
+              {open && (
+                <div className="mt-3 overflow-x-auto">
+                  {sec.note && <p className="text-muted mb-2 text-sm">{sec.note}</p>}
+                  {!hyve.length && !git.length ? (
+                    <p className="text-muted text-sm">{problemsOnly ? 'Everything here is ready.' : 'Nothing delivered here yet.'}</p>
+                  ) : (
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Resource</th>
+                          <th>From</th>
+                          <th>State</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {hyve.map(({ r, state }) => (
+                          <tr key={`${r.it.kind}/${idOf(r.it.model)}`}>
+                            <td>
+                              {r.it.name}
+                              <div className="text-muted text-xs break-all">
+                                {r.it.kind} {r.it.source}
+                              </div>
+                              {r.own && <div className="text-error text-xs">{r.own}</div>}
+                            </td>
+                            <td className="whitespace-nowrap">{r.it.ownerKind === 'ClusterTemplate' ? `Template ${r.it.owner}` : 'This cluster'}</td>
+                            <td className="whitespace-nowrap">{state ? <span className={stateColor(state)}>{state}</span> : <span className="text-muted">-</span>}</td>
+                            <td className="text-right whitespace-nowrap">
+                              <div className="flex justify-end gap-1">
+                                <button type="button" className="btn btn-tertiary btn-sm" onClick={() => view(r)}>
+                                  View
+                                </button>
+                                <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(r)}>
+                                  Edit
+                                </button>
+                                <ConfirmButton label="Remove" confirm="Remove?" onConfirm={() => onRemove(r)} />
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                        {git.map(({ g, state }) => {
+                          const message = state !== 'Ready' ? bundleMessage(g.bundle) : ''
+                          return (
+                            <tr key={`git/${idOf(g.bundle)}`}>
+                              <td>
+                                {g.name}
+                                <div className="text-muted text-xs">Bundle from git, read-only</div>
+                              </td>
+                              <td className="whitespace-nowrap">
+                                <Link to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)}>Repo {g.repo.metadata.name}</Link>
+                              </td>
+                              <td>
+                                <span className={stateColor(state)}>{state}</span>
+                                {message && (
+                                  <div className="text-muted line-clamp-2 max-w-xl text-xs" title={message}>
+                                    {message}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="text-right whitespace-nowrap">
+                                <Link
+                                  className="btn btn-tertiary btn-sm"
+                                  to={paths.repo(g.repo.metadata.namespace!, g.repo.metadata.name)}
+                                  title="Git owns this bundle; it's managed from its repo"
+                                >
+                                  Open repo
+                                </Link>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </Card>
+          )
+        })}
       </div>
       {viewing && <ViewDialog title={viewing.title} sections={viewing.sections} onClose={() => setViewing(null)} />}
     </div>

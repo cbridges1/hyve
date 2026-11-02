@@ -1,6 +1,7 @@
-// Every hyve cluster with its provider, template, environment, phase and
-// expiry; resources failing anywhere (hyve's, and bundles from git repos,
-// the management cluster's included); and clusters expiring soon.
+// Every cluster with its provider, template, environment, phase and
+// expiry, the host cluster (local) first for whoever can reach it;
+// resources failing anywhere (hyve's, and bundles from git repos, the
+// host's included); and clusters expiring soon.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApplyYaml } from '../components/ApplyYaml'
@@ -10,9 +11,10 @@ import { classOf, extendExpiry, providerOfClass } from '../lib/clusters'
 import { useEnvironment } from '../lib/environment'
 import { useAction, useLoad } from '../lib/hooks'
 import { idOf, type Obj } from '../lib/kube'
-import { bundleMessage, LOCAL_CLUSTER, repoBundles } from '../lib/repos'
+import { bundleMessage, LOCAL_FLEET_CLUSTER, repoBundles } from '../lib/repos'
 import { allClusterStates, allItems, problem, stateColor, stateOn } from '../lib/resources'
 import { paths } from '../lib/routes'
+import { useSession } from '../lib/session'
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from '../lib/types'
 
 const SOON_HOURS = 24
@@ -29,6 +31,7 @@ function Stat({ count, label, tone = '' }: { count: number; label: string; tone?
 export default function Overview() {
   const [environment] = useEnvironment()
   const [applying, setApplying] = useState(false)
+  const { canExplore } = useSession()
   const action = useAction()
   const { data, error, loading, reload } = useLoad(async (r) => {
     const [all, states, classes, fromGit] = await Promise.all([
@@ -79,7 +82,7 @@ export default function Overview() {
     const shownIds = new Set(shown.map(idOf))
     const gitFailing = fromGit.flatMap((g) => {
       const on = Object.entries(g.on)
-        .filter(([id, state]) => state !== 'Ready' && (id === LOCAL_CLUSTER || shownIds.has(id)))
+        .filter(([id, state]) => state !== 'Ready' && (id === LOCAL_FLEET_CLUSTER || shownIds.has(id)))
         .map(([id, state]) => ({ id, state, cluster: clusters.find((c) => idOf(c) === id) }))
       return on.length ? [{ g, on, message: bundleMessage(g.bundle) }] : []
     })
@@ -103,7 +106,7 @@ export default function Overview() {
       {view && (
         <>
           <div className="mb-5 flex flex-wrap gap-5">
-            <Stat count={view.shown.length} label="clusters" />
+            <Stat count={view.shown.length + (canExplore ? 1 : 0)} label="clusters" />
             <Stat
               count={view.failing.length + view.gitFailing.length}
               label="resources failing"
@@ -156,8 +159,10 @@ export default function Overview() {
                           <div key={x.id}>
                             {x.cluster ? (
                               <Link to={paths.cluster(x.cluster.metadata.namespace!, x.cluster.metadata.name)}>{x.id}</Link>
+                            ) : x.id === LOCAL_FLEET_CLUSTER ? (
+                              <Link to={paths.localCluster('resources')}>local</Link>
                             ) : (
-                              <span>{x.id === LOCAL_CLUSTER ? 'Management cluster' : x.id}</span>
+                              <span>{x.id}</span>
                             )}
                             : <span className={stateColor(x.state)}>{x.state}</span>
                           </div>
@@ -189,7 +194,20 @@ export default function Overview() {
               </tr>
             </thead>
             <tbody>
-              {!view.rows.length && (
+              {canExplore && (
+                <tr>
+                  <td>
+                    <Link to={paths.localCluster()}>local</Link>
+                  </td>
+                  <td className="text-muted">-</td>
+                  <td>Host</td>
+                  <td className="text-muted">-</td>
+                  <td className="text-muted">-</td>
+                  <td>Never</td>
+                  <td />
+                </tr>
+              )}
+              {!view.rows.length && !canExplore && (
                 <tr>
                   <td colSpan={7} className="text-muted">
                     No clusters yet.
