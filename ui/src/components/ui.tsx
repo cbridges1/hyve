@@ -1,8 +1,9 @@
 // The console's building blocks: cards, label/value rows, pills, banners,
 // the two-click delete, page headers.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import type { Status, Tone } from '../lib/format'
+import { backOf } from '../lib/routes'
 import { Icon } from './Icon'
 
 export function Card({ title, action, children, className = '' }: { title?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
@@ -20,16 +21,19 @@ export function Card({ title, action, children, className = '' }: { title?: Reac
 }
 
 // A back-to-list link, the same on every detail page.
+// Back to the page that opened this one, if it said (lib/routes.ts
+// backFrom), else to the given parent.
 export function BackLink({ to, label }: { to: string; label: string }) {
+  const back = backOf(useLocation())
   return (
     <Link
-      to={to}
+      to={back?.to || to}
       className="mb-3 inline-flex items-center gap-1 text-sm font-medium text-neutral-500 no-underline transition-colors hover:text-neutral-900 hover:no-underline dark:text-neutral-400 dark:hover:text-neutral-100"
     >
       <span className="rotate-180">
         <Icon name="chevronRight" size={14} />
       </span>
-      {label}
+      {back?.label || label}
     </Link>
   )
 }

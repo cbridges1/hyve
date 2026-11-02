@@ -54,7 +54,8 @@ export function shortBundleName(repo: Obj, bundle: Obj): string {
 // One bundle from a repo, with its state on each Fleet cluster it targets
 // ("namespace/name": CAAPF registers a CAPI cluster under its own
 // namespace and name; the host cluster is LOCAL_FLEET_CLUSTER).
-export type RepoBundle = { repo: Obj; bundle: Obj; name: string; on: Record<string, string> }
+// bds: its BundleDeployment on each, what it deployed there.
+export type RepoBundle = { repo: Obj; bundle: Obj; name: string; on: Record<string, string>; bds: Record<string, Obj> }
 
 // Every repo bundle. Its states come from BundleDeployments; without the
 // right to list those, a bundle's own summary gives what isn't ready.
@@ -72,7 +73,7 @@ export async function repoBundles(store: Reader): Promise<RepoBundle[]> {
     if (!repo) continue
     const on: Record<string, string> = {}
     for (const r of b.status?.summary?.nonReadyResources || []) on[r.name] = r.bundleState || 'NotReady'
-    out.set(idOf(b), { repo, bundle: b, name: shortBundleName(repo, b), on })
+    out.set(idOf(b), { repo, bundle: b, name: shortBundleName(repo, b), on, bds: {} })
   }
   for (const bd of bds) {
     const l = bd.metadata.labels || {}
@@ -80,6 +81,7 @@ export async function repoBundles(store: Reader): Promise<RepoBundle[]> {
     const cluster = fleetCluster[bd.metadata.namespace!]
     if (!rb || !cluster) continue
     rb.on[cluster] = bd.status?.display?.state || (bd.status?.ready ? 'Ready' : 'Pending')
+    rb.bds[cluster] = bd
   }
   return [...out.values()].sort((a, b) => idOf(a.repo).localeCompare(idOf(b.repo)) || a.name.localeCompare(b.name))
 }

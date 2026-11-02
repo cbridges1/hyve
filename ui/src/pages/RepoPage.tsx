@@ -3,138 +3,21 @@
 // that bundle deploys and the state of each. The GitRepo's own YAML is a
 // link away; its status lists hundreds of objects, which this page sorts out.
 import { Fragment, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
+import { BundleDetail } from '../components/BundleDetail'
 import { Checkbox } from '../components/form'
 import { Icon } from '../components/Icon'
-import { BackLink, Banner, Card, CodeBlock, EmptyState, ErrorBanner, Field, Loading, PageHeader, Pill } from '../components/ui'
-import { age, type Tone } from '../lib/format'
+import { BackLink, Banner, Card, EmptyState, ErrorBanner, Field, Loading, PageHeader, Pill } from '../components/ui'
+import { age } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
-import { can, patch, typeForKind, type Obj } from '../lib/kube'
+import { can, patch, type Obj } from '../lib/kube'
 import { FLEET } from '../lib/resources'
 import { bundleMessage, bundleState, fleetTone as tone, REPO_LABEL, shortBundleName } from '../lib/repos'
-import { paths } from '../lib/routes'
-
-type Res = { apiVersion: string; kind: string; namespace?: string; name: string; state: string; message: string; clusters: string[] }
-
-// The objects a bundle deploys, from its BundleDeployments (one per target
-// cluster): what Fleet applied, with what isn't ready or was changed.
-function resourcesOf(bds: Obj[]): Res[] {
-  const out = new Map<string, Res>()
-  const key = (r: any) => `${r.apiVersion}/${r.kind}/${r.namespace || ''}/${r.name}`
-  for (const bd of bds) {
-    const cluster = bd.metadata.labels?.['fleet.cattle.io/cluster'] || bd.metadata.namespace || ''
-    for (const r of bd.status?.resources || []) {
-      const k = key(r)
-      const e: Res = out.get(k) || { apiVersion: r.apiVersion, kind: r.kind, namespace: r.namespace, name: r.name, state: 'Ready', message: '', clusters: [] }
-      e.clusters.push(cluster)
-      out.set(k, e)
-    }
-    for (const r of bd.status?.nonReadyStatus || []) {
-      const e = out.get(key(r))
-      if (!e) continue
-      e.state = r.summary?.state || 'NotReady'
-      e.message = (r.summary?.message || []).join('; ')
-    }
-    for (const r of bd.status?.modifiedStatus || []) {
-      const k = key(r)
-      const e = out.get(k) || { apiVersion: r.apiVersion, kind: r.kind, namespace: r.namespace, name: r.name, state: '', message: '', clusters: [cluster] }
-      e.state = r.missing ? 'Missing' : r.delete ? 'Extra' : 'Modified'
-      e.message = r.patch || ''
-      out.set(k, e)
-    }
-  }
-  // What isn't ready first: that's what the bundle is opened for.
-  const rank = (r: Res) => (r.state === 'Ready' ? 1 : 0)
-  return [...out.values()].sort((a, b) => rank(a) - rank(b) || a.kind.localeCompare(b.kind) ||(a.namespace || '').localeCompare(b.namespace || '') || a.name.localeCompare(b.name))
-}
-
-function resTone(state: string): Tone {
-  if (state === 'Ready') return 'good'
-  if (state === 'Missing' || state === 'error' || state === 'unavailable') return 'bad'
-  return 'busy'
-}
-
-function ResourceName({ r }: { r: Res }) {
-  const type = typeForKind(r.apiVersion, r.kind)
-  return type ? <Link to={paths.yaml(type, r.namespace, r.name)}>{r.name}</Link> : <>{r.name}</>
-}
-
-// The kinds Helm couldn't find ("no matches for kind X in version Y"), the
-// usual reason a bundle fails: a provider or operator that isn't installed.
-function missingKinds(message: string): string[] {
-  const out = new Set<string>()
-  for (const m of message.matchAll(/no matches for kind "([^"]+)" in version "([^"]+)"/g)) out.add(`${m[1]} (${m[2]})`)
-  return [...out]
-}
-
-function BundleDetail({ bundle, bds }: { bundle: Obj; bds: Obj[] }) {
-  const message = bundleMessage(bundle)
-  const missing = missingKinds(message)
-  const resources = resourcesOf(bds)
-  return (
-    <div className="space-y-3 py-2">
-      {!!missing.length && (
-        <div className="text-sm">
-          <p className="mb-1">The cluster doesn't serve these kinds, so nothing in the bundle was applied:</p>
-          <ul className="ml-5 list-disc">
-            {missing.map((k) => (
-              <li key={k} className="font-mono text-xs">
-                {k}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {message && <CodeBlock className="max-h-48 whitespace-pre-wrap">{message}</CodeBlock>}
-      {bds.length > 1 && (
-        <div className="flex flex-wrap gap-2 text-sm">
-          {bds.map((bd) => (
-            <Pill
-              key={bd.metadata.uid}
-              tone={tone(bd.status?.display?.state || '')}
-              label={`${bd.metadata.labels?.['fleet.cattle.io/cluster'] || bd.metadata.namespace}: ${bd.status?.display?.state || 'Ready'}`}
-            />
-          ))}
-        </div>
-      )}
-      {resources.length ? (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Namespace</th>
-              <th>Name</th>
-              <th>State</th>
-            </tr>
-          </thead>
-          <tbody>
-            {resources.map((r) => (
-              <tr key={`${r.apiVersion}/${r.kind}/${r.namespace}/${r.name}`}>
-                <td>{r.kind}</td>
-                <td className="text-muted">{r.namespace || '-'}</td>
-                <td className="break-all">
-                  <ResourceName r={r} />
-                </td>
-                <td>
-                  <Pill tone={resTone(r.state)} label={r.state} />
-                  {r.message && <div className="text-muted mt-1 text-xs break-words">{r.message}</div>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <p className="text-muted text-sm">Nothing deployed yet.</p>
-      )}
-      <Link className="text-sm" to={paths.yaml(FLEET.BUNDLE, bundle.metadata.namespace, bundle.metadata.name)}>
-        Bundle YAML
-      </Link>
-    </div>
-  )
-}
+import { backFrom, paths } from '../lib/routes'
 
 export default function RepoPage() {
   const { namespace, name } = useParams() as { namespace: string; name: string }
+  const location = useLocation()
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [problemsOnly, setProblemsOnly] = useState(false)
 
@@ -217,7 +100,7 @@ export default function RepoPage() {
             </button>
           </>
         )}
-        <Link className="btn btn-secondary" to={paths.yaml(FLEET.GIT_REPO, namespace, name)}>
+        <Link className="btn btn-secondary" to={paths.yaml(FLEET.GIT_REPO, namespace, name)} state={backFrom(location, `Repo ${name}`)}>
           YAML
         </Link>
       </PageHeader>
@@ -287,7 +170,7 @@ export default function RepoPage() {
                         <tr>
                           <td />
                           <td colSpan={4}>
-                            <BundleDetail bundle={b} bds={bds} />
+                            <BundleDetail bundle={b} bds={bds} backLabel={`Repo ${name}`} />
                           </td>
                         </tr>
                       )}

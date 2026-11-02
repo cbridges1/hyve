@@ -2,11 +2,12 @@
 // API and Fleet run. It's listed with the clusters, as Rancher lists its
 // own, and reached the same way (kubeconfig, shell, explorer), but it's in
 // no environment and hyve doesn't create, scale, upgrade or delete it:
-// 'hyve install' changes what runs on it. Its Resources tab is what git
-// repos deploy to it; hyve's own resources go to environments' clusters.
+// 'hyve install' changes what runs on it. Its Resources tab is the git
+// repos that deploy to it, managed as on the Repos page, and their
+// bundles; hyve's own resources go to environments' clusters.
 import { lazy, Suspense } from 'react'
 import { useParams } from 'react-router-dom'
-import { GitBundles } from '../components/GitBundles'
+import { GitSection } from '../components/GitBundles'
 import { BackLink, Banner, Card, ErrorBanner, Field, Loading, Pill, Tabs } from '../components/ui'
 import { request } from '../lib/api'
 import { LOCAL_CLUSTER, clusterBase } from '../lib/explorer'
@@ -95,11 +96,8 @@ export default function LocalCluster() {
 
       {tab === 'resources' ? (
         <Card>
-          <p className="text-muted mb-3 text-sm">
-            Bundles Fleet makes from git repos that target the host cluster. Git owns them; manage them from their repo. hyve's own resources go to
-            environments' clusters, not here.
-          </p>
-          {data?.bundles.length ? <GitBundles fleetId={LOCAL_FLEET_CLUSTER} bundles={data.bundles} /> : <p className="text-muted text-sm">No bundles from git repos.</p>}
+          <p className="text-muted mb-0 text-sm">Only git repos deliver to the host cluster; hyve's own resources go to environments' clusters.</p>
+          <GitSection fleetId={LOCAL_FLEET_CLUSTER} scope={{ workspace: 'fleet-local', fleetId: LOCAL_FLEET_CLUSTER }} bundles={data?.bundles || []} backLabel="local" />
         </Card>
       ) : tab === 'explorer' ? (
         <Suspense fallback={<Loading />}>

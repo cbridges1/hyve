@@ -128,7 +128,7 @@ function TypeList({ schemas, current, onPick }: { schemas: Record<string, Schema
   const f = filter.trim().toLowerCase()
   const nav = useRef<HTMLElement>(null)
   // Sticky: once it's stuck, nothing's under it but the main area's padding.
-  const navHeight = useFitHeight(nav, { gap: 28 })
+  const navHeight = useFitHeight(nav, { gap: 28, sticky: true })
 
   // The current type in view when the page opens on it.
   useEffect(() => {

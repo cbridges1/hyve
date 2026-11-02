@@ -1,14 +1,15 @@
 // A cluster's Resources tab: what hyve delivers to it (its template's
 // resources and its own extras) with Fleet's state there. Extras can be
-// added, edited and removed here ('hyve cluster resource'). Bundles from
-// git repos that target the cluster are listed after them, read-only.
+// added, edited and removed here ('hyve cluster resource'). After them, the
+// git repos that deliver to the cluster, managed as on the Repos page, and
+// their bundles' state here.
 import { useRef, useState } from 'react'
 import { useAction, useLoad } from '../lib/hooks'
 import { idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
 import { repoBundles } from '../lib/repos'
 import { clusterItems, clusterResourceObject, clusterStates, stateOn, type Entry, type Item } from '../lib/resources'
 import { TYPES } from '../lib/types'
-import { GitBundles } from './GitBundles'
+import { GitSection } from './GitBundles'
 import { ResourceForm, type ResourceFormHandle } from './ResourceForm'
 import { Banner, ErrorBanner, Loading } from './ui'
 import { ViewDialog, type Section } from './ViewDialog'
@@ -156,14 +157,6 @@ export function ClusterResources({ cluster }: { cluster: Obj }) {
         </tbody>
       </table>
 
-      {!!data?.fromGit.length && (
-        <>
-          <h3 className="mt-6">From git repos</h3>
-          <p className="text-muted mb-2 text-sm">Bundles Fleet makes from git repos that target this cluster. Git owns them; manage them from their repo.</p>
-          <GitBundles fleetId={`${ns}/${name}`} bundles={data.fromGit} />
-        </>
-      )}
-
       {editing ? (
         <div className="mt-5">
           <h3>{editing.cr ? `Edit ${editing.entry?.name}` : 'Add resource to this cluster'}</h3>
@@ -185,6 +178,7 @@ export function ClusterResources({ cluster }: { cluster: Obj }) {
       <p className="text-muted mt-2.5 text-sm">
         CLI: <code>hyve cluster resource add {name} --helm/--git/--path/--ref</code>
       </p>
+      <GitSection fleetId={`${ns}/${name}`} scope={{ workspace: ns, clusterName: name, fleetId: `${ns}/${name}` }} bundles={data?.fromGit || []} backLabel={name} />
       {viewing && <ViewDialog title={viewing.title} sections={viewing.sections} onClose={() => setViewing(null)} />}
     </div>
   )

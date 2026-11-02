@@ -3,7 +3,7 @@
 // width, down to the window's bottom, with Save and Cancel under it.
 import { load } from 'js-yaml'
 import { useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { CodeEditor } from '../components/CodeEditor'
 import { FleetManaged } from '../components/FleetManaged'
 import { BackLink, Banner, Card, ConfirmButton, ErrorBanner, Loading, PageHeader } from '../components/ui'
@@ -22,6 +22,8 @@ export default function YamlPage() {
   const [query] = useSearchParams()
   const editing = creating || query.get('mode') === 'edit'
   const navigate = useNavigate()
+  // Where it was opened from (BackLink's), kept across view, edit and save.
+  const { state: from } = useLocation()
   const schema = schemaFor(type)
   const kind = schema?.kind || type
   const [text, setText] = useState('')
@@ -57,7 +59,7 @@ export default function YamlPage() {
       return
     }
     const saved = await run(() => save(type, { ...obj, status: obj.status ?? model!.status }))
-    if (saved) navigate(paths.yaml(type, saved.metadata.namespace, saved.metadata.name))
+    if (saved) navigate(paths.yaml(type, saved.metadata.namespace, saved.metadata.name), { state: from })
   }
 
   return (
@@ -67,7 +69,7 @@ export default function YamlPage() {
         {!editing && (
           <>
             {can(type, 'update') && (
-              <Link className="btn btn-primary" to={paths.yaml(type, namespace, name!, true)}>
+              <Link className="btn btn-primary" to={paths.yaml(type, namespace, name!, true)} state={from}>
                 Edit
               </Link>
             )}
@@ -96,7 +98,7 @@ export default function YamlPage() {
             <button
               type="button"
               className="btn btn-tertiary"
-              onClick={() => navigate(creating ? paths.list(type) : paths.yaml(type, namespace, name!))}
+              onClick={() => navigate(creating ? paths.list(type) : paths.yaml(type, namespace, name!), { state: from })}
             >
               Cancel
             </button>
