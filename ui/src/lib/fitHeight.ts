@@ -5,23 +5,26 @@
 // well. Kept up to date as the page scrolls (a sticky pane's top moves)
 // and the window resizes.
 //
-// Below the pane is its containers' padding (its card's, the main
-// area's), which is left room for. If something follows the pane, the page
-// scrolls to it anyway, and up to 64px is left. A sticky pane (the type
-// list) has nothing under it once it's stuck, so it gives a fixed gap.
+// Below the pane is whatever follows it in its containers (Save and
+// Cancel, a pager) and their padding, down to the main area's: room is
+// left for up to 160px of it, so those stay in view; past that the page
+// scrolls to the rest. A sticky pane (the type list) has nothing under it
+// once it's stuck, so it gives a fixed gap.
 import { useLayoutEffect, useState, type RefObject } from 'react'
 
-const MAX_BELOW = 64
+const MAX_BELOW = 160
 
-// The padding, borders and margins under el, up to the main area's
-// padding; MAX_BELOW when something visible follows it.
+// The height of what's under el, up to the main area's padding: its
+// containers' padding, borders and margins, and the elements after it.
 function spaceBelow(el: HTMLElement): number {
   const px = (v: string) => parseFloat(v) || 0
   let total = px(getComputedStyle(el).marginBottom)
   let node: HTMLElement = el
   while (node.parentElement && node.tagName !== 'MAIN') {
-    for (let sib = node.nextElementSibling; sib; sib = sib.nextElementSibling) {
-      if ((sib as HTMLElement).offsetHeight > 0) return MAX_BELOW
+    for (let sib = node.nextElementSibling as HTMLElement | null; sib; sib = sib.nextElementSibling as HTMLElement | null) {
+      if (!sib.offsetHeight || getComputedStyle(sib).position === 'fixed') continue
+      const st = getComputedStyle(sib)
+      total += sib.offsetHeight + px(st.marginTop) + px(st.marginBottom)
     }
     const p = node.parentElement
     const s = getComputedStyle(p)

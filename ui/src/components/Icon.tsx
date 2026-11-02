@@ -17,6 +17,7 @@ const PATHS: Record<string, string[]> = {
   import: ['M12 3v12', 'M7 10l5 5 5-5', 'M5 21h14'],
   menu: ['M4 6h16M4 12h16M4 18h16'],
   close: ['M6 6l12 12M18 6 6 18'],
+  expand: ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7'],
   chevronRight: ['M9 6l6 6-6 6'],
   chevronDown: ['M6 9l6 6 6-6'],
   sun: [

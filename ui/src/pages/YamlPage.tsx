@@ -1,5 +1,6 @@
 // Any object as YAML: view, edit, or create. The plain way to manage what
-// has no form of its own.
+// has no form of its own. As Rancher's YAML view, it's all editor: the full
+// width, down to the window's bottom, with Save and Cancel under it.
 import { load } from 'js-yaml'
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -89,9 +90,9 @@ export default function YamlPage() {
       <ErrorBanner error={error || loadError} />
       {model.metadata.deletionTimestamp && <Banner tone="warning">Being deleted.</Banner>}
       <Card>
-        <CodeEditor value={text} onChange={setText} readOnly={!editing} minHeight="28rem" upload={editing} />
+        <CodeEditor value={text} onChange={setText} readOnly={!editing} minHeight="20rem" upload={editing} fill="window" />
         {editing && (
-          <div className="mt-4 flex justify-end gap-2">
+          <div className="mt-3 flex justify-end gap-2">
             <button
               type="button"
               className="btn btn-tertiary"

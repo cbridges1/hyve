@@ -62,6 +62,13 @@ body {
   input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea {
     @apply w-full rounded-lg border border-neutral-300 bg-white px-2.5 py-1.5 text-sm text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-500 focus:ring-2 focus:ring-neutral-900/10 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:ring-white/10;
   }
+  /* The browser's own arrow sits against the right edge, whatever the
+     padding: draw one with room around it. */
+  select {
+    @apply appearance-none bg-no-repeat pr-9;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23737373' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-position: right 0.75rem center;
+  }
   input[type=checkbox], input[type=radio] { @apply accent-neutral-900 dark:accent-white; }
 }
 
@@ -103,16 +110,36 @@ body {
   .preview { @apply rounded-lg bg-neutral-50 p-3 font-mono text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300; }
 }
 
-/* YAML token colours for the code editor (prismjs). */
-.token.key, .token.atrule { color: rgb(79 70 229); }
-:root.dark .token.key, :root.dark .token.atrule { color: rgb(165 180 252); }
-.token.string, .token.scalar { color: rgb(5 150 105); }
-:root.dark .token.string, :root.dark .token.scalar { color: rgb(110 231 183); }
-.token.number, .token.boolean, .token.null, .token.datetime { color: rgb(180 83 9); }
-:root.dark .token.number, :root.dark .token.boolean, :root.dark .token.null, :root.dark .token.datetime { color: rgb(252 211 77); }
-.token.comment { color: rgb(163 163 163); font-style: italic; }
-:root.dark .token.comment { color: rgb(115 115 115); }
-.token.punctuation { color: rgb(115 115 115); }
-:root.dark .token.punctuation { color: rgb(163 163 163); }
-.token.tag, .token.directive, .token.important { color: rgb(220 38 38); }
-:root.dark .token.tag, :root.dark .token.directive, :root.dark .token.important { color: rgb(248 113 113); }
+/* The code editor (CodeMirror, components/CodeEditor.tsx): its chrome,
+   then YAML token colours (@lezer/highlight's tok-* classes). */
+.code-editor .cm-editor { background: rgb(250 250 250); color: rgb(38 38 38); }
+:root.dark .code-editor .cm-editor { background: rgb(10 10 10); color: rgb(229 229 229); }
+.code-editor .cm-gutters { background: rgb(245 245 245); color: rgb(163 163 163); }
+:root.dark .code-editor .cm-gutters { background: rgb(23 23 23); color: rgb(82 82 82); }
+.code-editor .cm-activeLine { background: rgb(0 0 0 / 0.03); }
+:root.dark .code-editor .cm-activeLine { background: rgb(255 255 255 / 0.04); }
+.code-editor .cm-activeLineGutter { background: rgb(0 0 0 / 0.05); color: rgb(82 82 82); }
+:root.dark .code-editor .cm-activeLineGutter { background: rgb(255 255 255 / 0.06); color: rgb(163 163 163); }
+.code-editor .cm-cursor { border-left-color: rgb(23 23 23); }
+:root.dark .code-editor .cm-cursor { border-left-color: rgb(245 245 245); }
+.code-editor .cm-selectionBackground, .code-editor .cm-focused .cm-selectionBackground { background: rgb(99 102 241 / 0.2) !important; }
+.code-editor .cm-selectionMatch { background: rgb(234 179 8 / 0.25); }
+.code-editor .cm-foldPlaceholder { background: rgb(229 229 229); border: none; color: rgb(82 82 82); padding: 0 4px; }
+:root.dark .code-editor .cm-foldPlaceholder { background: rgb(38 38 38); color: rgb(163 163 163); }
+.code-editor .cm-panels { background: rgb(245 245 245); color: inherit; border-color: rgb(212 212 212); }
+:root.dark .code-editor .cm-panels { background: rgb(23 23 23); border-color: rgb(64 64 64); }
+.code-editor .cm-panels input, .code-editor .cm-panels button { height: auto; width: auto; padding: 2px 6px; font-size: 12px; }
+.code-editor .cm-searchMatch { background: rgb(234 179 8 / 0.3); }
+.code-editor .cm-searchMatch-selected { background: rgb(234 179 8 / 0.55); }
+.tok-propertyName, .tok-definition { color: rgb(79 70 229); }
+:root.dark .tok-propertyName, :root.dark .tok-definition { color: rgb(165 180 252); }
+.tok-string, .tok-string2, .tok-content { color: rgb(5 150 105); }
+:root.dark .tok-string, :root.dark .tok-string2, :root.dark .tok-content { color: rgb(110 231 183); }
+.tok-number, .tok-bool, .tok-atom, .tok-keyword { color: rgb(180 83 9); }
+:root.dark .tok-number, :root.dark .tok-bool, :root.dark .tok-atom, :root.dark .tok-keyword { color: rgb(252 211 77); }
+.tok-comment { color: rgb(163 163 163); font-style: italic; }
+:root.dark .tok-comment { color: rgb(115 115 115); }
+.tok-punctuation, .tok-operator { color: rgb(115 115 115); }
+:root.dark .tok-punctuation, :root.dark .tok-operator { color: rgb(163 163 163); }
+.tok-labelName, .tok-meta, .tok-typeName { color: rgb(220 38 38); }
+:root.dark .tok-labelName, :root.dark .tok-meta, :root.dark .tok-typeName { color: rgb(248 113 113); }

@@ -303,6 +303,13 @@ function ColumnsMenu({ columns, shown, onChange }: { columns: string[]; shown: S
   )
 }
 
+// Rows a page of the list shows.
+const PAGE_SIZE = 50
+
+// A header cell that stays at the top of the scrolling table, opaque so
+// rows don't show through.
+const STICKY = 'sticky top-0 z-10 bg-neutral-50! dark:bg-neutral-900!'
+
 function ResourceTable({
   clusterId,
   schema,
@@ -328,6 +335,11 @@ function ResourceTable({
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [more, setMore] = useState(false)
+  const [page, setPage] = useState(0)
+  // The table scrolls in itself, its header pinned, down to the window's
+  // bottom; the pager stays in view under it.
+  const scroller = useRef<HTMLDivElement>(null)
+  const scrollerHeight = useFitHeight(scroller, { min: 320 })
 
   const load = async (quiet: boolean) => {
     if (!quiet) setLoading(true)
@@ -343,6 +355,7 @@ function ResourceTable({
   }
 
   useEffect(() => {
+    setPage(0)
     load(false)
     // Live: the host watches the list as you, and the page reloads its
     // first page when it changes.
@@ -350,6 +363,8 @@ function ResourceTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clusterId, schema.id, namespace, applied])
 
+  // The next page of the server's list (its pages are bigger than ours),
+  // then our next page.
   async function loadMore() {
     if (!table?.metadata?.continue) return
     setMore(true)
@@ -360,6 +375,7 @@ function ResourceTable({
         continueToken: table.metadata.continue,
       })
       setTable({ ...next, rows: [...table.rows, ...next.rows] })
+      goTo(page + 1)
     } catch (e) {
       setError(errorMessage(e))
     } finally {
@@ -382,6 +398,14 @@ function ResourceTable({
     (r) => !s || r.object.metadata.name.toLowerCase().includes(s) || (r.object.metadata.namespace || '').toLowerCase().includes(s),
   )
   const total = table?.rows.length || 0
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
+  // A narrower list (a search, a smaller namespace) may have fewer pages.
+  const current = Math.min(page, pages - 1)
+  const pageRows = rows.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE)
+  const goTo = (p: number) => {
+    setPage(p)
+    scroller.current?.scrollTo({ top: 0 })
+  }
 
   const nameBlock = (r: TableRow) => {
     const md = r.object.metadata
@@ -430,7 +454,12 @@ function ResourceTable({
           <span className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-neutral-400">
             <Icon name="search" size={15} />
           </span>
-          <input className="pl-8" placeholder={`Search ${schema.kind} by name`} value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search by name" />
+          <input className="pl-8" placeholder={`Search ${schema.kind} by name`} value={search}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setPage(0)
+            }}
+            aria-label="Search by name" />
         </div>
         <form
           className="relative flex-1"
@@ -479,7 +508,7 @@ function ResourceTable({
               <>
                 {/* Phones: a card per object, so nothing scrolls sideways. */}
                 <ul className="divide-y divide-neutral-100 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm md:hidden dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
-                  {rows.map((r) => (
+                  {pageRows.map((r) => (
                     <li key={`${r.object.metadata.namespace}/${r.object.metadata.name}`} className="px-4 py-3">
                       {nameBlock(r)}
                       {otherCols.length > 0 && (
@@ -500,20 +529,24 @@ function ResourceTable({
 
                 {/* Wider screens: a table whose long values wrap; it scrolls
                     sideways only when many wide columns are on. */}
-                <div className="hidden overflow-x-auto rounded-xl md:block">
-                  <table className="table">
+                <div
+                  ref={scroller}
+                  style={{ maxHeight: scrollerHeight }}
+                  className="hidden overflow-auto rounded-xl border border-neutral-200 shadow-sm md:block dark:border-neutral-800"
+                >
+                  <table className="table overflow-visible! rounded-none! border-0! shadow-none!">
                     <thead>
                       <tr>
-                        <th className="min-w-[12rem]">{nameCol?.name || 'Name'}</th>
+                        <th className={`min-w-[12rem] ${STICKY}`}>{nameCol?.name || 'Name'}</th>
                         {otherCols.map((c) => (
-                          <th key={c.i} title={c.description} className={isCompactColumn(c) ? '' : 'whitespace-normal'}>
+                          <th key={c.i} title={c.description} className={`${isCompactColumn(c) ? '' : 'whitespace-normal'} ${STICKY}`}>
                             {c.name}
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map((r) => {
+                      {pageRows.map((r) => {
                         const md = r.object.metadata
                         return (
                           <tr
@@ -540,11 +573,24 @@ function ResourceTable({
                 </div>
               </>
             )}
-            {table.metadata?.continue && (
-              <div className="flex justify-center">
-                <button type="button" className="btn btn-secondary" disabled={more} onClick={loadMore}>
-                  {more ? 'Loading…' : 'Load more'}
+            {(pages > 1 || table.metadata?.continue) && rows.length > 0 && (
+              <div className="flex items-center justify-end gap-2 text-sm">
+                <span className="text-muted mr-1">
+                  {current * PAGE_SIZE + 1}–{current * PAGE_SIZE + pageRows.length} of {rows.length}
+                  {table.metadata?.continue && !s ? '+' : ''}
+                </span>
+                <button type="button" className="btn btn-secondary btn-sm" disabled={current === 0} onClick={() => goTo(current - 1)}>
+                  Previous
                 </button>
+                {current < pages - 1 ? (
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => goTo(current + 1)}>
+                    Next
+                  </button>
+                ) : (
+                  <button type="button" className="btn btn-secondary btn-sm" disabled={!table.metadata?.continue || more} onClick={loadMore}>
+                    {more ? 'Loading…' : 'Next'}
+                  </button>
+                )}
               </div>
             )}
           </>

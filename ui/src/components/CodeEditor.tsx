@@ -1,15 +1,33 @@
-// A YAML (or plain text) editor with highlighting, as the old console's
-// spec editor: react-simple-code-editor over prismjs. Drop a file on it, or
-// use Upload, to load one.
-import { useRef, useState, type DragEvent } from 'react'
-import EditorModule from 'react-simple-code-editor'
-import Prism from 'prismjs'
+// A YAML (or plain text) editor: CodeMirror, as Rancher's, with line
+// numbers, folding (a nested block, such as status or managedFields,
+// collapses from the gutter or with Ctrl/Cmd-Alt-[), search
+// (Ctrl/Cmd-F) and undo. Drop a file on it, or use Upload, to load one.
+//
+// It scrolls in itself and ends at the window's bottom (lib/fitHeight.ts).
+// fill makes it that tall even when the text is short: 'window' for a page
+// that's all editor, 'parent' to fill a flex column (a full-screen view).
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { yaml } from '@codemirror/lang-yaml'
+import { foldGutter, foldKeymap, indentOnInput, syntaxHighlighting } from '@codemirror/language'
+import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
+import { Compartment, EditorState } from '@codemirror/state'
+import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view'
+import { classHighlighter } from '@lezer/highlight'
+import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { useFitHeight } from '../lib/fitHeight'
-import 'prismjs/components/prism-yaml'
 
-// The package is CommonJS: its default export arrives as a module object
-// in the production build.
-const Editor = ((EditorModule as unknown as { default?: typeof EditorModule }).default ?? EditorModule) as typeof EditorModule
+// Colours come from index.css (.cm-* and tok-* classes), so they follow
+// the light and dark themes.
+const layout = EditorView.theme({
+  // As tall as the text, between the host's min and max heights; or, in
+  // fill mode, the host's height.
+  '&': { height: '100%', minHeight: 'inherit', maxHeight: 'inherit', fontSize: '12px' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-scroller': { overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', lineHeight: '1.55' },
+  '.cm-content': { padding: '8px 0' },
+  '.cm-gutters': { border: 'none' },
+  '.cm-foldGutter .cm-gutterElement': { padding: '0 4px', cursor: 'pointer' },
+})
 
 export function CodeEditor({
   value,
@@ -19,6 +37,7 @@ export function CodeEditor({
   readOnly,
   label,
   upload = false,
+  fill,
 }: {
   value: string
   onChange?: (v: string) => void
@@ -27,21 +46,81 @@ export function CodeEditor({
   readOnly?: boolean
   label?: string
   upload?: boolean
+  fill?: 'window' | 'parent'
 }) {
-  // Long YAML scrolls inside the editor, which ends at the window's bottom.
   const box = useRef<HTMLDivElement>(null)
-  const maxHeight = useFitHeight(box, { min: 320 })
+  const height = useFitHeight(box, { min: 320 })
+  const host = useRef<HTMLDivElement>(null)
+  const view = useRef<EditorView | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const file = useRef<HTMLInputElement>(null)
-  const highlight = (code: string) =>
-    language === 'yaml' ? Prism.highlight(code, Prism.languages.yaml, 'yaml') : code.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!)
+  // The latest onChange, without rebuilding the editor when it changes.
+  const changed = useRef(onChange)
+  useEffect(() => {
+    changed.current = onChange
+  })
+  const editable = useRef(new Compartment())
+  const lang = useRef(new Compartment())
+
+  useEffect(() => {
+    const v = new EditorView({
+      parent: host.current!,
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          lineNumbers(),
+          foldGutter({ openText: '▾', closedText: '▸' }),
+          highlightActiveLineGutter(),
+          highlightActiveLine(),
+          drawSelection(),
+          history(),
+          indentOnInput(),
+          highlightSelectionMatches(),
+          syntaxHighlighting(classHighlighter),
+          EditorState.tabSize.of(2),
+          keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap, ...searchKeymap, indentWithTab]),
+          lang.current.of(language === 'yaml' ? yaml() : []),
+          editable.current.of([EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly)]),
+          layout,
+          EditorView.updateListener.of((u) => {
+            if (u.docChanged) changed.current?.(u.state.doc.toString())
+          }),
+        ],
+      }),
+    })
+    view.current = v
+    return () => {
+      v.destroy()
+      view.current = null
+    }
+    // Built once; the effects below follow the props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // A new value from outside (a reload, Upload, a reset): replace the text,
+  // unless it's what the editor already has (the user's own typing).
+  useEffect(() => {
+    const v = view.current
+    if (!v || v.state.doc.toString() === value) return
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value } })
+  }, [value])
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: editable.current.reconfigure([EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly)]) })
+  }, [readOnly])
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: lang.current.reconfigure(language === 'yaml' ? yaml() : []) })
+  }, [language])
 
   async function load(f: File) {
     onChange?.(await f.text())
   }
 
+  const boxStyle = fill === 'window' ? { height, minHeight } : undefined
+  const hostStyle = fill ? { minHeight: fill === 'window' ? minHeight : undefined } : { maxHeight: height, minHeight }
   return (
-    <div>
+    <div className={fill === 'parent' ? 'flex min-h-0 flex-1 flex-col' : ''}>
       {(label || (upload && !readOnly)) && (
         <div className="mb-1 flex items-center justify-between">
           <span className="label mb-0">{label}</span>
@@ -66,6 +145,7 @@ export function CodeEditor({
         </div>
       )}
       <div
+        ref={box}
         onDragOver={(e: DragEvent) => {
           if (readOnly) return
           e.preventDefault()
@@ -79,22 +159,12 @@ export function CodeEditor({
           const f = e.dataTransfer.files?.[0]
           if (f) load(f)
         }}
-        className={`overflow-auto rounded-lg border bg-neutral-50 dark:bg-neutral-950 ${
+        className={`code-editor flex overflow-hidden rounded-lg border ${fill === 'parent' ? 'min-h-0 flex-1' : ''} ${
           dragOver ? 'border-dashed border-neutral-500' : 'border-neutral-300 dark:border-neutral-700'
         }`}
-        ref={box}
-        style={{ maxHeight }}
+        style={boxStyle}
       >
-        <Editor
-          value={value}
-          onValueChange={(v) => onChange?.(v)}
-          highlight={highlight}
-          readOnly={readOnly}
-          padding={12}
-          textareaClassName="!outline-none !ring-0 !border-0 !bg-transparent"
-          className="font-mono text-xs text-neutral-800 dark:text-neutral-200"
-          style={{ minHeight, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
-        />
+        <div ref={host} className="min-h-0 min-w-0 flex-1" style={hostStyle} />
       </div>
     </div>
   )

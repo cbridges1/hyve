@@ -53,6 +53,17 @@ export function ObjectView({
   const [busy, setBusy] = useState(false)
   const [showSecrets, setShowSecrets] = useState(false)
   const [events, setEvents] = useState<Obj[] | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  // Esc closes the full-window YAML, but not when it's the editor's own
+  // (closing its search panel).
+  useEffect(() => {
+    if (!expanded) return
+    const close = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target as HTMLElement | null)?.closest?.('.cm-panels')) setExpanded(false)
+    }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [expanded])
   const [allLabels, setAllLabels] = useState(false)
 
   const load = async () => {
@@ -107,6 +118,73 @@ export function ObjectView({
     } finally {
       setBusy(false)
     }
+  }
+
+  // The YAML tab's content, in its card or (fill 'parent') over the
+  // whole window.
+  const yamlBody = (fill?: 'parent') => {
+    const size = (
+      <button
+        type="button"
+        className="btn btn-tertiary btn-sm"
+        title={fill ? 'Back to the panel (Esc)' : 'Show the YAML over the whole window'}
+        onClick={() => setExpanded(!fill)}
+      >
+        <Icon name={fill ? 'close' : 'expand'} size={14} />
+        {fill ? 'Close' : 'Expand'}
+      </button>
+    )
+    return editing ? (
+      <>
+        <div className="mb-2 flex justify-end gap-2">{size}</div>
+        <CodeEditor value={text} onChange={setText} minHeight="20rem" upload fill={fill} />
+        {conflict && (
+          <div className="banner banner-warning mt-3">
+            <p className="mb-2">Someone else manages some of these fields: {conflict}</p>
+            <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => save(true)}>
+              Save anyway, taking those fields over
+            </button>
+          </div>
+        )}
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <p className="hint mt-0 mr-auto">Saved with server-side apply (field manager hyve-ui): fields you leave out that hyve-ui set before are removed.</p>
+          <button type="button" className="btn btn-tertiary" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => save(false)}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </>
+    ) : (
+      <>
+        <div className="mb-2 flex justify-end gap-2">
+          {size}
+          {obj.kind === 'Secret' && (
+            <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setShowSecrets((v) => !v)}>
+              {showSecrets ? 'Hide values' : 'Show values'}
+            </button>
+          )}
+          <button type="button" className="btn btn-tertiary btn-sm" onClick={load}>
+            Refresh
+          </button>
+          {canUpdate && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                setText(editableYaml(obj))
+                setConflict('')
+                setEditing(true)
+              }}
+            >
+              Edit
+            </button>
+          )}
+        </div>
+        <CodeEditor value={viewYaml(obj, showSecrets)} readOnly minHeight="20rem" fill={fill} />
+      </>
+    )
   }
 
   const md = obj.metadata
@@ -223,58 +301,23 @@ export function ObjectView({
       </div>
       <ErrorBanner error={error} />
 
-      {view === 'yaml' && (
-        <Card>
-          {editing ? (
-            <>
-              <CodeEditor value={text} onChange={setText} minHeight="28rem" upload />
-              {conflict && (
-                <div className="banner banner-warning mt-3">
-                  <p className="mb-2">Someone else manages some of these fields: {conflict}</p>
-                  <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => save(true)}>
-                    Save anyway, taking those fields over
-                  </button>
-                </div>
-              )}
-              <div className="mt-4 flex justify-end gap-2">
-                <button type="button" className="btn btn-tertiary" onClick={() => setEditing(false)}>
-                  Cancel
-                </button>
-                <button type="button" className="btn btn-primary" disabled={busy} onClick={() => save(false)}>
-                  {busy ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-              <p className="hint">Saved with server-side apply (field manager hyve-ui): fields you leave out that hyve-ui set before are removed.</p>
-            </>
-          ) : (
-            <>
-              <div className="mb-2 flex justify-end gap-2">
-                {obj.kind === 'Secret' && (
-                  <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setShowSecrets((v) => !v)}>
-                    {showSecrets ? 'Hide values' : 'Show values'}
-                  </button>
-                )}
-                <button type="button" className="btn btn-tertiary btn-sm" onClick={load}>
-                  Refresh
-                </button>
-                {canUpdate && (
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={() => {
-                      setText(editableYaml(obj))
-                      setConflict('')
-                      setEditing(true)
-                    }}
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-              <CodeEditor value={viewYaml(obj, showSecrets)} readOnly minHeight="20rem" />
-            </>
-          )}
-        </Card>
+      {view === 'yaml' && !expanded && <Card>{yamlBody()}</Card>}
+      {view === 'yaml' && expanded && (
+        // The YAML over the whole window, for a long object: the same view,
+        // editing included. Esc or Close returns.
+        <div
+          role="dialog"
+          aria-label={`${obj.kind} ${obj.metadata.name} YAML`}
+          className="fixed inset-0 z-50 flex flex-col gap-3 bg-white p-4 sm:p-6 dark:bg-neutral-950"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="mb-0 truncate text-base">
+              {obj.kind} {obj.metadata.namespace ? `${obj.metadata.namespace}/` : ''}
+              {obj.metadata.name}
+            </h2>
+          </div>
+          {yamlBody('parent')}
+        </div>
       )}
 
       {view === 'events' &&
