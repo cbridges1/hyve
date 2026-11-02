@@ -1,6 +1,6 @@
 // Every page's path, so links are built one way.
 import { typeOf, type Obj } from './kube'
-import { TYPES } from './types'
+import { LABELS, TYPES } from './types'
 
 const enc = encodeURIComponent
 
@@ -20,6 +20,7 @@ export const paths = {
   matrix: '/matrix',
   secrets: '/secrets',
   repos: '/repos',
+  repo: (namespace: string, name: string) => `/repos/${enc(namespace)}/${enc(name)}`,
   providers: '/providers',
   users: '/users',
   environments: '/environments',
@@ -44,6 +45,8 @@ export function detailPath(type: string, o: Obj): string {
       return paths.template(namespace!, name)
     case TYPES.RESOURCE:
       return paths.resource(namespace!, name)
+    case TYPES.FLEET_GIT_REPO:
+      return o.metadata.labels?.[LABELS.OWNER_KIND] ? paths.yaml(type, namespace, name) : paths.repo(namespace!, name)
     default:
       return paths.yaml(type, namespace, name)
   }

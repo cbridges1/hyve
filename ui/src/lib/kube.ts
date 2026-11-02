@@ -116,6 +116,13 @@ export function schemaFor(type: string): Schema | undefined {
   return schemas[type]
 }
 
+// The type ID of an apiVersion and kind, as an object lists them (Fleet's
+// resource lists, owner references); undefined if the server doesn't serve it.
+export function typeForKind(apiVersion: string, kind: string): string | undefined {
+  const group = apiVersion.includes('/') ? apiVersion.split('/')[0] : ''
+  return Object.values(schemas).find((s) => s.group === group && s.kind === kind)?.id
+}
+
 function schemaOrThrow(type: string): Schema {
   const s = schemas[type]
   if (!s) throw new Error(`The server doesn't serve ${type}`)

@@ -21,6 +21,7 @@ import ManagementExplorer from './pages/ManagementExplorer'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
 import Providers from './pages/Providers'
+import RepoPage from './pages/RepoPage'
 import Repos from './pages/Repos'
 import ResourceMatrix from './pages/ResourceMatrix'
 import Secrets from './pages/Secrets'
@@ -112,6 +113,7 @@ export default function App() {
           <Route path="matrix" element={<ResourceMatrix />} />
           <Route path="secrets" element={<Secrets />} />
           <Route path="repos" element={<Repos />} />
+          <Route path="repos/:namespace/:name" element={<RepoPage />} />
           <Route path="providers" element={<Providers />} />
           <Route path="users" element={<Users />} />
           <Route path="environments" element={<Environments />} />

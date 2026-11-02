@@ -4,12 +4,13 @@
 // what 'hyve repo add' does, credentials for a private repo included (a
 // basic-auth Secret the GitRepo names).
 import { useState } from 'react'
-import { Card, ErrorBanner, Loading, PageHeader } from '../components/ui'
+import { Link } from 'react-router-dom'
+import { Card, ErrorBanner, Loading, PageHeader, Pill } from '../components/ui'
 import { Checkbox, TextField } from '../components/form'
-import { ViewDialog } from '../components/ViewDialog'
 import { useAction, useLoad } from '../lib/hooks'
 import { idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
 import { FLEET, problem } from '../lib/resources'
+import { paths } from '../lib/routes'
 import { LABELS } from '../lib/types'
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
@@ -40,8 +41,27 @@ function bundles(r: Obj) {
   return s ? `${s.ready || 0}/${s.desiredReady || 0}` : '-'
 }
 
-function state(r: Obj) {
-  return problem(r) || r.status?.display?.state || (r.status?.summary?.ready === r.status?.summary?.desiredReady ? 'Ready' : 'Pending')
+// Fleet's state as a pill, with the first line of its message; the repo's
+// page has each bundle's in full.
+function State({ r }: { r: Obj }) {
+  const s = r.status?.display?.state || (r.status?.summary?.ready === r.status?.summary?.desiredReady ? 'Ready' : 'Pending')
+  const msg = problem(r)
+  const tone = s === 'Ready' && !msg ? 'good' : /^(Err|Error|Failed)/.test(s) || r.status?.display?.error ? 'bad' : 'busy'
+  return (
+    <>
+      <Pill tone={tone} label={s} />
+      {r.spec?.paused && (
+        <span className="ml-1">
+          <Pill tone="busy" label="Paused" />
+        </span>
+      )}
+      {msg && (
+        <div className="text-muted mt-1 line-clamp-2 max-w-md text-xs" title={msg}>
+          {msg.replace(/^Error: /, '')}
+        </div>
+      )}
+    </>
+  )
 }
 
 export default function Repos() {
@@ -51,7 +71,6 @@ export default function Repos() {
   }, [])
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<Form>(emptyForm)
-  const [viewing, setViewing] = useState<Obj | null>(null)
   const act = useAction()
   const set = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }))
 
@@ -217,19 +236,20 @@ export default function Repos() {
             )}
             {repos?.map((r) => (
               <tr key={idOf(r)}>
-                <td>{r.metadata.name}</td>
+                <td>
+                  <Link to={paths.repo(r.metadata.namespace!, r.metadata.name)}>{r.metadata.name}</Link>
+                </td>
                 <td>{r.metadata.namespace}</td>
-                <td className="break-all">
+                <td className="break-all sm:min-w-64">
                   {r.spec?.repo}
                   {!!r.spec?.paths?.length && <div className="text-muted text-xs">{r.spec.paths.join(', ')}</div>}
                 </td>
                 <td>{r.spec?.branch || r.spec?.revision || '-'}</td>
                 <td>{bundles(r)}</td>
-                <td>{state(r)}</td>
+                <td>
+                  <State r={r} />
+                </td>
                 <td className="text-right whitespace-nowrap">
-                  <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(r)}>
-                    View
-                  </button>
                   <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(r)}>
                     Edit
                   </button>
@@ -242,13 +262,6 @@ export default function Repos() {
           </tbody>
         </table>
       </div>
-      {viewing && (
-        <ViewDialog
-          title={`GitRepo ${viewing.metadata.namespace}/${viewing.metadata.name}`}
-          sections={[{ label: 'GitRepo', object: viewing }]}
-          onClose={() => setViewing(null)}
-        />
-      )}
     </div>
   )
 }
