@@ -33,7 +33,9 @@ type UserSpec struct {
 	// Subject is the identity provider's ID for the user (the ID token's
 	// sub claim).
 	Subject string `json:"subject,omitempty"`
-	// Email is the address the identity provider gave at the last sign-in.
+	// Email is where the host sends the user's password resets and account
+	// emails. For an identity provider's user, it's the address the
+	// provider gave at the last sign-in.
 	Email string `json:"email,omitempty"`
 }
 

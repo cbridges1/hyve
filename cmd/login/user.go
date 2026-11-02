@@ -25,6 +25,7 @@ import (
 var (
 	userShowOutput       string
 	userDisplayName      string
+	userEmail            string
 	userGroups           []string
 	userPasswordStdin    bool
 	userNoPasswordChange bool
@@ -107,7 +108,7 @@ var userAddCmd = &cobra.Command{
 		ctx := cmd.Context()
 		u := &hyvev1alpha1.User{}
 		u.Name = name
-		u.Spec = hyvev1alpha1.UserSpec{DisplayName: userDisplayName, Groups: userGroups}
+		u.Spec = hyvev1alpha1.UserSpec{DisplayName: userDisplayName, Email: userEmail, Groups: userGroups}
 		if err := uc.kc.Create(ctx, u); err != nil {
 			return fmt.Errorf("creating user %s: %w", name, err)
 		}
@@ -145,13 +146,13 @@ var userListCmd = &cobra.Command{
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tDISPLAY NAME\tGROUPS\tDISABLED\tLAST LOGIN")
+		fmt.Fprintln(w, "NAME\tDISPLAY NAME\tEMAIL\tGROUPS\tDISABLED\tLAST LOGIN")
 		for _, u := range list.Items {
 			last := "never"
 			if u.Status.LastLogin != nil {
 				last = u.Status.LastLogin.Local().Format(time.DateTime)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%s\n", u.Name, u.Spec.DisplayName, strings.Join(u.Spec.Groups, ","), u.Spec.Disabled, last)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%s\n", u.Name, u.Spec.DisplayName, u.Spec.Email, strings.Join(u.Spec.Groups, ","), u.Spec.Disabled, last)
 		}
 		return w.Flush()
 	},
@@ -214,6 +215,50 @@ func setDisabled(disabled bool) func(*cobra.Command, []string) error {
 		fmt.Fprintf(os.Stderr, "%s user %s.\n", state, args[0])
 		return nil
 	}
+}
+
+var userEditCmd = &cobra.Command{
+	Use:   "edit NAME",
+	Short: "Change a user's display name, email or groups",
+	Long: `Changes the flags given and leaves the rest. --group replaces the user's
+groups; --group "" removes them all. The user is emailed when their groups
+or address change (at the old address), once the host has SMTP set up.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		f := cmd.Flags()
+		if !f.Changed("display-name") && !f.Changed("email") && !f.Changed("group") {
+			return errors.New("nothing to change: give --display-name, --email or --group")
+		}
+		uc, err := newUserContext()
+		if err != nil {
+			return err
+		}
+		ctx := cmd.Context()
+		u := &hyvev1alpha1.User{}
+		if err := uc.kc.Get(ctx, client.ObjectKey{Name: args[0]}, u); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(u.DeepCopy())
+		if f.Changed("display-name") {
+			u.Spec.DisplayName = userDisplayName
+		}
+		if f.Changed("email") {
+			u.Spec.Email = userEmail
+		}
+		if f.Changed("group") {
+			u.Spec.Groups = nil
+			for _, g := range userGroups {
+				if g = strings.TrimSpace(g); g != "" {
+					u.Spec.Groups = append(u.Spec.Groups, g)
+				}
+			}
+		}
+		if err := uc.kc.Patch(ctx, u, patch); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Updated user %s.\n", args[0])
+		return nil
+	},
 }
 
 var userDisableCmd = &cobra.Command{
@@ -285,11 +330,15 @@ var userShowCmd = &cobra.Command{
 func init() {
 	userShowCmd.Flags().StringVarP(&userShowOutput, "output", "o", "", `"yaml" (the default) or "json"`)
 	userAddCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
+	userAddCmd.Flags().StringVar(&userEmail, "email", "", "address for password resets and account emails")
 	userAddCmd.Flags().StringSliceVar(&userGroups, "group", nil, "group to add the user to (repeatable)")
+	userEditCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
+	userEditCmd.Flags().StringVar(&userEmail, "email", "", `address for password resets and account emails ("" removes it)`)
+	userEditCmd.Flags().StringSliceVar(&userGroups, "group", nil, "the user's groups, replacing the current ones (repeatable)")
 	userAddCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read the initial password from stdin")
 	userAddCmd.Flags().BoolVar(&userNoPasswordChange, "no-password-change", false, "don't make the user change the password at first sign-in")
 	userPasswdCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read passwords from stdin: the current one then the new one for your own, just the new one for another user")
-	for _, c := range []*cobra.Command{userAddCmd, userListCmd, userShowCmd, userPasswdCmd, userDisableCmd, userEnableCmd, userRemoveCmd} {
+	for _, c := range []*cobra.Command{userAddCmd, userListCmd, userShowCmd, userEditCmd, userPasswdCmd, userDisableCmd, userEnableCmd, userRemoveCmd} {
 		addServerFlag(c)
 		c.SilenceUsage = true // session.go's init runs before this file's
 		UserCmd.AddCommand(c)

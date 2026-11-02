@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
+	"github.com/cbridges1/hyve/internal/email"
 )
 
 // LocalProviderType is the password provider's type, named as Rancher
@@ -41,6 +42,11 @@ type Server struct {
 	// NoPasswords turns password sign-in off (the chart's
 	// auth.passwords=false), leaving only the identity provider.
 	NoPasswords bool
+	// PublicURL is the host's address as browsers reach it, for links in
+	// email (a password reset's). Without it, emails carry only the code.
+	PublicURL string
+	// Mailer, if set, sends email instead of SMTP (tests).
+	Mailer func(ctx context.Context, settings email.Settings, to string, tmpl email.Template, data any) error
 
 	userLimit *limiter
 	addrLimit *limiter
@@ -82,6 +88,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1-public/ui-session", s.handleUISession)
 	mux.HandleFunc("POST /v1-public/local-session", s.handleLocalSession)
 	mux.HandleFunc("PUT /v1/users/{name}/password", s.handleSetPassword)
+	mux.HandleFunc("POST /v1-public/password-reset", s.handleResetRequest)
+	mux.HandleFunc("POST /v1-public/password-reset/confirm", s.handleResetConfirm)
+	mux.HandleFunc("GET /v1/settings/email", s.handleGetEmailSettings)
+	mux.HandleFunc("PUT /v1/settings/email", s.handleUpdateEmailSettings)
+	mux.HandleFunc("POST /v1/settings/email/test", s.handleTestEmail)
 	if s.Proxy != nil {
 		mux.Handle("/k8s/clusters/local/", s.Proxy)
 		mux.Handle("/k8s/clusters/local", s.Proxy)
@@ -198,6 +209,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.userLimit.Succeed(userKey)
 	s.addrLimit.Succeed(addrKey)
+	if req.NewPassword != "" {
+		s.notify(s.userEmail(r.Context(), req.Username), email.TemplatePasswordChanged, email.PasswordChangedData{Username: req.Username})
+	}
 
 	id, _, _ := parseSessionToken(token)
 	if req.ResponseType == "cookie" {
@@ -314,6 +328,7 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.RevokeSessions(r.Context(), name, keep); err != nil {
 		log.Printf("signin: revoking %s's sessions: %v", name, err)
 	}
+	s.notify(s.userEmail(r.Context(), name), email.TemplatePasswordChanged, email.PasswordChangedData{Username: name})
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -338,7 +353,8 @@ func (s *Server) canSetPassword(ctx context.Context, ident Identity, name string
 	return sar.Status.Allowed, nil
 }
 
-// RunSessionCleanup deletes expired sessions every interval until ctx ends.
+// RunSessionCleanup deletes expired sessions and password-reset codes
+// every interval until ctx ends.
 func (s *Server) RunSessionCleanup(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -349,6 +365,9 @@ func (s *Server) RunSessionCleanup(ctx context.Context, interval time.Duration) 
 		case <-t.C:
 			if err := s.Store.DeleteExpiredSessions(ctx); err != nil {
 				log.Printf("signin: deleting expired sessions: %v", err)
+			}
+			if err := s.Store.DeleteExpiredResetCodes(ctx); err != nil {
+				log.Printf("signin: deleting expired reset codes: %v", err)
 			}
 		}
 	}

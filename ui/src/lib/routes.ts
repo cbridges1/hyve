@@ -29,6 +29,7 @@ export const paths = {
   users: '/users',
   environments: '/environments',
   access: '/access',
+  settings: '/settings',
   import: '/import',
   // Any kind, as a list or as YAML.
   list: (type: string) => `/list/${enc(type)}`,

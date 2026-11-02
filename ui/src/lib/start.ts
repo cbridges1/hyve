@@ -1,4 +1,4 @@
-import { auth, LOCAL, request } from './api'
+import { auth, emailSettings, LOCAL, request } from './api'
 import { loadSchemas } from './kube'
 import { startLive } from './live'
 import { setSession } from './session'
@@ -7,8 +7,15 @@ import { setSession } from './session'
 export async function startSession() {
   const me = await auth.me()
   setSession({ user: me, version: me.version })
-  const [, canExplore] = await Promise.all([loadSchemas(), mayList('namespaces')])
-  setSession({ canExplore })
+  const [, canExplore, canSettings] = await Promise.all([
+    loadSchemas(),
+    mayList('namespaces'),
+    emailSettings.get().then(
+      () => true,
+      () => false,
+    ),
+  ])
+  setSession({ canExplore, canSettings })
   startLive()
 }
 

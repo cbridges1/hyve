@@ -1,5 +1,8 @@
 // hyve's Users, as `hyve user` manages them: the User object through the
-// API, its password through the host.
+// API, its password through the host. A user's email address is where the
+// host sends their password resets and account emails (Settings has the
+// SMTP relay); the host emails them when their account is made, or their
+// groups or address change, however it was changed.
 import { useState, type FormEvent } from 'react'
 import { Checkbox, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
@@ -12,10 +15,31 @@ import { useSession } from '../lib/session'
 import { TYPES } from '../lib/types'
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
+const EMAIL_RE = /^[^\s@]+@[^\s@]+$/
 
-type Form = { name: string; displayName: string; groups: string; password: string; mustChange: boolean }
+type Form = { name: string; displayName: string; email: string; groups: string; password: string; mustChange: boolean }
 
-const emptyForm = (): Form => ({ name: '', displayName: '', groups: '', password: '', mustChange: true })
+const emptyForm = (): Form => ({ name: '', displayName: '', email: '', groups: '', password: '', mustChange: true })
+
+const groupsOf = (s: string) =>
+  s
+    .split(',')
+    .map((g) => g.trim())
+    .filter(Boolean)
+
+// The spec with these fields set, leaving out the empty ones.
+function withFields(spec: any, f: { displayName: string; email: string; groups: string }) {
+  const { displayName: _d, email: _e, groups: _g, ...rest } = spec || {}
+  const groups = groupsOf(f.groups)
+  return {
+    ...rest,
+    ...(f.displayName.trim() ? { displayName: f.displayName.trim() } : {}),
+    ...(f.email.trim() ? { email: f.email.trim() } : {}),
+    ...(groups.length ? { groups } : {}),
+  }
+}
+
+type EditForm = { displayName: string; email: string; groups: string }
 
 function lastLogin(u: Obj) {
   return u.status?.lastLogin ? `last signed in ${new Date(u.status.lastLogin).toLocaleString()}` : 'never signed in'
@@ -33,6 +57,8 @@ export default function Users() {
   const [formError, setFormError] = useState('')
   const [busy, setBusy] = useState(false)
   const [viewing, setViewing] = useState<Obj | null>(null)
+  const [editing, setEditing] = useState<Obj | null>(null)
+  const [editForm, setEditForm] = useState<EditForm>({ displayName: '', email: '', groups: '' })
   const [passwordFor, setPasswordFor] = useState('')
   const [newPassword, setNewPassword] = useState('')
 
@@ -61,18 +87,12 @@ export default function Users() {
       setFormError("A username is a DNS label: lowercase letters, digits and '-', at most 63")
       return
     }
+    if (f.email.trim() && !EMAIL_RE.test(f.email.trim())) {
+      setFormError("That email address doesn't look right")
+      return
+    }
     const ok = await act(async () => {
-      const groups = f.groups
-        .split(',')
-        .map((g) => g.trim())
-        .filter(Boolean)
-      const u = await save(
-        TYPES.USER,
-        newObject(TYPES.USER, {
-          metadata: { name: f.name },
-          spec: { ...(f.displayName ? { displayName: f.displayName } : {}), ...(groups.length ? { groups } : {}) },
-        }),
-      )
+      const u = await save(TYPES.USER, newObject(TYPES.USER, { metadata: { name: f.name }, spec: withFields({}, f) }))
       try {
         await auth.password(f.name, '', f.password)
       } catch (err) {
@@ -93,6 +113,27 @@ export default function Users() {
   }
 
   const setDisabled = (u: Obj, disabled: boolean) => act(() => save(TYPES.USER, { ...u, spec: { ...u.spec, disabled } }))
+
+  function startEdit(u: Obj) {
+    setEditing(u)
+    setEditForm({ displayName: u.spec?.displayName || '', email: u.spec?.email || '', groups: (u.spec?.groups || []).join(', ') })
+    setFormError('')
+  }
+
+  async function saveEdit(e: FormEvent) {
+    e.preventDefault()
+    if (!editing) return
+    if (editForm.email.trim() && !EMAIL_RE.test(editForm.email.trim())) {
+      setFormError("That email address doesn't look right")
+      return
+    }
+    // Fresh, so a sign-in's changes in the meantime aren't undone.
+    const ok = await act(async () => {
+      const fresh = await kube.find(TYPES.USER, undefined, editing.metadata.name)
+      await save(TYPES.USER, { ...fresh, spec: withFields(fresh.spec, editForm) })
+    }, setFormError)
+    if (ok) setEditing(null)
+  }
 
   async function setPassword(e: FormEvent) {
     e.preventDefault()
@@ -147,12 +188,16 @@ export default function Users() {
                   </div>
                   <div className="mt-0.5 truncate text-xs text-neutral-500">
                     {u.spec?.displayName ? `${u.spec.displayName} · ` : ''}
+                    {u.spec?.email ? `${u.spec.email} · ` : ''}
                     {lastLogin(u)}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(u)}>
                     View
+                  </button>
+                  <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(u)}>
+                    Edit
                   </button>
                   {u.metadata.name !== me && (
                     <>
@@ -187,6 +232,15 @@ export default function Users() {
               <TextField label="Username" value={form.name} onChange={(v) => set({ name: v })} autoFocus />
               <TextField label="Display name" value={form.displayName} onChange={(v) => set({ displayName: v })} />
             </div>
+            <TextField
+              className="mb-3"
+              label="Email"
+              type="email"
+              value={form.email}
+              onChange={(v) => set({ email: v })}
+              placeholder="optional"
+              help="For password resets and account emails. They're told their account exists, when email is set up."
+            />
             <TextField className="mb-3" label="Groups" value={form.groups} onChange={(v) => set({ groups: v })} placeholder="comma-separated" />
             <TextField
               className="mb-3"
@@ -206,6 +260,50 @@ export default function Users() {
               </button>
               <button type="submit" className="btn btn-primary" disabled={busy || !form.name || !form.password}>
                 {busy ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {editing && (
+        <Modal title={`Edit ${editing.metadata.name}`} onClose={() => setEditing(null)}>
+          <form onSubmit={saveEdit}>
+            <TextField
+              className="mb-3"
+              label="Display name"
+              value={editForm.displayName}
+              onChange={(v) => setEditForm((f) => ({ ...f, displayName: v }))}
+              autoFocus
+            />
+            <TextField
+              className="mb-3"
+              label="Email"
+              type="email"
+              value={editForm.email}
+              onChange={(v) => setEditForm((f) => ({ ...f, email: v }))}
+              disabled={editing.spec?.provider === 'oidc'}
+              help={
+                editing.spec?.provider === 'oidc'
+                  ? 'From the identity provider at each sign-in.'
+                  : 'For password resets and account emails. A change is emailed to the old address.'
+              }
+            />
+            <TextField
+              className="mb-3"
+              label="Groups"
+              value={editForm.groups}
+              onChange={(v) => setEditForm((f) => ({ ...f, groups: v }))}
+              placeholder="comma-separated"
+              help="They're emailed when their groups change."
+            />
+            {formError && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{formError}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn btn-tertiary" onClick={() => setEditing(null)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={busy}>
+                Save
               </button>
             </div>
           </form>

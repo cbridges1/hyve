@@ -91,7 +91,10 @@ spec:
                   sub claim).
                 type: string
               email:
-                description: Email is the address the identity provider gave at the last sign-in.
+                description: |-
+                  Email is where the host sends the user's password resets and account
+                  emails. For an identity provider's user, it's the address the
+                  provider gave at the last sign-in.
                 type: string
             type: object
           status:

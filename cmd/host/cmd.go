@@ -28,10 +28,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
 	"github.com/cbridges1/hyve/internal/audit"
+	"github.com/cbridges1/hyve/internal/email"
 	"github.com/cbridges1/hyve/internal/hostapi"
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/shell"
@@ -57,6 +59,7 @@ var (
 	oidcCfg         signin.OIDCConfig
 	noPasswords     bool
 	shellImage      string
+	smtp            email.Settings
 )
 
 // Cmd is `hyve host`.
@@ -101,7 +104,7 @@ func init() {
 	runCmd.Flags().BoolVar(&serveUI, "ui", false, "serve hyve's own UI at / (built into the binary with 'task ui')")
 	runCmd.Flags().StringVar(&localUser, "local-user", "", "sign browsers at 127.0.0.1 or localhost in as this user without a password (local mode only: never on a host others can reach)")
 	f := runCmd.Flags()
-	f.StringVar(&publicURL, "public-url", "", "the host's address as browsers reach it (needed for single sign-in's callback)")
+	f.StringVar(&publicURL, "public-url", "", "the host's address as browsers reach it (needed for single sign-in's callback, and for the link in password-reset emails)")
 	f.StringVar(&oidcCfg.Issuer, "oidc-issuer", "", "turns on single sign-in: the OpenID Connect issuer URL")
 	f.StringVar(&oidcCfg.ClientID, "oidc-client-id", "", "the OIDC client ID")
 	f.StringVar(&oidcCfg.DisplayName, "oidc-display-name", "", `the provider's name on the sign-in page ("Sign in with ...")`)
@@ -113,6 +116,12 @@ func init() {
 	f.BoolVar(&audit.Enabled, "audit-log", true, "write a JSON line to stdout for each request proxied to a cluster (user, groups, cluster, verb, path, status)")
 	f.StringVar(&shellImage, "shell-image", shell.DefaultImage, "image for the UI's kubectl shell (kubectl, helm, k9s; empty turns the shell off)")
 	f.BoolVar(&noPasswords, "no-passwords", false, "turn password sign-in off, leaving single sign-in (the bootstrap admin then can't sign in)")
+	f.StringVar(&smtp.Host, "smtp-host", "", "SMTP relay for password resets and account emails, saved on first start only: after that the UI's Settings page owns it (the password comes from $HYVE_SMTP_PASSWORD)")
+	f.IntVar(&smtp.Port, "smtp-port", 587, "the SMTP relay's port (see --smtp-host)")
+	f.StringVar(&smtp.Username, "smtp-username", "", "the SMTP relay's username; none for an anonymous relay (see --smtp-host)")
+	f.BoolVar(&smtp.UseTLS, "smtp-tls", false, "implicit TLS, usually port 465; otherwise STARTTLS when offered (see --smtp-host)")
+	f.StringVar(&smtp.FromAddress, "smtp-from-address", "", "the From: address of hyve's emails (see --smtp-host)")
+	f.StringVar(&smtp.FromName, "smtp-from-name", "", `the From: name of hyve's emails (default "hyve"; see --smtp-host)`)
 	runCmd.Flags().StringVar(&caCertsFile, "cacerts", "", "PEM CA the host's certificate chains to, for agents to pin (leave unset for a publicly trusted certificate)")
 	Cmd.AddCommand(runCmd)
 }
@@ -151,6 +160,28 @@ func run(ctx context.Context) error {
 	srv := signin.NewServer(store, proxy, Version)
 	srv.LocalUser = localUser
 	srv.NoPasswords = noPasswords
+	srv.PublicURL = publicURL
+	if smtp.Host != "" {
+		// From the environment, so it's never on the command line.
+		smtp.Password = os.Getenv("HYVE_SMTP_PASSWORD")
+		if err := store.SeedEmailSettings(ctx, smtp); err != nil {
+			log.Printf("host: saving the --smtp-* settings: %v; set SMTP up on the Settings page instead", err)
+		}
+	}
+	users, err := cache.New(cfg, cache.Options{Scheme: scheme})
+	if err != nil {
+		return fmt.Errorf("creating the User cache: %w", err)
+	}
+	go func() {
+		if err := users.Start(ctx); err != nil {
+			log.Printf("host: the User cache stopped: %v", err)
+		}
+	}()
+	go func() {
+		if err := srv.RunUserNotices(ctx, users); err != nil {
+			log.Printf("host: account emails stopped: %v", err)
+		}
+	}()
 	if oidcCfg.Issuer != "" {
 		if oidcCfg.ClientID == "" || publicURL == "" {
 			return errors.New("--oidc-issuer needs --oidc-client-id and --public-url")

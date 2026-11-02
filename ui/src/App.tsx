@@ -22,9 +22,11 @@ import Login from './pages/Login'
 import Overview from './pages/Overview'
 import Providers from './pages/Providers'
 import RepoPage from './pages/RepoPage'
+import ResetPassword from './pages/ResetPassword'
 import Repos from './pages/Repos'
 import ResourceMatrix from './pages/ResourceMatrix'
 import Secrets from './pages/Secrets'
+import Settings from './pages/Settings'
 import SharedResourceList from './pages/SharedResourceList'
 import SharedResourcePage from './pages/SharedResourcePage'
 import TemplateList from './pages/TemplateList'
@@ -92,6 +94,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/cli-login" element={<CliLogin />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route
           element={
             <RequireAuth>
@@ -119,6 +122,7 @@ export default function App() {
           <Route path="users" element={<Users />} />
           <Route path="environments" element={<Environments />} />
           <Route path="access" element={<Access />} />
+          <Route path="settings" element={<Settings />} />
           <Route path="import" element={<ImportPage />} />
           {/* The host cluster's explorer is a tab of its page now. */}
           <Route path="explorer" element={<Navigate to={paths.localCluster('explorer')} replace />} />

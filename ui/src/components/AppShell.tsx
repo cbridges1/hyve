@@ -21,7 +21,9 @@ import { ErrorBanner } from './ui'
 // The kubectl shell brings xterm.js: loaded when first opened.
 const KubectlShell = lazy(() => import('./KubectlShell').then((m) => ({ default: m.KubectlShell })))
 
-type Item = { label: string; icon: string; to: string; type?: string }
+// type: shown when the cluster serves it; settings: when the user may read
+// the host's settings.
+type Item = { label: string; icon: string; to: string; type?: string; settings?: boolean }
 
 const groups: { label: string; items: Item[] }[] = [
   {
@@ -48,6 +50,7 @@ const groups: { label: string; items: Item[] }[] = [
       { label: 'Users', icon: 'users', to: paths.users, type: TYPES.USER },
       { label: 'Environments', icon: 'environments', to: paths.environments },
       { label: 'Access', icon: 'access', to: paths.access },
+      { label: 'Settings', icon: 'settings', to: paths.settings, settings: true },
     ],
   },
 ]
@@ -60,8 +63,9 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
   }`
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+  const { canSettings } = useSession()
   const visible = groups
-    .map((g) => ({ ...g, items: g.items.filter((i) => !i.type || schemaFor(i.type)) }))
+    .map((g) => ({ ...g, items: g.items.filter((i) => (!i.type || schemaFor(i.type)) && (!i.settings || canSettings)) }))
     .filter((g) => g.items.length)
   return (
     <nav className="w-full flex-1 space-y-3 overflow-y-auto px-2.5 pb-3">

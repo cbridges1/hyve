@@ -193,9 +193,28 @@ spec:
             {{- if .Values.host.localUser }}
             - --local-user={{ .Values.host.localUser }}
             {{- end }}
+            {{- if .Values.host.agentURL }}
+            - --public-url={{ .Values.host.agentURL }}
+            {{- end }}
+            {{- with .Values.email.smtp }}
+            {{- if .host }}
+            - --smtp-host={{ .host }}
+            - --smtp-port={{ .port }}
+            {{- if .username }}
+            - --smtp-username={{ .username }}
+            {{- end }}
+            {{- if .tls }}
+            - --smtp-tls
+            {{- end }}
+            - --smtp-from-address={{ required "email.smtp.fromAddress is required with email.smtp.host" .fromAddress }}
+            {{- if .fromName }}
+            - --smtp-from-name={{ .fromName }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.auth.oidc }}
             {{- if .issuer }}
-            - --public-url={{ required "auth.oidc needs host.agentURL, the host's public address" $.Values.host.agentURL }}
+            {{- $_ := required "auth.oidc needs host.agentURL, the host's public address" $.Values.host.agentURL }}
             - --oidc-issuer={{ .issuer }}
             - --oidc-client-id={{ required "auth.oidc.clientID is required" .clientID }}
             {{- if .displayName }}
@@ -224,13 +243,24 @@ spec:
             - --tls-cert=/etc/hyve/tls/tls.crt
             - --tls-key=/etc/hyve/tls/tls.key
             {{- end }}
-          {{- if and .Values.auth.oidc.issuer .Values.auth.oidc.clientSecret.name }}
+          {{- $oidcSecret := and .Values.auth.oidc.issuer .Values.auth.oidc.clientSecret.name }}
+          {{- $smtpSecret := and .Values.email.smtp.host .Values.email.smtp.passwordSecret.name }}
+          {{- if or $oidcSecret $smtpSecret }}
           env:
+            {{- if $oidcSecret }}
             - name: HYVE_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.auth.oidc.clientSecret.name }}
                   key: {{ .Values.auth.oidc.clientSecret.key }}
+            {{- end }}
+            {{- if $smtpSecret }}
+            - name: HYVE_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.email.smtp.passwordSecret.name }}
+                  key: {{ .Values.email.smtp.passwordSecret.key }}
+            {{- end }}
           {{- end }}
           ports:
             - name: http

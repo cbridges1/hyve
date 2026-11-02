@@ -55,6 +55,25 @@ auth:
     allowedDomains: []
     allowedGroups: []
 
+# The SMTP relay the host sends password resets and account emails through.
+# Saved on the host's first start only: after that, the UI's Settings page
+# owns it. Leave host empty to set it up there. Reset emails link to
+# host.agentURL.
+email:
+  smtp:
+    host: ""
+    port: 587
+    # Empty username and password: an anonymous relay.
+    username: ""
+    # A Secret in namespace holding the password, and its key.
+    passwordSecret:
+      name: ""
+      key: password
+    # Implicit TLS (usually port 465); otherwise STARTTLS when offered.
+    tls: false
+    fromAddress: ""
+    fromName: ""
+
 # hyve's UI: the host serves it at / (built into hyve's binary, so nothing
 # more is installed); open it with `hyve ui`.
 ui:

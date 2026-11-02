@@ -1,7 +1,7 @@
 // Sign-in: a username and password against the host's Users. A User that
 // must change its password does it here before signing in.
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Logo } from '../components/Logo'
 import { ThemeToggle } from '../components/ThemeToggle'
 import { ApiError, auth, authMethods, type AuthMethods } from '../lib/api'
@@ -152,12 +152,17 @@ export default function Login() {
           <SSOButton methods={methods} redirect={redirect} />
           {methods.oidc && methods.passwords && <Divider />}
           {methods.passwords && (
-            <PasswordForm
-              onSignedIn={async () => {
-                await startSession()
-                navigate(redirect, { replace: true })
-              }}
-            />
+            <>
+              <PasswordForm
+                onSignedIn={async () => {
+                  await startSession()
+                  navigate(redirect, { replace: true })
+                }}
+              />
+              <p className="mt-3 mb-0 text-center text-sm">
+                <Link to="/reset-password">Forgot password?</Link>
+              </p>
+            </>
           )}
         </>
       )}

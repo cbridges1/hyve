@@ -75,6 +75,34 @@ export const auth = {
   logout: () => request('POST', '/v1/logout', {}, { quiet401: true }),
   password: (username: string, currentPassword: string, newPassword: string) =>
     request('PUT', `/v1/users/${encodeURIComponent(username)}/password`, { currentPassword, newPassword }),
+  // Forgot password: the host emails a code to the user a username or
+  // address names (and says the same whether or not there is one).
+  requestReset: (identifier: string) => request('POST', '/v1-public/password-reset', { identifier }, { quiet401: true }),
+  confirmReset: (identifier: string, code: string, newPassword: string) =>
+    request('POST', '/v1-public/password-reset/confirm', { identifier, code, newPassword }, { quiet401: true }),
+}
+
+// The host's SMTP relay, for password resets and account emails. Reading
+// or changing it takes get or update on its Secret; the password never
+// comes back, passwordSet says whether there is one.
+export type EmailSettings = {
+  host: string
+  port: number
+  username: string
+  passwordSet: boolean
+  useTLS: boolean
+  skipVerify: boolean
+  fromAddress: string
+  fromName: string
+  configured: boolean
+}
+
+export type EmailSettingsUpdate = Partial<Omit<EmailSettings, 'passwordSet' | 'configured'>> & { password?: string }
+
+export const emailSettings = {
+  get: () => request<EmailSettings>('GET', '/v1/settings/email'),
+  update: (u: EmailSettingsUpdate) => request<EmailSettings>('PUT', '/v1/settings/email', u),
+  test: (to: string) => request('POST', '/v1/settings/email/test', { to }),
 }
 
 export function errorMessage(e: unknown): string {

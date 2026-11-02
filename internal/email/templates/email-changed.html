@@ -1,0 +1,6 @@
+{{define "subject"}}Your account email was changed{{end}}
+{{define "body"}}
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0 0 16px 0;">Hi{{if .Username}} {{.Username}}{{end}},</p>
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0 0 16px 0;">The email address on your account was changed to <strong>{{.NewEmail}}</strong>. You're receiving this at the old address as a security notice.</p>
+<p style="font-size:14px;color:#3f3f46;line-height:1.6;margin:0;">If you didn't make this change, contact an administrator of your hyve installation immediately — your account may be compromised.</p>
+{{end}}
