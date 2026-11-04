@@ -75,6 +75,9 @@ export const auth = {
   logout: () => request('POST', '/v1/logout', {}, { quiet401: true }),
   password: (username: string, currentPassword: string, newPassword: string) =>
     request('PUT', `/v1/users/${encodeURIComponent(username)}/password`, { currentPassword, newPassword }),
+  // Emails a user a link and code to set their own password (onboarding,
+  // or again); takes the right to set their password.
+  invite: (username: string) => request('POST', `/v1/users/${encodeURIComponent(username)}/invite`, {}),
   // Forgot password: the host emails a code to the user a username or
   // address names (and says the same whether or not there is one).
   requestReset: (identifier: string) => request('POST', '/v1-public/password-reset', { identifier }, { quiet401: true }),

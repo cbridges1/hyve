@@ -39,6 +39,19 @@ func TestRenderAll(t *testing.T) {
 		{tmpl: TemplateEmailChanged, data: EmailChangedData{Username: "alice", NewEmail: "new@example.com"}, subject: "Your account email was changed", contains: []string{"new@example.com"}},
 		{tmpl: TemplateAccountCreated, data: AccountCreatedData{Username: "bob", Groups: "ops"}, subject: "An account was created for you", contains: []string{"bob", "ops"}},
 		{tmpl: TemplateAccountCreated, data: AccountCreatedData{Username: "bob"}, subject: "An account was created for you", contains: []string{"bob"}, absent: []string{">Groups<"}},
+		{
+			tmpl:     TemplateInvite,
+			data:     InviteData{Username: "bob", Groups: "ops", Code: "ABCD2345", Link: "https://h/reset-password?code=ABCD2345&invite=1&user=bob", ExpiresIn: "7 days"},
+			subject:  "You're invited to hyve",
+			contains: []string{"bob", "ops", "ABCD2345", "Set your password</a>", "7 days"},
+		},
+		{
+			tmpl:     TemplateInvite,
+			data:     InviteData{Username: "bob", Code: "ABCD2345", ExpiresIn: "7 days"},
+			subject:  "You're invited to hyve",
+			contains: []string{"I have a code"},
+			absent:   []string{"Set your password</a>", ">Groups<"},
+		},
 		{tmpl: TemplateTest, data: TestEmailData{RequestedBy: "admin"}, subject: "Test email from hyve", contains: []string{"admin"}},
 	}
 	for _, tc := range cases {

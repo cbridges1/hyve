@@ -2,11 +2,13 @@
 // API, its password through the host. A user's email address is where the
 // host sends their password resets and account emails (Settings has the
 // SMTP relay); the host emails them when their account is made, or their
-// groups or address change, however it was changed.
+// groups or address change, however it was changed. A new user needs an
+// address, and is either invited (emailed a link to set their own
+// password) or given a password by whoever adds them.
 import { useState, type FormEvent } from 'react'
-import { Checkbox, TextField } from '../components/form'
+import { Checkbox, RadioGroup, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
-import { ErrorBanner, Loading, PageHeader, Pill, ConfirmButton, EmptyState } from '../components/ui'
+import { Banner, ErrorBanner, Loading, PageHeader, Pill, ConfirmButton, EmptyState } from '../components/ui'
 import { ViewDialog } from '../components/ViewDialog'
 import { auth, errorMessage } from '../lib/api'
 import { useLoad } from '../lib/hooks'
@@ -17,9 +19,13 @@ import { TYPES } from '../lib/types'
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
 const EMAIL_RE = /^[^\s@]+@[^\s@]+$/
 
-type Form = { name: string; displayName: string; email: string; groups: string; password: string; mustChange: boolean }
+type Form = { name: string; displayName: string; email: string; groups: string; onboard: 'invite' | 'password'; password: string; mustChange: boolean }
 
-const emptyForm = (): Form => ({ name: '', displayName: '', email: '', groups: '', password: '', mustChange: true })
+const emptyForm = (): Form => ({ name: '', displayName: '', email: '', groups: '', onboard: 'invite', password: '', mustChange: true })
+
+// On a new User: an invitation is coming, so the host doesn't also send
+// "an account was created for you".
+const INVITE_ANNOTATION = 'hyve.io/invite'
 
 const groupsOf = (s: string) =>
   s
@@ -57,6 +63,7 @@ export default function Users() {
   const [formError, setFormError] = useState('')
   const [busy, setBusy] = useState(false)
   const [viewing, setViewing] = useState<Obj | null>(null)
+  const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Obj | null>(null)
   const [editForm, setEditForm] = useState<EditForm>({ displayName: '', email: '', groups: '' })
   const [passwordFor, setPasswordFor] = useState('')
@@ -87,12 +94,29 @@ export default function Users() {
       setFormError("A username is a DNS label: lowercase letters, digits and '-', at most 63")
       return
     }
-    if (f.email.trim() && !EMAIL_RE.test(f.email.trim())) {
-      setFormError("That email address doesn't look right")
+    if (!EMAIL_RE.test(f.email.trim())) {
+      setFormError(f.email.trim() ? "That email address doesn't look right" : 'An email address is required')
       return
     }
+    const invite = f.onboard === 'invite'
     const ok = await act(async () => {
-      const u = await save(TYPES.USER, newObject(TYPES.USER, { metadata: { name: f.name }, spec: withFields({}, f) }))
+      const u = await save(
+        TYPES.USER,
+        newObject(TYPES.USER, {
+          metadata: { name: f.name, ...(invite ? { annotations: { [INVITE_ANNOTATION]: 'true' } } : {}) },
+          spec: withFields({}, f),
+        }),
+      )
+      if (invite) {
+        try {
+          await auth.invite(f.name)
+        } catch (err) {
+          await remove(TYPES.USER, u).catch(() => {})
+          throw new Error(`${errorMessage(err)} (the user was removed again)`)
+        }
+        setNotice(`Invited ${f.name}: they'll get an email at ${f.email.trim()} to set their password. It works for 7 days.`)
+        return
+      }
       try {
         await auth.password(f.name, '', f.password)
       } catch (err) {
@@ -111,6 +135,12 @@ export default function Users() {
       setForm(emptyForm())
     }
   }
+
+  const reinvite = (u: Obj) =>
+    act(async () => {
+      await auth.invite(u.metadata.name)
+      setNotice(`Sent ${u.metadata.name} another invitation at ${u.spec?.email}.`)
+    })
 
   const setDisabled = (u: Obj, disabled: boolean) => act(() => save(TYPES.USER, { ...u, spec: { ...u.spec, disabled } }))
 
@@ -163,6 +193,11 @@ export default function Users() {
         <code>hyve access grant</code> or RBAC on those names.
       </p>
       <ErrorBanner error={error || loadError} />
+      {notice && (
+        <div className="mb-4">
+          <Banner tone="success">{notice}</Banner>
+        </div>
+      )}
       {loading ? (
         <Loading />
       ) : (
@@ -199,6 +234,17 @@ export default function Users() {
                   <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(u)}>
                     Edit
                   </button>
+                  {u.metadata.name !== me && !u.status?.lastLogin && u.spec?.email && !u.spec?.provider && !u.spec?.disabled && (
+                    <button
+                      type="button"
+                      className="btn btn-tertiary btn-sm"
+                      disabled={busy}
+                      title="Email them a new link to set their password (7 days)"
+                      onClick={() => reinvite(u)}
+                    >
+                      Resend invite
+                    </button>
+                  )}
                   {u.metadata.name !== me && (
                     <>
                       <button
@@ -236,30 +282,48 @@ export default function Users() {
               className="mb-3"
               label="Email"
               type="email"
+              required
               value={form.email}
               onChange={(v) => set({ email: v })}
-              placeholder="optional"
-              help="For password resets and account emails. They're told their account exists, when email is set up."
+              help="Where their invitation, password resets and account emails go."
             />
             <TextField className="mb-3" label="Groups" value={form.groups} onChange={(v) => set({ groups: v })} placeholder="comma-separated" />
-            <TextField
-              className="mb-3"
-              label="Initial password"
-              type="password"
-              autoComplete="new-password"
-              value={form.password}
-              onChange={(v) => set({ password: v })}
-            />
             <div className="mb-3">
-              <Checkbox checked={form.mustChange} onChange={(v) => set({ mustChange: v })} label="Must change it at first sign-in" />
+              <RadioGroup
+                label="Password"
+                value={form.onboard}
+                onChange={(v) => set({ onboard: v as Form['onboard'] })}
+                options={[
+                  { value: 'invite', label: 'Email them a link to set their own password' },
+                  { value: 'password', label: 'Set an initial password now' },
+                ]}
+              />
             </div>
+            {form.onboard === 'invite' ? (
+              <p className="hint mb-3">The link works for 7 days; Resend invite sends another. Email has to be set up in Settings.</p>
+            ) : (
+              <>
+                <TextField
+                  className="mb-3"
+                  label="Initial password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={form.password}
+                  onChange={(v) => set({ password: v })}
+                  help="Give it to them yourself; they're emailed that their account exists."
+                />
+                <div className="mb-3">
+                  <Checkbox checked={form.mustChange} onChange={(v) => set({ mustChange: v })} label="Must change it at first sign-in" />
+                </div>
+              </>
+            )}
             {formError && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{formError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn btn-tertiary" onClick={() => setAdding(false)}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn-primary" disabled={busy || !form.name || !form.password}>
-                {busy ? 'Creating…' : 'Create'}
+              <button type="submit" className="btn btn-primary" disabled={busy || !form.name || !form.email.trim() || (form.onboard === 'password' && !form.password)}>
+                {busy ? 'Creating…' : form.onboard === 'invite' ? 'Create and invite' : 'Create'}
               </button>
             </div>
           </form>

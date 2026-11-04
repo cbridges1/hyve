@@ -88,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1-public/ui-session", s.handleUISession)
 	mux.HandleFunc("POST /v1-public/local-session", s.handleLocalSession)
 	mux.HandleFunc("PUT /v1/users/{name}/password", s.handleSetPassword)
+	mux.HandleFunc("POST /v1/users/{name}/invite", s.handleInvite)
 	mux.HandleFunc("POST /v1-public/password-reset", s.handleResetRequest)
 	mux.HandleFunc("POST /v1-public/password-reset/confirm", s.handleResetConfirm)
 	mux.HandleFunc("GET /v1/settings/email", s.handleGetEmailSettings)

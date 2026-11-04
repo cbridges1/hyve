@@ -120,8 +120,9 @@ func (s *Server) noticeUser(ctx context.Context, c client.Reader, name string) e
 			}
 			return err
 		}
-		// An identity provider's user was made by signing in: nothing to tell.
-		if u.Spec.Provider == "" && s.Store.now().Sub(u.CreationTimestamp.Time) < newUserWindow {
+		// An identity provider's user was made by signing in: nothing to
+		// tell. An invited one gets its invitation instead.
+		if u.Spec.Provider == "" && u.Annotations[InviteAnnotation] != "true" && s.Store.now().Sub(u.CreationTimestamp.Time) < newUserWindow {
 			s.notify(u.Spec.Email, email.TemplateAccountCreated, email.AccountCreatedData{Username: name, Groups: groupList(now.Groups)})
 		}
 		return nil

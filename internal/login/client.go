@@ -200,6 +200,28 @@ func SetPassword(ctx context.Context, c *http.Client, s *Server, username, curre
 	return fmt.Errorf("setting the password: %s", resp.Status)
 }
 
+// Invite has the host email username a link and code to set their own
+// password.
+func Invite(ctx context.Context, c *http.Client, s *Server, username string) error {
+	resp, data, err := do(ctx, c, http.MethodPost, s.URL+"/v1/users/"+neturl.PathEscape(username)+"/invite", map[string]any{}, s.Token)
+	if err != nil {
+		return err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		if _, msg := apiError(data); msg != "" && resp.StatusCode == http.StatusNotFound {
+			return errors.New(msg)
+		}
+		return errors.New("this hyve host is too old to send invitations; upgrade it")
+	}
+	if _, msg := apiError(data); msg != "" {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("sending the invitation: %s", resp.Status)
+}
+
 // UISession asks a hyve host for a new session for the browser, as the
 // same user (`hyve ui`).
 func UISession(ctx context.Context, c *http.Client, s *Server) (Session, error) {

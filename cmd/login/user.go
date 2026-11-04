@@ -29,6 +29,7 @@ var (
 	userGroups           []string
 	userPasswordStdin    bool
 	userNoPasswordChange bool
+	userInvite           bool
 )
 
 // UserCmd is `hyve user`.
@@ -86,31 +87,58 @@ func readNewPassword(in *input, fromStdin bool) (string, error) {
 }
 
 var userAddCmd = &cobra.Command{
-	Use:   "add NAME",
-	Short: "Create a user and set its password",
-	Args:  cobra.ExactArgs(1),
+	Use:   "add NAME --email ADDRESS",
+	Short: "Create a user, and invite them or set their password",
+	Long: `Creates a user. With --invite, the host emails them a link and code to set
+their own password (it works for 7 days; 'hyve user invite' sends another).
+Otherwise you choose their initial password, which they change at first
+sign-in unless --no-password-change, and they're emailed that the account
+exists.
+
+An email address is required: it's where password resets and account
+emails go.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		if !signin.ValidUsername(name) {
 			return errors.New("a username must be a DNS label: lowercase letters, digits and '-', at most 63 characters")
 		}
+		if userEmail = strings.TrimSpace(userEmail); userEmail == "" {
+			return errors.New("an email address is required (--email): it's where password resets and account emails go")
+		}
+		if userInvite && (userPasswordStdin || userNoPasswordChange) {
+			return errors.New("--invite lets the user choose their password: it doesn't go with --password-stdin or --no-password-change")
+		}
 		uc, err := newUserContext()
 		if err != nil {
 			return err
 		}
-		pw, err := readNewPassword(newInput(os.Stdin), userPasswordStdin)
-		if err != nil {
-			return err
-		}
-		if err := signin.ValidatePassword(pw); err != nil {
-			return err
+		pw := ""
+		if !userInvite {
+			if pw, err = readNewPassword(newInput(os.Stdin), userPasswordStdin); err != nil {
+				return err
+			}
+			if err := signin.ValidatePassword(pw); err != nil {
+				return err
+			}
 		}
 		ctx := cmd.Context()
 		u := &hyvev1alpha1.User{}
 		u.Name = name
 		u.Spec = hyvev1alpha1.UserSpec{DisplayName: userDisplayName, Email: userEmail, Groups: userGroups}
+		if userInvite {
+			u.Annotations = map[string]string{signin.InviteAnnotation: "true"}
+		}
 		if err := uc.kc.Create(ctx, u); err != nil {
 			return fmt.Errorf("creating user %s: %w", name, err)
+		}
+		if userInvite {
+			if err := login.Invite(ctx, uc.hc, uc.srv, name); err != nil {
+				_ = uc.kc.Delete(context.Background(), u)
+				return fmt.Errorf("inviting %s (the user was removed again): %w", name, err)
+			}
+			fmt.Fprintf(os.Stderr, "Created user %s (Kubernetes user %s%s) and emailed an invitation to %s.\n", name, signin.UserPrefix, name, userEmail)
+			return nil
 		}
 		if err := login.SetPassword(ctx, uc.hc, uc.srv, name, "", pw); err != nil {
 			_ = uc.kc.Delete(context.Background(), u)
@@ -261,6 +289,27 @@ or address change (at the old address), once the host has SMTP set up.`,
 	},
 }
 
+var userInviteCmd = &cobra.Command{
+	Use:   "invite NAME",
+	Short: "Email a user a link to set their password (again)",
+	Long: `Emails NAME a link and code to set their own password, good for 7 days and
+replacing any earlier one: to send an invitation again, or to let someone
+who never set a password choose one. It takes the right to set NAME's
+password.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		uc, err := newUserContext()
+		if err != nil {
+			return err
+		}
+		if err := login.Invite(cmd.Context(), uc.hc, uc.srv, args[0]); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Emailed %s an invitation.\n", args[0])
+		return nil
+	},
+}
+
 var userDisableCmd = &cobra.Command{
 	Use:   "disable NAME",
 	Short: "Stop a user signing in; their sessions stop working within 30 seconds",
@@ -330,7 +379,8 @@ var userShowCmd = &cobra.Command{
 func init() {
 	userShowCmd.Flags().StringVarP(&userShowOutput, "output", "o", "", `"yaml" (the default) or "json"`)
 	userAddCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
-	userAddCmd.Flags().StringVar(&userEmail, "email", "", "address for password resets and account emails")
+	userAddCmd.Flags().StringVar(&userEmail, "email", "", "address for password resets and account emails (required)")
+	userAddCmd.Flags().BoolVar(&userInvite, "invite", false, "email them a link to set their own password instead of choosing one")
 	userAddCmd.Flags().StringSliceVar(&userGroups, "group", nil, "group to add the user to (repeatable)")
 	userEditCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
 	userEditCmd.Flags().StringVar(&userEmail, "email", "", `address for password resets and account emails ("" removes it)`)
@@ -338,7 +388,7 @@ func init() {
 	userAddCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read the initial password from stdin")
 	userAddCmd.Flags().BoolVar(&userNoPasswordChange, "no-password-change", false, "don't make the user change the password at first sign-in")
 	userPasswdCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read passwords from stdin: the current one then the new one for your own, just the new one for another user")
-	for _, c := range []*cobra.Command{userAddCmd, userListCmd, userShowCmd, userEditCmd, userPasswdCmd, userDisableCmd, userEnableCmd, userRemoveCmd} {
+	for _, c := range []*cobra.Command{userAddCmd, userListCmd, userShowCmd, userEditCmd, userInviteCmd, userPasswdCmd, userDisableCmd, userEnableCmd, userRemoveCmd} {
 		addServerFlag(c)
 		c.SilenceUsage = true // session.go's init runs before this file's
 		UserCmd.AddCommand(c)

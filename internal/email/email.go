@@ -65,6 +65,9 @@ const (
 	// TemplateAccountCreated tells a new user their account exists. Never
 	// with the password.
 	TemplateAccountCreated Template = "account-created"
+	// TemplateInvite is a new user's invitation: a code and link to set
+	// their own password.
+	TemplateInvite Template = "invite"
 	// TemplateTest checks the SMTP settings work.
 	TemplateTest Template = "test"
 )
@@ -101,6 +104,16 @@ type EmailChangedData struct {
 type AccountCreatedData struct {
 	Username string
 	Groups   string
+}
+
+// InviteData is TemplateInvite's data. Link may be empty: the code works
+// on the sign-in page's "Forgot password?" form. ExpiresIn is "7 days".
+type InviteData struct {
+	Username  string
+	Groups    string
+	Code      string
+	Link      string
+	ExpiresIn string
 }
 
 // TestEmailData is TemplateTest's data.

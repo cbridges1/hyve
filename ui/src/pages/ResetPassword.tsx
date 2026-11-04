@@ -1,6 +1,7 @@
 // Forgot password: ask for a code by username or email address, then set a
 // new password with it. The emailed link opens the second step with both
-// filled in (/reset-password?user=&code=).
+// filled in (/reset-password?user=&code=). An invitation's link adds
+// invite=1: the same code, worded as setting a first password.
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, auth } from '../lib/api'
@@ -37,7 +38,10 @@ export default function ResetPassword() {
   const [query] = useSearchParams()
   const [identifier, setIdentifier] = useState(query.get('user') || '')
   const [code, setCode] = useState(query.get('code') || '')
+  const invite = query.get('invite') === '1'
   const [step, setStep] = useState<'ask' | 'reset' | 'done'>(query.get('code') ? 'reset' : 'ask')
+  // Typing in a code from an email, rather than asking for one.
+  const [haveCode, setHaveCode] = useState(false)
   const [password, setPassword] = useState('')
   const [again, setAgain] = useState('')
   const [error, setError] = useState('')
@@ -70,7 +74,7 @@ export default function ResetPassword() {
 
   return (
     <SignInFrame onSubmit={() => !busy && (step === 'ask' ? ask() : step === 'reset' ? reset() : navigate('/login'))}>
-      <h1 className="mb-1 text-center text-lg">Reset your password</h1>
+      <h1 className="mb-1 text-center text-lg">{invite ? 'Set your password' : 'Reset your password'}</h1>
       {step === 'ask' && (
         <>
           <p className="text-muted mb-5 text-center text-sm">We'll email a code to the address on your account.</p>
@@ -79,29 +83,46 @@ export default function ResetPassword() {
           <button type="submit" className={primary} disabled={busy || !identifier.trim()}>
             {busy ? 'Sending…' : 'Email me a code'}
           </button>
+          <p className="mt-3 mb-0 text-center text-sm">
+            <button
+              type="button"
+              className="h-auto cursor-pointer border-0 bg-transparent p-0 text-neutral-900 underline-offset-2 hover:underline dark:text-neutral-100"
+              onClick={() => {
+                setHaveCode(true)
+                setStep('reset')
+                setError('')
+              }}
+            >
+              I have a code
+            </button>
+          </p>
         </>
       )}
       {step === 'reset' && (
         <>
           <p className="text-muted mb-5 text-center text-sm">
-            {query.get('code')
-              ? 'Choose a new password.'
-              : 'If that account has an email address, a code is on its way. It works for 2 hours. No email? Ask an admin to set your password.'}
+            {invite
+              ? `Welcome to hyve${identifier ? `, ${identifier}` : ''}. Choose a password to finish setting up your account.`
+              : query.get('code')
+                ? 'Choose a new password.'
+                : haveCode
+                  ? 'Enter your username and the code from your email.'
+                  : 'If that account has an email address, a code is on its way. It works for 2 hours. No email? Ask an admin to set your password.'}
           </p>
-          {query.get('code') && !query.get('user') && <Field label="Username or email" value={identifier} onChange={setIdentifier} autoComplete="username" autoFocus />}
+          {((query.get('code') && !query.get('user')) || haveCode) && <Field label="Username or email" value={identifier} onChange={setIdentifier} autoComplete="username" autoFocus />}
           {!query.get('code') && <Field label="Code" value={code} onChange={setCode} autoComplete="one-time-code" autoFocus />}
           <Field label="New password" type="password" value={password} onChange={setPassword} autoComplete="new-password" autoFocus={!!query.get('code')} />
           <Field label="New password again" type="password" value={again} onChange={setAgain} autoComplete="new-password" />
-          <p className="hint -mt-2 mb-4">At least 12 characters. Resetting signs you out everywhere.</p>
+          <p className="hint -mt-2 mb-4">At least 12 characters.{invite ? '' : ' Resetting signs you out everywhere.'}</p>
           {error && <p className="banner banner-error mb-5">{error}</p>}
           <button type="submit" className={primary} disabled={busy || !identifier.trim() || !code.trim() || !password || !again}>
-            {busy ? 'Resetting…' : 'Reset password'}
+            {busy ? 'Saving…' : invite ? 'Set password' : 'Reset password'}
           </button>
         </>
       )}
       {step === 'done' && (
         <>
-          <p className="banner banner-success mb-5">Your password is changed. Sign in with the new one.</p>
+          <p className="banner banner-success mb-5">{invite ? 'Your password is set. Sign in to get started.' : 'Your password is changed. Sign in with the new one.'}</p>
           <button type="submit" className={primary}>
             Sign in
           </button>

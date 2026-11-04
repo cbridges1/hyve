@@ -25,6 +25,8 @@ import (
 const (
 	// ResetCodeTTL is how long a password-reset code works.
 	ResetCodeTTL = 2 * time.Hour
+	// InviteTTL is how long an invitation's code works.
+	InviteTTL = 7 * 24 * time.Hour
 
 	labelResetFor = "hyve.io/reset-for"
 	resetAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -82,9 +84,10 @@ func (s *Store) findResetUser(ctx context.Context, identifier string) (*hyvev1al
 	return u, nil
 }
 
-// NewResetCode starts a password reset for u: a code, kept as a bcrypt hash
-// in a Secret owned by u, that replaces any earlier one.
-func (s *Store) NewResetCode(ctx context.Context, u *hyvev1alpha1.User) (string, error) {
+// NewResetCode starts a password reset (or an invitation's first password)
+// for u: a code that works for ttl, kept as a bcrypt hash in a Secret owned
+// by u, that replaces any earlier one.
+func (s *Store) NewResetCode(ctx context.Context, u *hyvev1alpha1.User, ttl time.Duration) (string, error) {
 	code, err := newResetCode()
 	if err != nil {
 		return "", err
@@ -93,7 +96,7 @@ func (s *Store) NewResetCode(ctx context.Context, u *hyvev1alpha1.User) (string,
 	if err != nil {
 		return "", err
 	}
-	data := map[string][]byte{keyHash: hash, keyExpiresAt: []byte(s.now().Add(ResetCodeTTL).Format(time.RFC3339))}
+	data := map[string][]byte{keyHash: hash, keyExpiresAt: []byte(s.now().Add(ttl).Format(time.RFC3339))}
 	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: s.Namespace, Name: resetSecretName(u.Name)}}
 	err = s.Client.Get(ctx, client.ObjectKeyFromObject(sec), sec)
 	switch {
@@ -197,11 +200,14 @@ type ResetConfirm struct {
 // host's configured public address. Never the request's Host header, which
 // whoever asks for the reset controls. Empty without one: the code alone
 // works.
-func (s *Server) resetLink(username, code string) string {
+func (s *Server) resetLink(username, code string, invite bool) string {
 	if s.PublicURL == "" {
 		return ""
 	}
 	q := url.Values{"user": {username}, "code": {code}}
+	if invite {
+		q.Set("invite", "1")
+	}
 	return strings.TrimRight(s.PublicURL, "/") + "/reset-password?" + q.Encode()
 }
 
@@ -237,13 +243,13 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
 		return
 	}
-	code, err := s.Store.NewResetCode(ctx, u)
+	code, err := s.Store.NewResetCode(ctx, u, ResetCodeTTL)
 	if err != nil {
 		log.Printf("signin: password reset for %s: %v", u.Name, err)
 		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start the password reset")
 		return
 	}
-	to, name, link := u.Spec.Email, u.Name, s.resetLink(u.Name, code)
+	to, name, link := u.Spec.Email, u.Name, s.resetLink(u.Name, code, false)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), mailTimeout)
 		defer cancel()
