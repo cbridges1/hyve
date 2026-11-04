@@ -1,115 +1,256 @@
 name: Release
 
+# Builds and publishes a release with GoReleaser: the binaries and archives,
+# the multi-arch image (ghcr.io/cbridges1/hyve), the Homebrew formula, the
+# Helm chart (oci://ghcr.io/cbridges1/charts/hyve) and the GitHub Release.
+# The tests run first; nothing publishes if they fail.
+#
+# Two ways to start one:
+# - Push a v* tag (git tag v1.2.3 && git push origin v1.2.3).
+# - Run this workflow (Actions -> Release -> Run workflow, pick the branch):
+#   it picks the next version, tags the branch's head and releases it.
+#
+#   gh workflow run release.yml --ref v2 -f bump=rc        # v1.0.0-rc.4 -> v1.0.0-rc.5
+#   gh workflow run release.yml --ref main -f bump=final   # v1.0.0-rc.5 -> v1.0.0
+#   gh workflow run release.yml --ref main -f bump=patch   # v1.0.0 -> v1.0.1
+#   gh workflow run release.yml --ref main -f version=v1.1.0-rc.1
+#   gh workflow run release.yml --ref my-branch            # snapshot
+#
+# A snapshot (the default, so a stray click publishes nothing) builds
+# everything and publishes nothing: the dist/ files are a workflow artifact.
+# Release candidates can be cut from any branch; anything else only from
+# main.
 on:
   push:
     tags:
-      - "v*"
-
+      - 'v*'
   workflow_dispatch:
     inputs:
-      snapshot:
-        description: "Snapshot mode — build everything (binaries, archives, Docker images, Helm chart, Homebrew formula) but publish nothing. Safe to run anytime, on any branch, with or without a tag, to test the pipeline itself."
-        type: boolean
-        default: true
+      bump:
+        description: 'snapshot: build only. rc: next release candidate. final: the last rc without -rc.N. patch/minor/major: bump the last release.'
+        type: choice
+        options: [snapshot, rc, final, patch, minor, major]
+        default: snapshot
+      version:
+        description: 'Exact version instead (e.g. v1.1.0 or v1.1.0-rc.1) - leave empty to use bump'
+        type: string
+        default: ''
 
-permissions:
-  contents: write   # create the GitHub Release and upload artifacts
-  packages: write   # push images and the Helm chart to ghcr.io
+# Two releases at once could both pick the same next version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # full history/tags — GoReleaser needs this for the changelog
+  test:
+    name: Tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      tests_only: true
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+  release:
+    name: Build and publish
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write # the tag and the GitHub Release
+      packages: write # the image and the chart on ghcr.io
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      snapshot: ${{ steps.version.outputs.snapshot }}
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      BUMP: ${{ inputs.bump }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      # Full history and tags: to pick the next version, and for
+      # GoReleaser's changelog.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pick the version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = push ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$BUMP" = snapshot ] && [ -z "$VERSION" ]; then
+            echo "snapshot=true" >> "$GITHUB_OUTPUT"
+            echo "Snapshot of $GITHUB_REF_NAME ($GITHUB_SHA): nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          existing="$(git tag --points-at HEAD --list 'v*')"
+          if [ -n "$existing" ]; then
+            echo "::error::$GITHUB_SHA is already released as $existing."
+            exit 1
+          fi
+
+          # Newest first, with v1.0.0-rc.N before v1.0.0.
+          tags() { git -c versionsort.suffix=-rc. tag --list "$@" --sort=-v:refname; }
+          last="$(tags 'v[0-9]*.[0-9]*.[0-9]*' | head -n 1)"
+          last_final="$(tags 'v[0-9]*.[0-9]*.[0-9]*' | grep -v -- - | head -n 1 || true)"
+          IFS=. read -r major minor patch <<< "${last_final:-v0.0.0}"
+          major="${major#v}"
+          if [ -n "$VERSION" ]; then
+            next="$VERSION"
+          else
+            case "$BUMP" in
+              rc)
+                if [[ "$last" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
+                  next="${BASH_REMATCH[1]}-rc.$((BASH_REMATCH[2] + 1))"
+                else
+                  next="v$major.$minor.$((patch + 1))-rc.1"
+                fi ;;
+              final)
+                if ! [[ "$last" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-rc\.[0-9]+$ ]]; then
+                  echo "::error::The last version ($last) isn't a release candidate."
+                  exit 1
+                fi
+                next="${BASH_REMATCH[1]}" ;;
+              major) next="v$((major + 1)).0.0" ;;
+              minor) next="v$major.$((minor + 1)).0" ;;
+              patch) next="v$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+
+          if ! [[ "$next" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::Version must look like v1.2.3 or v1.2.3-rc.1, got '$next'."
+            exit 1
+          fi
+          if [[ "$next" != *-rc.* ]] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Only release candidates are cut from $GITHUB_REF_NAME; $next needs main."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$next" > /dev/null; then
+            echo "::error::$next already exists."
+            exit 1
+          fi
+          echo "Releasing $next from $GITHUB_REF_NAME (previous: ${last:-none})" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "create=true" >> "$GITHUB_OUTPUT"
+
+      # The tag GoReleaser releases. Pushed with the API rather than git, so
+      # the checkout keeps no credentials. A tag made with GITHUB_TOKEN
+      # doesn't start another run of this workflow; this run releases it.
+      - name: Create the tag
+        if: ${{ steps.version.outputs.create }}
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" > /dev/null
+          git tag "$TAG" "$GITHUB_SHA"
+
+      # No caches here: a release builds from a clean slate, never from
+      # one another workflow could have written.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
       # GoReleaser's before hook builds the UI with npm.
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+          package-manager-cache: false
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        if: ${{ !steps.version.outputs.snapshot }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set args (snapshot — nothing published)
-        id: snapshot_args
-        if: github.event_name == 'workflow_dispatch' && inputs.snapshot
-        run: echo "value=release --snapshot --clean --skip=publish" >> "$GITHUB_OUTPUT"
-
-      - name: Set args (real release)
-        id: release_args
-        if: github.event_name != 'workflow_dispatch' || inputs.snapshot == false
-        run: echo "value=release --clean" >> "$GITHUB_OUTPUT"
+          password: ${{ github.token }}
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: "~> v2"
-          args: ${{ steps.snapshot_args.outputs.value || steps.release_args.outputs.value }}
+          version: '~> v2'
+          args: ${{ steps.version.outputs.snapshot && 'release --snapshot --clean --skip=publish' || 'release --clean' }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           # Needs `contents: write` on the separate cbridges1/homebrew-tap
-          # repository — GITHUB_TOKEN is scoped to this repo only, so a
+          # repository - GITHUB_TOKEN is scoped to this repo only, so a
           # fine-grained PAT (or classic PAT with `repo` scope) is required.
-          # Create it under Settings → Secrets and variables → Actions.
-          # Not needed in snapshot mode (nothing is pushed), so this workflow
-          # runs fine even before that secret/repo exist yet.
+          # Prereleases and snapshots don't push to the tap, so they don't
+          # need it.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       # The chart's version and appVersion are both the release version, so
       # image.tag's default (appVersion) is the image GoReleaser just pushed.
-      # Published as an OCI artifact:
       #   helm install hyve oci://ghcr.io/cbridges1/charts/hyve --version <version>
-      - name: Package Helm chart
+      - name: Package the Helm chart
         id: chart
+        env:
+          SNAPSHOT: ${{ steps.version.outputs.snapshot }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.snapshot }}" = "true" ]; then
-            VERSION="0.0.0-snapshot.${GITHUB_SHA::7}"
+          set -euo pipefail
+          if [ -n "$SNAPSHOT" ]; then
+            version="0.0.0-snapshot.${GITHUB_SHA::7}"
           else
-            VERSION="${GITHUB_REF_NAME#v}"
+            version="${TAG#v}"
           fi
           helm lint deploy/helm/hyve
-          helm package deploy/helm/hyve --version "$VERSION" --app-version "$VERSION" --destination dist/chart
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          helm package deploy/helm/hyve --version "$version" --app-version "$version" --destination dist/chart
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Publish Helm chart
-        if: github.event_name != 'workflow_dispatch' || inputs.snapshot == false
+      - name: Publish the Helm chart
+        if: ${{ !steps.version.outputs.snapshot }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          TAG: ${{ steps.version.outputs.tag }}
+          CHART: dist/chart/hyve-${{ steps.chart.outputs.version }}.tgz
         run: |
-          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
-          helm push "dist/chart/hyve-${{ steps.chart.outputs.version }}.tgz" oci://ghcr.io/cbridges1/charts
-          gh release upload "$GITHUB_REF_NAME" "dist/chart/hyve-${{ steps.chart.outputs.version }}.tgz" --clobber
+          set -euo pipefail
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+          helm push "$CHART" oci://ghcr.io/cbridges1/charts
+          gh release upload "$TAG" "$CHART" --clobber
 
       - name: Upload snapshot artifacts
-        if: github.event_name == 'workflow_dispatch' && inputs.snapshot
-        uses: actions/upload-artifact@v4
+        if: ${{ steps.version.outputs.snapshot }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: snapshot-dist
           path: dist/*
           retention-days: 7
+
+  # The published image, scanned for vulnerabilities with a fix available
+  # (informational: a finding here needs a base image or dependency bump
+  # and a new release, not a re-run). Snapshots aren't pushed, so aren't
+  # scanned.
+  scan-image:
+    name: Scan the image
+    needs: release
+    if: ${{ !needs.release.outputs.snapshot }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - name: trivy image (HIGH+, fixed only)
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          docker run --rm \
+            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+            image --severity HIGH,CRITICAL --ignore-unfixed "ghcr.io/cbridges1/hyve:${TAG#v}" \
+            || echo "::warning::trivy found fixable vulnerabilities in the image (see above)."

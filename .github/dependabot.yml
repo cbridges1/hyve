@@ -1,0 +1,95 @@
+# Dependabot version updates. Dependabot alerts and security updates are
+# turned on separately in the repository settings (Security), and aren't
+# held back by the cooldowns or the major-version rule below.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Let new releases age a week before proposing them (supply-chain
+    # hygiene).
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      # Cluster API (first: groups are matched in order, and kubernetes
+      # below would claim it).
+      cluster-api:
+        patterns:
+          - 'sigs.k8s.io/cluster-api*'
+      # client-go, apimachinery, api and controller-runtime move together.
+      kubernetes:
+        patterns:
+          - 'k8s.io/*'
+          - 'sigs.k8s.io/*'
+      rancher:
+        patterns:
+          - 'github.com/rancher/*'
+      golang-x:
+        patterns:
+          - 'golang.org/x/*'
+    ignore:
+      # Major versions are upgraded by hand: they need code changes.
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
+
+  # The UI (embedded in the binary).
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      react:
+        patterns:
+          - 'react'
+          - 'react-dom'
+          - 'react-router-dom'
+          - '@types/react'
+          - '@types/react-dom'
+      codemirror:
+        patterns:
+          - '@codemirror/*'
+          - '@lezer/*'
+      xterm:
+        patterns:
+          - '@xterm/*'
+      # Groups are matched in order, so this only catches dev dependencies
+      # not already claimed by a group above.
+      dev-dependencies:
+        dependency-type: development
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+
+  # Dockerfile and Dockerfile.release (alpine, node, golang).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns:
+          - '*'

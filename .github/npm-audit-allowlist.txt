@@ -1,0 +1,4 @@
+# Advisories the npm-audit gate (ci.yml, .github/scripts/audit-gate.mjs)
+# accepts because no real fix exists yet. One GHSA id per line, with why.
+# Re-check each when its upstream releases, and delete the line once it's
+# fixable.

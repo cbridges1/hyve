@@ -1,0 +1,389 @@
+name: CI
+
+# Every check on a PR or push, in parallel jobs:
+# - Quality: go (gofmt, vet, test, build), golangci-lint, ui (oxlint,
+#   typecheck, build), chart (lint, render) and the agent e2e test.
+# - Security scans: SAST (semgrep), secrets (gitleaks), dependencies
+#   (govulncheck, npm audit, osv-scanner), the Dockerfiles and the chart
+#   (trivy config), and the workflows themselves (actionlint, zizmor). All
+#   free/OSS; reports are kept as workflow artifacts.
+#
+# Required checks (branch protection): go, golangci-lint, ui, chart,
+# semgrep, gitleaks, govulncheck, npm-audit, trivy-config, workflow-lint.
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'v[0-9]*']
+  schedule:
+    # Weekly, Monday 06:17 UTC: the security scans only (new advisories
+    # land without a code change), including gitleaks' full-history scan.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+  # release.yml's gate. tests_only skips everything but the tests: a release
+  # is gated on them; lint and the scans are enforced on the PR instead.
+  workflow_call:
+    inputs:
+      tests_only:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Not when it's release.yml's gate: that never cancels.
+  cancel-in-progress: ${{ !inputs.tests_only }}
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  go:
+    name: go
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        if: ${{ !inputs.tests_only }}
+        run: |
+          unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::Not gofmt'd (run gofmt -w):"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go mod tidy
+        if: ${{ !inputs.tests_only }}
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || {
+            echo "::error::go.mod/go.sum aren't tidy (run go mod tidy)."
+            exit 1
+          }
+      - name: Vet
+        if: ${{ !inputs.tests_only }}
+        run: go vet ./...
+      - name: Test
+        run: go test -race -cover ./... -json > report.json
+      - name: Report
+        if: ${{ !cancelled() }}
+        uses: becheran/go-testreport@90efc1ce13c872f23d6bc8a069527c26288b8f9c # v0.3.2
+        with:
+          input: report.json
+      - name: Build
+        if: ${{ !inputs.tests_only }}
+        run: CGO_ENABLED=0 go build -o /dev/null .
+
+  golangci-lint:
+    name: golangci-lint
+    if: ${{ !inputs.tests_only && github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Ratchet: the existing code has findings (27 when this gate was
+      # added: errcheck, staticcheck, ineffassign), so only issues a PR or
+      # push introduces fail it. Drop only-new-issues once
+      # `golangci-lint run ./...` is clean.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          only-new-issues: true
+          args: --timeout=10m
+
+  ui:
+    name: ui
+    if: ${{ !inputs.tests_only && github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      # tsc -b (the typecheck) then vite build, into internal/webui/dist.
+      - run: npm run build
+
+  chart:
+    name: chart
+    if: ${{ !inputs.tests_only && github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: Lint
+        run: helm lint deploy/helm/hyve
+      - name: Render (defaults, and with the host endpoint)
+        run: |
+          helm template hyve deploy/helm/hyve --include-crds > /dev/null
+          helm template hyve deploy/helm/hyve --set host.enabled=true \
+            | grep -q 'name: hyve-host'
+
+  # hyve's host endpoint against the pinned rancher/rancher-agent; also
+  # how a new agent version is tested before the pin moves.
+  agent:
+    name: agent
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      K3D_VERSION: v5.8.3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install k3d
+        run: curl -fsSL "https://raw.githubusercontent.com/k3d-io/k3d/$K3D_VERSION/install.sh" | TAG="$K3D_VERSION" bash
+      - name: Agent test
+        run: hack/e2e-agent.sh
+
+  semgrep:
+    name: semgrep
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: semgrep/semgrep:1.182.0@sha256:4a34048c04fef049f71665047f074cffb00cc3d89482f965a5cd151d589237af
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: semgrep scan (fail on ERROR)
+        run: |
+          semgrep scan --metrics=off \
+            --config p/golang --config p/typescript --config p/react \
+            --config p/dockerfile --config p/kubernetes \
+            --text --sarif-output=semgrep.sarif --json-output=semgrep.json
+          python3 - <<'PY'
+          import json, sys
+          results = json.load(open("semgrep.json"))["results"]
+          errors = [r for r in results if r["extra"]["severity"] == "ERROR"]
+          print(f"semgrep: {len(results)} findings, {len(errors)} at ERROR severity")
+          for r in errors:
+              print(f"::error file={r['path']},line={r['start']['line']}::{r['check_id']}")
+          sys.exit(1 if errors else 0)
+          PY
+      - name: Upload SARIF
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          if-no-files-found: ignore
+          retention-days: 30
+
+  gitleaks:
+    name: gitleaks
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      EVENT_NAME: ${{ github.event_name }}
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      PUSH_BEFORE_SHA: ${{ github.event.before }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The release binary (checksum-verified): gitleaks-action needs a paid
+      # license for organization repos.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: gitleaks (PR/push range, full history otherwise)
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=""
+          case "$EVENT_NAME" in
+            pull_request) base="$PR_BASE_SHA" ;;
+            push) base="$PUSH_BEFORE_SHA" ;;
+          esac
+          if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "Scanning commits $base..HEAD"
+            log_opts=(--log-opts="$base..HEAD")
+          else
+            echo "Scanning full history"
+            log_opts=()
+          fi
+          gitleaks git . --config .gitleaks.toml --redact --no-banner \
+            --exit-code 1 "${log_opts[@]}" \
+            --report-format sarif --report-path gitleaks.sarif
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitleaks-sarif
+          path: gitleaks.sarif
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Fails only on vulnerabilities hyve's code can reach (the call graph),
+  # in its modules or in the Go standard library - the latter is fixed by
+  # moving go.mod's toolchain line to the patched Go release.
+  govulncheck:
+    name: govulncheck
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOVULNCHECK_VERSION: v1.1.4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION" ./...
+
+  npm-audit:
+    name: npm-audit
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # The UI is built into the binary, so its production dependencies
+      # ship; its dev dependencies (vite, tsc) only run on a developer's
+      # machine and in CI.
+      - name: npm audit (ui production deps, high+)
+        working-directory: ui
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Human-readable report (non-zero exit is expected when anything
+          # high/critical exists; the gate is the next command).
+          npm audit --omit=dev --audit-level=high || true
+          set -e
+          npm audit --omit=dev --json > ../npm-audit.json || true
+          # Fails on high/critical advisories with a fix available.
+          # Advisories with no fix are reported but don't block, nor do the
+          # ones .github/npm-audit-allowlist.txt accepts.
+          cd .. && node .github/scripts/audit-gate.mjs npm-audit.json
+      - name: Upload npm audit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-audit
+          path: npm-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  osv-scanner:
+    name: osv-scanner
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Informational: osv-scanner reports every advisory in the lockfiles,
+    # reachable or not and dev dependencies included, so it would duplicate
+    # govulncheck's and npm audit's gates with a noisier one. The step
+    # reports without failing. Not a required check.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: osv-scanner (go.mod, ui/package-lock.json)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" \
+            ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0 \
+            scan source --lockfile /src/go.mod --lockfile /src/ui/package-lock.json --format table \
+            || echo "::warning::osv-scanner found vulnerabilities (informational - see the table above)."
+
+  trivy-config:
+    name: trivy-config
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # hyve's own Dockerfiles and chart. internal/install/manifests is
+      # upstream's (Cluster API's) and isn't ours to fix. Accepted findings
+      # are in .trivyignore, with why. Trivy has no GitHub Actions scanner;
+      # the workflows are workflow-lint's.
+      - name: trivy config (Dockerfiles and chart, HIGH+)
+        run: |
+          trivy() {
+            docker run --rm -v "$PWD:/src:ro" -w /src \
+              aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+              config --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore "$@"
+          }
+          status=0
+          for target in Dockerfile Dockerfile.release deploy/helm/hyve; do
+            echo "::group::$target"
+            trivy "$target" || status=1
+            echo "::endgroup::"
+          done
+          # The chart again as it's usually installed: with the host.
+          echo "::group::deploy/helm/hyve (host enabled)"
+          trivy --helm-set host.enabled=true,host.agentURL=https://hyve.example.com deploy/helm/hyve || status=1
+          echo "::endgroup::"
+          exit "$status"
+
+  workflow-lint:
+    name: workflow-lint
+    if: ${{ !inputs.tests_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      - name: zizmor
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo \
+            ghcr.io/zizmorcore/zizmor:1.31.1@sha256:42d409dbb851d4c5d35a058cf042b828bea1e3f2884378c526eb0974780e18d9 \
+            --offline --format plain .github

@@ -2,21 +2,10 @@
   <!-- Black background -->
   <rect width="1280" height="720" fill="#000000"/>
   
-  <!-- Logo positioned in center-left, scaled up -->
-  <g transform="translate(200, 250) scale(3)">
-    <!-- Beehive pattern with 4 white rectangular blocks -->
-    <!-- Block 1: Same width as block 3 -->
-    <rect x="20" y="0" width="60" height="16" fill="#ffffff" rx="2"/>
-    
-    <!-- Block 2: Still the widest -->
-    <rect x="10" y="24" width="80" height="16" fill="#ffffff" rx="2"/>
-    
-    <!-- Block 3: Wider than before -->
-    <rect x="20" y="48" width="60" height="16" fill="#ffffff" rx="2"/>
-    
-    <!-- Block 4: Decreased to match difference -->
-    <rect x="35" y="72" width="30" height="16" fill="#ffffff" rx="2"/>
-  </g>
+  <!-- Logo: three honeycomb cells, centre-left -->
+  <polygon points="350.0,263.9 400.3,293.0 400.3,351.0 350.0,380.1 299.7,351.0 299.7,293.0" fill="#ffffff" stroke="#ffffff" stroke-width="12" stroke-linejoin="round"/>
+  <polygon points="280.7,383.9 331.0,413.0 331.0,471.0 280.7,500.1 230.4,471.0 230.4,413.0" fill="#ffffff" stroke="#ffffff" stroke-width="12" stroke-linejoin="round"/>
+  <polygon points="419.3,383.9 469.6,413.0 469.6,471.0 419.3,500.1 369.0,471.0 369.0,413.0" fill="#ffffff" stroke="#ffffff" stroke-width="12" stroke-linejoin="round"/>
   
   <!-- Project title - larger and repositioned -->
   <text x="540" y="400" font-family="Arial, sans-serif" font-size="120" font-weight="bold" fill="#ffffff">Hyve</text>

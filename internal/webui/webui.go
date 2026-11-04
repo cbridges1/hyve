@@ -49,7 +49,8 @@ func Handler() http.Handler {
 			_, _ = w.Write([]byte(notBuilt))
 			return
 		}
-		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		// Cleaned as an absolute path, so ".." can't climb out of dist.
+		p := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 		if p != "" {
 			if st, err := fs.Stat(root, p); err == nil && !st.IsDir() {
 				if strings.HasPrefix(p, "assets/") {

@@ -20,6 +20,10 @@ spec:
         app.kubernetes.io/name: hyve-controller
     spec:
       serviceAccountName: hyve-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: controller
           image: {{ include "hyve.image" . | quote }}
@@ -61,6 +65,8 @@ spec:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
+            # It writes only to /tmp (the webhook certificate), an emptyDir.
+            readOnlyRootFilesystem: true
             runAsNonRoot: true
             capabilities:
               drop: ["ALL"]

@@ -1,0 +1,7 @@
+# Config for the zizmor workflow audit (ci.yml's workflow-lint job).
+rules:
+  # Suggests GitHub's newer `$/` form for calling this repo's own workflows.
+  # `./.github/workflows/...` is the form actionlint and every runner accept;
+  # revisit once the new syntax is supported everywhere.
+  self-repository:
+    disable: true

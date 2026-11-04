@@ -1,0 +1,25 @@
+# Findings trivy config (ci.yml's trivy-config job) accepts, with why. Each
+# is something hyve needs to do its job, not a mistake to fix; see the
+# comments on each rule in deploy/helm/hyve/templates/controller-rbac.yaml.
+
+# The controller's ClusterRole reads Secrets (whether a resource's Secrets
+# exist) and creates them (push delivery's Job inputs and packaged charts,
+# in the child cluster's namespace). It can't list, update or delete them
+# cluster-wide.
+KSV-0041
+
+# The controller's ClusterRole can get and update its own two webhook
+# configurations (by resourceNames): it makes its webhook certificate at
+# start-up and sets the CA on them.
+KSV-0114
+
+# With the host enabled (the second chart scan):
+# hyve-cluster-owner is a role template, after Rancher's Cluster Owner: its
+# rules are written to child clusters for ClusterAccess, and it's never
+# bound on the management cluster (templates/access-roles.yaml).
+KSV-0044
+KSV-0046
+
+# The host execs into the kubectl shell's pods, only in the hyve-shell
+# namespace (internal/shell).
+KSV-0053

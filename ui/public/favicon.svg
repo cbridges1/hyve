@@ -1,16 +1,10 @@
 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Honeycomb logo centered and scaled for favicon -->
-  <g transform="translate(1, 1.5) scale(0.24)">
-    <!-- Block 1 -->
-    <rect x="20" y="0" width="60" height="16" fill="#09090B" rx="2"/>
-
-    <!-- Block 2 -->
-    <rect x="10" y="24" width="80" height="16" fill="#09090B" rx="2"/>
-
-    <!-- Block 3 -->
-    <rect x="20" y="48" width="60" height="16" fill="#09090B" rx="2"/>
-
-    <!-- Block 4 -->
-    <rect x="35" y="72" width="30" height="16" fill="#09090B" rx="2"/>
-  </g>
+  <!-- Hyve's mark: three honeycomb cells. Dark on light tabs, light on dark ones. -->
+  <style>
+    .cell { fill: #09090B; stroke: #09090B; }
+    @media (prefers-color-scheme: dark) { .cell { fill: #FAFAFA; stroke: #FAFAFA; } }
+  </style>
+  <polygon class="cell" points="12.00,2.18 16.15,4.58 16.15,9.37 12.00,11.77 7.85,9.37 7.85,4.58" stroke-width="0.5" stroke-linejoin="round"/>
+  <polygon class="cell" points="6.20,12.23 10.35,14.63 10.35,19.42 6.20,21.82 2.05,19.42 2.05,14.63" stroke-width="0.5" stroke-linejoin="round"/>
+  <polygon class="cell" points="17.80,12.23 21.95,14.63 21.95,19.42 17.80,21.82 13.65,19.42 13.65,14.63" stroke-width="0.5" stroke-linejoin="round"/>
 </svg>

@@ -1,0 +1,8 @@
+# Paths semgrep (ci.yml's semgrep job) doesn't scan. This replaces semgrep's
+# defaults, so .gitignore is included again.
+:include .gitignore
+node_modules/
+ui/node_modules/
+internal/webui/dist/
+# Upstream's manifests (Cluster API's), embedded as they're published.
+internal/install/manifests/

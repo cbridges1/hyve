@@ -171,6 +171,10 @@ spec:
         app.kubernetes.io/name: hyve-host
     spec:
       serviceAccountName: hyve-host
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: host
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

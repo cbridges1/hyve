@@ -1,0 +1,9 @@
+# gitleaks configuration (ci.yml's gitleaks job). Extends the built-in
+# ruleset; only narrowly scoped false positives belong here. Anything that
+# looks like a real credential must be rotated and removed from history,
+# not added to this file.
+
+title = "hyve gitleaks config"
+
+[extend]
+useDefault = true
