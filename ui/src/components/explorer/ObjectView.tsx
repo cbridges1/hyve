@@ -13,6 +13,16 @@ import { Card, ConfirmButton, ErrorBanner, Loading, Pill } from '../ui'
 import { PodLogs } from './PodLogs'
 import { PodShell } from './PodShell'
 
+// The YAML pane's tallest, in the page (Expand shows it all): with the card
+// scrolled up to the cluster's header (--sticky-header), the pane, the
+// buttons above it (Expand, Refresh, Edit) and, while editing, Save and
+// Cancel below it all fit in the window. A long object scrolls in the
+// pane. The rems are those rows, the card's padding and the main area's.
+const YAML_MAX_HEIGHT = 'min(48rem, calc(100dvh - var(--sticky-header, 3.5rem) - 7rem))'
+const YAML_EDIT_MAX_HEIGHT = 'min(48rem, calc(100dvh - var(--sticky-header, 3.5rem) - 11.5rem))'
+// Short windows: the cap above wins over the editor's usual 20rem floor.
+const YAML_MIN_HEIGHT = '8rem'
+
 // The type ID for an owner reference's apiVersion and kind.
 function typeFor(schemas: Record<string, Schema>, apiVersion: string, kind: string): string | undefined {
   const group = apiVersion.includes('/') ? apiVersion.split('/')[0] : ''
@@ -137,7 +147,7 @@ export function ObjectView({
     return editing ? (
       <>
         <div className="mb-2 flex justify-end gap-2">{size}</div>
-        <CodeEditor value={text} onChange={setText} minHeight="20rem" upload fill={fill} />
+        <CodeEditor value={text} onChange={setText} minHeight={fill ? '20rem' : YAML_MIN_HEIGHT} maxHeight={YAML_EDIT_MAX_HEIGHT} upload fill={fill} />
         {conflict && (
           <div className="banner banner-warning mt-3">
             <p className="mb-2">Someone else manages some of these fields: {conflict}</p>
@@ -182,7 +192,7 @@ export function ObjectView({
             </button>
           )}
         </div>
-        <CodeEditor value={viewYaml(obj, showSecrets)} readOnly minHeight="20rem" fill={fill} />
+        <CodeEditor value={viewYaml(obj, showSecrets)} readOnly minHeight={fill ? '20rem' : YAML_MIN_HEIGHT} maxHeight={YAML_MAX_HEIGHT} fill={fill} />
       </>
     )
   }

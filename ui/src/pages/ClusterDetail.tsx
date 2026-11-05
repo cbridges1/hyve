@@ -5,7 +5,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ClusterResources } from '../components/ClusterResources'
-import { BackLink, Card, ConfirmButton, ErrorBanner, Field, Loading, Pill, StatusPill, Tabs } from '../components/ui'
+import { BackLink, Card, ConfirmButton, ErrorBanner, Field, Loading, Pill, StatusPill, StickyHeader, Tabs } from '../components/ui'
 import { EXTEND_HOURS, isoSeconds, setExpiry } from '../lib/clusters'
 import { clusterStatus, download, expiry, kubeconfig } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -162,43 +162,44 @@ export default function ClusterDetail() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <BackLink to={paths.clusters} label="Clusters" />
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <h1 className="mb-0 truncate">{m.name}</h1>
-            <Pill tone="env" label={m.namespace || ''} />
-            <StatusPill status={expiry(expires)} />
-            <StatusPill status={clusterStatus(value)} />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              title="kubectl, helm and k9s in your browser, as you, on this cluster"
-              onClick={() => openShell({ cluster: `${namespace}.${name}`, label: `${namespace}/${name}` })}
-            >
-              Kubectl shell
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              title="A kubeconfig that runs 'hyve token' for your CLI session; it holds no secret"
-              onClick={downloadKubeconfig}
-            >
-              Kubeconfig
-            </button>
-            <Link className="btn btn-secondary" to={paths.yaml(TYPES.CLUSTER, m.namespace, m.name)}>
-              YAML
-            </Link>
-            {!m.deletionTimestamp && <ConfirmButton label="Delete" confirm={`Delete ${m.name}?`} disabled={action.busy} onConfirm={del} />}
+      <StickyHeader>
+        <div>
+          <BackLink to={paths.clusters} label="Clusters" />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <h1 className="mb-0 truncate">{m.name}</h1>
+              <Pill tone="env" label={m.namespace || ''} />
+              <StatusPill status={expiry(expires)} />
+              <StatusPill status={clusterStatus(value)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                title="kubectl, helm and k9s in your browser, as you, on this cluster"
+                onClick={() => openShell({ cluster: `${namespace}.${name}`, label: `${namespace}/${name}` })}
+              >
+                Kubectl shell
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                title="A kubeconfig that runs 'hyve token' for your CLI session; it holds no secret"
+                onClick={downloadKubeconfig}
+              >
+                Kubeconfig
+              </button>
+              <Link className="btn btn-secondary" to={paths.yaml(TYPES.CLUSTER, m.namespace, m.name)}>
+                YAML
+              </Link>
+              {!m.deletionTimestamp && <ConfirmButton label="Delete" confirm={`Delete ${m.name}?`} disabled={action.busy} onConfirm={del} />}
+            </div>
           </div>
         </div>
-      </div>
+        <Tabs tabs={tabs} className="" />
+      </StickyHeader>
       <ErrorBanner error={error} />
       <ErrorBanner error={action.error} />
-
-      <Tabs tabs={tabs} />
 
       {tab === 'resources' ? (
         <Card>

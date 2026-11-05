@@ -168,7 +168,7 @@ function TypeList({ schemas, current, onPick }: { schemas: Record<string, Schema
 
   const cur = schemas[current]
   return (
-    <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
+    <aside className="min-w-0 lg:sticky lg:top-[var(--sticky-header,3.5rem)] lg:self-start">
       <button
         type="button"
         className="btn btn-secondary w-full justify-between lg:hidden"
@@ -303,12 +303,19 @@ function ColumnsMenu({ columns, shown, onChange }: { columns: string[]; shown: S
   )
 }
 
-// Rows a page of the list shows.
-const PAGE_SIZE = 50
+// Rows a page of the list shows: 25 unless the user picked another size,
+// remembered in this browser.
+const PAGE_SIZES = [25, 50, 100]
+const PAGE_SIZE_KEY = 'hyve.explorer.pageSize'
 
-// A header cell that stays at the top of the scrolling table, opaque so
-// rows don't show through.
-const STICKY = 'sticky top-0 z-10 bg-neutral-50! dark:bg-neutral-900!'
+function readPageSize(): number {
+  try {
+    const n = Number(localStorage.getItem(PAGE_SIZE_KEY))
+    return PAGE_SIZES.includes(n) ? n : PAGE_SIZES[0]
+  } catch {
+    return PAGE_SIZES[0]
+  }
+}
 
 function ResourceTable({
   clusterId,
@@ -336,10 +343,10 @@ function ResourceTable({
   const [loading, setLoading] = useState(true)
   const [more, setMore] = useState(false)
   const [page, setPage] = useState(0)
-  // The table scrolls in itself, its header pinned, down to the window's
-  // bottom; the pager stays in view under it.
-  const scroller = useRef<HTMLDivElement>(null)
-  const scrollerHeight = useFitHeight(scroller, { min: 320 })
+  const [pageSize, setPageSize] = useState(readPageSize)
+  // The table is as tall as its page and the page scrolls (the type list
+  // stays put beside it); a new page scrolls back up to the table's top.
+  const top = useRef<HTMLDivElement>(null)
 
   const load = async (quiet: boolean) => {
     if (!quiet) setLoading(true)
@@ -398,13 +405,23 @@ function ResourceTable({
     (r) => !s || r.object.metadata.name.toLowerCase().includes(s) || (r.object.metadata.namespace || '').toLowerCase().includes(s),
   )
   const total = table?.rows.length || 0
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize))
   // A narrower list (a search, a smaller namespace) may have fewer pages.
   const current = Math.min(page, pages - 1)
-  const pageRows = rows.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE)
+  const pageRows = rows.slice(current * pageSize, (current + 1) * pageSize)
   const goTo = (p: number) => {
     setPage(p)
-    scroller.current?.scrollTo({ top: 0 })
+    // Only up: when the table's top is already in view, nothing moves.
+    if (top.current && top.current.getBoundingClientRect().top < 0) top.current.scrollIntoView({ block: 'start' })
+  }
+  const changePageSize = (n: number) => {
+    setPageSize(n)
+    setPage(0)
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(n))
+    } catch {
+      // No storage: the size lasts until the page reloads.
+    }
   }
 
   const nameBlock = (r: TableRow) => {
@@ -418,7 +435,7 @@ function ResourceTable({
   }
 
   return (
-    <div className="space-y-3">
+    <div ref={top} className="scroll-mt-[var(--sticky-header,3.5rem)] space-y-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="mb-0 text-base">{schema.kind}</h2>
         {table && (
@@ -529,17 +546,13 @@ function ResourceTable({
 
                 {/* Wider screens: a table whose long values wrap; it scrolls
                     sideways only when many wide columns are on. */}
-                <div
-                  ref={scroller}
-                  style={{ maxHeight: scrollerHeight }}
-                  className="hidden overflow-auto rounded-xl border border-neutral-200 shadow-sm md:block dark:border-neutral-800"
-                >
+                <div className="hidden overflow-x-auto rounded-xl border border-neutral-200 shadow-sm md:block dark:border-neutral-800">
                   <table className="table overflow-visible! rounded-none! border-0! shadow-none!">
                     <thead>
                       <tr>
-                        <th className={`min-w-[12rem] ${STICKY}`}>{nameCol?.name || 'Name'}</th>
+                        <th className="min-w-[12rem]">{nameCol?.name || 'Name'}</th>
                         {otherCols.map((c) => (
-                          <th key={c.i} title={c.description} className={`${isCompactColumn(c) ? '' : 'whitespace-normal'} ${STICKY}`}>
+                          <th key={c.i} title={c.description} className={isCompactColumn(c) ? '' : 'whitespace-normal'}>
                             {c.name}
                           </th>
                         ))}
@@ -573,10 +586,22 @@ function ResourceTable({
                 </div>
               </>
             )}
-            {(pages > 1 || table.metadata?.continue) && rows.length > 0 && (
-              <div className="flex items-center justify-end gap-2 text-sm">
+            {(rows.length > PAGE_SIZES[0] || table.metadata?.continue) && rows.length > 0 && (
+              <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+                <select
+                  className="mr-auto w-auto"
+                  value={pageSize}
+                  onChange={(e) => changePageSize(Number(e.target.value))}
+                  aria-label="Rows per page"
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n} per page
+                    </option>
+                  ))}
+                </select>
                 <span className="text-muted mr-1">
-                  {current * PAGE_SIZE + 1}–{current * PAGE_SIZE + pageRows.length} of {rows.length}
+                  {current * pageSize + 1}–{current * pageSize + pageRows.length} of {rows.length}
                   {table.metadata?.continue && !s ? '+' : ''}
                 </span>
                 <button type="button" className="btn btn-secondary btn-sm" disabled={current === 0} onClick={() => goTo(current - 1)}>

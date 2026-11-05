@@ -151,10 +151,44 @@ export function PageHeader({ title, children, subtitle }: { title: ReactNode; ch
   )
 }
 
-// Tabs that are links (a detail page's sections).
-export function Tabs({ tabs }: { tabs: { label: string; to: string; active: boolean }[] }) {
+// A detail page's top (its back link, title, actions and tabs), kept under
+// the app's header as the page scrolls; opaque, so what scrolls under it
+// doesn't show through. Its bottom edge is --sticky-header, for sticky
+// panes further down (the explorer's type list) to sit under it. The
+// negative top margin takes in the main area's top padding, so it looks
+// the same before it sticks. The gap below it is its own padding (mb-0
+// overrides the page's space-y, which would add to it), so what follows
+// never starts under it.
+export function StickyHeader({ children }: { children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const root = document.documentElement
+    // 3.5rem: the app's header (AppShell), which this sits under.
+    const update = () => root.style.setProperty('--sticky-header', `calc(3.5rem + ${el.offsetHeight}px)`)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      root.style.removeProperty('--sticky-header')
+    }
+  }, [])
   return (
-    <div className="mb-4 flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
+    <div
+      ref={box}
+      className="sticky top-14 z-20 -mt-5 mb-0 space-y-4 bg-neutral-50 pt-5 pb-4 sm:-mt-6 sm:pt-6 dark:bg-neutral-950"
+    >
+      {children}
+    </div>
+  )
+}
+
+// Tabs that are links (a detail page's sections).
+export function Tabs({ tabs, className = 'mb-4' }: { tabs: { label: string; to: string; active: boolean }[]; className?: string }) {
+  return (
+    <div className={`flex gap-1 border-b border-neutral-200 dark:border-neutral-800 ${className}`}>
       {tabs.map((t) => (
         <Link
           key={t.to}

@@ -3,7 +3,8 @@
 // collapses from the gutter or with Ctrl/Cmd-Alt-[), search
 // (Ctrl/Cmd-F) and undo. Drop a file on it, or use Upload, to load one.
 //
-// It scrolls in itself and ends at the window's bottom (lib/fitHeight.ts).
+// It scrolls in itself and ends at the window's bottom (lib/fitHeight.ts),
+// or at maxHeight when given (a pane in a page that scrolls).
 // fill makes it that tall even when the text is short: 'window' for a page
 // that's all editor, 'parent' to fill a flex column (a full-screen view).
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -38,6 +39,7 @@ export function CodeEditor({
   label,
   upload = false,
   fill,
+  maxHeight,
 }: {
   value: string
   onChange?: (v: string) => void
@@ -47,6 +49,7 @@ export function CodeEditor({
   label?: string
   upload?: boolean
   fill?: 'window' | 'parent'
+  maxHeight?: string
 }) {
   const box = useRef<HTMLDivElement>(null)
   const height = useFitHeight(box, { min: 320 })
@@ -118,7 +121,7 @@ export function CodeEditor({
   }
 
   const boxStyle = fill === 'window' ? { height, minHeight } : undefined
-  const hostStyle = fill ? { minHeight: fill === 'window' ? minHeight : undefined } : { maxHeight: height, minHeight }
+  const hostStyle = fill ? { minHeight: fill === 'window' ? minHeight : undefined } : { maxHeight: maxHeight ?? height, minHeight }
   return (
     <div className={fill === 'parent' ? 'flex min-h-0 flex-1 flex-col' : ''}>
       {(label || (upload && !readOnly)) && (

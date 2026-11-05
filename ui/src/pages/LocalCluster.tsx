@@ -8,7 +8,7 @@
 import { lazy, Suspense } from 'react'
 import { useParams } from 'react-router-dom'
 import { GitSection } from '../components/GitBundles'
-import { BackLink, Banner, Card, ErrorBanner, Field, Loading, Pill, Tabs } from '../components/ui'
+import { BackLink, Banner, Card, ErrorBanner, Field, Loading, Pill, StickyHeader, Tabs } from '../components/ui'
 import { request } from '../lib/api'
 import { LOCAL_CLUSTER, clusterBase } from '../lib/explorer'
 import { download, kubeconfig } from '../lib/format'
@@ -62,37 +62,38 @@ export default function LocalCluster() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <BackLink to={paths.clusters} label="Clusters" />
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <h1 className="mb-0 truncate">local</h1>
-            <Pill tone="info" label="Host" title="hyve's management cluster" />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              title="kubectl, helm and k9s in your browser, as you, on the host cluster"
-              onClick={() => openShell({ cluster: LOCAL_CLUSTER, label: 'local' })}
-            >
-              Kubectl shell
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              title="A kubeconfig that runs 'hyve token' for your CLI session; it holds no secret"
-              onClick={downloadKubeconfig}
-            >
-              Kubeconfig
-            </button>
+      <StickyHeader>
+        <div>
+          <BackLink to={paths.clusters} label="Clusters" />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <h1 className="mb-0 truncate">local</h1>
+              <Pill tone="info" label="Host" title="hyve's management cluster" />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                title="kubectl, helm and k9s in your browser, as you, on the host cluster"
+                onClick={() => openShell({ cluster: LOCAL_CLUSTER, label: 'local' })}
+              >
+                Kubectl shell
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                title="A kubeconfig that runs 'hyve token' for your CLI session; it holds no secret"
+                onClick={downloadKubeconfig}
+              >
+                Kubeconfig
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+        <Tabs tabs={tabs} className="" />
+      </StickyHeader>
       <ErrorBanner error={error} />
       <ErrorBanner error={action.error} />
-
-      <Tabs tabs={tabs} />
 
       {tab === 'resources' ? (
         <Card>
