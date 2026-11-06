@@ -4,15 +4,20 @@
 // SMTP relay); the host emails them when their account is made, or their
 // groups or address change, however it was changed. A new user needs an
 // address, and is either invited (emailed a link to set their own
-// password) or given a password by whoever adds them.
+// password) or given a password by whoever adds them. Each row says what
+// the user may reach (their grants and their groups', lib/access.ts), with
+// a link to them on Access.
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { Checkbox, RadioGroup, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
-import { Banner, ErrorBanner, Loading, PageHeader, Pill, ConfirmButton, EmptyState } from '../components/ui'
+import { Banner, ErrorBanner, Loading, Pill, ConfirmButton, EmptyState } from '../components/ui'
 import { ViewDialog } from '../components/ViewDialog'
+import { describeGrant, grantsFor, loadAccess, type Grant } from '../lib/access'
 import { auth, errorMessage } from '../lib/api'
 import { useLoad } from '../lib/hooks'
 import { kube, newObject, remove, save, type Obj } from '../lib/kube'
+import { paths } from '../lib/routes'
 import { useSession } from '../lib/session'
 import { TYPES } from '../lib/types'
 
@@ -47,16 +52,44 @@ function withFields(spec: any, f: { displayName: string; email: string; groups: 
 
 type EditForm = { displayName: string; email: string; groups: string }
 
+// The first few of a user's grants, in words (a group's say which group;
+// all of them on hover), and a link to them on Access.
+const SHOWN_GRANTS = 3
+
+function AccessSummary({ user, grants }: { user: Obj; grants: Grant[] }) {
+  const name = user.metadata.name
+  const mine = grantsFor(grants, name, user.spec?.groups || [])
+  const say = (g: Grant) => (g.kind === 'group' ? `${describeGrant(g)} (via ${g.who})` : describeGrant(g))
+  if (!mine.length) return <div className="mt-0.5 text-xs text-neutral-500">No access granted</div>
+  // The link stays visible however long the list: only the list is cut.
+  return (
+    <div className="mt-0.5 flex min-w-0 gap-1 text-xs text-neutral-500">
+      <span className="truncate" title={mine.map(say).join('\n')}>
+        {mine.slice(0, SHOWN_GRANTS).map(say).join(' · ')}
+        {mine.length > SHOWN_GRANTS && ` · ${mine.length - SHOWN_GRANTS} more`}
+      </span>
+      <span className="shrink-0">
+        ·{' '}
+        <Link to={`${paths.access}?user=${encodeURIComponent(name)}`}>Access</Link>
+      </span>
+    </div>
+  )
+}
+
 function lastLogin(u: Obj) {
   return u.status?.lastLogin ? `last signed in ${new Date(u.status.lastLogin).toLocaleString()}` : 'never signed in'
 }
 
 export default function Users() {
   const me = useSession().user?.username
-  const { data: users, error: loadError, loading, reload } = useLoad(
-    async (r) => (await r.findAll(TYPES.USER, { force: true })).sort((a, b) => a.metadata.name.localeCompare(b.metadata.name)),
-    [],
-  )
+  // The grants come with the users, so a row's access is current after any
+  // change here. Rows say nothing about access to whoever can't read it.
+  const { data, error: loadError, loading, reload } = useLoad(async (r) => {
+    const [users, access] = await Promise.all([r.findAll(TYPES.USER, { force: true }), loadAccess(r)])
+    return { users: users.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name)), grants: access.grants, readable: access.readable }
+  }, [])
+  const users = data?.users
+  const grants = data?.grants || []
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<Form>(emptyForm)
   const [error, setError] = useState('')
@@ -176,7 +209,11 @@ export default function Users() {
 
   return (
     <div>
-      <PageHeader title="Users">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="mb-0 max-w-2xl text-sm text-neutral-500">
+          Kubernetes sees each user as <code>hyve:&lt;username&gt;</code>, in groups <code>hyve:&lt;group&gt;</code>; grant access on the Access tab,
+          with <code>hyve access grant</code> or with RBAC on those names.
+        </p>
         <button
           type="button"
           className="btn btn-primary"
@@ -187,11 +224,7 @@ export default function Users() {
         >
           New user
         </button>
-      </PageHeader>
-      <p className="mb-4 text-sm text-neutral-500">
-        Kubernetes sees each user as <code>hyve:&lt;username&gt;</code>, in groups <code>hyve:&lt;group&gt;</code>; grant access with{' '}
-        <code>hyve access grant</code> or RBAC on those names.
-      </p>
+      </div>
       <ErrorBanner error={error || loadError} />
       {notice && (
         <div className="mb-4">
@@ -226,6 +259,7 @@ export default function Users() {
                     {u.spec?.email ? `${u.spec.email} · ` : ''}
                     {lastLogin(u)}
                   </div>
+                  {data?.readable && <AccessSummary user={u} grants={grants} />}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(u)}>

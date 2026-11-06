@@ -1,7 +1,7 @@
 // Fleet GitRepos people add (not the ones hyve makes for template
 // resources) and the bundles Fleet makes from them. Git owns what's in a
-// bundle: the console shows bundles wherever they're useful (Delivery, the
-// Overview, a cluster's page) but edits only the GitRepo, on its own page.
+// bundle: the console shows bundles wherever they're useful (the Overview,
+// a cluster's page) but edits only the GitRepo, on its own page.
 import type { Tone } from './format'
 import { idOf, type Obj, type Reader } from './kube'
 import { FLEET } from './resources'

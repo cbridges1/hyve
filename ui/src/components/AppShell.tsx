@@ -6,7 +6,7 @@ import { auth, errorMessage } from '../lib/api'
 import { download, kubeconfig } from '../lib/format'
 import { useShellTarget } from '../lib/kubectlShell'
 import { schemaFor } from '../lib/kube'
-import { paths } from '../lib/routes'
+import { paths, peoplePath } from '../lib/routes'
 import { setSession, useSession } from '../lib/session'
 import { TYPES } from '../lib/types'
 import { ChangePassword } from './ChangePassword'
@@ -23,7 +23,9 @@ const KubectlShell = lazy(() => import('./KubectlShell').then((m) => ({ default:
 
 // type: shown when the cluster serves it; settings: when the user may read
 // the host's settings.
-type Item = { label: string; icon: string; to: string; type?: string; settings?: boolean }
+// to: a function when where it goes depends on what the cluster serves;
+// also: other pages it's highlighted on (a page with tabs).
+type Item = { label: string; icon: string; to: string | (() => string); also?: string[]; type?: string; settings?: boolean }
 
 const groups: { label: string; items: Item[] }[] = [
   {
@@ -38,7 +40,6 @@ const groups: { label: string; items: Item[] }[] = [
     label: 'Configuration',
     items: [
       { label: 'Resources', icon: 'resources', to: paths.resources, type: TYPES.RESOURCE },
-      { label: 'Delivery', icon: 'matrix', to: paths.matrix },
       { label: 'Secrets', icon: 'secrets', to: paths.secrets },
       { label: 'Repos', icon: 'repos', to: paths.repos },
       { label: 'Providers', icon: 'providers', to: paths.providers },
@@ -47,9 +48,8 @@ const groups: { label: string; items: Item[] }[] = [
   {
     label: 'Administration',
     items: [
-      { label: 'Users', icon: 'users', to: paths.users, type: TYPES.USER },
+      { label: 'People', icon: 'users', to: peoplePath, also: [paths.users, paths.access] },
       { label: 'Environments', icon: 'environments', to: paths.environments },
-      { label: 'Access', icon: 'access', to: paths.access },
       { label: 'Settings', icon: 'settings', to: paths.settings, settings: true },
     ],
   },
@@ -64,6 +64,7 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { canSettings } = useSession()
+  const { pathname } = useLocation()
   const visible = groups
     .map((g) => ({ ...g, items: g.items.filter((i) => (!i.type || schemaFor(i.type)) && (!i.settings || canSettings)) }))
     .filter((g) => g.items.length)
@@ -74,7 +75,12 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <div className="px-3 pt-4 pb-1 text-[11px] font-semibold tracking-wider text-neutral-400 uppercase dark:text-neutral-600">{g.label}</div>
           <div className="space-y-0.5">
             {g.items.map((item) => (
-              <NavLink key={item.label} to={item.to} className={linkClass} onClick={onNavigate}>
+              <NavLink
+                key={item.label}
+                to={typeof item.to === 'function' ? item.to() : item.to}
+                className={({ isActive }) => linkClass({ isActive: isActive || !!item.also?.includes(pathname) })}
+                onClick={onNavigate}
+              >
                 <Icon name={item.icon} />
                 {item.label}
               </NavLink>

@@ -20,11 +20,11 @@ import GenericList from './pages/GenericList'
 import ImportPage from './pages/ImportPage'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
+import People from './pages/People'
 import Providers from './pages/Providers'
 import RepoPage from './pages/RepoPage'
 import ResetPassword from './pages/ResetPassword'
 import Repos from './pages/Repos'
-import ResourceMatrix from './pages/ResourceMatrix'
 import Secrets from './pages/Secrets'
 import Settings from './pages/Settings'
 import SharedResourceList from './pages/SharedResourceList'
@@ -114,14 +114,15 @@ export default function App() {
           <Route path="resources" element={<SharedResourceList />} />
           <Route path="resources/new" element={<SharedResourcePage />} />
           <Route path="resources/:namespace/:name" element={<SharedResourcePage />} />
-          <Route path="matrix" element={<ResourceMatrix />} />
           <Route path="secrets" element={<Secrets />} />
           <Route path="repos" element={<Repos />} />
           <Route path="repos/:namespace/:name" element={<RepoPage />} />
           <Route path="providers" element={<Providers />} />
-          <Route path="users" element={<Users />} />
+          <Route element={<People />}>
+            <Route path="users" element={<Users />} />
+            <Route path="access" element={<Access />} />
+          </Route>
           <Route path="environments" element={<Environments />} />
-          <Route path="access" element={<Access />} />
           <Route path="settings" element={<Settings />} />
           <Route path="import" element={<ImportPage />} />
           {/* The host cluster's explorer is a tab of its page now. */}

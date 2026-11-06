@@ -1,6 +1,6 @@
 // Every page's path, so links are built one way.
 import type { Location } from 'react-router-dom'
-import { typeOf, type Obj } from './kube'
+import { schemaFor, typeOf, type Obj } from './kube'
 import { LABELS, TYPES } from './types'
 
 const enc = encodeURIComponent
@@ -21,7 +21,6 @@ export const paths = {
   resources: '/resources',
   resource: (namespace: string, name: string, edit = false) => `/resources/${enc(namespace)}/${enc(name)}${edit ? '?mode=edit' : ''}`,
   newResource: (namespace?: string) => `/resources/new${namespace ? `?namespace=${enc(namespace)}` : ''}`,
-  matrix: '/matrix',
   secrets: '/secrets',
   repos: '/repos',
   repo: (namespace: string, name: string) => `/repos/${enc(namespace)}/${enc(name)}`,
@@ -37,6 +36,9 @@ export const paths = {
     `/yaml/${enc(type)}/${enc(namespace || '_')}/${enc(name)}${edit ? '?mode=edit' : ''}`,
   newYaml: (type: string, namespace?: string) => `/yaml/${enc(type)}/new${namespace ? `?namespace=${enc(namespace)}` : ''}`,
 }
+
+// People (pages/People.tsx): Users when the host has its own, else Access.
+export const peoplePath = () => (schemaFor(TYPES.USER) ? paths.users : paths.access)
 
 // Where an object is shown: its own page for kinds that have one, else as
 // YAML.

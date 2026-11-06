@@ -1,16 +1,19 @@
 // Who can reach which clusters: 'hyve access grant/list/revoke'. A grant
 // is a ClusterAccess in the environment (hyve-controller binds the role on
 // the clusters), or, for environment members, RoleBindings in the
-// environment and the template namespace.
+// environment and the template namespace (lib/access.ts reads them).
+// ?user=<name> shows one user's, their groups' included: Users links here.
 import { useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { SelectField, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
-import { ConfirmButton, ErrorBanner, Loading, PageHeader } from '../components/ui'
+import { ConfirmButton, ErrorBanner, Loading } from '../components/ui'
 import { ViewDialog } from '../components/ViewDialog'
 import { errorMessage } from '../lib/api'
 import { useEnvironment } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
-import { idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
+import { kube, newObject, remove, save } from '../lib/kube'
+import { ENV_MEMBER, grantsFor, loadAccess, type Grant } from '../lib/access'
 import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from '../lib/types'
 
 const ROLES = [
@@ -20,59 +23,14 @@ const ROLES = [
   { value: 'env-member', label: 'Environment member', hint: 'create and manage clusters in the environment' },
 ]
 
-const ENV_MEMBER = 'hyve.io/env-member'
-
-type Grant = { id: string; name: string; ns: string; subject: string; role: string; on: string; ready: string; model: Obj; type: string }
-
 type Form = { kind: 'user' | 'group'; subject: string; role: string; env: string; cluster: string }
 
 export default function Access() {
   const [picked] = useEnvironment()
-  const { data, error: loadError, loading, reload } = useLoad(async (r) => {
-    const none = () => [] as Obj[]
-    const [nss, cas, rbs, clusters, users] = await Promise.all([
-      r.findAll(TYPES.NAMESPACE, { force: true }).catch(none),
-      r.findAll(TYPES.CLUSTER_ACCESS, { force: true }).catch(none),
-      r.findAll(TYPES.ROLE_BINDING, { force: true }).catch(none),
-      r.findAll(TYPES.CLUSTER, { force: true }).catch(none),
-      r.findAll(TYPES.USER, { force: true }).catch(none),
-    ])
-    const envs = nss
-      .filter((n) => n.metadata.labels?.[LABELS.ENVIRONMENT] === 'true')
-      .map((n) => n.metadata.name)
-      .sort()
-    const envSet = new Set(envs)
-    const grants: Grant[] = cas.map((ca) => ({
-      id: `ca:${idOf(ca)}`,
-      name: ca.metadata.name,
-      ns: ca.metadata.namespace || '',
-      subject: ca.spec?.group ? `group ${ca.spec.group}` : `user ${ca.spec?.user}`,
-      role: ca.spec?.role,
-      on: ca.spec?.clusterName || 'every cluster',
-      ready: (ca.status?.conditions || []).find((c: any) => c.type === 'Ready')?.status || '-',
-      model: ca,
-      type: TYPES.CLUSTER_ACCESS,
-    }))
-    rbs
-      .filter((rb) => rb.metadata.labels?.[ENV_MEMBER] === 'true' && envSet.has(rb.metadata.namespace || ''))
-      .forEach((rb) => {
-        ;(rb.subjects || []).forEach((s: any) =>
-          grants.push({
-            id: `rb:${idOf(rb)}:${s.name}`,
-            name: rb.metadata.name,
-            ns: rb.metadata.namespace || '',
-            subject: `${String(s.kind).toLowerCase()} ${String(s.name).replace(/^hyve:/, '')}`,
-            role: 'environment member',
-            on: rb.metadata.namespace || '',
-            ready: '-',
-            model: rb,
-            type: TYPES.ROLE_BINDING,
-          }),
-        )
-      })
-    grants.sort((a, b) => `${a.ns}/${a.name}`.localeCompare(`${b.ns}/${b.name}`))
-    return { envs, grants, clusters, users: users.map((u) => u.metadata.name).sort() }
-  }, [])
+  const { data, error: loadError, loading, reload } = useLoad(loadAccess, [])
+  // ?user=<name>: that user's grants, their groups' too (from Users).
+  const [params, setParams] = useSearchParams()
+  const forUser = params.get('user') || ''
 
   const [env, setEnv] = useState(picked)
   const [adding, setAdding] = useState(false)
@@ -82,7 +40,8 @@ export default function Access() {
   const [viewing, setViewing] = useState<Grant | null>(null)
 
   const envs = data?.envs || []
-  const shown = (data?.grants || []).filter((g) => !env || g.ns === env)
+  const userGroups = data?.users.find((u) => u.metadata.name === forUser)?.spec?.groups || []
+  const shown = (forUser ? grantsFor(data?.grants || [], forUser, userGroups) : data?.grants || []).filter((g) => !env || g.ns === env)
   const envClusters = (data?.clusters || [])
     .filter((c) => c.metadata.namespace === form.env)
     .map((c) => c.metadata.name)
@@ -163,23 +122,36 @@ export default function Access() {
 
   return (
     <div>
-      <PageHeader title="Access">
-        <select className="w-auto!" aria-label="Environment" value={env} onChange={(e) => setEnv(e.target.value)}>
-          <option value="">All environments</option>
-          {envs.map((e) => (
-            <option key={e} value={e}>
-              {e}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="btn btn-primary" onClick={startAdd}>
-          Grant access
-        </button>
-      </PageHeader>
-      <p className="mb-4 text-sm text-neutral-500">
-        Roles on clusters: owner, member or read-only, on one cluster or every cluster in an environment (now and later). A cluster's creator owns it. Also{' '}
-        <code>hyve access</code>.
-      </p>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="mb-0 max-w-2xl text-sm text-neutral-500">
+          Roles on clusters: owner, member or read-only, on one cluster or every cluster in an environment (now and later). A cluster's creator owns it. Also{' '}
+          <code>hyve access</code>.
+        </p>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <select className="w-auto!" aria-label="Environment" value={env} onChange={(e) => setEnv(e.target.value)}>
+            <option value="">All environments</option>
+            {envs.map((e) => (
+              <option key={e} value={e}>
+                {e}
+              </option>
+            ))}
+          </select>
+          <button type="button" className="btn btn-primary" onClick={startAdd}>
+            Grant access
+          </button>
+        </div>
+      </div>
+      {forUser && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
+          <span>
+            Showing <span className="font-medium text-neutral-900 dark:text-neutral-100">{forUser}</span>'s grants
+            {userGroups.length > 0 && ` and their groups' (${userGroups.join(', ')})`}.
+          </span>
+          <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setParams({})}>
+            Show everyone
+          </button>
+        </div>
+      )}
       <ErrorBanner error={(!adding && error) || loadError} />
       {loading ? (
         <Loading />
@@ -238,7 +210,7 @@ export default function Access() {
               value={form.subject}
               onChange={(v) => set({ subject: v })}
               autoComplete="off"
-              list={form.kind === 'user' ? data?.users : undefined}
+              list={form.kind === 'user' ? data?.users.map((u) => u.metadata.name) : undefined}
             />
             <SelectField
               label="Role"
