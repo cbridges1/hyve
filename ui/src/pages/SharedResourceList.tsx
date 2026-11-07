@@ -20,7 +20,7 @@ export default function SharedResourceList() {
 
   return (
     <div>
-      <PageHeader title="Resources">
+      <PageHeader title="Shared resources">
         <button type="button" className="btn btn-secondary" onClick={() => setApplying(true)}>
           Apply YAML
         </button>

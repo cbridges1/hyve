@@ -1,8 +1,10 @@
-// One Secret: its keys, with each value hidden until revealed. It's read
-// as the signed-in user, so what they can't read says so instead.
+// One Secret: its keys, with each value hidden until revealed, and copied
+// with a click. It's read as the signed-in user, so what they can't read
+// says so instead. On the host by default, or a child's given its api.
 import { useMemo, useState } from 'react'
 import { ApiError } from '../lib/api'
 import { useLoad } from '../lib/hooks'
+import type { SecretApi } from '../lib/secrets'
 import { TYPES } from '../lib/types'
 import { ViewDialog } from './ViewDialog'
 
@@ -15,9 +17,20 @@ function decode(b64: string) {
   }
 }
 
-export function SecretView({ namespace, name, onClose }: { namespace: string; name: string; onClose: () => void }) {
-  const { data: secret, error, loading } = useLoad((r) => r.find(TYPES.SECRET, namespace, name), [namespace, name], { live: false })
+export function SecretView({ namespace, name, api, onClose }: { namespace: string; name: string; api?: SecretApi; onClose: () => void }) {
+  const { data: secret, error, loading } = useLoad((r) => (api ? api.get(namespace, name) : r.find(TYPES.SECRET, namespace, name)), [namespace, name, api], {
+    live: false,
+  })
   const [revealed, setRevealed] = useState<Record<string, boolean>>({})
+  const [copied, setCopied] = useState('')
+  const copy = (k: string) =>
+    navigator.clipboard.writeText(decode(secret!.data![k])).then(
+      () => {
+        setCopied(k)
+        setTimeout(() => setCopied((c) => (c === k ? '' : c)), 1500)
+      },
+      () => setCopied(''),
+    )
 
   const message = !error
     ? ''
@@ -79,9 +92,12 @@ export function SecretView({ namespace, name, onClose }: { namespace: string; na
                       <span>••••••••</span>
                     )}
                   </td>
-                  <td className="text-right align-middle!">
+                  <td className="text-right align-middle! whitespace-nowrap">
                     <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setRevealed({ ...revealed, [k]: !revealed[k] })}>
                       {revealed[k] ? 'Hide' : 'Show'}
+                    </button>
+                    <button type="button" className="btn btn-tertiary btn-sm" onClick={() => copy(k)}>
+                      {copied === k ? 'Copied' : 'Copy'}
                     </button>
                   </td>
                 </tr>

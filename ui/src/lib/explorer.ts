@@ -4,10 +4,11 @@
 // /k8s/clusters/<id> as the signed-in user, so the child's RBAC decides
 // what each person sees. The Kubernetes API does the work: discovery for
 // the types, server-side tables for lists, server-side apply for edits.
-import { dump } from 'js-yaml'
+import { dump, load } from 'js-yaml'
 import { ApiError, request } from './api'
 import type { Tone } from './format'
 import { discover, urlFor, type Obj, type Schema } from './kube'
+import { asText, fromBase64 } from './secrets'
 
 // The management cluster's ID in proxy paths and the watch stream.
 export const LOCAL_CLUSTER = 'local'
@@ -96,6 +97,31 @@ export async function applyYaml(id: string, s: Schema, namespace: string | undef
   }
 }
 
+// Creates an object from YAML (one document), in the given namespace
+// unless it names its own. Fails if it exists: creating never changes
+// another object.
+export async function createFromYaml(id: string, s: Schema, namespace: string | undefined, yaml: string): Promise<Obj> {
+  const o = load(yaml) as Obj | null
+  if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('Give one object, as YAML.')
+  if (!o.metadata?.name && !(o.metadata as { generateName?: string } | undefined)?.generateName) throw new Error('Give it a metadata.name.')
+  const ns = s.namespaced ? o.metadata.namespace || namespace : undefined
+  if (s.namespaced && !ns) throw new Error('Give it a metadata.namespace, or pick a namespace first.')
+  const body = { apiVersion: s.group ? `${s.group}/${s.version}` : s.version, kind: s.kind, ...o, metadata: { ...o.metadata, ...(ns ? { namespace: ns } : {}) } }
+  return request('POST', urlFor(s, ns, undefined, clusterBase(id)), body)
+}
+
+// A starting point for a new object of a type.
+export function skeletonYaml(s: Schema, namespace: string | undefined): string {
+  const o: Record<string, unknown> = {
+    apiVersion: s.group ? `${s.group}/${s.version}` : s.version,
+    kind: s.kind,
+    metadata: { name: '', ...(s.namespaced ? { namespace: namespace || 'default' } : {}) },
+  }
+  if (s.kind === 'ConfigMap') o.data = { key: 'value' }
+  else o.spec = {}
+  return dump(o, { lineWidth: 120 })
+}
+
 // An object as YAML for editing: without managedFields, status, or what
 // the server sets.
 export function editableYaml(o: Obj): string {
@@ -111,12 +137,23 @@ export function editableYaml(o: Obj): string {
   return dump(c, { lineWidth: 120, noRefs: true })
 }
 
-// An object as YAML to read; a Secret's values are masked unless shown.
+// An object as YAML to read; a Secret's values are masked unless shown,
+// and shown decoded: text values as stringData, binary ones left in data.
 export function viewYaml(o: Obj, showSecrets = false): string {
   const c = JSON.parse(JSON.stringify(o))
   if (c.metadata) delete c.metadata.managedFields
   if (c.kind === 'Secret' && !showSecrets) {
     for (const k of ['data', 'stringData']) if (c[k]) for (const key of Object.keys(c[k])) c[k][key] = '••••••••'
+  } else if (c.kind === 'Secret' && c.data) {
+    const text: Record<string, string> = { ...(c.stringData || {}) }
+    for (const key of Object.keys(c.data)) {
+      const t = asText(fromBase64(c.data[key]))
+      if (t === null) continue
+      text[key] = t
+      delete c.data[key]
+    }
+    if (!Object.keys(c.data).length) delete c.data
+    if (Object.keys(text).length) c.stringData = text
   }
   return dump(c, { lineWidth: 120, noRefs: true })
 }

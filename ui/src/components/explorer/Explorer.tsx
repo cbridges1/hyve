@@ -25,6 +25,7 @@ import {
 import { Checkbox } from '../form'
 import { Icon } from '../Icon'
 import { ErrorBanner, Loading, Pill } from '../ui'
+import { CreateObject } from './CreateObject'
 import { ObjectView } from './ObjectView'
 
 // The types last opened, across clusters, for the sidebar's Recent group.
@@ -342,6 +343,7 @@ function ResourceTable({
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [more, setMore] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(readPageSize)
   // The table is as tall as its page and the page scrolls (the type list
@@ -464,7 +466,25 @@ function ResourceTable({
             ))}
           </select>
         )}
+        {schema.verbs.includes('create') && (
+          <button type="button" className={`btn btn-primary btn-sm ${schema.namespaced ? '' : 'ml-auto'}`} onClick={() => setCreating(true)}>
+            Create
+          </button>
+        )}
       </div>
+      {creating && (
+        <CreateObject
+          clusterId={clusterId}
+          schema={schema}
+          namespace={namespace}
+          namespaces={namespaces}
+          onClose={() => setCreating(false)}
+          onCreated={(name, ns) => {
+            setCreating(false)
+            navigate(hrefFor(name, ns))
+          }}
+        />
+      )}
 
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">

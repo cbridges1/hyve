@@ -1,10 +1,11 @@
 // Creates a Secret, or changes an existing one's keys, labels and values,
-// as the signed-in user: 'hyve secrets create' and 'hyve secrets set'.
+// as the signed-in user: 'hyve secrets create' and 'hyve secrets set'. On
+// the host by default, or a child cluster's (the explorer's) given its api.
 // Values are hidden while typed unless shown; a file's contents can fill
 // one, binary files included.
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
-import { kube, newObject, save, type Obj } from '../lib/kube'
-import { TYPES } from '../lib/types'
+import type { Obj } from '../lib/kube'
+import { asText, fromBase64, hostSecrets, toBase64, type SecretApi } from '../lib/secrets'
 import { KeyValueEditor, TextField } from './form'
 import { Modal } from './Modal'
 import { Banner } from './ui'
@@ -15,28 +16,6 @@ const SECRET_TYPES = ['Opaque', 'kubernetes.io/basic-auth', 'kubernetes.io/ssh-a
 
 type Row = { key: string; value: string; binary: string | null; size: number; shown: boolean }
 
-function toBase64(bytes: Uint8Array) {
-  let bin = ''
-  bytes.forEach((b) => {
-    bin += String.fromCharCode(b)
-  })
-  return btoa(bin)
-}
-
-function fromBase64(b64: string) {
-  const bin = atob(b64 || '')
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0))
-}
-
-// Text when the bytes are UTF-8, else null (a binary value).
-function asText(bytes: Uint8Array) {
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    return null
-  }
-}
-
 const blankRow = (): Row => ({ key: '', value: '', binary: null, size: 0, shown: true })
 
 export function SecretEdit({
@@ -45,6 +24,8 @@ export function SecretEdit({
   existing = false,
   namespaces = [],
   templateNamespaces = [],
+  hint,
+  api = hostSecrets,
   onClose,
   onSaved,
 }: {
@@ -56,6 +37,9 @@ export function SecretEdit({
   namespaces?: string[]
   // Which of them hold templates; the rest are environments.
   templateNamespaces?: string[]
+  // Said above the form instead of what the namespace means.
+  hint?: string
+  api?: SecretApi
   onClose: () => void
   onSaved: (s: { namespace: string; name: string }) => void
 }) {
@@ -72,8 +56,8 @@ export function SecretEdit({
   useEffect(() => {
     if (!existing) return
     let gone = false
-    kube
-      .find(TYPES.SECRET, namespace, name)
+    api
+      .get(namespace, name)
       .then((s) => {
         if (gone) return
         setSecret(s)
@@ -94,14 +78,18 @@ export function SecretEdit({
     return () => {
       gone = true
     }
-  }, [existing, namespace, name])
+  }, [existing, namespace, name, api])
 
   // What the chosen namespace means for who can read the Secret.
-  const nsHint = !ns
+  const nsHint = hint !== undefined
+    ? hint
+    : !ns
     ? ''
     : templateNamespaces.includes(ns)
       ? `${ns} is a template namespace: templates' resources can copy this Secret to clusters. Cluster API providers don't read credentials from here; put those in the environment.`
       : `${ns} is an environment: providers read credentials here for clusters created in it, and a cluster's extra resources can copy it. Templates' resources can't copy it from here.`
+  const owner = (secret?.metadata?.ownerReferences || [])[0]
+  const managedBy = owner ? `${owner.kind} ${owner.name}` : ''
   const title = existing ? `Edit Secret ${namespace}/${name}` : 'Create a Secret'
 
   const setRow = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
@@ -161,9 +149,9 @@ export function SecretEdit({
     try {
       const s: Obj = secret
         ? { ...secret, metadata: { ...secret.metadata, labels: lbls }, data }
-        : newObject(TYPES.SECRET, { metadata: { name: nm, namespace: ns, labels: lbls }, type: typ || 'Opaque', data })
+        : { apiVersion: 'v1', kind: 'Secret', metadata: { name: nm, namespace: ns, labels: lbls }, type: typ || 'Opaque', data }
       delete s.stringData
-      const out = await save(TYPES.SECRET, s)
+      const out = await api.save(s)
       onSaved({ namespace: out.metadata.namespace!, name: out.metadata.name })
     } catch (e) {
       setErrors([e instanceof Error ? e.message : String(e)])
@@ -191,11 +179,12 @@ export function SecretEdit({
                 <TextField label="Type" value={typ} onChange={setTyp} list={SECRET_TYPES} />
               </div>
             )}
-            {!existing && nsHint ? (
-              <Banner tone="info">{nsHint}</Banner>
-            ) : (
-              <div className="text-muted mb-2.5 text-sm">Type: {typ}</div>
+            {managedBy && (
+              <Banner tone="warning">
+                {managedBy} manages this Secret and will put its own values back on its next sync. Change them at its source instead.
+              </Banner>
             )}
+            {existing ? <div className="text-muted mb-2.5 text-sm">Type: {typ}</div> : nsHint && <Banner tone="info">{nsHint}</Banner>}
 
             <h3 className="mt-3 mb-2 text-sm font-semibold">Keys</h3>
             {rows.map((r, i) => (

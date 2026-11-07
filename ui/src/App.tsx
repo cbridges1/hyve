@@ -25,7 +25,6 @@ import Providers from './pages/Providers'
 import RepoPage from './pages/RepoPage'
 import ResetPassword from './pages/ResetPassword'
 import Repos from './pages/Repos'
-import Secrets from './pages/Secrets'
 import Settings from './pages/Settings'
 import SharedResourceList from './pages/SharedResourceList'
 import SharedResourcePage from './pages/SharedResourcePage'
@@ -114,7 +113,6 @@ export default function App() {
           <Route path="resources" element={<SharedResourceList />} />
           <Route path="resources/new" element={<SharedResourcePage />} />
           <Route path="resources/:namespace/:name" element={<SharedResourcePage />} />
-          <Route path="secrets" element={<Secrets />} />
           <Route path="repos" element={<Repos />} />
           <Route path="repos/:namespace/:name" element={<RepoPage />} />
           <Route path="providers" element={<Providers />} />

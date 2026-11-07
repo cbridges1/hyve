@@ -36,7 +36,7 @@ export default function SharedResourcePage() {
 
   return (
     <div>
-      <BackLink to={paths.resources} label="Resources" />
+      <BackLink to={paths.resources} label="Shared resources" />
       <PageHeader title={mode === 'create' ? 'New resource' : value.metadata.name}>
         {mode !== 'create' && (
           <Link className="btn btn-secondary" to={paths.yaml(TYPES.RESOURCE, ns, value.metadata.name)}>

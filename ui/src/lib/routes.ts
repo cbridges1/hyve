@@ -21,7 +21,6 @@ export const paths = {
   resources: '/resources',
   resource: (namespace: string, name: string, edit = false) => `/resources/${enc(namespace)}/${enc(name)}${edit ? '?mode=edit' : ''}`,
   newResource: (namespace?: string) => `/resources/new${namespace ? `?namespace=${enc(namespace)}` : ''}`,
-  secrets: '/secrets',
   repos: '/repos',
   repo: (namespace: string, name: string) => `/repos/${enc(namespace)}/${enc(name)}`,
   providers: '/providers',

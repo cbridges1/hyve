@@ -2,15 +2,18 @@
 // resources and its own extras) with Fleet's state there. Extras can be
 // added, edited and removed here ('hyve cluster resource'). After them, the
 // git repos that deliver to the cluster, managed as on the Repos page, and
-// their bundles' state here.
+// their bundles' state here. Last, the Secrets the cluster's own extras and
+// its provider need from its environment.
 import { useRef, useState } from 'react'
 import { useAction, useLoad } from '../lib/hooks'
 import { idOf, kube, newObject, remove, save, type Obj } from '../lib/kube'
 import { repoBundles } from '../lib/repos'
+import { clusterSecrets } from '../lib/secrets'
 import { clusterItems, clusterResourceObject, clusterStates, stateOn, type Entry, type Item } from '../lib/resources'
 import { TYPES } from '../lib/types'
 import { GitSection } from './GitBundles'
 import { ResourceForm, type ResourceFormHandle } from './ResourceForm'
+import { SecretsSection } from './SecretsSection'
 import { Banner, ErrorBanner, Loading } from './ui'
 import { ViewDialog, type Section } from './ViewDialog'
 
@@ -179,6 +182,17 @@ export function ClusterResources({ cluster }: { cluster: Obj }) {
         CLI: <code>hyve cluster resource add {name} --helm/--git/--path/--ref</code>
       </p>
       <GitSection fleetId={`${ns}/${name}`} scope={{ workspace: ns, clusterName: name, fleetId: `${ns}/${name}` }} bundles={data?.fromGit || []} backLabel={name} />
+      <h3 className="mt-6">Secrets</h3>
+      <p className="text-muted text-sm">
+        The credentials its Cluster API provider reads and what this cluster's own resources copy to it, from {ns}. Its template's are on the template's
+        page.
+      </p>
+      <SecretsSection
+        load={(r) => clusterSecrets(r, cluster)}
+        deps={[ns, name, JSON.stringify(cluster.metadata.labels || {})]}
+        hint={`In ${ns}, the environment: providers read credentials here for every cluster in it, and resources added to a cluster can copy it.`}
+        empty="This cluster's provider and resources don't need a Secret from its environment."
+      />
       {viewing && <ViewDialog title={viewing.title} sections={viewing.sections} onClose={() => setViewing(null)} />}
     </div>
   )

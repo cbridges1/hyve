@@ -39,8 +39,7 @@ const groups: { label: string; items: Item[] }[] = [
   {
     label: 'Configuration',
     items: [
-      { label: 'Resources', icon: 'resources', to: paths.resources, type: TYPES.RESOURCE },
-      { label: 'Secrets', icon: 'secrets', to: paths.secrets },
+      { label: 'Shared resources', icon: 'resources', to: paths.resources, type: TYPES.RESOURCE },
       { label: 'Repos', icon: 'repos', to: paths.repos },
       { label: 'Providers', icon: 'providers', to: paths.providers },
     ],

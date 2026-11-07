@@ -1,17 +1,21 @@
 // One object on a child cluster: YAML (view, and edit with server-side
-// apply), its events, its owners, and for a pod its logs and a shell.
-import { useEffect, useState } from 'react'
+// apply), its events, its owners, and for a pod its logs and a shell. A
+// Secret's keys are shown decoded, and edited in the key/value form.
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { errorMessage } from '../../lib/api'
 import { age } from '../../lib/format'
 import type { Obj, Schema } from '../../lib/kube'
 import { applyYaml, cellTone, ConflictError, deleteObject, editableYaml, eventsFor, getObject, viewYaml } from '../../lib/explorer'
+import { clusterSecretApi } from '../../lib/secrets'
 import { CodeEditor } from '../CodeEditor'
 import { FleetManaged } from '../FleetManaged'
 import { Icon } from '../Icon'
+import { SecretEdit } from '../SecretEdit'
 import { Card, ConfirmButton, ErrorBanner, Loading, Pill } from '../ui'
 import { PodLogs } from './PodLogs'
 import { PodShell } from './PodShell'
+import { SecretKeys } from './SecretKeys'
 
 // The YAML pane's tallest, in the page (Expand shows it all): with the card
 // scrolled up to the cluster's header (--sticky-header), the pane, the
@@ -62,6 +66,8 @@ export function ObjectView({
   const [conflict, setConflict] = useState('')
   const [busy, setBusy] = useState(false)
   const [showSecrets, setShowSecrets] = useState(false)
+  const [formEditing, setFormEditing] = useState(false)
+  const secretApi = useMemo(() => clusterSecretApi(clusterId, schema), [clusterId, schema])
   const [events, setEvents] = useState<Obj[] | null>(null)
   const [expanded, setExpanded] = useState(false)
   // Esc closes the full-window YAML, but not when it's the editor's own
@@ -101,6 +107,7 @@ export function ObjectView({
   if (!obj) return error ? <ErrorBanner error={error} /> : <Loading />
 
   const isPod = schema.id === 'pod'
+  const isSecret = schema.id === 'secret'
   const containers: string[] = isPod ? [...(obj.spec?.initContainers || []), ...(obj.spec?.containers || [])].map((c: any) => c.name) : []
   const tabs = [
     { id: 'yaml', label: 'YAML', icon: 'edit' },
@@ -172,7 +179,7 @@ export function ObjectView({
           {size}
           {obj.kind === 'Secret' && (
             <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setShowSecrets((v) => !v)}>
-              {showSecrets ? 'Hide values' : 'Show values'}
+              {showSecrets ? 'Hide values' : 'Show values (decoded)'}
             </button>
           )}
           <button type="button" className="btn btn-tertiary btn-sm" onClick={load}>
@@ -181,13 +188,18 @@ export function ObjectView({
           {canUpdate && (
             <button
               type="button"
-              className="btn btn-primary btn-sm"
+              className={`btn btn-sm ${isSecret ? 'btn-tertiary' : 'btn-primary'}`}
               onClick={() => {
                 setText(editableYaml(obj))
                 setConflict('')
                 setEditing(true)
               }}
             >
+              {isSecret ? 'Edit YAML' : 'Edit'}
+            </button>
+          )}
+          {canUpdate && isSecret && (
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setFormEditing(true)}>
               Edit
             </button>
           )}
@@ -311,7 +323,25 @@ export function ObjectView({
       </div>
       <ErrorBanner error={error} />
 
+      {view === 'yaml' && isSecret && !editing && (
+        <Card title="Keys">
+          <SecretKeys secret={obj} />
+        </Card>
+      )}
       {view === 'yaml' && !expanded && <Card>{yamlBody()}</Card>}
+      {formEditing && (
+        <SecretEdit
+          existing
+          namespace={namespace || ''}
+          name={name}
+          api={secretApi}
+          onClose={() => setFormEditing(false)}
+          onSaved={() => {
+            setFormEditing(false)
+            load()
+          }}
+        />
+      )}
       {view === 'yaml' && expanded && (
         // The YAML over the whole window, for a long object: the same view,
         // editing included. Esc or Close returns.
