@@ -59,7 +59,8 @@ export default function TemplatePage() {
       {previewing && <RenderDialog template={value} onClose={() => setPreviewing(false)} />}
       <Card>
         <TemplateForm
-          key={mode === 'view' ? value.metadata.resourceVersion : mode}
+          // generation, not resourceVersion: a status update would close an open resource form.
+          key={mode === 'view' ? `view-${value.metadata.generation}` : mode}
           value={value}
           mode={mode}
           onSaved={(o) => navigate(paths.template(o.metadata.namespace!, o.metadata.name))}

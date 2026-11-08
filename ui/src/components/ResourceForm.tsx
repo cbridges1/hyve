@@ -42,9 +42,11 @@ type Props = {
   shared?: { name: string; namespace: string }[]
   // Hide the name field (a shared Resource's name is its object's).
   noName?: boolean
+  // Taller manifest and values editors, for a form in a large modal.
+  roomy?: boolean
 }
 
-export const ResourceForm = forwardRef<ResourceFormHandle, Props>(function ResourceForm({ value, allowRef = true, shared = [], noName = false }, ref) {
+export const ResourceForm = forwardRef<ResourceFormHandle, Props>(function ResourceForm({ value, allowRef = true, shared = [], noName = false, roomy = false }, ref) {
   const e = value || {}
   const startKind = ({ HelmOp: 'helm', GitRepo: 'git', Bundle: 'bundle', Ref: 'ref' } as Record<string, Kind>)[kindOf(e)] || 'helm'
   const h = e.helmOp?.helm || {}
@@ -239,7 +241,8 @@ export const ResourceForm = forwardRef<ResourceFormHandle, Props>(function Resou
               </div>
               <CodeEditor
                 value={f.content}
-                minHeight="10rem"
+                minHeight={roomy ? (files.length > 1 ? '16rem' : '45vh') : '10rem'}
+                maxHeight={roomy ? '60vh' : undefined}
                 onChange={(v) => setFiles((fs) => fs.map((x, j) => (j === i ? { ...x, content: v } : x)))}
               />
             </div>
@@ -287,7 +290,11 @@ export const ResourceForm = forwardRef<ResourceFormHandle, Props>(function Resou
       )}
 
       {(kind === 'helm' || kind === 'ref') && (
-        <CodeEditor label={kind === 'ref' ? 'Helm value overrides (YAML)' : 'Helm values (YAML)'} value={values} onChange={setValues} minHeight="7.5rem" />
+        <CodeEditor label={kind === 'ref' ? 'Helm value overrides (YAML)' : 'Helm values (YAML)'} value={values}
+          onChange={setValues}
+          minHeight={roomy ? '20rem' : '7.5rem'}
+          maxHeight={roomy ? '60vh' : undefined}
+        />
       )}
 
       <div className="grid items-end gap-3 sm:grid-cols-3">

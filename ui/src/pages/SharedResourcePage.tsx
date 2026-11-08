@@ -1,8 +1,9 @@
 // A shared Resource: one Fleet spec that templates and clusters refer to
 // by name, with the same form as their own resources ('hyve resource
-// create NAME --helm/--git/--path').
+// create NAME --helm/--git/--path'), and a way to add it to a template.
 import { useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { AddToTemplate } from '../components/AddToTemplate'
 import { NameNamespace } from '../components/NameNamespace'
 import { ResourceForm, type ResourceFormHandle } from '../components/ResourceForm'
 import { BackLink, Banner, Card, ErrorBanner, Field, Loading, PageHeader } from '../components/ui'
@@ -20,6 +21,7 @@ export default function SharedResourcePage() {
   const [query] = useSearchParams()
   const navigate = useNavigate()
   const mode: Mode = !name ? 'create' : query.get('mode') === 'edit' ? 'edit' : 'view'
+  const [adding, setAdding] = useState(false)
 
   const { data: value, error, loading } = useLoad(
     async (r) =>
@@ -43,6 +45,11 @@ export default function SharedResourcePage() {
             YAML
           </Link>
         )}
+        {mode === 'view' && can(TYPES.TEMPLATE, 'update') && (
+          <button type="button" className="btn btn-secondary" onClick={() => setAdding(true)}>
+            Add to template
+          </button>
+        )}
         {mode === 'view' && can(TYPES.RESOURCE, 'update') && (
           <Link className="btn btn-primary" to={paths.resource(ns, value.metadata.name, true)}>
             Edit
@@ -50,6 +57,7 @@ export default function SharedResourcePage() {
         )}
       </PageHeader>
       {value.metadata.deletionTimestamp && <Banner tone="warning">Being deleted.</Banner>}
+      {adding && <AddToTemplate resource={value} onClose={() => setAdding(false)} />}
       <Card>
         <SharedResourceForm
           key={mode === 'view' ? value.metadata.resourceVersion : mode}

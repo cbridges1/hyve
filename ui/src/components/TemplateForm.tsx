@@ -1,14 +1,16 @@
 // A ClusterTemplate's form: its ClusterClass, sizes, expiry schedule,
 // variables (with locks), resources and cluster labels. Read-only when
-// viewing.
+// viewing, except the resources: those can be added, edited and removed
+// from the view too, each change saved to the template at once.
 import { useRef, useState } from 'react'
 import { nextRun } from '../lib/cron'
 import { useLoad } from '../lib/hooks'
-import { save, type Obj } from '../lib/kube'
+import { can, kube, save, type Obj } from '../lib/kube'
 import { describe, kindOf, validate, type Entry } from '../lib/resources'
 import { TYPES } from '../lib/types'
 import { Checkbox, KeyValueEditor, TextField } from './form'
 import { NameNamespace } from './NameNamespace'
+import { Modal } from './Modal'
 import { ResourceForm, type ResourceFormHandle } from './ResourceForm'
 import { Banner } from './ui'
 import { ViewDialog } from './ViewDialog'
@@ -35,6 +37,8 @@ export type Mode = 'create' | 'edit' | 'view'
 
 export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; mode: Mode; onSaved: (o: Obj) => void; onCancel: () => void }) {
   const isView = mode === 'view'
+  // Resources are changed in the view too, when the user may update templates.
+  const resEditable = !isView || can(TYPES.TEMPLATE, 'update')
   const spec = value.spec || {}
   const [name, setName] = useState(value.metadata.name || '')
   const [namespace, setNamespace] = useState(value.metadata.namespace || '')
@@ -95,13 +99,41 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
     setEditing(i)
   }
 
-  function saveEntry() {
+  // The resources changed: kept for Save when editing, saved to the
+  // template now when viewing. The page reloads the saved template.
+  async function commit(next: Entry[]) {
+    if (!isView) {
+      setResources(next)
+      return
+    }
+    setBusy(true)
+    try {
+      // Read it fresh: hyve-controller's status writes move its resourceVersion.
+      const o: Obj = JSON.parse(JSON.stringify(await kube.find(TYPES.TEMPLATE, value.metadata.namespace, value.metadata.name)))
+      o.spec = { ...(o.spec || {}), resources: next.length ? next : undefined }
+      await save(TYPES.TEMPLATE, o)
+      setResources(next)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveEntry() {
     setFormError('')
     try {
       const e = rform.current!.entry()
       if (resources.some((r, j) => r.name === e.name && j !== editing)) throw new Error(`There's already a resource named ${e.name}.`)
-      setResources(editing! < 0 ? [...resources, e] : resources.map((r, j) => (j === editing ? e : r)))
+      await commit(editing! < 0 ? [...resources, e] : resources.map((r, j) => (j === editing ? e : r)))
       setEditing(null)
+    } catch (err) {
+      setFormError((err as Error).message)
+    }
+  }
+
+  async function dropEntry(i: number) {
+    setFormError('')
+    try {
+      await commit(resources.filter((_, j) => j !== i))
     } catch (err) {
       setFormError((err as Error).message)
     }
@@ -227,6 +259,7 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
         <Banner>
           Delivered by Fleet to every cluster made from this template, now and later; hyve-controller keeps the Fleet objects in step. Secrets named
           here must exist in this namespace; Fleet copies them to each cluster.
+          {isView && resEditable && ' Changes here are saved to the template right away.'}
         </Banner>
         {resources.length > 0 && (
           <div className="mb-2.5 overflow-x-auto">
@@ -253,12 +286,12 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
                       <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(r)}>
                         View
                       </button>
-                      {!isView && (
+                      {resEditable && (
                         <>
-                          <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(i)}>
+                          <button type="button" className="btn btn-tertiary btn-sm" disabled={busy} onClick={() => startEdit(i)}>
                             Edit
                           </button>
-                          <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setResources(resources.filter((_, j) => j !== i))}>
+                          <button type="button" className="btn btn-tertiary btn-sm" disabled={busy} onClick={() => dropEntry(i)}>
                             Remove
                           </button>
                         </>
@@ -270,31 +303,34 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
             </table>
           </div>
         )}
-        {isView && !resources.length && <p className="text-muted text-sm">—</p>}
-        {editing !== null ? (
-          <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-            <h3 className="mt-0">{editing < 0 ? 'New resource' : `Edit ${resources[editing].name}`}</h3>
-            <ResourceForm ref={rform} key={editing} value={editing < 0 ? null : resources[editing]} shared={data?.shared || []} />
+        {isView && !resources.length && <p className="text-muted text-sm">No resources yet.</p>}
+        {editing === null && formError && (
+          <div className="mb-2.5">
+            <Banner tone="error">{formError}</Banner>
+          </div>
+        )}
+        {resEditable && (
+          <button type="button" className="btn btn-tertiary" disabled={busy} onClick={() => startEdit(-1)}>
+            Add resource
+          </button>
+        )}
+        {editing !== null && (
+          <Modal title={editing < 0 ? 'New resource' : `Edit ${resources[editing].name}`} onClose={() => setEditing(null)} wide="xl" persistent>
+            <ResourceForm ref={rform} key={editing} value={editing < 0 ? null : resources[editing]} shared={data?.shared || []} roomy />
             {formError && (
               <div className="mt-3">
                 <Banner tone="error">{formError}</Banner>
               </div>
             )}
-            <div className="mt-3 flex gap-2">
-              <button type="button" className="btn btn-primary" onClick={saveEntry}>
-                {editing < 0 ? 'Add' : 'Done'}
-              </button>
+            <div className="mt-4 flex justify-end gap-2">
               <button type="button" className="btn btn-secondary" onClick={() => setEditing(null)}>
                 Cancel
               </button>
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={saveEntry}>
+                {isView ? (busy ? 'Saving…' : editing < 0 ? 'Add' : 'Save') : editing < 0 ? 'Add' : 'Done'}
+              </button>
             </div>
-          </div>
-        ) : (
-          !isView && (
-            <button type="button" className="btn btn-tertiary" onClick={() => startEdit(-1)}>
-              Add resource
-            </button>
-          )
+          </Modal>
         )}
       </div>
 
