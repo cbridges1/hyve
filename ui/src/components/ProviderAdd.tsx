@@ -26,6 +26,7 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
   const [namespace, setNamespace] = useState('')
   const [providerName, setProviderName] = useState('')
   const [fetchURL, setFetchURL] = useState('')
+  const [classes, setClasses] = useState('')
   const [vars, setVars] = useState<Var[]>([])
   const act = useAction()
 
@@ -39,6 +40,11 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
     reader.readAsArrayBuffer(f)
     e.target.value = ''
   }
+
+  const classList = classes
+    .split(/[\s,]+/)
+    .map((c) => c.trim())
+    .filter(Boolean)
 
   const body = () => {
     const variables: Record<string, string> = {}
@@ -58,6 +64,7 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
       providerName: providerName.trim() || undefined,
       fetchURL: fetchURL.trim() || undefined,
       variables: Object.keys(variables).length ? variables : undefined,
+      clusterClasses: classList.length ? classList : undefined,
     }
   }
 
@@ -66,6 +73,8 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
       const r = body()
       if (!NAME_RE.test(r.name)) throw new Error('Name: lowercase letters, digits and dashes')
       if (r.fetchURL && !/^https?:\/\//.test(r.fetchURL)) throw new Error('The components URL must be http(s).')
+      if (classList.some((c) => !c.includes('://')) && !r.fetchURL)
+        throw new Error("ClusterClasses are published beside the provider's components: give the Components URL, or each class file's URL.")
       const out = await host<{ message: string }>('providers', r)
       onAdded(out.message)
     })
@@ -85,6 +94,15 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
         <TextField label="Namespace" placeholder={name ? `${name}-system` : 'NAME-system'} value={namespace} onChange={setNamespace} />
         <TextField label="clusterctl name" placeholder={name} value={providerName} onChange={setProviderName} />
         <TextField label="Components URL" placeholder="https://.../infrastructure-components.yaml" value={fetchURL} onChange={setFetchURL} />
+        <div className="sm:col-span-2">
+          <TextField
+            label="ClusterClasses"
+            placeholder="civo, quick-start..."
+            hint="ClusterClasses the provider publishes, to install in the template namespace: a name is clusterclass-NAME.yaml beside the components URL, or give a file's URL. Separate them with commas."
+            value={classes}
+            onChange={setClasses}
+          />
+        </div>
       </div>
       <h3 className="mt-5 mb-1 text-sm font-semibold">Variables</h3>
       <p className="text-muted mb-3 text-xs">

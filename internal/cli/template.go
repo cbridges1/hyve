@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
@@ -159,14 +160,17 @@ func printYAML(v any) error {
 }
 
 // applyCmd is `template apply -f` (also `resource apply -f`): it creates
-// or updates ClusterTemplates, Resources and ClusterResources from YAML.
+// or updates ClusterTemplates, Resources, ClusterResources and
+// ClusterClasses from YAML.
 func applyCmd() *cobra.Command {
 	var files []string
 	cmd := &cobra.Command{
 		Use:   "apply -f FILE",
-		Short: "Create or update ClusterTemplates, Resources and ClusterResources from YAML",
-		Long: `Applies hyve objects from YAML files. Objects without a namespace go in the
-template namespace (a ClusterResource in the environment). A bundle entry
+		Short: "Create or update ClusterTemplates, Resources, ClusterResources and ClusterClasses from YAML",
+		Long: `Applies hyve objects from YAML files, and ClusterClasses with their
+provider templates (CivoClusterTemplate, DockerMachineTemplate...). Objects
+without a namespace go in the template namespace (a ClusterResource in the
+environment). A bundle entry
 may give 'path: DIR' instead of resources; the manifests there, relative to
 the file, are sent inline.`,
 		Args: cobra.NoArgs,
@@ -200,8 +204,16 @@ the file, are sent inline.`,
 }
 
 func applyObject(ctx context.Context, s *session, o *unstructured.Unstructured, baseDir string) error {
+	// A ClusterClass of your own, with its provider templates, goes beside
+	// the templates built on it.
+	if install.IsClassObject(o) {
+		if o.GetNamespace() == "" {
+			o.SetNamespace(s.templateNS())
+		}
+		return s.kube.ApplyObject(ctx, o)
+	}
 	if o.GroupVersionKind().Group != "hyve.io" {
-		return errors.New("not a hyve.io object; apply it with kubectl")
+		return errors.New("not a hyve.io object or a ClusterClass; apply it with kubectl")
 	}
 	switch o.GetKind() {
 	case "ClusterTemplate":
@@ -251,7 +263,7 @@ func applyObject(ctx context.Context, s *session, o *unstructured.Unstructured, 
 			_ = unstructured.SetNestedField(o.Object, es[0].Bundle, "spec", "bundle")
 		}
 	default:
-		return errors.New("hyve applies ClusterTemplates, Resources and ClusterResources")
+		return errors.New("hyve applies ClusterTemplates, Resources, ClusterResources and ClusterClasses")
 	}
 	return notInstalled(s.kube.ApplyObject(ctx, o))
 }

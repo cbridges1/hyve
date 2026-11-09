@@ -44,15 +44,25 @@ credentials and feature flags.`,
 func providerAddCmd() *cobra.Command {
 	var (
 		typ, version, namespace, providerName, fetchURL string
-		vars, varFiles, varB64Files                     []string
+		vars, varFiles, varB64Files, classes            []string
 	)
 	cmd := &cobra.Command{
 		Use:   "add NAME",
 		Short: "Install a Cluster API provider",
+		Long: `Installs a Cluster API provider: its CRDs and controller, nothing more.
+
+--clusterclass also installs a ClusterClass the provider publishes, the way
+clusterctl finds them: clusterclass-NAME.yaml beside the components manifest
+(--fetch-url), with its provider templates, in the template namespace. Run
+it again to update the class to that release's. Templates are then built on
+it ('hyve template create --from-clusterclass NAME'). A ClusterClass of your
+own goes in with 'hyve template apply -f'.`,
 		Example: `  hyve provider add docker --version v1.12.0
   hyve provider add gcp --variable-b64-file GCP_B64ENCODED_CREDENTIALS=./key.json --variable EXP_CAPG_GKE=true
   hyve provider add civo --fetch-url https://github.com/cbridges1/cluster-api-provider-civo/releases/latest/download/infrastructure-components.yaml \
-      --variable CIVO_API_KEY`,
+      --variable CIVO_API_KEY
+  hyve provider add civo --fetch-url https://github.com/cbridges1/cluster-api-provider-civo/releases/v0.2.0/infrastructure-components.yaml \
+      --clusterclass civo`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
@@ -92,7 +102,7 @@ func providerAddCmd() *cobra.Command {
 			}
 			r := install.ProviderRequest{
 				Name: name, Version: version, Namespace: namespace, ProviderName: providerName, FetchURL: fetchURL,
-				Variables: map[string]string{},
+				Variables: map[string]string{}, ClusterClasses: classes, ClusterClassNamespace: s.templateNS(),
 			}
 			if cmd.Flags().Changed("type") {
 				r.Type = typ
@@ -117,6 +127,7 @@ func providerAddCmd() *cobra.Command {
 	f.StringArrayVar(&vars, "variable", nil, "provider variable KEY=value, or KEY to read it from the environment (repeatable)")
 	f.StringArrayVar(&varFiles, "variable-file", nil, "provider variable KEY=path, the file's contents (repeatable)")
 	f.StringArrayVar(&varB64Files, "variable-b64-file", nil, "provider variable KEY=path, the file's contents base64-encoded (repeatable)")
+	f.StringArrayVar(&classes, "clusterclass", nil, "a ClusterClass the provider publishes, to install in the template namespace: NAME for clusterclass-NAME.yaml beside --fetch-url, or the file's URL (repeatable)")
 	return cmd
 }
 

@@ -50,8 +50,9 @@ function typeId(group: string, singular: string) {
   return group ? `${group}.${singular}` : singular
 }
 
-// Discovery: every served kind, by type ID, at its preferred version, on
-// the management cluster or (base /k8s/clusters/<id>) a child.
+// Discovery: every served kind, by type ID, at the group's preferred
+// version or else the first that serves it, on the management cluster or
+// (base /k8s/clusters/<id>) a child.
 export async function discover(base = LOCAL): Promise<Record<string, Schema>> {
   const out: Record<string, Schema> = {}
   const add = (group: string, version: string, r: any) => {
@@ -81,9 +82,12 @@ export async function discover(base = LOCAL): Promise<Record<string, Schema>> {
       request('GET', `${base}/apis`, undefined, { headers: { Accept: accept } }),
     ])
     if (core?.kind !== 'APIGroupDiscoveryList' || groups?.kind !== 'APIGroupDiscoveryList') throw new Error('no aggregated discovery')
+    // Versions come preferred first; a kind only an older one serves (a
+    // provider's v1alpha1 beside another's v1beta2) still counts.
     for (const g of [...core.items, ...groups.items]) {
-      const v = g.versions?.[0]
-      for (const r of v?.resources || []) add(g.metadata?.name || '', v.version, r)
+      for (const v of g.versions || []) {
+        for (const r of v.resources || []) add(g.metadata?.name || '', v.version, r)
+      }
     }
     return out
   } catch (e) {
@@ -96,9 +100,11 @@ export async function discover(base = LOCAL): Promise<Record<string, Schema>> {
   const groups = await request('GET', `${base}/apis`)
   await Promise.all(
     groups.groups.map(async (g: any) => {
-      const v = g.preferredVersion.version
-      const list = await request('GET', `${base}/apis/${g.name}/${v}`).catch(() => null)
-      for (const r of list?.resources || []) add(g.name, v, r)
+      const versions = [g.preferredVersion.version, ...g.versions.map((v: any) => v.version).filter((v: string) => v !== g.preferredVersion.version)]
+      const lists = await Promise.all(versions.map((v) => request('GET', `${base}/apis/${g.name}/${v}`).catch(() => null)))
+      lists.forEach((list, i) => {
+        for (const r of list?.resources || []) add(g.name, versions[i], r)
+      })
     }),
   )
   return out

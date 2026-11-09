@@ -1,9 +1,11 @@
 // Creating or updating hyve objects from YAML, as 'hyve template apply'
 // does: ClusterTemplates, shared Resources and ClusterResources, each in
 // its default namespace when it names none (templates and Resources in the
-// template namespace, a ClusterResource in the environment).
+// template namespace, a ClusterResource in the environment), and
+// ClusterClasses with their provider templates, beside the templates.
 import { loadAll } from 'js-yaml';
-import { kube, newObject, save } from './kube';
+import { ApiError, LOCAL, request } from './api';
+import { allSchemas, kube, loadSchemas, newObject, save } from './kube';
 import { validate } from './resources';
 import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from './types';
 
@@ -19,10 +21,51 @@ export function parseDocs(text: string): any[] {
   return loadAll(text).filter((d: any) => d && typeof d === 'object');
 }
 
+// A ClusterClass, or a provider template one refers to
+// (CivoClusterTemplate, KubeadmControlPlaneTemplate...).
+export function isClassObject(o: any): boolean {
+  const [group] = (o.apiVersion || '').split('/');
+
+  if (group === 'cluster.x-k8s.io') {
+    return o.kind === 'ClusterClass';
+  }
+
+  return group.endsWith('.cluster.x-k8s.io') && (o.kind || '').endsWith('Template');
+}
+
+// Server-side applies a ClusterClass object, at the version it's written in.
+async function applyClass(o: any, ns: string): Promise<'created' | 'updated'> {
+  const [group, version] = o.apiVersion.split('/');
+  const find = () => Object.values(allSchemas()).find((x) => x.group === group && x.kind === o.kind);
+  let s = find();
+
+  if (!s) {
+    // A provider added since the page loaded.
+    await loadSchemas();
+    s = find();
+  }
+
+  if (!s) {
+    throw new Error(`the cluster doesn't serve ${ o.kind }: install its provider first`);
+  }
+  const url = `${ LOCAL }/apis/${ group }/${ version }/namespaces/${ encodeURIComponent(ns) }/${ s.resource }/${ encodeURIComponent(o.metadata.name) }`;
+  const existed = await request('GET', url).then(() => true, (e) => {
+    if (e instanceof ApiError && e.status === 404) {
+      return false;
+    }
+    throw e;
+  });
+  const body = { ...o, metadata: { ...o.metadata, namespace: ns } };
+
+  await request('PATCH', `${ url }?fieldManager=hyve-ui&force=true`, JSON.stringify(body), { contentType: 'application/apply-patch+yaml' });
+
+  return existed ? 'updated' : 'created';
+}
+
 // What's wrong with an object before it's sent, or ''.
 function check(o: any): string {
   if (!(o.apiVersion || '').startsWith('hyve.io/') || !KINDS[o.kind]) {
-    return "not a hyve ClusterTemplate, Resource or ClusterResource; apply it with kubectl";
+    return "not a hyve ClusterTemplate, Resource or ClusterResource, or a ClusterClass; apply it with kubectl";
   }
   if (!o.metadata?.name) {
     return 'it has no metadata.name';
@@ -49,6 +92,18 @@ export async function applyObjects(objs: any[], opts: { templateNamespace?: stri
   for (const o of objs) {
     const ns = o.metadata?.namespace || (o.kind === 'ClusterResource' ? (opts.environment || 'default') : (opts.templateNamespace || DEFAULT_TEMPLATE_NAMESPACE));
     const label = `${ o.kind || '?' } ${ ns }/${ o.metadata?.name || '?' }`;
+
+    if (isClassObject(o)) {
+      try {
+        if (!o.metadata?.name) {
+          throw new Error('it has no metadata.name');
+        }
+        out.push({ object: label, action: await applyClass(o, ns) });
+      } catch (e: any) {
+        out.push({ object: label, error: e?.message || String(e) });
+      }
+      continue;
+    }
     const bad = check(o);
 
     if (bad) {

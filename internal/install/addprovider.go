@@ -35,16 +35,46 @@ type ProviderRequest struct {
 	// Variables are what the provider's clusterctl configuration reads:
 	// credentials and feature flags.
 	Variables map[string]string `json:"variables,omitempty"`
+	// ClusterClasses are ClusterClasses the provider publishes to install
+	// with it, by clusterctl's convention: NAME is clusterclass-NAME.yaml
+	// beside the components manifest at FetchURL; a URL is the file itself.
+	ClusterClasses []string `json:"clusterClasses,omitempty"`
+	// ClusterClassNamespace is where they go: the template namespace
+	// (default capi-clusters).
+	ClusterClassNamespace string `json:"clusterClassNamespace,omitempty"`
 }
 
 // AddProvider installs a Cluster API provider the way the management
 // cluster installs them: as a CAPI Operator provider object, or from
 // manifests on a lean install
-// (local mode). It returns what it did, for the user.
+// (local mode), then the ClusterClasses asked for. It returns what it did,
+// for the user.
 func AddProvider(ctx context.Context, kc *kube.Client, r ProviderRequest) (string, error) {
 	if r.Name == "" {
 		return "", fmt.Errorf("a provider needs a name")
 	}
+	// Checked first, so a missing URL doesn't leave the provider half done.
+	for _, c := range r.ClusterClasses {
+		if _, err := ClassURL(r.FetchURL, c); err != nil {
+			return "", err
+		}
+	}
+	msg, err := addProvider(ctx, kc, r)
+	if err != nil || len(r.ClusterClasses) == 0 {
+		return msg, err
+	}
+	vars := map[string]string{}
+	for k, v := range r.Variables {
+		vars[k] = v
+	}
+	more, err := addClasses(ctx, kc, r, vars)
+	if err != nil {
+		return "", fmt.Errorf("%s, but %w", msg, err)
+	}
+	return msg + more, nil
+}
+
+func addProvider(ctx context.Context, kc *kube.Client, r ProviderRequest) (string, error) {
 	typ := r.Type
 	if typ == "" {
 		typ = "infrastructure"

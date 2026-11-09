@@ -126,6 +126,9 @@ func (a *API) addProvider(w http.ResponseWriter, r *http.Request, ident signin.I
 	if !decode(w, r, &req) {
 		return
 	}
+	if req.ClusterClassNamespace == "" {
+		req.ClusterClassNamespace = a.DefaultTemplateNamespace
+	}
 	kc, err := a.kubeAs(ident)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
