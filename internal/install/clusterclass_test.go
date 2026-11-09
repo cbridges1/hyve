@@ -91,3 +91,36 @@ metadata: {name: ${CLASS_NAME}}
 		}
 	}
 }
+
+// A server error is retried; a 404 isn't.
+func TestFetchManifestRetries(t *testing.T) {
+	saved := fetchRetries
+	fetchRetries = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { fetchRetries = saved }()
+	hits := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits[r.URL.Path]++
+		switch {
+		case r.URL.Path == "/flaky.yaml" && hits[r.URL.Path] < 3:
+			w.WriteHeader(http.StatusGatewayTimeout)
+		case r.URL.Path == "/flaky.yaml":
+			_, _ = w.Write([]byte("ok"))
+		case r.URL.Path == "/down.yaml":
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	raw, err := fetchManifest(context.Background(), srv.URL+"/flaky.yaml")
+	if err != nil || string(raw) != "ok" || hits["/flaky.yaml"] != 3 {
+		t.Errorf("flaky: %q, %v after %d tries; want ok after 3", raw, err, hits["/flaky.yaml"])
+	}
+	if _, err := fetchManifest(context.Background(), srv.URL+"/down.yaml"); err == nil || hits["/down.yaml"] != 4 {
+		t.Errorf("down: %v after %d tries; want an error after 4", err, hits["/down.yaml"])
+	}
+	if _, err := fetchManifest(context.Background(), srv.URL+"/gone.yaml"); err == nil || hits["/gone.yaml"] != 1 {
+		t.Errorf("404: %v after %d tries; want an error after 1", err, hits["/gone.yaml"])
+	}
+}

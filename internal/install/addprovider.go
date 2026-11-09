@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -195,22 +196,44 @@ func releaseURL(url string) string {
 	return gh + strings.Join([]string{p[0], p[1], "releases", "download", p[3], p[4]}, "/")
 }
 
+// fetchRetries are the waits between attempts at a manifest whose server
+// failed (a 5xx, a 429, or no answer): GitHub's release downloads return
+// 504s for minutes at a time.
+var fetchRetries = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second}
+
 func fetchManifest(ctx context.Context, url string) ([]byte, error) {
 	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
 		return nil, fmt.Errorf("%q: want an http(s) URL", url)
 	}
 	url = releaseURL(url)
+	for attempt := 0; ; attempt++ {
+		raw, retry, err := fetchOnce(ctx, url)
+		if err == nil || !retry || attempt == len(fetchRetries) {
+			return raw, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(fetchRetries[attempt]):
+		}
+	}
+}
+
+// fetchOnce GETs url, and says whether a failure is worth retrying.
+func fetchOnce(ctx context.Context, url string) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, ctx.Err() == nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching %s: %s", url, resp.Status)
+		retry := resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
+		return nil, retry, fmt.Errorf("fetching %s: %s", url, resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	return raw, err != nil && ctx.Err() == nil, err
 }
