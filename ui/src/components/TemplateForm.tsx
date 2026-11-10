@@ -1,190 +1,290 @@
 // A ClusterTemplate's form: its ClusterClass, sizes, expiry schedule,
-// variables (with locks), resources and cluster labels. Read-only when
+// variables (with locks), adoption, resources and cluster labels. Read-only when
 // viewing, except the resources: those can be added, edited and removed
 // from the view too, each change saved to the template at once.
-import { useRef, useState } from 'react'
-import { nextRun } from '../lib/cron'
-import { useLoad } from '../lib/hooks'
-import { can, kube, save, type Obj } from '../lib/kube'
-import { describe, kindOf, validate, type Entry } from '../lib/resources'
-import { TYPES } from '../lib/types'
-import { Checkbox, KeyValueEditor, TextField } from './form'
-import { NameNamespace } from './NameNamespace'
-import { Modal } from './Modal'
-import { ResourceForm, type ResourceFormHandle } from './ResourceForm'
-import { Banner } from './ui'
-import { ViewDialog } from './ViewDialog'
+import { useRef, useState } from "react";
+import { nextRun } from "../lib/cron";
+import { useLoad } from "../lib/hooks";
+import { can, kube, save, type Obj } from "../lib/kube";
+import { describe, kindOf, validate, type Entry } from "../lib/resources";
+import { TYPES } from "../lib/types";
+import { Checkbox, KeyValueEditor, SelectField, TextField } from "./form";
+import { NameNamespace } from "./NameNamespace";
+import { Modal } from "./Modal";
+import { ResourceForm, type ResourceFormHandle } from "./ResourceForm";
+import { Banner } from "./ui";
+import { ViewDialog } from "./ViewDialog";
 
 // A variable's value as text: JSON for anything but plain strings.
 function toText(v: unknown): string {
-  if (v === null || v === undefined) return ''
-  return typeof v === 'string' ? v : JSON.stringify(v)
+  if (v === null || v === undefined) return "";
+  return typeof v === "string" ? v : JSON.stringify(v);
 }
 
 // Text back to a value: JSON when it parses, otherwise the string.
 function fromText(s: string): unknown {
-  if (s === '') return null
+  if (s === "") return null;
   try {
-    return JSON.parse(s)
+    return JSON.parse(s);
   } catch {
-    return s
+    return s;
   }
 }
 
-type Row = { name: string; value: string; locked: boolean }
+type Row = { name: string; value: string; locked: boolean };
 
-export type Mode = 'create' | 'edit' | 'view'
+export type Mode = "create" | "edit" | "view";
 
-export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; mode: Mode; onSaved: (o: Obj) => void; onCancel: () => void }) {
-  const isView = mode === 'view'
+export function TemplateForm({
+  value,
+  mode,
+  onSaved,
+  onCancel,
+}: {
+  value: Obj;
+  mode: Mode;
+  onSaved: (o: Obj) => void;
+  onCancel: () => void;
+}) {
+  const isView = mode === "view";
   // Resources are changed in the view too, when the user may update templates.
-  const resEditable = !isView || can(TYPES.TEMPLATE, 'update')
-  const spec = value.spec || {}
-  const [name, setName] = useState(value.metadata.name || '')
-  const [namespace, setNamespace] = useState(value.metadata.namespace || '')
-  const [description, setDescription] = useState<string>(spec.description || '')
-  const [className, setClassName] = useState<string>(spec.clusterClassRef?.name || '')
-  const [version, setVersion] = useState<string>(spec.kubernetesVersion || '')
+  const resEditable = !isView || can(TYPES.TEMPLATE, "update");
+  const spec = value.spec || {};
+  const [name, setName] = useState(value.metadata.name || "");
+  const [namespace, setNamespace] = useState(value.metadata.namespace || "");
+  const [description, setDescription] = useState<string>(
+    spec.description || "",
+  );
+  const [className, setClassName] = useState<string>(
+    spec.clusterClassRef?.name || "",
+  );
+  const [version, setVersion] = useState<string>(spec.kubernetesVersion || "");
   // lockedVariables' kubernetesVersion: clusters stay at the template's.
-  const [lockVersion, setLockVersion] = useState<boolean>((spec.lockedVariables || []).includes('kubernetesVersion'))
-  const [controlPlane, setControlPlane] = useState(String(spec.controlPlane?.replicas ?? 1))
-  const [workers, setWorkers] = useState(String(spec.workers?.count ?? 1))
-  const [schedule, setSchedule] = useState<string>(spec.schedule || '')
+  const [lockVersion, setLockVersion] = useState<boolean>(
+    (spec.lockedVariables || []).includes("kubernetesVersion"),
+  );
+  const [controlPlane, setControlPlane] = useState(
+    String(spec.controlPlane?.replicas ?? 1),
+  );
+  const [workers, setWorkers] = useState(String(spec.workers?.count ?? 1));
+  const [schedule, setSchedule] = useState<string>(spec.schedule || "");
   const [rows, setRows] = useState<Row[]>(() => {
-    const locked: string[] = spec.lockedVariables || []
-    return Object.entries(spec.variables || {}).map(([n, v]) => ({ name: n, value: toText(v), locked: locked.includes(n) }))
-  })
-  const [labels, setLabels] = useState<Record<string, string>>({ ...(spec.labels || {}) })
+    const locked: string[] = spec.lockedVariables || [];
+    return Object.entries(spec.variables || {}).map(([n, v]) => ({
+      name: n,
+      value: toText(v),
+      locked: locked.includes(n),
+    }));
+  });
+  // adopt: the variable 'hyve cluster adopt' puts an existing cluster's ID
+  // in, and what adopted clusters get in place of the variables (empty: the
+  // cluster keeps its own).
+  const [adoptVar, setAdoptVar] = useState<string>(
+    spec.adopt?.idVariable || "",
+  );
+  const [adoptRows, setAdoptRows] = useState<{ name: string; value: string }[]>(
+    () =>
+      Object.entries(spec.adopt?.variables || {}).map(([n, v]) => ({
+        name: n,
+        value: toText(v),
+      })),
+  );
+  const [labels, setLabels] = useState<Record<string, string>>({
+    ...(spec.labels || {}),
+  });
   // Each entry is Fleet's own spec (or a ref), edited whole in the
   // resource form.
-  const [resources, setResources] = useState<Entry[]>(() => JSON.parse(JSON.stringify(spec.resources || [])))
+  const [resources, setResources] = useState<Entry[]>(() =>
+    JSON.parse(JSON.stringify(spec.resources || [])),
+  );
   // The entry being edited: its index, -1 for a new one, null for none.
-  const [editing, setEditing] = useState<number | null>(null)
-  const [formError, setFormError] = useState('')
-  const [errors, setErrors] = useState<string[]>([])
-  const [viewing, setViewing] = useState<Entry | null>(null)
-  const [busy, setBusy] = useState(false)
-  const rform = useRef<ResourceFormHandle>(null)
+  const [editing, setEditing] = useState<number | null>(null);
+  const [formError, setFormError] = useState("");
+  const [errors, setErrors] = useState<string[]>([]);
+  const [viewing, setViewing] = useState<Entry | null>(null);
+  const [busy, setBusy] = useState(false);
+  const rform = useRef<ResourceFormHandle>(null);
 
   const { data } = useLoad(async (r) => {
-    const [classes, shared] = await Promise.all([r.findAll(TYPES.CLUSTER_CLASS).catch(() => []), r.findAll(TYPES.RESOURCE).catch(() => [])])
-    return { classes, shared: shared.map((s) => ({ name: s.metadata.name, namespace: s.metadata.namespace! })) }
-  }, [])
-  const classes = data?.classes || []
-  const classOptions = classes.filter((c) => c.metadata.namespace === namespace).map((c) => c.metadata.name)
-  const selectedClass = classes.find((c) => c.metadata.namespace === namespace && c.metadata.name === className)
+    const [classes, shared] = await Promise.all([
+      r.findAll(TYPES.CLUSTER_CLASS).catch(() => []),
+      r.findAll(TYPES.RESOURCE).catch(() => []),
+    ]);
+    return {
+      classes,
+      shared: shared.map((s) => ({
+        name: s.metadata.name,
+        namespace: s.metadata.namespace!,
+      })),
+    };
+  }, []);
+  const classes = data?.classes || [];
+  const classOptions = classes
+    .filter((c) => c.metadata.namespace === namespace)
+    .map((c) => c.metadata.name);
+  const selectedClass = classes.find(
+    (c) => c.metadata.namespace === namespace && c.metadata.name === className,
+  );
 
   const scheduleError = (() => {
-    if (!schedule) return ''
+    if (!schedule) return "";
     try {
-      return `Next run: ${nextRun(schedule, new Date()).toLocaleString()}`
+      return `Next run: ${nextRun(schedule, new Date()).toLocaleString()}`;
     } catch (e) {
-      return (e as Error).message
+      return (e as Error).message;
     }
-  })()
-  const validationPassed = !!name && !!className && !scheduleError.startsWith('schedule')
+  })();
+  const validationPassed =
+    !!name && !!className && !scheduleError.startsWith("schedule");
 
   function loadDefaults() {
-    const have = new Set(rows.map((r) => r.name))
+    const have = new Set(rows.map((r) => r.name));
     const add = (selectedClass?.spec?.variables || [])
       .filter((v: any) => !have.has(v.name))
-      .map((v: any) => ({ name: v.name, value: toText(v.schema?.openAPIV3Schema?.default), locked: false }))
-    setRows([...rows, ...add])
+      .map((v: any) => ({
+        name: v.name,
+        value: toText(v.schema?.openAPIV3Schema?.default),
+        locked: false,
+      }));
+    setRows([...rows, ...add]);
   }
 
-  const setRow = (i: number, patch: Partial<Row>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  const setRow = (i: number, patch: Partial<Row>) =>
+    setRows(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
   function startEdit(i: number) {
-    setFormError('')
-    setEditing(i)
+    setFormError("");
+    setEditing(i);
   }
 
   // The resources changed: kept for Save when editing, saved to the
   // template now when viewing. The page reloads the saved template.
   async function commit(next: Entry[]) {
     if (!isView) {
-      setResources(next)
-      return
+      setResources(next);
+      return;
     }
-    setBusy(true)
+    setBusy(true);
     try {
       // Read it fresh: hyve-controller's status writes move its resourceVersion.
-      const o: Obj = JSON.parse(JSON.stringify(await kube.find(TYPES.TEMPLATE, value.metadata.namespace, value.metadata.name)))
-      o.spec = { ...(o.spec || {}), resources: next.length ? next : undefined }
-      await save(TYPES.TEMPLATE, o)
-      setResources(next)
+      const o: Obj = JSON.parse(
+        JSON.stringify(
+          await kube.find(
+            TYPES.TEMPLATE,
+            value.metadata.namespace,
+            value.metadata.name,
+          ),
+        ),
+      );
+      o.spec = { ...(o.spec || {}), resources: next.length ? next : undefined };
+      await save(TYPES.TEMPLATE, o);
+      setResources(next);
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
   }
 
   async function saveEntry() {
-    setFormError('')
+    setFormError("");
     try {
-      const e = rform.current!.entry()
-      if (resources.some((r, j) => r.name === e.name && j !== editing)) throw new Error(`There's already a resource named ${e.name}.`)
-      await commit(editing! < 0 ? [...resources, e] : resources.map((r, j) => (j === editing ? e : r)))
-      setEditing(null)
+      const e = rform.current!.entry();
+      if (resources.some((r, j) => r.name === e.name && j !== editing))
+        throw new Error(`There's already a resource named ${e.name}.`);
+      await commit(
+        editing! < 0
+          ? [...resources, e]
+          : resources.map((r, j) => (j === editing ? e : r)),
+      );
+      setEditing(null);
     } catch (err) {
-      setFormError((err as Error).message)
+      setFormError((err as Error).message);
     }
   }
 
   async function dropEntry(i: number) {
-    setFormError('')
+    setFormError("");
     try {
-      await commit(resources.filter((_, j) => j !== i))
+      await commit(resources.filter((_, j) => j !== i));
     } catch (err) {
-      setFormError((err as Error).message)
+      setFormError((err as Error).message);
     }
   }
 
   function build(): Obj {
-    const o: Obj = JSON.parse(JSON.stringify(value))
-    o.metadata.name = name
-    o.metadata.namespace = namespace
-    const s: any = o.spec || {}
-    const variables: Record<string, unknown> = {}
-    rows.filter((r) => r.name).forEach((r) => (variables[r.name] = fromText(r.value)))
-    s.description = description
-    s.clusterClassRef = { ...(s.clusterClassRef || {}), name: className }
-    s.kubernetesVersion = version
-    s.schedule = schedule
-    s.variables = variables
-    s.lockedVariables = [...rows.filter((r) => r.name && r.locked).map((r) => r.name), ...(lockVersion && version ? ['kubernetesVersion'] : [])]
-    s.controlPlane = { replicas: Number(controlPlane) || 1 }
-    s.workers = { ...(s.workers || {}), count: Number(workers) }
-    s.labels = Object.keys(labels).length ? labels : undefined
-    for (const k of ['kubernetesVersion', 'schedule', 'description']) if (!s[k]) delete s[k]
-    if (!s.lockedVariables.length) delete s.lockedVariables
-    s.resources = resources.length ? JSON.parse(JSON.stringify(resources)) : undefined
-    o.spec = s
-    return o
+    const o: Obj = JSON.parse(JSON.stringify(value));
+    o.metadata.name = name;
+    o.metadata.namespace = namespace;
+    const s: any = o.spec || {};
+    const variables: Record<string, unknown> = {};
+    rows
+      .filter((r) => r.name)
+      .forEach((r) => (variables[r.name] = fromText(r.value)));
+    s.description = description;
+    s.clusterClassRef = { ...(s.clusterClassRef || {}), name: className };
+    s.kubernetesVersion = version;
+    s.schedule = schedule;
+    s.variables = variables;
+    s.lockedVariables = [
+      ...rows.filter((r) => r.name && r.locked).map((r) => r.name),
+      ...(lockVersion && version ? ["kubernetesVersion"] : []),
+    ];
+    s.controlPlane = { replicas: Number(controlPlane) || 1 };
+    s.workers = { ...(s.workers || {}), count: Number(workers) };
+    s.labels = Object.keys(labels).length ? labels : undefined;
+    for (const k of ["kubernetesVersion", "schedule", "description"])
+      if (!s[k]) delete s[k];
+    if (!s.lockedVariables.length) delete s.lockedVariables;
+    s.resources = resources.length
+      ? JSON.parse(JSON.stringify(resources))
+      : undefined;
+    if (adoptVar) {
+      const av: Record<string, unknown> = {};
+      adoptRows
+        .filter((r) => r.name)
+        .forEach((r) => (av[r.name] = fromText(r.value)));
+      s.adopt = {
+        idVariable: adoptVar,
+        ...(Object.keys(av).length ? { variables: av } : {}),
+      };
+    } else delete s.adopt;
+    o.spec = s;
+    return o;
   }
 
   async function onSave() {
-    setErrors([])
-    const o = build()
-    const bad = (o.spec.resources || []).map(validate).filter(Boolean)
+    setErrors([]);
+    const o = build();
+    const bad = (o.spec.resources || []).map(validate).filter(Boolean);
     if (bad.length) {
-      setErrors(bad)
-      return
+      setErrors(bad);
+      return;
     }
-    setBusy(true)
+    setBusy(true);
     try {
       // hyve-controller turns the resources into Fleet objects.
-      onSaved(await save(TYPES.TEMPLATE, o))
+      onSaved(await save(TYPES.TEMPLATE, o));
     } catch (e) {
-      setErrors([(e as Error)?.message || String(e)])
+      setErrors([(e as Error)?.message || String(e)]);
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
   }
 
   return (
     <div className="space-y-4">
-      <NameNamespace name={name} namespace={namespace} onName={setName} onNamespace={setNamespace} fixed={mode !== 'create'} />
-      <TextField label="Description" value={description} onChange={setDescription} disabled={isView} />
+      <NameNamespace
+        name={name}
+        namespace={namespace}
+        onName={setName}
+        onNamespace={setNamespace}
+        fixed={mode !== "create"}
+      />
+      <TextField
+        label="Description"
+        value={description}
+        onChange={setDescription}
+        disabled={isView}
+      />
       <div className="grid gap-3 sm:grid-cols-12">
         <TextField
           className="sm:col-span-4"
@@ -197,15 +297,40 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
           disabled={isView}
         />
         <div className="sm:col-span-4">
-          <TextField label="Kubernetes version" placeholder="ClusterClass default" value={version} onChange={setVersion} disabled={isView} />
+          <TextField
+            label="Kubernetes version"
+            placeholder="ClusterClass default"
+            value={version}
+            onChange={setVersion}
+            disabled={isView}
+          />
           {version && (
             <div className="mt-1.5">
-              <Checkbox label="Locked: clusters stay at this version" checked={lockVersion} onChange={setLockVersion} disabled={isView} />
+              <Checkbox
+                label="Locked: clusters stay at this version"
+                checked={lockVersion}
+                onChange={setLockVersion}
+                disabled={isView}
+              />
             </div>
           )}
         </div>
-        <TextField className="sm:col-span-2" label="Control-plane replicas" type="number" value={controlPlane} onChange={setControlPlane} disabled={isView} />
-        <TextField className="sm:col-span-2" label="Worker replicas" type="number" value={workers} onChange={setWorkers} disabled={isView} />
+        <TextField
+          className="sm:col-span-2"
+          label="Control-plane replicas"
+          type="number"
+          value={controlPlane}
+          onChange={setControlPlane}
+          disabled={isView}
+        />
+        <TextField
+          className="sm:col-span-2"
+          label="Worker replicas"
+          type="number"
+          value={workers}
+          onChange={setWorkers}
+          disabled={isView}
+        />
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <TextField
@@ -222,19 +347,41 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
       <div>
         <h3>Variables</h3>
         <Banner>
-          Defaults for ClusterClass variables. Values are JSON when valid JSON, otherwise strings. Locked variables cannot be changed when creating a
+          Defaults for ClusterClass variables. Values are JSON when valid JSON,
+          otherwise strings. Locked variables cannot be changed when creating a
           cluster.
         </Banner>
         <div className="space-y-2">
           {rows.map((row, i) => (
             <div key={i} className="grid items-end gap-2 sm:grid-cols-12">
-              <TextField className="sm:col-span-3" label="Name" value={row.name} onChange={(v) => setRow(i, { name: v })} disabled={isView} />
-              <TextField className="sm:col-span-6" label="Value" value={row.value} onChange={(v) => setRow(i, { value: v })} disabled={isView} />
+              <TextField
+                className="sm:col-span-3"
+                label="Name"
+                value={row.name}
+                onChange={(v) => setRow(i, { name: v })}
+                disabled={isView}
+              />
+              <TextField
+                className="sm:col-span-6"
+                label="Value"
+                value={row.value}
+                onChange={(v) => setRow(i, { value: v })}
+                disabled={isView}
+              />
               <div className="flex h-9 items-center sm:col-span-2">
-                <Checkbox label="Locked" checked={row.locked} onChange={(v) => setRow(i, { locked: v })} disabled={isView} />
+                <Checkbox
+                  label="Locked"
+                  checked={row.locked}
+                  onChange={(v) => setRow(i, { locked: v })}
+                  disabled={isView}
+                />
               </div>
               {!isView && (
-                <button type="button" className="btn btn-tertiary sm:col-span-1" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+                <button
+                  type="button"
+                  className="btn btn-tertiary sm:col-span-1"
+                  onClick={() => setRows(rows.filter((_, j) => j !== i))}
+                >
                   Remove
                 </button>
               )}
@@ -244,10 +391,21 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
         </div>
         {!isView && (
           <div className="mt-2 flex gap-2">
-            <button type="button" className="btn btn-tertiary" onClick={() => setRows([...rows, { name: '', value: '', locked: false }])}>
+            <button
+              type="button"
+              className="btn btn-tertiary"
+              onClick={() =>
+                setRows([...rows, { name: "", value: "", locked: false }])
+              }
+            >
               Add
             </button>
-            <button type="button" className="btn btn-tertiary" disabled={!selectedClass} onClick={loadDefaults}>
+            <button
+              type="button"
+              className="btn btn-tertiary"
+              disabled={!selectedClass}
+              onClick={loadDefaults}
+            >
               Load ClusterClass variables
             </button>
           </div>
@@ -255,11 +413,104 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
       </div>
 
       <div>
+        <h3>Adoption</h3>
+        <Banner>
+          Lets 'hyve cluster adopt' (and Adopt on the New cluster page) take
+          over an existing cluster through the ClusterClass's provider, by its
+          ID, when the provider supports it (Civo's clusterID). Adopted clusters
+          take the values below in place of the variables above (empty keeps the
+          cluster's own, e.g. nodeCount), and no expiry schedule.
+        </Banner>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <SelectField
+            label="Adopt by variable"
+            value={adoptVar}
+            onChange={setAdoptVar}
+            disabled={isView}
+            options={[
+              { label: "Off", value: "" },
+              ...[
+                ...new Set([
+                  ...(selectedClass?.spec?.variables || []).map(
+                    (v: any) => v.name as string,
+                  ),
+                  ...(adoptVar ? [adoptVar] : []),
+                ]),
+              ].map((n) => ({
+                label: n,
+                value: n,
+              })),
+            ]}
+          />
+        </div>
+        {adoptVar && (
+          <div className="mt-2 space-y-2">
+            {adoptRows.map((row, i) => (
+              <div key={i} className="grid items-end gap-2 sm:grid-cols-12">
+                <TextField
+                  className="sm:col-span-3"
+                  label="Variable"
+                  value={row.name}
+                  onChange={(v) =>
+                    setAdoptRows(
+                      adoptRows.map((r, j) =>
+                        j === i ? { ...r, name: v } : r,
+                      ),
+                    )
+                  }
+                  disabled={isView}
+                />
+                <TextField
+                  className="sm:col-span-6"
+                  label="On adopted clusters"
+                  placeholder="empty: the cluster keeps its own"
+                  value={row.value}
+                  onChange={(v) =>
+                    setAdoptRows(
+                      adoptRows.map((r, j) =>
+                        j === i ? { ...r, value: v } : r,
+                      ),
+                    )
+                  }
+                  disabled={isView}
+                />
+                {!isView && (
+                  <button
+                    type="button"
+                    className="btn btn-tertiary sm:col-span-1"
+                    onClick={() =>
+                      setAdoptRows(adoptRows.filter((_, j) => j !== i))
+                    }
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+            {!isView && (
+              <button
+                type="button"
+                className="btn btn-tertiary"
+                onClick={() =>
+                  setAdoptRows([...adoptRows, { name: "", value: "" }])
+                }
+              >
+                Add
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div>
         <h3>Resources</h3>
         <Banner>
-          Delivered by Fleet to every cluster made from this template, now and later; hyve-controller keeps the Fleet objects in step. Secrets named
+          Delivered by Fleet to every cluster made from this template, now and
+          later; hyve-controller keeps the Fleet objects in step. Secrets named
           here must exist in this namespace; Fleet copies them to each cluster.
-          {isView && resEditable && ' Changes here are saved to the template right away.'}
+          {isView &&
+            resEditable &&
+            " Changes here are saved to the template right away."}
         </Banner>
         {resources.length > 0 && (
           <div className="mb-2.5 overflow-x-auto">
@@ -280,18 +531,32 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
                     <td>{r.name}</td>
                     <td>{kindOf(r)}</td>
                     <td className="break-all">{describe(r)}</td>
-                    <td>{r.namespace || '-'}</td>
-                    <td>{(r.secrets || []).join(', ') || '-'}</td>
+                    <td>{r.namespace || "-"}</td>
+                    <td>{(r.secrets || []).join(", ") || "-"}</td>
                     <td className="text-right whitespace-nowrap">
-                      <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(r)}>
+                      <button
+                        type="button"
+                        className="btn btn-tertiary btn-sm"
+                        onClick={() => setViewing(r)}
+                      >
                         View
                       </button>
                       {resEditable && (
                         <>
-                          <button type="button" className="btn btn-tertiary btn-sm" disabled={busy} onClick={() => startEdit(i)}>
+                          <button
+                            type="button"
+                            className="btn btn-tertiary btn-sm"
+                            disabled={busy}
+                            onClick={() => startEdit(i)}
+                          >
                             Edit
                           </button>
-                          <button type="button" className="btn btn-tertiary btn-sm" disabled={busy} onClick={() => dropEntry(i)}>
+                          <button
+                            type="button"
+                            className="btn btn-tertiary btn-sm"
+                            disabled={busy}
+                            onClick={() => dropEntry(i)}
+                          >
                             Remove
                           </button>
                         </>
@@ -303,31 +568,68 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
             </table>
           </div>
         )}
-        {isView && !resources.length && <p className="text-muted text-sm">No resources yet.</p>}
+        {isView && !resources.length && (
+          <p className="text-muted text-sm">No resources yet.</p>
+        )}
         {editing === null && formError && (
           <div className="mb-2.5">
             <Banner tone="error">{formError}</Banner>
           </div>
         )}
         {resEditable && (
-          <button type="button" className="btn btn-tertiary" disabled={busy} onClick={() => startEdit(-1)}>
+          <button
+            type="button"
+            className="btn btn-tertiary"
+            disabled={busy}
+            onClick={() => startEdit(-1)}
+          >
             Add resource
           </button>
         )}
         {editing !== null && (
-          <Modal title={editing < 0 ? 'New resource' : `Edit ${resources[editing].name}`} onClose={() => setEditing(null)} wide="xl" persistent>
-            <ResourceForm ref={rform} key={editing} value={editing < 0 ? null : resources[editing]} shared={data?.shared || []} roomy />
+          <Modal
+            title={
+              editing < 0 ? "New resource" : `Edit ${resources[editing].name}`
+            }
+            onClose={() => setEditing(null)}
+            wide="xl"
+            persistent
+          >
+            <ResourceForm
+              ref={rform}
+              key={editing}
+              value={editing < 0 ? null : resources[editing]}
+              shared={data?.shared || []}
+              roomy
+            />
             {formError && (
               <div className="mt-3">
                 <Banner tone="error">{formError}</Banner>
               </div>
             )}
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" className="btn btn-secondary" onClick={() => setEditing(null)}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setEditing(null)}
+              >
                 Cancel
               </button>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={saveEntry}>
-                {isView ? (busy ? 'Saving…' : editing < 0 ? 'Add' : 'Save') : editing < 0 ? 'Add' : 'Done'}
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={saveEntry}
+              >
+                {isView
+                  ? busy
+                    ? "Saving…"
+                    : editing < 0
+                      ? "Add"
+                      : "Save"
+                  : editing < 0
+                    ? "Add"
+                    : "Done"}
               </button>
             </div>
           </Modal>
@@ -336,8 +638,16 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
 
       <div>
         <h3>Cluster labels</h3>
-        <p className="hint mt-0 mb-2">Added to every cluster; Fleet sees them through CAAPF.</p>
-        <KeyValueEditor key={isView ? 'view' : 'edit'} value={labels} onChange={setLabels} addLabel="Add" readOnly={isView} />
+        <p className="hint mt-0 mb-2">
+          Added to every cluster; Fleet sees them through CAAPF.
+        </p>
+        <KeyValueEditor
+          key={isView ? "view" : "edit"}
+          value={labels}
+          onChange={setLabels}
+          addLabel="Add"
+          readOnly={isView}
+        />
       </div>
 
       {errors.map((e, i) => (
@@ -350,12 +660,23 @@ export function TemplateForm({ value, mode, onSaved, onCancel }: { value: Obj; m
           <button type="button" className="btn btn-tertiary" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="btn btn-primary" disabled={busy || !validationPassed} onClick={onSave}>
-            {mode === 'create' ? 'Create' : 'Save'}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || !validationPassed}
+            onClick={onSave}
+          >
+            {mode === "create" ? "Create" : "Save"}
           </button>
         </div>
       )}
-      {viewing && <ViewDialog title={viewing.name || ''} sections={[{ label: 'As written', object: viewing }]} onClose={() => setViewing(null)} />}
+      {viewing && (
+        <ViewDialog
+          title={viewing.name || ""}
+          sections={[{ label: "As written", object: viewing }]}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
-  )
+  );
 }

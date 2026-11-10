@@ -201,3 +201,49 @@ func TestLockedVersion(t *testing.T) {
 		t.Error("a locked version needs kubernetesVersion")
 	}
 }
+
+// An adopted cluster takes the adopt variables in place of the template's
+// (null leaves one to the cluster) and no expiry schedule.
+func TestFillAdopted(t *testing.T) {
+	tp := tmpl()
+	tp.Spec.Adopt = &Adopt{IDVariable: "clusterID", Variables: map[string]any{"machineType": nil, "deletionPolicy": "Retain"}}
+	c := clusters.New("web", "capi-clusters")
+	c.SetAnnotations(map[string]string{clusters.AnnotationAdopted: "true"})
+	_ = clusters.SetVariables(c, map[string]any{"clusterID": "abc"})
+	if err := Fill(c, tp, class(false), now); err != nil {
+		t.Fatal(err)
+	}
+	v := clusters.Variables(c)
+	if _, ok := v["machineType"]; ok || v["deletionPolicy"] != "Retain" || v["project"] != "p1" || v["clusterID"] != "abc" {
+		t.Errorf("variables = %v", v)
+	}
+	if got := c.GetAnnotations()[AnnotationExpiresAt]; got != "" {
+		t.Errorf("an adopted cluster took the schedule: expires-at = %s", got)
+	}
+	if bad := CheckLocked(tp, c); len(bad) != 0 {
+		t.Errorf("locked = %v", bad)
+	}
+	if err := Validate(&Template{Spec: Spec{ClusterClassRef: ClassRef{Name: "x"}, Adopt: &Adopt{}}}); err == nil {
+		t.Error("adopt without idVariable passed validation")
+	}
+}
+
+// An imported cluster is only labelled, and isn't held to the template's
+// locks; an annotation alone doesn't make a cluster imported.
+func TestFillImported(t *testing.T) {
+	c := clusters.NewImported("web", "capi-clusters")
+	if err := Fill(c, tmpl(), class(false), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := unstructured.NestedFieldNoCopy(c.Object, "spec", "topology"); found {
+		t.Error("an imported cluster got a topology")
+	}
+	if c.GetLabels()[LabelTemplate] != "gke-small" || len(CheckLocked(tmpl(), c)) != 0 {
+		t.Errorf("labels %v, locked %v", c.GetLabels(), CheckLocked(tmpl(), c))
+	}
+	fake := clusters.New("web", "capi-clusters")
+	_ = unstructured.SetNestedField(fake.Object, map[string]any{"apiGroup": "hyve.io", "kind": "ImportedControlPlane", "name": "web"}, "spec", "controlPlaneRef")
+	if clusters.Origin(fake) == clusters.OriginImported {
+		t.Error("a topology Cluster counted as imported")
+	}
+}

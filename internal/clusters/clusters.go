@@ -36,11 +36,73 @@ const (
 	// used when none is given.
 	AnnotationDefaultVersion = "hyve.io/default-version"
 
+	// AnnotationAdopted ("true") on a Cluster made by adopting an existing
+	// cluster through its provider ('hyve cluster adopt').
+	AnnotationAdopted = "hyve.io/adopted"
+
 	// herd's names for the two annotations above, still read so
 	// ClusterClasses written for herd keep working.
 	legacyClusterLabels  = "herd.io/cluster-labels"
 	legacyDefaultVersion = "herd.io/default-version"
 )
+
+// Where a cluster hyve didn't create came from (Origin).
+const (
+	// OriginImported: an existing cluster reached through its kubeconfig
+	// (ImportedCluster and ImportedControlPlane); hyve never changes it,
+	// and deleting it only detaches it.
+	OriginImported = "imported"
+	// OriginAdopted: an existing cluster its provider took over (a
+	// template's adopt), managed from then on like any other.
+	OriginAdopted = "adopted"
+)
+
+// The kinds an imported cluster's Cluster refers to, which hyve-controller
+// reconciles.
+const (
+	ImportedGroup            = "hyve.io"
+	ImportedClusterKind      = "ImportedCluster"
+	ImportedControlPlaneKind = "ImportedControlPlane"
+)
+
+var (
+	ImportedClusterGVR      = schema.GroupVersionResource{Group: ImportedGroup, Version: "v1alpha1", Resource: "importedclusters"}
+	ImportedControlPlaneGVR = schema.GroupVersionResource{Group: ImportedGroup, Version: "v1alpha1", Resource: "importedcontrolplanes"}
+)
+
+// Origin is OriginImported for a Cluster whose control plane is an
+// ImportedControlPlane (and has no topology), OriginAdopted for one
+// annotated hyve.io/adopted, and "" otherwise. Imported is read from the
+// Cluster's refs, not an annotation, since it exempts a Cluster from its
+// template's variables and locks.
+func Origin(c *unstructured.Unstructured) string {
+	if _, topo, _ := unstructured.NestedMap(c.Object, "spec", "topology"); !topo {
+		g, _, _ := unstructured.NestedString(c.Object, "spec", "controlPlaneRef", "apiGroup")
+		k, _, _ := unstructured.NestedString(c.Object, "spec", "controlPlaneRef", "kind")
+		if g == ImportedGroup && k == ImportedControlPlaneKind {
+			return OriginImported
+		}
+	}
+	if c.GetAnnotations()[AnnotationAdopted] == "true" {
+		return OriginAdopted
+	}
+	return ""
+}
+
+// NewImported returns the Cluster for an imported cluster: no topology,
+// and the ImportedCluster and ImportedControlPlane of the same name as its
+// infrastructure and control plane.
+func NewImported(name, namespace string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "cluster.x-k8s.io/v1beta2",
+		"kind":       "Cluster",
+		"metadata":   map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{LabelManagedBy: ManagedBy}},
+		"spec": map[string]any{
+			"infrastructureRef": map[string]any{"apiGroup": ImportedGroup, "kind": ImportedClusterKind, "name": name},
+			"controlPlaneRef":   map[string]any{"apiGroup": ImportedGroup, "kind": ImportedControlPlaneKind, "name": name},
+		},
+	}}
+}
 
 // Worker types.
 const (

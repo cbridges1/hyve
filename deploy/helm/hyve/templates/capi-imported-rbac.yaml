@@ -1,0 +1,16 @@
+# Cluster API's controllers read and own the infrastructure and control
+# plane of every Cluster, an imported cluster's ImportedCluster and
+# ImportedControlPlane included; CAPI's manager role aggregates this one.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hyve-capi-imported
+  labels:
+    cluster.x-k8s.io/aggregate-to-manager: "true"
+rules:
+  - apiGroups: ["hyve.io"]
+    resources: ["importedclusters", "importedcontrolplanes"]
+    verbs: ["get", "list", "watch", "patch", "update", "delete"]
+  - apiGroups: ["hyve.io"]
+    resources: ["importedclusters/status", "importedcontrolplanes/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]

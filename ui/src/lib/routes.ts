@@ -15,6 +15,7 @@ export const paths = {
   localCluster: (tab?: 'resources' | 'explorer') => `/clusters/local${tab ? `/${tab}` : ''}`,
   createCluster: (template?: { namespace: string; name: string }) =>
     `/clusters/new${template ? `?template=${enc(`${template.namespace}/${template.name}`)}` : ''}`,
+  importCluster: '/clusters/import',
   templates: '/templates',
   template: (namespace: string, name: string, edit = false) => `/templates/${enc(namespace)}/${enc(name)}${edit ? '?mode=edit' : ''}`,
   newTemplate: (namespace?: string) => `/templates/new${namespace ? `?namespace=${enc(namespace)}` : ''}`,

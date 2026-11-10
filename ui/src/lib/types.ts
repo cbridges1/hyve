@@ -9,6 +9,7 @@ export const TYPES = {
   CLUSTER_RESOURCE: 'hyve.io.clusterresource',
   CLUSTER_ACCESS: 'hyve.io.clusteraccess',
   USER: 'hyve.io.user',
+  IMPORTED_CONTROL_PLANE: 'hyve.io.importedcontrolplane',
   NAMESPACE: 'namespace',
   SECRET: 'secret',
   CONFIG_MAP: 'configmap',
@@ -38,6 +39,7 @@ export const ANNOTATIONS = {
   SOURCE: 'hyve.io/source',
   CLUSTER_LABELS: 'hyve.io/cluster-labels',
   DEFAULT_VERSION: 'hyve.io/default-version',
+  ADOPTED: 'hyve.io/adopted',
 } as const
 
 // "never" in hyve.io/expires-at: the cluster doesn't expire, whatever its

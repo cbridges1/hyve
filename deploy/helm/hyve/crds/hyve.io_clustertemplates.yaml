@@ -99,6 +99,18 @@ spec:
                   type: object
                   description: Extra labels on every Cluster; Fleet sees them through CAAPF.
                   additionalProperties: {type: string}
+                adopt:
+                  type: object
+                  description: How 'hyve cluster adopt' takes over an existing cluster through the ClusterClass's provider. Adopted clusters take no expiry schedule.
+                  required: [idVariable]
+                  properties:
+                    idVariable:
+                      type: string
+                      description: The ClusterClass variable the provider adopts a cluster by (e.g. clusterID).
+                    variables:
+                      type: object
+                      description: Set on adopted clusters in place of the template's variables; null leaves one unset, so the cluster keeps its own (e.g. nodeCount).
+                      x-kubernetes-preserve-unknown-fields: true
                 resources:
                   type: array
                   description: What Fleet delivers to every cluster made from this template.

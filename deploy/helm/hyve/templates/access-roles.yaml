@@ -73,7 +73,7 @@ rules:
     resources: ["clusterresources"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["hyve.io"]
-    resources: ["clustertemplates", "resources", "clusteraccesses"]
+    resources: ["clustertemplates", "resources", "clusteraccesses", "importedclusters", "importedcontrolplanes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["fleet.cattle.io"]
     resources: ["clusters", "helmops", "bundles", "bundledeployments", "gitrepos"]

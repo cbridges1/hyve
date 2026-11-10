@@ -17,6 +17,7 @@ import ClusterList from './pages/ClusterList'
 import CreateCluster from './pages/CreateCluster'
 import Environments from './pages/Environments'
 import GenericList from './pages/GenericList'
+import ImportCluster from './pages/ImportCluster'
 import ImportPage from './pages/ImportPage'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
@@ -105,6 +106,7 @@ export default function App() {
           <Route path="overview" element={<Overview />} />
           <Route path="clusters" element={<ClusterList />} />
           <Route path="clusters/new" element={<CreateCluster />} />
+          <Route path="clusters/import" element={<ImportCluster />} />
           <Route path="clusters/local/:tab?/*" element={<LocalCluster />} />
           <Route path="clusters/:namespace/:name/:tab?/*" element={<ClusterDetail />} />
           <Route path="templates" element={<TemplateList />} />

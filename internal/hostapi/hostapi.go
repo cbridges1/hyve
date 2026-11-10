@@ -1,14 +1,16 @@
 // Package hostapi is the host's API for what hyve's UI can't do with the
 // Kubernetes API alone, because it's hyve's own Go code: adding a Cluster
 // API provider (which may mean applying hyve's embedded manifests),
-// rendering a template, and converting old templates. The same code runs
-// for 'hyve provider add', 'hyve render' and 'hyve import'. It also streams
+// rendering a template, converting old templates, and importing a cluster
+// (which reaches the cluster from the host). The same code runs for 'hyve
+// provider add', 'hyve render', 'hyve import' and 'hyve cluster import'.
+// It also streams
 // change notifications for the UI's live updates (watch.go).
 //
 // Requests are authenticated with the hyve session, as the
-// /k8s/clusters/local proxy does. Adding a provider runs as the signed-in
-// user (impersonated), so it needs the same RBAC as the CLI; rendering and
-// converting only transform the YAML they're sent.
+// /k8s/clusters/local proxy does. Adding a provider and importing a cluster
+// run as the signed-in user (impersonated), so they need the same RBAC as
+// the CLI; rendering and converting only transform the YAML they're sent.
 package hostapi
 
 import (
@@ -65,6 +67,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/hyve/providers", a.authed(a.addProvider))
 	mux.HandleFunc("POST /v1/hyve/render", a.authed(a.render))
 	mux.HandleFunc("POST /v1/hyve/import", a.authed(a.importTemplates))
+	mux.HandleFunc("POST /v1/hyve/clusters/import", a.authed(a.importCluster))
 	mux.HandleFunc("GET /v1/hyve/watch", a.authed(a.watchStream))
 	if a.Shells != nil {
 		mux.HandleFunc("POST /v1/hyve/shells", a.authed(a.startShell))

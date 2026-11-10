@@ -60,7 +60,8 @@ func (h *FillCluster) Handle(ctx context.Context, req admission.Request) admissi
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
-	if t == nil {
+	if t == nil || clusters.Origin(c) == clusters.OriginImported {
+		// An imported cluster has no topology to fill.
 		return admission.Allowed("")
 	}
 	class := object(clusters.ClusterClassGVR.GroupVersion().WithKind("ClusterClass"))

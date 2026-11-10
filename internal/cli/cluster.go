@@ -37,7 +37,7 @@ func ClusterCmd() *cobra.Command {
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
 	addTemplateNSFlag(cmd)
-	cmd.AddCommand(clusterCreateCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(),
+	cmd.AddCommand(clusterCreateCmd(), clusterImportCmd(), clusterAdoptCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(),
 		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterUpgradeCmd(), clusterResourceCmd())
 	return cmd
 }
@@ -413,6 +413,7 @@ is in no environment.`,
 				head = "ENVIRONMENT\t" + head
 			}
 			fmt.Fprintln(w, head)
+			importedVersions := s.importedVersions(cmd.Context(), ns)
 			// The host first, whatever the environment: it's in none.
 			l := s.localSummary(cmd.Context())
 			row := fmt.Sprintf("%s\t-\t-\t%s\thost\t-\t%s", login.LocalCluster, l.version, l.age)
@@ -424,6 +425,9 @@ is in no environment.`,
 				c := &list.Items[i]
 				class, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "classRef", "name")
 				version, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "version")
+				if clusters.Origin(c) == clusters.OriginImported {
+					class, version = "(imported)", importedVersions[c.GetNamespace()+"/"+c.GetName()]
+				}
 				tn, _ := templates.Ref(c)
 				row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", c.GetName(), dash(tn), dash(class), dash(version), clusters.Phase(c), expiresAt(c), clusters.Age(c.GetCreationTimestamp().Time))
 				if all {
@@ -436,6 +440,21 @@ is in no environment.`,
 	}
 	cmd.Flags().BoolVarP(&all, "all-environments", "A", false, "list clusters in every environment")
 	return cmd
+}
+
+// importedVersions are the Kubernetes versions imported clusters report,
+// by namespace/name.
+func (s *session) importedVersions(ctx context.Context, ns string) map[string]string {
+	out := map[string]string{}
+	list, err := s.kube.Dynamic.Resource(clusters.ImportedControlPlaneGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return out
+	}
+	for _, cp := range list.Items {
+		v, _, _ := unstructured.NestedString(cp.Object, "status", "version")
+		out[cp.GetNamespace()+"/"+cp.GetName()] = v
+	}
+	return out
 }
 
 func expiresAt(c *unstructured.Unstructured) string {
@@ -486,6 +505,28 @@ func clusterShowCmd() *cobra.Command {
 			fmt.Printf("Name:          %s\n", c.GetName())
 			fmt.Printf("Environment:   %s\n", c.GetNamespace())
 			fmt.Printf("Template:      %s\n", dash(tn))
+			if clusters.Origin(c) == clusters.OriginImported {
+				fmt.Printf("Origin:        imported (hyve doesn't manage its lifecycle; deleting detaches it)\n")
+				if cp, err := s.kube.Dynamic.Resource(clusters.ImportedControlPlaneGVR).Namespace(c.GetNamespace()).Get(ctx, c.GetName(), metav1.GetOptions{}); err == nil {
+					host, _, _ := unstructured.NestedString(cp.Object, "spec", "controlPlaneEndpoint", "host")
+					port, _, _ := unstructured.NestedInt64(cp.Object, "spec", "controlPlaneEndpoint", "port")
+					v, _, _ := unstructured.NestedString(cp.Object, "status", "version")
+					fmt.Printf("API server:    %s:%d\n", host, port)
+					fmt.Printf("Version:       %s\n", dash(v))
+					for _, l := range clusters.Conditions(cp) {
+						fmt.Printf("Reachable:     %s\n", l)
+					}
+				}
+				fmt.Printf("Phase:         %s\n", clusters.Phase(c))
+				fmt.Println("Conditions:")
+				for _, l := range clusters.Conditions(c) {
+					fmt.Println("  " + l)
+				}
+				return nil
+			}
+			if clusters.Origin(c) == clusters.OriginAdopted {
+				fmt.Printf("Origin:        adopted\n")
+			}
 			fmt.Printf("Class:         %s/%s\n", classNS, topo("classRef", "name"))
 			fmt.Printf("Expires:       %s\n", expiresAt(c))
 			fmt.Printf("Version:       %s\n", topo("version"))
@@ -556,10 +597,18 @@ func clusterDeleteCmd() *cobra.Command {
 				return errLocal()
 			}
 			ri := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(ns)
+			c, err := s.getCluster(ctx, name)
+			if err != nil {
+				return err
+			}
 			if err := ri.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 				return err
 			}
-			logf("Deleting cluster %s in environment %s", name, ns)
+			if clusters.Origin(c) == clusters.OriginImported {
+				logf("Detaching imported cluster %s in environment %s (the cluster itself is left running)", name, ns)
+			} else {
+				logf("Deleting cluster %s in environment %s", name, ns)
+			}
 			if !wait {
 				return nil
 			}
@@ -658,6 +707,9 @@ func clusterScaleCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if clusters.Origin(c) == clusters.OriginImported {
+				return fmt.Errorf("cluster %s is imported: hyve doesn't scale it", c.GetName())
+			}
 			if cc {
 				if err := unstructured.SetNestedField(c.Object, controlPlane, "spec", "topology", "controlPlane", "replicas"); err != nil {
 					return err
@@ -723,6 +775,9 @@ kubernetesVersion keeps its clusters at its own.`,
 			c, err := s.getCluster(ctx, args[0])
 			if err != nil {
 				return err
+			}
+			if clusters.Origin(c) == clusters.OriginImported {
+				return fmt.Errorf("cluster %s is imported: hyve doesn't upgrade it", c.GetName())
 			}
 			cur, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "version")
 			if cur == version {

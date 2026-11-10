@@ -25,6 +25,18 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["clusteraccesses"]
     verbs: ["create"]
+  # Imported clusters' infrastructure and control plane.
+  - apiGroups: ["hyve.io"]
+    resources: ["importedclusters", "importedcontrolplanes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["hyve.io"]
+    resources: ["importedclusters/status", "importedcontrolplanes/status"]
+    verbs: ["get", "patch", "update"]
+  # An imported cluster's template in another namespace reaches it through
+  # a BundleNamespaceMapping, as CAAPF makes for ClusterClass clusters.
+  - apiGroups: ["fleet.cattle.io"]
+    resources: ["bundlenamespacemappings"]
+    verbs: ["get", "create"]
   - apiGroups: ["hyve.io"]
     resources: ["clustertemplates/status", "resources/status", "clusterresources/status", "clusteraccesses/status"]
     verbs: ["get", "patch", "update"]

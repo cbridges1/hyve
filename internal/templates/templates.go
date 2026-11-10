@@ -64,6 +64,17 @@ type Spec struct {
 	Schedule        string            `json:"schedule,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
 	Resources       []resources.Entry `json:"resources,omitempty"`
+	Adopt           *Adopt            `json:"adopt,omitempty"`
+}
+
+// Adopt is how a template adopts an existing cluster through its
+// ClusterClass's provider ('hyve cluster adopt'): the variable that takes
+// the cluster's ID, and variables set in place of the template's on an
+// adopted cluster (null leaves one unset, so the provider keeps what the
+// cluster has).
+type Adopt struct {
+	IDVariable string         `json:"idVariable"`
+	Variables  map[string]any `json:"variables,omitempty"`
 }
 
 type ClassRef struct {
@@ -148,12 +159,37 @@ func (e *LockedError) Error() string {
 	return fmt.Sprintf("ClusterTemplate %s locks %s: they must keep the template's values", e.Template, strings.Join(e.Names, ", "))
 }
 
+// Effective is the template as it applies to c: for an adopted cluster,
+// with the adopt variables in place of the template's and no expiry
+// schedule; otherwise t itself.
+func (t *Template) Effective(c *unstructured.Unstructured) *Template {
+	if clusters.Origin(c) != clusters.OriginAdopted || t.Spec.Adopt == nil {
+		return t
+	}
+	e := *t
+	e.Spec.Variables = map[string]any{}
+	for k, v := range t.Spec.Variables {
+		e.Spec.Variables[k] = v
+	}
+	for k, v := range t.Spec.Adopt.Variables {
+		e.Spec.Variables[k] = v
+	}
+	e.Spec.Schedule = ""
+	return &e
+}
+
 // Fill completes a Cluster labelled with t, as it's created: the class
 // (and its namespace when it's another), version, control plane, workers,
 // variables, labels and expiry. Whatever the Cluster already sets is kept,
 // except that it can't use another class or change a locked variable.
-// now is the creation time, for the template's schedule.
+// now is the creation time, for the template's schedule. An imported
+// cluster has no topology to fill: only its labels are set.
 func Fill(c *unstructured.Unstructured, t *Template, class *unstructured.Unstructured, now time.Time) error {
+	if clusters.Origin(c) == clusters.OriginImported {
+		Label(c, t)
+		return nil
+	}
+	t = t.Effective(c)
 	ref := t.Spec.ClusterClassRef.Name
 	if have, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "classRef", "name"); have != "" && have != ref {
 		return fmt.Errorf("ClusterTemplate %s builds from ClusterClass %s, not %s", t.Name, ref, have)
@@ -283,6 +319,10 @@ func Fill(c *unstructured.Unstructured, t *Template, class *unstructured.Unstruc
 // CheckLocked returns the locked variables whose value on the Cluster
 // differs from the template's.
 func CheckLocked(t *Template, c *unstructured.Unstructured) []string {
+	if clusters.Origin(c) == clusters.OriginImported {
+		return nil
+	}
+	t = t.Effective(c)
 	have := clusters.Variables(c)
 	var bad []string
 	for _, l := range t.Spec.LockedVariables {
@@ -389,6 +429,9 @@ func Validate(t *Template) error {
 			return fmt.Errorf("resource %q listed twice", r.Name)
 		}
 		seen[r.Name] = true
+	}
+	if a := t.Spec.Adopt; a != nil && a.IDVariable == "" {
+		return fmt.Errorf("adopt.idVariable is required")
 	}
 	for _, l := range t.Spec.LockedVariables {
 		if l == LockVersion {

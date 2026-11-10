@@ -8,6 +8,9 @@
 //     objects aimed at its clusters, and each ClusterResource one aimed at
 //     its cluster;
 //   - expiry: Clusters whose hyve.io/expires-at has passed are deleted;
+//   - imported clusters: the ImportedCluster and ImportedControlPlane of a
+//     cluster 'hyve cluster import' brought in are reported ready while
+//     it answers, and deleting one detaches it (imported.go);
 //   - push delivery: for a child whose fleet-agent can't reach this
 //     cluster, BundleDeployments are deployed from here (push.go).
 package operator
@@ -107,6 +110,9 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 		return err
 	}
 	if err := setupResources(mgr, dc); err != nil {
+		return err
+	}
+	if err := setupImported(mgr); err != nil {
 		return err
 	}
 	// Push delivery, for children whose agent can't reach this cluster.
