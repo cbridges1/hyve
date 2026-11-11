@@ -167,7 +167,7 @@ Which namespace depends on who reads the Secret:
 			}}
 			if _, err := s.kube.Dynamic.Resource(secretGVR).Namespace(ns).Create(cmd.Context(), obj, metav1.CreateOptions{}); err != nil {
 				if apierrors.IsAlreadyExists(err) {
-					return fmt.Errorf("Secret %s/%s exists; change it with 'hyve deploy secret set'", ns, args[0])
+					return fmt.Errorf("there's already a Secret %s/%s; change it with 'hyve deploy secret set'", ns, args[0])
 				}
 				return err
 			}

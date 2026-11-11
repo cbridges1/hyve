@@ -38,7 +38,17 @@ step "creating clusters"
 docker network create "$net" >/dev/null 2>&1 || true
 k3d cluster create "$mgmt" --network "$net" --no-lb --k3s-arg "--disable=traefik@server:0" --kubeconfig-update-default=false --wait >/dev/null
 k3d cluster create "$child" --network "$net" --no-lb --k3s-arg "--disable=traefik@server:0" --kubeconfig-update-default=false --wait >/dev/null
-k3d image import -c "$mgmt" "$image" >/dev/null
+# k3d can log a failed import and still exit 0 (its tools container
+# losing the tarball), so import straight into the node and check the
+# image is there, a few times.
+for try in 1 2 3; do
+  k3d image import --mode direct -c "$mgmt" "$image" >/dev/null 2>&1 || true
+  if [ -n "$(docker exec "k3d-$mgmt-server-0" crictl images -q "docker.io/library/$image" 2>/dev/null)" ]; then
+    break
+  fi
+  [ "$try" = 3 ] && { echo "importing $image into $mgmt failed" >&2; exit 1; }
+  sleep 5
+done
 k3d kubeconfig get "$mgmt" > "$work/mgmt.kubeconfig"
 k3d kubeconfig get "$child" | sed -E "s#server: https://[^ ]+#server: https://k3d-$child-server-0:6443#" > "$work/child-internal.kubeconfig"
 host="k3d-$mgmt-server-0"

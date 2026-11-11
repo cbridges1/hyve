@@ -281,13 +281,13 @@ func templateListCmd() *cobra.Command {
 			sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].GetName() < list.Items[j].GetName() })
 			items, _ := delivery.List(cmd.Context(), s.kube.Dynamic, s.templateNS(), []string{s.templateNS()})
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "NAME\tCLASS\tVERSION\tSCHEDULE\tLOCKED\tDEPLOYMENTS\tDESCRIPTION")
+			_, _ = fmt.Fprintln(w, "NAME\tCLASS\tVERSION\tSCHEDULE\tLOCKED\tDEPLOYMENTS\tDESCRIPTION")
 			for i := range list.Items {
 				t, err := templates.FromUnstructured(&list.Items[i])
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", t.Name, t.Spec.ClusterClassRef.Name, dash(t.Spec.Version), dash(t.Spec.Schedule),
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", t.Name, t.Spec.ClusterClassRef.Name, dash(t.Spec.Version), dash(t.Spec.Schedule),
 					dash(strings.Join(t.Spec.LockedVariables, ",")), len(delivery.ForTemplate(items, t.Name, t.Spec.ClusterClassRef.Name)), t.Spec.Description)
 			}
 			return w.Flush()

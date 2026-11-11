@@ -118,7 +118,7 @@ func (s *session) progress(ctx context.Context, kind, ns, name string) (delivery
 	if err != nil {
 		return delivery.Progress{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return delivery.Progress{}, err
@@ -148,10 +148,10 @@ func printProgress(out io.Writer, p delivery.Progress) {
 			continue
 		}
 		if n == 0 {
-			fmt.Fprintln(w, "CLUSTER\tSTATE\tMESSAGE")
+			_, _ = fmt.Fprintln(w, "CLUSTER\tSTATE\tMESSAGE")
 		}
 		n++
-		fmt.Fprintf(w, "%s\t%s\t%s\n", c.Cluster, c.State, dash(oneLine(c.Message)))
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", c.Cluster, c.State, dash(oneLine(c.Message)))
 	}
 	_ = w.Flush()
 }

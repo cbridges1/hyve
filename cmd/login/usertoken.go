@@ -89,13 +89,13 @@ var userTokenListCmd = &cobra.Command{
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "USER\tNAME\tEXPIRES\tLAST USED\tMADE BY\tDESCRIPTION")
+		_, _ = fmt.Fprintln(w, "USER\tNAME\tEXPIRES\tLAST USED\tMADE BY\tDESCRIPTION")
 		for _, t := range list {
 			used := "never"
 			if t.LastUsed != nil {
 				used = t.LastUsed.Local().Format(time.DateTime)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", t.User, t.Name, t.ExpiresAt.Local().Format(time.DateOnly), used, t.CreatedBy, t.Description)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", t.User, t.Name, t.ExpiresAt.Local().Format(time.DateOnly), used, t.CreatedBy, t.Description)
 		}
 		return w.Flush()
 	},
@@ -222,13 +222,13 @@ var userTrustListCmd = &cobra.Command{
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "NAME\tISSUER\tAUDIENCE\tCLAIMS")
+		_, _ = fmt.Fprintln(w, "NAME\tISSUER\tAUDIENCE\tCLAIMS")
 		for _, t := range u.Spec.TrustedCI {
 			aud := t.Audience
 			if aud == "" {
 				aud = signin.DefaultCIAudience
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Name, t.Issuer, aud, claimList(t.Claims))
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Name, t.Issuer, aud, claimList(t.Claims))
 		}
 		return w.Flush()
 	},

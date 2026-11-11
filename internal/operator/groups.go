@@ -167,7 +167,7 @@ func (g *Groups) Reconcile(ctx context.Context, _ reconcile.Request) (reconcile.
 		}
 		keep[w.GetNamespace()+"/"+w.GetName()] = true
 		w.SetManagedFields(nil)
-		if err := g.Client.Patch(ctx, w, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+		if err := g.Client.Apply(ctx, client.ApplyConfigurationFromUnstructured(w), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue // the namespace is going away
 			}

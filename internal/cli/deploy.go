@@ -97,7 +97,7 @@ func (s *session) findDeployment(ctx context.Context, name, ns string) (*deliver
 	for _, f := range found {
 		where = append(where, f.Namespace)
 	}
-	return nil, fmt.Errorf("Deployment %q is in %s: give -n", name, strings.Join(where, " and "))
+	return nil, fmt.Errorf("there's a Deployment %q in %s: give -n", name, strings.Join(where, " and "))
 }
 
 func deployListCmd() *cobra.Command {
@@ -124,13 +124,13 @@ func deployListCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "NAMESPACE\tNAME\tSOURCE\tTARGETS\tROLLOUT\tREADY\tSTATE")
+			_, _ = fmt.Fprintln(w, "NAMESPACE\tNAME\tSOURCE\tTARGETS\tROLLOUT\tREADY\tSTATE")
 			for _, it := range items {
 				state := it.State
 				if it.Paused {
 					state = "Paused " + state
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", it.Namespace, it.Name, it.Source, dash(delivery.DescribeTargets(it.Targets)),
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", it.Namespace, it.Name, it.Source, dash(delivery.DescribeTargets(it.Targets)),
 					it.Rollout, dash(it.Ready), dash(strings.TrimSpace(state)))
 			}
 			return w.Flush()
@@ -182,9 +182,9 @@ func deployShowCmd() *cobra.Command {
 				fmt.Println("Fleet hasn't taken in its latest change yet.")
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "CLUSTER\tSTATE\tMESSAGE")
+			_, _ = fmt.Fprintln(w, "CLUSTER\tSTATE\tMESSAGE")
 			for _, cs := range p.Clusters {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", cs.Cluster, cs.State, dash(oneLine(cs.Message)))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", cs.Cluster, cs.State, dash(oneLine(cs.Message)))
 			}
 			return w.Flush()
 		},
@@ -736,7 +736,7 @@ func clusterDeploymentsCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "NAMESPACE\tNAME\tSOURCE\tWHY\tSTATE\tMESSAGE")
+			_, _ = fmt.Fprintln(w, "NAMESPACE\tNAME\tSOURCE\tWHY\tSTATE\tMESSAGE")
 			for i := range items {
 				it := &items[i]
 				var why []string
@@ -770,7 +770,7 @@ func clusterDeploymentsCmd() *cobra.Command {
 				if state == "" {
 					state = "NotYet"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Namespace, it.Name, it.Source, dash(strings.Join(why, ", ")), state, dash(oneLine(msg)))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Namespace, it.Name, it.Source, dash(strings.Join(why, ", ")), state, dash(oneLine(msg)))
 			}
 			return w.Flush()
 		},

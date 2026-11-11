@@ -109,7 +109,7 @@ func (m *Migrate) Template(ctx context.Context, req reconcile.Request) (reconcil
 	}
 	status := []byte(`{"status":{"resources":null,"missingSecrets":null}}`)
 	_ = m.Client.Status().Patch(ctx, u, client.RawPatch(types.MergePatchType, status))
-	log.FromContext(ctx).Info("migrated template resources to Deployments", "template", req.NamespacedName.String(), "count", len(t.Spec.Resources))
+	log.FromContext(ctx).Info("migrated template resources to Deployments", "template", req.String(), "count", len(t.Spec.Resources))
 	return reconcile.Result{}, nil
 }
 
@@ -125,7 +125,7 @@ func (m *Migrate) ClusterResource(ctx context.Context, req reconcile.Request) (r
 	clusterName, _, _ := unstructured.NestedString(u.Object, "spec", "clusterName")
 	e, err := resources.EntryFromSpec(u)
 	if err != nil || clusterName == "" {
-		log.FromContext(ctx).Info("can't migrate ClusterResource", "name", req.NamespacedName.String(), "error", err)
+		log.FromContext(ctx).Info("can't migrate ClusterResource", "name", req.String(), "error", err)
 		return reconcile.Result{}, nil
 	}
 	if n := u.GetLabels()[resources.LabelResource]; n != "" {
@@ -152,7 +152,7 @@ func (m *Migrate) ClusterResource(ctx context.Context, req reconcile.Request) (r
 	if err := m.Client.Delete(ctx, u); client.IgnoreNotFound(err) != nil {
 		return reconcile.Result{}, err
 	}
-	log.FromContext(ctx).Info("migrated ClusterResource to a Deployment", "name", req.NamespacedName.String())
+	log.FromContext(ctx).Info("migrated ClusterResource to a Deployment", "name", req.String())
 	return reconcile.Result{}, nil
 }
 
@@ -164,7 +164,7 @@ func (m *Migrate) apply(ctx context.Context, e resources.Entry, name, ns string,
 	if err != nil {
 		return err
 	}
-	return m.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership)
+	return m.Client.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(FieldManager), client.ForceOwnership)
 }
 
 // hasKind reports whether the API server serves a kind.

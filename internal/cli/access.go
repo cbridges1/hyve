@@ -210,7 +210,7 @@ func accessListCmd() *cobra.Command {
 					subs, _, _ := unstructured.NestedSlice(rb.Object, "subjects")
 					for _, sub := range subs {
 						m := sub.(map[string]any)
-						fmt.Fprintf(w, "%s\t%s %s\tdeployer\ttemplates (%s)\t-\n", rb.GetName(), strings.ToLower(fmt.Sprint(m["kind"])), strings.TrimPrefix(fmt.Sprint(m["name"]), "hyve:"), s.templateNS())
+						_, _ = fmt.Fprintf(w, "%s\t%s %s\tdeployer\ttemplates (%s)\t-\n", rb.GetName(), strings.ToLower(fmt.Sprint(m["kind"])), strings.TrimPrefix(fmt.Sprint(m["name"]), "hyve:"), s.templateNS())
 					}
 				}
 			}
