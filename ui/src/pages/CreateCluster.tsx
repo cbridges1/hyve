@@ -33,7 +33,8 @@ function fromText(s: string): unknown {
 type Row = { name: string; value: string; initial: string; locked: boolean };
 
 // A template's variables as they apply to a new cluster, or to an adopted
-// one: its adopt.variables in place (null drops one), as templates.Effective.
+// one: its adopt.variables in place, without its adopt.unset (or a null), as
+// templates.Effective.
 function rowsFor(spec: any, adopting: boolean): Row[] {
   const locked: string[] = spec.lockedVariables || [];
   const vars: Record<string, unknown> = { ...(spec.variables || {}) };
@@ -42,6 +43,8 @@ function rowsFor(spec: any, adopting: boolean): Row[] {
       if (v === null) delete vars[k];
       else vars[k] = v;
     }
+    for (const k of (spec.adopt?.unset as string[] | undefined) || [])
+      delete vars[k];
   }
   return Object.entries(vars).map(([n, v]) => ({
     name: n,

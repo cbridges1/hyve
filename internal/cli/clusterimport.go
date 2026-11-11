@@ -143,8 +143,9 @@ be the cluster's own name. From then on hyve manages it like any other:
 scaling, upgrades and deletion go through the provider.
 
 The template's adopt.variables replace its variables on an adopted
-cluster: usually so the provider leaves its size alone (nodeCount: null)
-and keeps it when the hyve cluster is deleted (deletionPolicy: Retain).
+cluster, and adopt.unset leaves some unset: usually so the provider keeps
+the cluster when the hyve cluster is deleted (deletionPolicy: Retain) and
+leaves its size alone (unset: [nodeCount]).
 An adopted cluster takes no expiry schedule; --ttl gives it one.
 
 Give --version as the cluster's Kubernetes version: the template's is

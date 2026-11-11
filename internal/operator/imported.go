@@ -130,7 +130,7 @@ func (r *ImportedControlPlane) Reconcile(ctx context.Context, req reconcile.Requ
 	}
 	cfg, err := clientcmd.Load(kubeconfig)
 	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("Secret %s-kubeconfig: %w", name, err)
+		return reconcile.Result{}, fmt.Errorf("secret %s-kubeconfig: %w", name, err)
 	}
 	server := ""
 	if ctxt := cfg.Contexts[cfg.CurrentContext]; ctxt != nil && cfg.Clusters[ctxt.Cluster] != nil {
@@ -138,7 +138,7 @@ func (r *ImportedControlPlane) Reconcile(ctx context.Context, req reconcile.Requ
 	}
 	host, port, err := importer.Endpoint(server)
 	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("Secret %s-kubeconfig: %w", name, err)
+		return reconcile.Result{}, fmt.Errorf("secret %s-kubeconfig: %w", name, err)
 	}
 	h, _, _ := unstructured.NestedString(cp.Object, "spec", "controlPlaneEndpoint", "host")
 	p, _, _ := unstructured.NestedInt64(cp.Object, "spec", "controlPlaneEndpoint", "port")

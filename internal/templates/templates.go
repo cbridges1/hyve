@@ -69,12 +69,15 @@ type Spec struct {
 
 // Adopt is how a template adopts an existing cluster through its
 // ClusterClass's provider ('hyve cluster adopt'): the variable that takes
-// the cluster's ID, and variables set in place of the template's on an
-// adopted cluster (null leaves one unset, so the provider keeps what the
-// cluster has).
+// the cluster's ID, variables set in place of the template's on an adopted
+// cluster, and variables left unset there, so the provider keeps what the
+// cluster has. A null in Variables also leaves one unset, but kubectl apply
+// and Helm (so Fleet) treat a null as "remove this key" and drop it: Unset
+// is what survives them.
 type Adopt struct {
 	IDVariable string         `json:"idVariable"`
 	Variables  map[string]any `json:"variables,omitempty"`
+	Unset      []string       `json:"unset,omitempty"`
 }
 
 type ClassRef struct {
@@ -173,6 +176,9 @@ func (t *Template) Effective(c *unstructured.Unstructured) *Template {
 	}
 	for k, v := range t.Spec.Adopt.Variables {
 		e.Spec.Variables[k] = v
+	}
+	for _, k := range t.Spec.Adopt.Unset {
+		e.Spec.Variables[k] = nil
 	}
 	e.Spec.Schedule = ""
 	return &e

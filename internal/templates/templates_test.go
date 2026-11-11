@@ -206,7 +206,7 @@ func TestLockedVersion(t *testing.T) {
 // (null leaves one to the cluster) and no expiry schedule.
 func TestFillAdopted(t *testing.T) {
 	tp := tmpl()
-	tp.Spec.Adopt = &Adopt{IDVariable: "clusterID", Variables: map[string]any{"machineType": nil, "deletionPolicy": "Retain"}}
+	tp.Spec.Adopt = &Adopt{IDVariable: "clusterID", Variables: map[string]any{"machineType": nil, "deletionPolicy": "Retain"}, Unset: []string{"project"}}
 	c := clusters.New("web", "capi-clusters")
 	c.SetAnnotations(map[string]string{clusters.AnnotationAdopted: "true"})
 	_ = clusters.SetVariables(c, map[string]any{"clusterID": "abc"})
@@ -214,7 +214,10 @@ func TestFillAdopted(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := clusters.Variables(c)
-	if _, ok := v["machineType"]; ok || v["deletionPolicy"] != "Retain" || v["project"] != "p1" || v["clusterID"] != "abc" {
+	if _, ok := v["machineType"]; ok || v["deletionPolicy"] != "Retain" || v["clusterID"] != "abc" {
+		t.Errorf("variables = %v", v)
+	}
+	if _, ok := v["project"]; ok {
 		t.Errorf("variables = %v", v)
 	}
 	if got := c.GetAnnotations()[AnnotationExpiresAt]; got != "" {

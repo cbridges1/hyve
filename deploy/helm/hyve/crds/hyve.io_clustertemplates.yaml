@@ -109,8 +109,13 @@ spec:
                       description: The ClusterClass variable the provider adopts a cluster by (e.g. clusterID).
                     variables:
                       type: object
-                      description: Set on adopted clusters in place of the template's variables; null leaves one unset, so the cluster keeps its own (e.g. nodeCount).
+                      description: Set on adopted clusters in place of the template's variables.
                       x-kubernetes-preserve-unknown-fields: true
+                    unset:
+                      type: array
+                      description: Variables left unset on adopted clusters, so the provider keeps the cluster's own (e.g. nodeCount). Use this rather than a null in variables, which kubectl apply and Helm drop.
+                      items:
+                        type: string
                 resources:
                   type: array
                   description: What Fleet delivers to every cluster made from this template.

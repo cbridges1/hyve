@@ -91,7 +91,7 @@ func Prepare(ctx context.Context, cfg *rest.Config, server string) (*Access, err
 		Type: corev1.SecretTypeServiceAccountToken,
 	}, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return nil, fmt.Errorf("Secret %s/%s: %w", AccessNamespace, tokenSecret, err)
+		return nil, fmt.Errorf("secret %s/%s: %w", AccessNamespace, tokenSecret, err)
 	}
 	var token []byte
 	err = kube.Poll(ctx, time.Second, 30*time.Second, nil, func(ctx context.Context) (bool, string, error) {
@@ -145,7 +145,7 @@ func Create(ctx context.Context, dc dynamic.Interface, c *unstructured.Unstructu
 	}}
 	secrets := dc.Resource(corev1.SchemeGroupVersion.WithResource("secrets")).Namespace(ns)
 	if _, err := secrets.Create(ctx, sec, metav1.CreateOptions{FieldManager: kube.FieldManager}); err != nil {
-		return fmt.Errorf("Secret %s-kubeconfig: %w", name, err)
+		return fmt.Errorf("secret %s-kubeconfig: %w", name, err)
 	}
 	for _, gvr := range []struct {
 		r    dynamic.NamespaceableResourceInterface

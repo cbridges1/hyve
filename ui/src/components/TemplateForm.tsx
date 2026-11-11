@@ -78,16 +78,21 @@ export function TemplateForm({
   });
   // adopt: the variable 'hyve cluster adopt' puts an existing cluster's ID
   // in, and what adopted clusters get in place of the variables (empty: the
-  // cluster keeps its own).
+  // cluster keeps its own, saved in adopt.unset).
   const [adoptVar, setAdoptVar] = useState<string>(
     spec.adopt?.idVariable || "",
   );
   const [adoptRows, setAdoptRows] = useState<{ name: string; value: string }[]>(
-    () =>
-      Object.entries(spec.adopt?.variables || {}).map(([n, v]) => ({
+    () => [
+      ...Object.entries(spec.adopt?.variables || {}).map(([n, v]) => ({
         name: n,
         value: toText(v),
       })),
+      ...((spec.adopt?.unset as string[] | undefined) || []).map((n) => ({
+        name: n,
+        value: "",
+      })),
+    ],
   );
   const [labels, setLabels] = useState<Record<string, string>>({
     ...(spec.labels || {}),
@@ -238,13 +243,20 @@ export function TemplateForm({
       ? JSON.parse(JSON.stringify(resources))
       : undefined;
     if (adoptVar) {
+      // Empty goes in unset, not as a null: kubectl apply and Helm drop nulls.
       const av: Record<string, unknown> = {};
+      const unset: string[] = [];
       adoptRows
         .filter((r) => r.name)
-        .forEach((r) => (av[r.name] = fromText(r.value)));
+        .forEach((r) =>
+          r.value.trim() === ""
+            ? unset.push(r.name)
+            : (av[r.name] = fromText(r.value)),
+        );
       s.adopt = {
         idVariable: adoptVar,
         ...(Object.keys(av).length ? { variables: av } : {}),
+        ...(unset.length ? { unset } : {}),
       };
     } else delete s.adopt;
     o.spec = s;
