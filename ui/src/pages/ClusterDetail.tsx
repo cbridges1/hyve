@@ -1,12 +1,12 @@
 // A cluster, the console's way: its fields and conditions in cards, with
 // scale (control plane and each worker pool), expiry, a kubeconfig, YAML
-// and delete: what 'hyve cluster' does. What runs on it (its template's
-// resources and its extras) is its Resources tab, .../<name>/resources.
+// and delete: what 'hyve cluster' does. What's deployed on it, and why, is
+// its Deployments tab, .../<name>/deployments.
 // An imported cluster has no size or version to change, and deleting it
 // detaches it.
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ClusterResources } from "../components/ClusterResources";
+import { ClusterDeployments } from "../components/ClusterDeployments";
 import {
   BackLink,
   Card,
@@ -24,6 +24,7 @@ import { clusterStatus, download, expiry, kubeconfig } from "../lib/format";
 import { useAction, useLoad } from "../lib/hooks";
 import { kube, type Obj, patch, remove, save } from "../lib/kube";
 import { paths } from "../lib/routes";
+import { ResourceMonitor } from "../components/ResourceMonitor";
 import { openShell } from "../lib/kubectlShell";
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from "../lib/types";
 
@@ -226,7 +227,7 @@ export default function ClusterDetail() {
         [
           "Template",
           l[LABELS.TEMPLATE]
-            ? `${l[LABELS.TEMPLATE_NAMESPACE] || m.namespace}/${l[LABELS.TEMPLATE]} (its resources)`
+            ? `${l[LABELS.TEMPLATE_NAMESPACE] || m.namespace}/${l[LABELS.TEMPLATE]} (its deployments)`
             : "—",
         ],
         [
@@ -287,9 +288,9 @@ export default function ClusterDetail() {
   const tabs = [
     { label: "Overview", to: paths.cluster(namespace, name), active: !tab },
     {
-      label: "Resources",
-      to: paths.cluster(namespace, name, "resources"),
-      active: tab === "resources",
+      label: "Deployments",
+      to: paths.cluster(namespace, name, "deployments"),
+      active: tab === "deployments",
     },
     {
       label: "Explorer",
@@ -362,9 +363,9 @@ export default function ClusterDetail() {
       <ErrorBanner error={error} />
       <ErrorBanner error={action.error} />
 
-      {tab === "resources" ? (
+      {tab === "deployments" ? (
         <Card>
-          <ClusterResources cluster={value} />
+          <ClusterDeployments cluster={value} />
         </Card>
       ) : tab === "explorer" ? (
         <Suspense fallback={<Loading />}>
@@ -372,6 +373,9 @@ export default function ClusterDetail() {
         </Suspense>
       ) : (
         <>
+          {value.status?.phase === "Provisioned" && (
+            <ResourceMonitor clusterId={`${namespace}.${name}`} />
+          )}
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="lg:col-span-2">
               <Card title="Details">

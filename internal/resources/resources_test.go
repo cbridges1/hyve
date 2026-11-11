@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func helmEntry() Entry {
@@ -16,51 +14,6 @@ func helmEntry() Entry {
 			"repo": "https://kubernetes-sigs.github.io/external-dns/", "chart": "external-dns", "version": "1.19.0",
 			"values": map[string]any{"provider": map[string]any{"name": "cloudflare"}, "txtOwnerId": "${ .ClusterName }"},
 		}},
-	}
-}
-
-func TestTemplateObject(t *testing.T) {
-	o := Owner{Kind: OwnerTemplate, Name: "civo", Namespace: "capi-clusters", UID: "u1"}
-	obj, err := Object(helmEntry(), o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if obj.GetKind() != "HelmOp" || obj.GetName() != "tpl-civo-external-dns" || obj.GetNamespace() != "capi-clusters" {
-		t.Errorf("object = %s %s/%s", obj.GetKind(), obj.GetNamespace(), obj.GetName())
-	}
-	get := func(f ...string) any { v, _, _ := unstructured.NestedFieldNoCopy(obj.Object, f...); return v }
-	if get("spec", "helm", "releaseName") != "external-dns" || get("spec", "defaultNamespace") != "external-dns" {
-		t.Errorf("spec = %v", obj.Object["spec"])
-	}
-	if get("spec", "helm", "values", "txtOwnerId") != "${ .ClusterName }" {
-		t.Error("Fleet's per-cluster templating must pass through untouched")
-	}
-	ts := get("spec", "targets").([]any)
-	ml := ts[0].(map[string]any)["clusterSelector"].(map[string]any)["matchLabels"].(map[string]any)
-	if ml[LabelTemplate] != "civo" || ml[LabelTemplateNamespace] != "capi-clusters" {
-		t.Errorf("targets = %v", ts)
-	}
-	ds := get("spec", "downstreamResources").([]any)
-	if len(ds) != 1 || ds[0].(map[string]any)["name"] != "cloudflare-dns" || ds[0].(map[string]any)["kind"] != "Secret" {
-		t.Errorf("downstreamResources = %v", ds)
-	}
-	if refs := obj.GetOwnerReferences(); len(refs) != 1 || refs[0].Kind != OwnerTemplate || refs[0].UID != "u1" {
-		t.Errorf("owner = %v", refs)
-	}
-}
-
-func TestClusterResourceObject(t *testing.T) {
-	e := Entry{Name: "web-podinfo", GitRepo: map[string]any{"repo": "https://example.com/apps.git", "paths": []any{"podinfo"}}, Namespace: "apps"}
-	obj, err := Object(e, Owner{Kind: OwnerClusterResource, Name: "web-podinfo", Namespace: "prod", ClusterName: "web"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ts, _, _ := unstructured.NestedSlice(obj.Object, "spec", "targets")
-	if obj.GetName() != "web-podinfo" || ts[0].(map[string]any)["clusterName"] != "web" {
-		t.Errorf("object %s targets %v", obj.GetName(), ts)
-	}
-	if ns, _, _ := unstructured.NestedString(obj.Object, "spec", "targetNamespace"); ns != "apps" {
-		t.Errorf("a gitRepo's namespace goes in targetNamespace, got %q", ns)
 	}
 }
 

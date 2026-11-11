@@ -8,7 +8,6 @@ import type { Obj } from '../lib/kube'
 import { isUserRepo, REPO_LABEL, shortBundleName } from '../lib/repos'
 import { FLEET } from '../lib/resources'
 import { paths } from '../lib/routes'
-import { LABELS } from '../lib/types'
 import { Banner } from './ui'
 
 export function FleetManaged({ obj }: { obj: Obj }) {
@@ -39,17 +38,20 @@ export function FleetManaged({ obj }: { obj: Obj }) {
     return (
       <Banner tone="warning">
         Fleet deployed this from git: bundle <strong>{shortBundleName(repo, bundle)}</strong> of repo{' '}
-        <Link to={paths.repo(repo.metadata.namespace!, repo.metadata.name)}>{repo.metadata.name}</Link>. {until} Change it in git instead.
+        <Link to={paths.deployment(repo.metadata.namespace!, repo.metadata.name)}>{repo.metadata.name}</Link>. {until} Change it in git instead.
       </Banner>
     )
   }
-  const owner = bundle?.metadata.labels?.[LABELS.OWNER]
-  const ownerKind = bundle?.metadata.labels?.[LABELS.OWNER_KIND]
+  const deployment = bundle && (bundle.metadata.labels?.['fleet.cattle.io/fleet-helm-name'] || bundle.metadata.name)
   return (
     <Banner tone="warning">
       Fleet deployed this (bundle {release}
-      {owner ? `, for hyve's ${ownerKind === 'ClusterTemplate' ? 'template' : 'cluster resource'} ${owner}` : ''}). A change made here lasts
-      until Fleet next deploys it; change it where it's defined instead.
+      {deployment && (
+        <>
+          , of Deployment <Link to={paths.deployment(bundle!.metadata.namespace!, deployment)}>{deployment}</Link>
+        </>
+      )}
+      ). A change made here lasts until Fleet next deploys it; change the Deployment instead.
     </Banner>
   )
 }

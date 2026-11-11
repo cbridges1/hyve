@@ -244,8 +244,8 @@ func providerListCmd() *cobra.Command {
 
 func providerRemoveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "remove NAME",
-		Aliases: []string{"rm"},
+		Use:     "delete NAME",
+		Aliases: []string{"remove", "rm"},
 		Short:   "Uninstall a Cluster API provider (delete its clusters first)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

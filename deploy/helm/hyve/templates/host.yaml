@@ -36,6 +36,12 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+  # A Deployment's progress on its clusters (GET /v1/hyve/deployments/.../
+  # progress), for anyone who can read the Deployment: BundleDeployments
+  # live in each cluster's Fleet namespace, where users have no access.
+  - apiGroups: ["fleet.cattle.io"]
+    resources: ["helmops", "gitrepos", "bundles", "bundledeployments"]
+    verbs: ["get", "list"]
   # Checks whether a caller may set someone else's password, and which
   # namespaces they can work in.
   - apiGroups: ["authorization.k8s.io"]
@@ -72,7 +78,8 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
+    # patch: an API token's last use (internal/signin/tokens.go).
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -139,8 +146,9 @@ subjects:
     kind: User
     name: "hyve:admin"
 ---
-# Lets a hyve user manage Users and set their passwords (`hyve user`).
-# Bound to nobody by default; cluster-admin already includes it.
+# Lets a hyve user manage Users, set their passwords and manage their API
+# tokens (`hyve user`, `hyve user token`). Bound to nobody by default;
+# cluster-admin already includes it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -152,6 +160,9 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["users/password"]
     verbs: ["update"]
+  - apiGroups: ["hyve.io"]
+    resources: ["users/tokens"]
+    verbs: ["list", "create", "delete"]
 ---
 apiVersion: apps/v1
 kind: Deployment

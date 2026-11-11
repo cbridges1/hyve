@@ -1,8 +1,9 @@
-// Creating or updating hyve objects from YAML, as 'hyve template apply'
-// does: ClusterTemplates, shared Resources and ClusterResources, each in
-// its default namespace when it names none (templates and Resources in the
-// template namespace, a ClusterResource in the environment), and
+// Creating or updating objects from YAML, as 'hyve apply' does:
+// ClusterTemplates, Deployments (Fleet GitRepos, HelmOps, Bundles) and
+// ClusterGroups, in the template namespace when they name none, and
 // ClusterClasses with their provider templates, beside the templates.
+// Older templates' resources, shared Resources and ClusterResources are
+// still taken; hyve-controller turns them into Deployments.
 import { loadAll } from 'js-yaml';
 import { ApiError, LOCAL, request } from './api';
 import { allSchemas, kube, loadSchemas, newObject, save } from './kube';
@@ -13,7 +14,13 @@ const KINDS: Record<string, string> = {
   ClusterTemplate: TYPES.TEMPLATE,
   Resource:        TYPES.RESOURCE,
   ClusterResource: TYPES.CLUSTER_RESOURCE,
+  GitRepo:         TYPES.FLEET_GIT_REPO,
+  HelmOp:          TYPES.FLEET_HELM_OP,
+  Bundle:          TYPES.FLEET_BUNDLE,
+  ClusterGroup:    'fleet.cattle.io.clustergroup',
 };
+
+const FLEET_KINDS = new Set(['GitRepo', 'HelmOp', 'Bundle', 'ClusterGroup']);
 
 export interface Applied { object: string; action?: 'created' | 'updated'; error?: string }
 
@@ -64,11 +71,16 @@ async function applyClass(o: any, ns: string): Promise<'created' | 'updated'> {
 
 // What's wrong with an object before it's sent, or ''.
 function check(o: any): string {
-  if (!(o.apiVersion || '').startsWith('hyve.io/') || !KINDS[o.kind]) {
-    return "not a hyve ClusterTemplate, Resource or ClusterResource, or a ClusterClass; apply it with kubectl";
+  const group = (o.apiVersion || '').split('/')[0];
+
+  if (!['hyve.io', 'fleet.cattle.io'].includes(group) || !KINDS[o.kind] || (group === 'fleet.cattle.io') !== FLEET_KINDS.has(o.kind)) {
+    return 'not a ClusterTemplate, a Deployment (Fleet GitRepo, HelmOp or Bundle), a ClusterGroup or a ClusterClass; apply it with kubectl';
   }
   if (!o.metadata?.name) {
     return 'it has no metadata.name';
+  }
+  if (FLEET_KINDS.has(o.kind)) {
+    return '';
   }
   const entries = o.kind === 'ClusterTemplate' ? (o.spec?.resources || []) : [{ ...(o.spec || {}), name: o.metadata.labels?.['hyve.io/resource'] || o.metadata.name }];
 

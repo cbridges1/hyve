@@ -33,13 +33,13 @@ var (
 	importedControlPlaneGVK   = clusters.ImportedControlPlaneGVR.GroupVersion().WithKind(clusters.ImportedControlPlaneKind)
 )
 
-func setupImported(mgr ctrl.Manager) error {
+func setupImported(mgr ctrl.Manager, workspace string) error {
 	if err := ctrl.NewControllerManagedBy(mgr).Named("hyve-imported-cluster").For(object(importedClusterGVK)).
 		Complete(&ImportedCluster{Client: mgr.GetClient(), Now: time.Now}); err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).Named("hyve-imported-control-plane").For(object(importedControlPlaneGVK)).
-		Complete(&ImportedControlPlane{Client: mgr.GetClient(), Now: time.Now})
+		Complete(&ImportedControlPlane{Client: mgr.GetClient(), Now: time.Now, Workspace: workspace})
 }
 
 // ImportedCluster is an imported cluster's infrastructure: there's none to
@@ -71,6 +71,9 @@ func (r *ImportedCluster) Reconcile(ctx context.Context, req reconcile.Request) 
 type ImportedControlPlane struct {
 	Client client.Client
 	Now    func() time.Time
+	// Workspace is the default template namespace, whose Deployments reach
+	// an imported cluster made from no template.
+	Workspace string
 	// Probe returns the version of the cluster a kubeconfig reaches, and
 	// Detach cleans it up; replaced in tests.
 	Probe  func(ctx context.Context, kubeconfig []byte) (string, error)
@@ -171,69 +174,39 @@ func (r *ImportedControlPlane) Reconcile(ctx context.Context, req reconcile.Requ
 	return reconcile.Result{RequeueAfter: 2 * time.Minute}, nil
 }
 
-// ensureMapping lets the bundles of an imported cluster's template, in
-// another namespace, reach it: the BundleNamespaceMapping CAAPF makes for
-// a Cluster whose ClusterClass is in another namespace, which an imported
-// cluster hasn't got. It has the same name and content as CAAPF's, so the
-// two agree; like CAAPF's, it stays when the cluster goes.
+// ensureMapping lets Deployments in the cluster's template namespace (or
+// the default one, for a cluster made from no template) reach it: the
+// BundleNamespaceMapping CAAPF makes for a Cluster whose ClusterClass is in
+// another namespace, which an imported cluster hasn't got. It has the same
+// name and content as CAAPF's, so the two agree; like CAAPF's, it stays
+// when the cluster goes.
 func (r *ImportedControlPlane) ensureMapping(ctx context.Context, ns, name string) error {
 	c := object(clusterGVK)
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, c); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	tn, tns := templates.Ref(c)
-	if tn == "" || tns == ns {
+	from := r.Workspace
+	if tn, tns := templates.Ref(c); tn != "" {
+		from = tns
+	}
+	if from == "" || from == ns {
 		return nil
 	}
 	m := object(bundleNamespaceMappingGVK)
-	err := r.Client.Get(ctx, types.NamespacedName{Namespace: tns, Name: ns}, m)
+	err := r.Client.Get(ctx, types.NamespacedName{Namespace: from, Name: ns}, m)
 	if err == nil || !apierrors.IsNotFound(err) {
 		return err
 	}
-	m.SetNamespace(tns)
+	m.SetNamespace(from)
 	m.SetName(ns)
 	m.Object["bundleSelector"] = map[string]any{}
 	m.Object["namespaceSelector"] = map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": ns}}
 	if err := r.Client.Create(ctx, m); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("BundleNamespaceMapping %s/%s: %w", tns, ns, err)
+		return fmt.Errorf("BundleNamespaceMapping %s/%s: %w", from, ns, err)
 	}
 	// Fleet doesn't retarget bundles when a mapping appears; a change to
 	// one makes it.
-	return r.retarget(ctx, tns, tn)
-}
-
-// retarget touches the bundles in ns aimed at template tn's clusters, so
-// Fleet works out their targets again.
-func (r *ImportedControlPlane) retarget(ctx context.Context, ns, tn string) error {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(bundleGVK.GroupVersion().WithKind("BundleList"))
-	if err := r.Client.List(ctx, list, client.InNamespace(ns)); err != nil {
-		return err
-	}
-	for i := range list.Items {
-		b := &list.Items[i]
-		targets, _, _ := unstructured.NestedSlice(b.Object, "spec", "targets")
-		aimed := false
-		for _, t := range targets {
-			if v, _, _ := unstructured.NestedString(t.(map[string]any), "clusterSelector", "matchLabels", templates.LabelTemplate); v == tn {
-				aimed = true
-			}
-		}
-		if !aimed {
-			continue
-		}
-		patch := client.MergeFrom(b.DeepCopy())
-		ann := b.GetAnnotations()
-		if ann == nil {
-			ann = map[string]string{}
-		}
-		ann["hyve.io/retargeted"] = r.Now().UTC().Format(time.RFC3339)
-		b.SetAnnotations(ann)
-		if err := r.Client.Patch(ctx, b, patch); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
+	return touchBundles(ctx, r.Client, from, r.Now())
 }
 
 // kubeconfig returns a cluster's <name>-kubeconfig Secret's value, or nil

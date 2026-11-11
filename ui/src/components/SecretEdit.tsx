@@ -1,5 +1,5 @@
 // Creates a Secret, or changes an existing one's keys, labels and values,
-// as the signed-in user: 'hyve secrets create' and 'hyve secrets set'. On
+// as the signed-in user: 'hyve deploy secret create' and 'hyve deploy secret set'. On
 // the host by default, or a child cluster's (the explorer's) given its api.
 // Values are hidden while typed unless shown; a file's contents can fill
 // one, binary files included.
@@ -86,8 +86,8 @@ export function SecretEdit({
     : !ns
     ? ''
     : templateNamespaces.includes(ns)
-      ? `${ns} is a template namespace: templates' resources can copy this Secret to clusters. Cluster API providers don't read credentials from here; put those in the environment.`
-      : `${ns} is an environment: providers read credentials here for clusters created in it, and a cluster's extra resources can copy it. Templates' resources can't copy it from here.`
+      ? `${ns} is a template namespace: Deployments living here can copy this Secret to clusters. Cluster API providers don't read credentials from here; put those in the environment.`
+      : `${ns} is an environment: providers read credentials here for clusters created in it, and Deployments living in it can copy it.`
   const owner = (secret?.metadata?.ownerReferences || [])[0]
   const managedBy = owner ? `${owner.kind} ${owner.name}` : ''
   const title = existing ? `Edit Secret ${namespace}/${name}` : 'Create a Secret'

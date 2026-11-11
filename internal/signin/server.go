@@ -51,6 +51,7 @@ type Server struct {
 	userLimit *limiter
 	addrLimit *limiter
 	nsCache   namespacesCache
+	ci        ciVerifier
 }
 
 // NewServer returns a Server with Rancher-like limits on failed sign-ins:
@@ -88,6 +89,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1-public/ui-session", s.handleUISession)
 	mux.HandleFunc("POST /v1-public/local-session", s.handleLocalSession)
 	mux.HandleFunc("PUT /v1/users/{name}/password", s.handleSetPassword)
+	mux.HandleFunc("GET /v1/tokens", s.handleListTokens)
+	mux.HandleFunc("POST /v1/tokens", s.handleCreateToken)
+	mux.HandleFunc("DELETE /v1/tokens/{user}/{name}", s.handleRevokeToken)
+	mux.HandleFunc("POST /v1-public/ci-login", s.handleCILogin)
 	mux.HandleFunc("POST /v1/users/{name}/invite", s.handleInvite)
 	mux.HandleFunc("POST /v1-public/password-reset", s.handleResetRequest)
 	mux.HandleFunc("POST /v1-public/password-reset/confirm", s.handleResetConfirm)

@@ -23,22 +23,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/dynamic"
 )
 
 var (
@@ -46,7 +41,6 @@ var (
 	GitRepoGVR          = schema.GroupVersionResource{Group: "fleet.cattle.io", Version: "v1alpha1", Resource: "gitrepos"}
 	BundleGVR           = schema.GroupVersionResource{Group: "fleet.cattle.io", Version: "v1alpha1", Resource: "bundles"}
 	BundleDeploymentGVR = schema.GroupVersionResource{Group: "fleet.cattle.io", Version: "v1alpha1", Resource: "bundledeployments"}
-	fleetClusterGVR     = schema.GroupVersionResource{Group: "fleet.cattle.io", Version: "v1alpha1", Resource: "clusters"}
 
 	// ResourceGVR and ClusterResourceGVR are hyve's own kinds.
 	ResourceGVR        = schema.GroupVersionResource{Group: "hyve.io", Version: "v1alpha1", Resource: "resources"}
@@ -58,35 +52,21 @@ var FleetGVRs = map[string]schema.GroupVersionResource{"HelmOp": HelmOpGVR, "Git
 
 // Labels hyve puts on the objects it makes, and on Clusters.
 const (
-	labelManagedBy = "app.kubernetes.io/managed-by"
-	managedBy      = "hyve"
 	// LabelResource is the entry's name.
 	LabelResource = "hyve.io/resource"
-	// LabelOwnerKind and LabelOwner name the ClusterTemplate or
-	// ClusterResource an object came from.
-	LabelOwnerKind = "hyve.io/owner-kind"
-	LabelOwner     = "hyve.io/owner"
-	// LabelCluster on a ClusterResource names its cluster, so they can be
-	// listed per cluster.
-	LabelCluster = "hyve.io/cluster"
+	// LabelOwner names the ClusterTemplate or ClusterResource an object
+	// came from.
+	LabelOwner = "hyve.io/owner"
 	// LabelTemplate and LabelTemplateNamespace on a Cluster (and, through
 	// CAAPF, its Fleet cluster) name the template it was made from.
 	LabelTemplate          = "hyve.io/template"
 	LabelTemplateNamespace = "hyve.io/template-namespace"
-
-	annotSource = "hyve.io/source"
 )
 
 // Owner kinds.
 const (
-	OwnerTemplate        = "ClusterTemplate"
-	OwnerClusterResource = "ClusterResource"
+	OwnerTemplate = "ClusterTemplate"
 )
-
-// ClusterIndexedLabel is Rancher's marker for objects that belong to one
-// cluster; Rancher's (and hyve's) cluster role bindings cover objects
-// carrying it.
-const ClusterIndexedLabel = "auth.cattle.io/cluster-indexed"
 
 // Entry is one resource. Exactly one of HelmOp, Bundle, GitRepo or Ref is
 // set.
@@ -329,19 +309,10 @@ func ObjectName(o Owner, entry string) string {
 	return strings.TrimRight(n[:41], "-") + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
-// Targets returns the Fleet targets for an owner: the template's clusters
-// by label, or one cluster by name.
-func Targets(o Owner) []any {
-	if o.Kind == OwnerTemplate {
-		return []any{map[string]any{"clusterSelector": map[string]any{"matchLabels": map[string]any{
-			LabelTemplate: o.Name, LabelTemplateNamespace: o.Namespace,
-		}}}}
-	}
-	return []any{map[string]any{"clusterName": o.ClusterName}}
-}
-
-// Object builds the Fleet object for a resolved entry (no ref).
-func Object(e Entry, o Owner) (*unstructured.Unstructured, error) {
+// FleetObject builds the Fleet HelmOp, Bundle or GitRepo name in namespace
+// for a resolved entry (no ref), with the given Fleet targets. The entry's
+// name is the Helm release's when the chart doesn't name one.
+func FleetObject(e Entry, name, namespace string, targets []any) (*unstructured.Unstructured, error) {
 	if err := e.Validate(false); err != nil {
 		return nil, err
 	}
@@ -382,28 +353,13 @@ func Object(e Entry, o Owner) (*unstructured.Unstructured, error) {
 		}
 		spec["downstreamResources"] = ds
 	}
-	spec["targets"] = Targets(o)
-	u := &unstructured.Unstructured{Object: map[string]any{
+	spec["targets"] = targets
+	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "fleet.cattle.io/v1alpha1",
 		"kind":       kind,
-		"metadata":   map[string]any{"name": ObjectName(o, e.Name), "namespace": o.Namespace},
+		"metadata":   map[string]any{"name": name, "namespace": namespace},
 		"spec":       spec,
-	}}
-	u.SetLabels(map[string]string{
-		labelManagedBy: managedBy,
-		LabelResource:  e.Name,
-		LabelOwnerKind: o.Kind,
-		LabelOwner:     o.Name,
-	})
-	u.SetAnnotations(map[string]string{annotSource: e.Describe()})
-	if o.UID != "" {
-		t := true
-		u.SetOwnerReferences([]metav1.OwnerReference{{
-			APIVersion: "hyve.io/v1alpha1", Kind: o.Kind, Name: o.Name, UID: o.UID,
-			Controller: &t, BlockOwnerDeletion: &t,
-		}})
-	}
-	return u, nil
+	}}, nil
 }
 
 // ReadBundle reads the manifests under path (a file or a directory) as
@@ -459,18 +415,6 @@ func EntryFromSpec(u *unstructured.Unstructured) (Entry, error) {
 	return e, nil
 }
 
-// SharedLookup looks shared Resources up with a dynamic client.
-func SharedLookup(dc dynamic.Interface) Lookup {
-	return func(ctx context.Context, ns, name string) (*Entry, error) {
-		u, err := dc.Resource(ResourceGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return nil, err
-		}
-		e, err := EntryFromSpec(u)
-		return &e, err
-	}
-}
-
 // Item is a hyve-made Fleet object, read back.
 type Item struct {
 	Name, Kind, Source string
@@ -520,124 +464,4 @@ func Problem(u *unstructured.Unstructured) string {
 		}
 	}
 	return ""
-}
-
-// Selector picks hyve's Fleet objects.
-type Selector struct {
-	// Namespace to list in; "" is every namespace.
-	Namespace string
-	// OwnerKind and Owner narrow it to one template's or ClusterResource's.
-	OwnerKind, Owner string
-}
-
-// List returns hyve's Fleet objects.
-func List(ctx context.Context, dc dynamic.Interface, s Selector) ([]Item, error) {
-	sel := labelManagedBy + "=" + managedBy + "," + LabelResource
-	if s.OwnerKind != "" {
-		sel += "," + LabelOwnerKind + "=" + s.OwnerKind
-	}
-	if s.Owner != "" {
-		sel += "," + LabelOwner + "=" + s.Owner
-	}
-	var items []Item
-	for _, kind := range []string{"HelmOp", "GitRepo", "Bundle"} {
-		gvr := FleetGVRs[kind]
-		list, err := dc.Resource(gvr).Namespace(s.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
-		if apierrors.IsNotFound(err) {
-			continue // that Fleet kind isn't installed
-		}
-		if err != nil {
-			return nil, err
-		}
-		for i := range list.Items {
-			o := &list.Items[i]
-			l := o.GetLabels()
-			// HelmOps and GitRepos make Bundles of their own; skip those.
-			if kind == "Bundle" && (l["fleet.cattle.io/repo-name"] != "" || hasNonHyveOwner(o)) {
-				continue
-			}
-			items = append(items, Item{
-				Name: l[LabelResource], Kind: o.GetKind(), Source: o.GetAnnotations()[annotSource],
-				OwnerKind: l[LabelOwnerKind], Owner: l[LabelOwner], Object: o,
-			})
-		}
-	}
-	sort.Slice(items, func(a, b int) bool {
-		ka := items[a].Object.GetNamespace() + "/" + items[a].OwnerKind + "/" + items[a].Owner + "/" + items[a].Name
-		kb := items[b].Object.GetNamespace() + "/" + items[b].OwnerKind + "/" + items[b].Owner + "/" + items[b].Name
-		return ka < kb
-	})
-	return items, nil
-}
-
-func hasNonHyveOwner(o *unstructured.Unstructured) bool {
-	for _, r := range o.GetOwnerReferences() {
-		if !strings.HasPrefix(r.APIVersion, "hyve.io/") {
-			return true
-		}
-	}
-	return false
-}
-
-// ClusterStates maps bundle name to BundleDeployment state on the Fleet
-// cluster ns/name, plus "repo:<name>" for a GitRepo's bundles (the worst of
-// them). nil when the cluster isn't registered with Fleet yet.
-func ClusterStates(ctx context.Context, dc dynamic.Interface, ns, name string) (map[string]string, error) {
-	fc, err := dc.Resource(fleetClusterGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	bdNS, _, _ := unstructured.NestedString(fc.Object, "status", "namespace")
-	if bdNS == "" {
-		return nil, errors.New("the Fleet cluster has no namespace yet")
-	}
-	list, err := dc.Resource(BundleDeploymentGVR).Namespace(bdNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, bd := range list.Items {
-		l := bd.GetLabels()
-		state, _, _ := unstructured.NestedString(bd.Object, "status", "display", "state")
-		if state == "" {
-			if ready, _, _ := unstructured.NestedBool(bd.Object, "status", "ready"); ready {
-				state = "Ready"
-			} else {
-				state = "Pending"
-			}
-		}
-		key := l["fleet.cattle.io/bundle-namespace"] + "/" + l["fleet.cattle.io/bundle-name"]
-		out[key] = state
-		if repo := l["fleet.cattle.io/repo-name"]; repo != "" {
-			k := "repo:" + l["fleet.cattle.io/bundle-namespace"] + "/" + repo
-			out[k] = worst(out[k], state)
-		}
-	}
-	return out, nil
-}
-
-// StateOn returns an item's deployment state on one cluster, from
-// ClusterStates.
-func (i *Item) StateOn(states map[string]string) string {
-	if msg := Problem(i.Object); msg != "" {
-		return msg
-	}
-	if states == nil {
-		return ""
-	}
-	key := i.Object.GetNamespace() + "/" + i.Object.GetName()
-	if i.Kind == "GitRepo" {
-		return states["repo:"+key]
-	}
-	return states[key]
-}
-
-func worst(a, b string) string {
-	if a == "" || a == "Ready" {
-		return b
-	}
-	return a
 }

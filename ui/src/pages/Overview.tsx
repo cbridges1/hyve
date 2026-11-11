@@ -1,23 +1,28 @@
 // Every cluster with its provider, template, environment, phase and
-// expiry, the host cluster (local) first for whoever can reach it;
-// resources failing anywhere (hyve's, and bundles from git repos, the
-// host's included); and clusters expiring soon.
+// expiry, the host cluster (local) first for whoever can reach it; each
+// running cluster's CPU, memory and pods (components/ResourceMonitor.tsx);
+// Deployments failing anywhere (the host's included); and clusters
+// expiring soon.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApplyYaml } from '../components/ApplyYaml'
 import { EnvironmentPicker } from '../components/EnvironmentPicker'
+import { ResourceSummaryCells } from '../components/ResourceMonitor'
 import { ErrorBanner, Loading, PageHeader } from '../components/ui'
 import { classOf, extendExpiry, providerOfClass } from '../lib/clusters'
 import { useEnvironment } from '../lib/environment'
 import { useAction, useLoad } from '../lib/hooks'
+import { LOCAL_CLUSTER } from '../lib/explorer'
 import { idOf, type Obj } from '../lib/kube'
-import { bundleMessage, LOCAL_FLEET_CLUSTER, repoBundles } from '../lib/repos'
-import { allClusterStates, allItems, problem, stateColor, stateOn } from '../lib/resources'
+import { HOST_WORKSPACE, loadDelivery, readiness } from '../lib/delivery'
+import { stateColor } from '../lib/resources'
 import { paths } from '../lib/routes'
 import { useSession } from '../lib/session'
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from '../lib/types'
 
 const SOON_HOURS = 24
+// Clusters whose resources the overview reads at once (each every 30s).
+const MAX_MONITORED = 25
 
 function Stat({ count, label, tone = '' }: { count: number; label: string; tone?: string }) {
   return (
@@ -34,18 +39,13 @@ export default function Overview() {
   const { canExplore } = useSession()
   const action = useAction()
   const { data, error, loading, reload } = useLoad(async (r) => {
-    const [all, states, classes, fromGit] = await Promise.all([
-      allItems(r),
-      allClusterStates(r),
-      r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[]),
-      repoBundles(r),
-    ])
-    return { ...all, states, classes, fromGit, now: Date.now() }
+    const [dl, classes] = await Promise.all([loadDelivery(r), r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[])])
+    return { dl, clusters: dl.clusters, templates: dl.templates, classes, now: Date.now() }
   }, [])
 
   const view = useMemo(() => {
     if (!data) return null
-    const { clusters, templates, classes, items, reaches, states, fromGit, now } = data
+    const { clusters, templates, classes, dl, now } = data
     const inEnv = (c: Obj) => !environment || c.metadata.namespace === environment
     const shown = clusters.filter(inEnv)
     const rows = shown.map((c) => {
@@ -68,25 +68,20 @@ export default function Overview() {
         soon: !Number.isNaN(at) && at - now < SOON_HOURS * 3600 * 1000,
       }
     })
-    // Each failing resource, with the clusters it's failing on.
-    const failing = items.flatMap((it) => {
-      const own = problem(it.model)
-      const on = reaches(it)
-        .filter(inEnv)
-        .map((c) => ({ c, state: stateOn(it, states[`${c.metadata.namespace}/${c.metadata.name}`] || null) }))
-        .filter((x) => x.state && x.state !== 'Ready')
-      return own || on.length ? [{ it, own, on }] : []
-    })
-    // Each failing bundle from a git repo, on the clusters shown and on the
-    // management cluster, whatever the environment.
+    // Each failing Deployment, with the clusters shown (and the host) it's
+    // failing on.
     const shownIds = new Set(shown.map(idOf))
-    const gitFailing = fromGit.flatMap((g) => {
-      const on = Object.entries(g.on)
-        .filter(([id, state]) => state !== 'Ready' && (id === LOCAL_FLEET_CLUSTER || shownIds.has(id)))
-        .map(([id, state]) => ({ id, state, cluster: clusters.find((c) => idOf(c) === id) }))
-      return on.length ? [{ g, on, message: bundleMessage(g.bundle) }] : []
+    const failing = dl.deployments.flatMap((d) => {
+      const { state, message } = readiness(d)
+      const on = d.states
+        .filter((x) => x.state !== 'Ready' && (x.cluster.startsWith(`${HOST_WORKSPACE}/`) || shownIds.has(x.cluster)))
+        .map((x) => ({ ...x, c: clusters.find((c) => idOf(c) === x.cluster) }))
+      const own = !d.states.length && state && state !== 'Ready' && state !== 'NoTargets' ? `${state}${message ? `: ${message}` : ''}` : ''
+      return own || on.length ? [{ d, own, on }] : []
     })
-    return { shown, rows, failing, gitFailing, expiringSoon: rows.filter((r) => r.soon) }
+    // Running clusters, whose API can be read for the resource summary.
+    const live = shown.filter((c) => c.status?.phase === 'Provisioned' && !c.metadata.deletionTimestamp)
+    return { shown, rows, failing, live, expiringSoon: rows.filter((r) => r.soon) }
   }, [data, environment])
 
   if (loading) return <Loading />
@@ -108,75 +103,94 @@ export default function Overview() {
           <div className="mb-5 flex flex-wrap gap-5">
             <Stat count={view.shown.length + (canExplore ? 1 : 0)} label="clusters" />
             <Stat
-              count={view.failing.length + view.gitFailing.length}
-              label="resources failing"
-              tone={view.failing.length + view.gitFailing.length ? 'text-error' : 'text-success'}
+              count={view.failing.length}
+              label="deployments failing"
+              tone={view.failing.length ? 'text-error' : 'text-success'}
             />
             <Stat count={view.expiringSoon.length} label="expiring within a day" tone={view.expiringSoon.length ? 'text-warning' : ''} />
           </div>
 
-          {view.failing.length + view.gitFailing.length > 0 && (
+          {view.failing.length > 0 && (
             <>
-              <h2>Failing resources</h2>
+              <h2>Failing deployments</h2>
               <table className="table mb-5">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>From</th>
+                    <th>Deployment</th>
                     <th>Where it's failing</th>
                   </tr>
                 </thead>
                 <tbody>
                   {view.failing.map((f) => (
-                    <tr key={`${idOf(f.it.model)}/${f.it.kind}`}>
-                      <td>{f.it.name}</td>
+                    <tr key={`${f.d.namespace}/${f.d.name}`}>
                       <td>
-                        {f.it.ownerKind === 'ClusterTemplate' ? (
-                          <Link to={paths.template(f.it.model.metadata.namespace!, f.it.owner)}>Template {f.it.owner}</Link>
-                        ) : (
-                          <span>This cluster</span>
-                        )}
+                        <Link to={paths.deployment(f.d.namespace, f.d.name)}>{f.d.name}</Link>
+                        <div className="text-muted text-xs">{f.d.source}</div>
                       </td>
                       <td>
                         {f.own && <div className="text-error">{f.own}</div>}
                         {f.on.map((x) => (
-                          <div key={idOf(x.c)}>
-                            <Link to={paths.cluster(x.c.metadata.namespace!, x.c.metadata.name)}>{idOf(x.c)}</Link>:{' '}
-                            <span className={stateColor(x.state)}>{x.state}</span>
-                          </div>
-                        ))}
-                      </td>
-                    </tr>
-                  ))}
-                  {view.gitFailing.map((f) => (
-                    <tr key={`git/${idOf(f.g.bundle)}`}>
-                      <td>{f.g.name}</td>
-                      <td>
-                        <Link to={paths.repo(f.g.repo.metadata.namespace!, f.g.repo.metadata.name)}>Repo {f.g.repo.metadata.name}</Link>
-                      </td>
-                      <td>
-                        {f.on.map((x) => (
-                          <div key={x.id}>
-                            {x.cluster ? (
-                              <Link to={paths.cluster(x.cluster.metadata.namespace!, x.cluster.metadata.name)}>{x.id}</Link>
-                            ) : x.id === LOCAL_FLEET_CLUSTER ? (
-                              <Link to={paths.localCluster('resources')}>local</Link>
+                          <div key={x.cluster}>
+                            {x.c ? (
+                              <Link to={paths.cluster(x.c.metadata.namespace!, x.c.metadata.name, 'deployments')}>{x.cluster}</Link>
+                            ) : x.cluster.startsWith(`${HOST_WORKSPACE}/`) ? (
+                              <Link to={paths.localCluster('deployments')}>local</Link>
                             ) : (
-                              <span>{x.id}</span>
+                              <span>{x.cluster}</span>
                             )}
                             : <span className={stateColor(x.state)}>{x.state}</span>
+                            {x.message && (
+                              <div className="text-muted line-clamp-2 max-w-xl text-xs" title={x.message}>
+                                {x.message}
+                              </div>
+                            )}
                           </div>
                         ))}
-                        {f.message && (
-                          <div className="text-muted line-clamp-2 max-w-xl text-xs" title={f.message}>
-                            {f.message}
-                          </div>
-                        )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </>
+          )}
+
+          {(canExplore || view.live.length > 0) && (
+            <>
+              <h2>Resources</h2>
+              <table className="table mb-5">
+                <thead>
+                  <tr>
+                    <th>Cluster</th>
+                    <th>CPU</th>
+                    <th>Memory</th>
+                    <th>Pods</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {canExplore && (
+                    <tr>
+                      <td>
+                        <Link to={paths.localCluster()}>local</Link>
+                      </td>
+                      <ResourceSummaryCells clusterId={LOCAL_CLUSTER} />
+                    </tr>
+                  )}
+                  {view.live.slice(0, MAX_MONITORED).map((c) => (
+                    <tr key={idOf(c)}>
+                      <td>
+                        <Link to={paths.cluster(c.metadata.namespace!, c.metadata.name)}>{c.metadata.name}</Link>
+                        <span className="text-muted ml-1 text-xs">{c.metadata.namespace}</span>
+                      </td>
+                      <ResourceSummaryCells clusterId={`${c.metadata.namespace}.${c.metadata.name}`} />
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {view.live.length > MAX_MONITORED && (
+                <p className="hint -mt-3 mb-5">
+                  The first {MAX_MONITORED} of {view.live.length} running clusters; pick an environment to narrow it, or open a cluster for its own.
+                </p>
+              )}
             </>
           )}
 

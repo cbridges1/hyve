@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList } from 'react'
+import { errorMessage } from './api'
 import { Reader } from './kube'
 import { newReader, subscribe } from './live'
 
@@ -102,4 +103,50 @@ export function useAction() {
     }
   }, [])
   return { busy, error, setError, run }
+}
+
+// usePolled reads with load now and every interval while the tab is
+// visible; a failed read keeps the last good one, with the error.
+export function usePolled<T>(load: () => Promise<T>, interval: number, deps: unknown[]) {
+  const [data, setData] = useState<T | null>(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const read = useCallback(load, deps)
+  useEffect(() => {
+    let live = true
+    // Per run of the effect: a read still going from an earlier run (or
+    // React's second mount) mustn't hold this one back.
+    let busy = false
+    setData(null)
+    setLoading(true)
+    // The first read happens whatever; the repeats pause while the tab
+    // is hidden.
+    const tick = async (first = false) => {
+      if (busy || (document.hidden && !first)) return
+      busy = true
+      try {
+        const d = await read()
+        if (live) {
+          setData(d)
+          setError('')
+        }
+      } catch (e) {
+        if (live) setError(errorMessage(e))
+      } finally {
+        busy = false
+        if (live) setLoading(false)
+      }
+    }
+    tick(true)
+    const t = setInterval(tick, interval)
+    const onVisible = () => !document.hidden && tick()
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      live = false
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [read, interval])
+  return { data, error, loading }
 }

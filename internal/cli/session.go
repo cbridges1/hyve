@@ -53,7 +53,7 @@ func addEnvFlag(c *cobra.Command) {
 }
 
 func addTemplateNSFlag(c *cobra.Command) {
-	c.PersistentFlags().StringVar(&tplNSFlag, "template-namespace", "", "namespace of templates and shared resources (default: the context's, or "+DefaultTemplateNamespace+")")
+	c.PersistentFlags().StringVar(&tplNSFlag, "template-namespace", "", "namespace of templates and their Deployments (default: the context's, or "+DefaultTemplateNamespace+")")
 }
 
 func logf(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }

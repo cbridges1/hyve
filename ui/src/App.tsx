@@ -15,7 +15,10 @@ import ClusterDetail from './pages/ClusterDetail'
 import LocalCluster from './pages/LocalCluster'
 import ClusterList from './pages/ClusterList'
 import CreateCluster from './pages/CreateCluster'
+import DeploymentEdit from './pages/DeploymentEdit'
+import DeploymentPage from './pages/DeploymentPage'
 import Environments from './pages/Environments'
+import Fleet from './pages/Fleet'
 import GenericList from './pages/GenericList'
 import ImportCluster from './pages/ImportCluster'
 import ImportPage from './pages/ImportPage'
@@ -23,12 +26,8 @@ import Login from './pages/Login'
 import Overview from './pages/Overview'
 import People from './pages/People'
 import Providers from './pages/Providers'
-import RepoPage from './pages/RepoPage'
 import ResetPassword from './pages/ResetPassword'
-import Repos from './pages/Repos'
 import Settings from './pages/Settings'
-import SharedResourceList from './pages/SharedResourceList'
-import SharedResourcePage from './pages/SharedResourcePage'
 import TemplateList from './pages/TemplateList'
 import TemplatePage from './pages/TemplatePage'
 import Users from './pages/Users'
@@ -112,11 +111,17 @@ export default function App() {
           <Route path="templates" element={<TemplateList />} />
           <Route path="templates/new" element={<TemplatePage />} />
           <Route path="templates/:namespace/:name" element={<TemplatePage />} />
-          <Route path="resources" element={<SharedResourceList />} />
-          <Route path="resources/new" element={<SharedResourcePage />} />
-          <Route path="resources/:namespace/:name" element={<SharedResourcePage />} />
-          <Route path="repos" element={<Repos />} />
-          <Route path="repos/:namespace/:name" element={<RepoPage />} />
+          <Route path="fleet" element={<Navigate to={paths.fleet} replace />} />
+          <Route path="fleet/deployments" element={<Fleet />} />
+          <Route path="fleet/deployments/new" element={<DeploymentEdit />} />
+          <Route path="fleet/deployments/:namespace/:name" element={<DeploymentPage />} />
+          <Route path="fleet/deployments/:namespace/:name/edit" element={<DeploymentEdit />} />
+          {/* Before the categories: Status and Groups tabs, and a Groups page. */}
+          <Route path="fleet/status" element={<Navigate to={`${paths.fleet}?category=clusters`} replace />} />
+          <Route path="fleet/groups/*" element={<Navigate to={`${paths.fleet}?category=groups`} replace />} />
+          {/* Before Fleet: shared resources and repos. */}
+          <Route path="resources/*" element={<Navigate to={paths.fleet} replace />} />
+          <Route path="repos/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="providers" element={<Providers />} />
           <Route element={<People />}>
             <Route path="users" element={<Users />} />

@@ -30,6 +30,11 @@ var (
 	loginPasswordStdin bool
 	loginCACert        string
 	loginInsecure      bool
+	loginTokenStdin    bool
+	loginGitHubActions bool
+	loginIDTokenEnv    string
+	loginIDTokenFile   string
+	loginAudience      string
 )
 
 // LoginCmd is `hyve login`.
@@ -39,11 +44,26 @@ var LoginCmd = &cobra.Command{
 	Long: `Signs in to a hyve host and saves it as the server later commands use.
 
 It opens the host's sign-in page in your browser: sign in there with your
-password or the identity provider, and the CLI gets the session. Unattended
-runs (CI, scripts) and machines without a browser sign in with
---username and --password-stdin instead.
+password or the identity provider, and the CLI gets the session.
+
+Unattended runs (CI, scripts) sign in one of these ways instead:
+
+  --github-actions, --id-token-env, --id-token-file
+      A CI job signs in with the ID token its CI system gives it, as a user
+      that trusts that CI system ('hyve user trust add'). Nothing secret is
+      kept in the pipeline; the session lasts an hour.
+  --token-stdin
+      An API token ('hyve user token create'), read from stdin.
+  --username and --password-stdin
+      A password, read from stdin.
+
+A pipeline can also skip 'hyve login' and set HYVE_URL and HYVE_TOKEN (an
+API token): every command uses them, and nothing is saved.
 
   hyve login https://hyve.example.com
+  hyve login https://hyve.example.com --username ci --github-actions
+  hyve login https://hyve.example.com --username ci --id-token-env HYVE_ID_TOKEN    # GitLab: id_tokens
+  echo "$HYVE_TOKEN" | hyve login https://hyve.example.com --token-stdin
   echo "$PW" | hyve login https://hyve.example.com --username ci --password-stdin`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLogin,
@@ -56,6 +76,11 @@ func init() {
 	f.BoolVar(&loginPasswordStdin, "password-stdin", false, "read the password from stdin (first line; a second line is the new password when one is required)")
 	f.StringVar(&loginCACert, "ca-cert", "", "PEM CA certificate to trust for this server")
 	f.BoolVar(&loginInsecure, "insecure-skip-tls-verify", false, "don't verify the server's certificate (testing only)")
+	f.BoolVar(&loginTokenStdin, "token-stdin", false, "sign in with an API token read from stdin ('hyve user token create')")
+	f.BoolVar(&loginGitHubActions, "github-actions", false, "sign in as --username with this GitHub Actions job's ID token (needs 'permissions: id-token: write')")
+	f.StringVar(&loginIDTokenEnv, "id-token-env", "", "sign in as --username with the CI job's ID token in this environment variable")
+	f.StringVar(&loginIDTokenFile, "id-token-file", "", "sign in as --username with the CI job's ID token in this file")
+	f.StringVar(&loginAudience, "audience", "hyve", "the audience to ask GitHub Actions for (the user's trusted CI entry must name it)")
 }
 
 func runLogin(cmd *cobra.Command, args []string) error {
@@ -102,9 +127,30 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	in := newInput(os.Stdin)
-	sess, err := signIn(ctx, hc, &srv, in, signInOptions{passwordStdin: loginPasswordStdin})
-	if err != nil {
-		return err
+	var sess login.Session
+	switch ci, ways := loginGitHubActions || loginIDTokenEnv != "" || loginIDTokenFile != "", countTrue(loginPasswordStdin, loginTokenStdin,
+		loginGitHubActions, loginIDTokenEnv != "", loginIDTokenFile != ""); {
+	case ways > 1:
+		return errors.New("give one of --password-stdin, --token-stdin, --github-actions, --id-token-env and --id-token-file")
+	case loginTokenStdin:
+		if sess, err = tokenSignIn(ctx, hc, &srv, in); err != nil {
+			return err
+		}
+	case ci:
+		if srv.Username == "" {
+			return errors.New("a CI sign-in needs --username: the user that trusts this CI system")
+		}
+		idToken, err := ciIDToken(ctx)
+		if err != nil {
+			return err
+		}
+		if sess, err = login.CILogin(ctx, hc, base, srv.Username, idToken); err != nil {
+			return err
+		}
+	default:
+		if sess, err = signIn(ctx, hc, &srv, in, signInOptions{passwordStdin: loginPasswordStdin}); err != nil {
+			return err
+		}
 	}
 	srv.Token, srv.ExpiresAt = sess.Token, sess.ExpiresAt
 	if sess.UserID != "" && srv.Username == "" {
@@ -131,6 +177,62 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "The session lasts until %s.\n", srv.ExpiresAt.Local().Format(time.DateTime))
 	}
 	return nil
+}
+
+func countTrue(bs ...bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
+}
+
+// tokenSignIn reads an API token from stdin and asks the host who it is.
+func tokenSignIn(ctx context.Context, hc *http.Client, srv *login.Server, in *input) (login.Session, error) {
+	token, err := in.line()
+	if err != nil {
+		return login.Session{}, err
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return login.Session{}, errors.New("no token on stdin")
+	}
+	me, err := login.WhoAmI(ctx, hc, srv.URL, token)
+	if err != nil {
+		return login.Session{}, err
+	}
+	if loginUsername != "" && loginUsername != me.Username {
+		return login.Session{}, fmt.Errorf("the token is %s's, not %s's", me.Username, loginUsername)
+	}
+	srv.Username = me.Username
+	sess := login.Session{Token: token, UserID: me.Username}
+	if me.ExpiresAt != "" {
+		sess.ExpiresAt, _ = time.Parse(time.RFC3339, me.ExpiresAt)
+	}
+	return sess, nil
+}
+
+// ciIDToken is the CI job's ID token: GitHub Actions', or one in an
+// environment variable or a file.
+func ciIDToken(ctx context.Context) (string, error) {
+	switch {
+	case loginGitHubActions:
+		return login.GitHubActionsIDToken(ctx, http.DefaultClient, loginAudience)
+	case loginIDTokenEnv != "":
+		t := strings.TrimSpace(os.Getenv(loginIDTokenEnv))
+		if t == "" {
+			return "", fmt.Errorf("$%s is empty", loginIDTokenEnv)
+		}
+		return t, nil
+	default:
+		raw, err := os.ReadFile(loginIDTokenFile)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(raw)), nil
+	}
 }
 
 type signInOptions struct {

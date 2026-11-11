@@ -51,6 +51,39 @@ type Config struct {
 	Servers []Server `json:"servers,omitempty"`
 
 	path string
+	// saved is Current as the file has it, while the environment's server
+	// (EnvServer) stands in for it.
+	saved *string
+}
+
+// EnvServer is the server HYVE_URL and HYVE_TOKEN give, for CI: commands
+// use it instead of the current saved one, and it's never saved.
+// HYVE_CA_CERT names a CA file to trust; HYVE_INSECURE_SKIP_TLS_VERIFY=true
+// skips verifying (testing only).
+const EnvServer = "env"
+
+// fromEnv adds the environment's server, if HYVE_URL and HYVE_TOKEN are
+// set, and makes it current.
+func (c *Config) fromEnv() error {
+	u, token := os.Getenv("HYVE_URL"), os.Getenv("HYVE_TOKEN")
+	if u == "" && token == "" {
+		return nil
+	}
+	if u == "" || token == "" {
+		return errors.New("set both HYVE_URL and HYVE_TOKEN, or neither")
+	}
+	base, err := NormalizeURL(u)
+	if err != nil {
+		return fmt.Errorf("HYVE_URL: %w", err)
+	}
+	c.Servers = append(c.Servers, Server{
+		Name: EnvServer, URL: base, Kind: KindHyve, Token: token,
+		CACertFile:         os.Getenv("HYVE_CA_CERT"),
+		InsecureSkipVerify: os.Getenv("HYVE_INSECURE_SKIP_TLS_VERIFY") == "true",
+	})
+	saved := c.Current
+	c.saved, c.Current = &saved, EnvServer
+	return nil
 }
 
 // Path is where the config lives under the hyve home directory.
@@ -64,7 +97,7 @@ func Load(home string) (*Config, error) {
 	cfg := &Config{path: p}
 	data, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return cfg, nil
+		return cfg, cfg.fromEnv()
 	}
 	if err != nil {
 		return nil, err
@@ -73,13 +106,28 @@ func Load(home string) (*Config, error) {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
 	}
 	cfg.path = p
-	return cfg, nil
+	return cfg, cfg.fromEnv()
 }
 
 // Save writes the config with owner-only permissions.
 func (c *Config) Save() error {
 	sort.Slice(c.Servers, func(i, j int) bool { return c.Servers[i].Name < c.Servers[j].Name })
-	data, err := yaml.Marshal(c)
+	out := c
+	if c.saved != nil {
+		// The environment's server isn't saved.
+		cp := *c
+		cp.Servers = nil
+		for _, s := range c.Servers {
+			if s.Name != EnvServer {
+				cp.Servers = append(cp.Servers, s)
+			}
+		}
+		if c.Current == EnvServer {
+			cp.Current = *c.saved
+		}
+		out = &cp
+	}
+	data, err := yaml.Marshal(out)
 	if err != nil {
 		return err
 	}

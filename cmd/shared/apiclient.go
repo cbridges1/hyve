@@ -210,7 +210,7 @@ func UseClusterMode() (*session.Session, bool) {
 	if err != nil || current.APIURL == "" {
 		return nil, false
 	}
-	log.Fatalf("❌ Context '%s' points at a hyve-api server (%s), which hyve no longer signs in to.\n\nSwitch to a local context with 'hyve context use <name>', or remove this one with 'hyve context remove %s'.", current.Name, current.APIURL, current.Name)
+	log.Fatalf("❌ Context '%s' points at a hyve-api server (%s), which hyve no longer signs in to.\n\nSwitch to a local context with 'hyve context use <name>', or remove this one with 'hyve context delete %s'.", current.Name, current.APIURL, current.Name)
 	return nil, false
 }
 

@@ -9,6 +9,7 @@ import { schemaFor } from '../lib/kube'
 import { paths, peoplePath } from '../lib/routes'
 import { setSession, useSession } from '../lib/session'
 import { TYPES } from '../lib/types'
+import { ApiTokens } from './ApiTokens'
 import { ChangePassword } from './ChangePassword'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Icon } from './Icon'
@@ -34,13 +35,12 @@ const groups: { label: string; items: Item[] }[] = [
       { label: 'Overview', icon: 'overview', to: paths.overview },
       { label: 'Clusters', icon: 'clusters', to: paths.clusters, type: TYPES.CLUSTER },
       { label: 'Templates', icon: 'templates', to: paths.templates, type: TYPES.TEMPLATE },
+      { label: 'Fleet', icon: 'fleet', to: paths.fleetRoot, type: TYPES.FLEET_HELM_OP },
     ],
   },
   {
     label: 'Configuration',
     items: [
-      { label: 'Shared resources', icon: 'resources', to: paths.resources, type: TYPES.RESOURCE },
-      { label: 'Repos', icon: 'repos', to: paths.repos },
       { label: 'Providers', icon: 'providers', to: paths.providers },
     ],
   },
@@ -96,6 +96,7 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [changingPassword, setChangingPassword] = useState(false)
+  const [showingTokens, setShowingTokens] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -157,6 +158,17 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
               <button
                 type="button"
                 className={item}
+                title="Tokens that sign in as you, for scripts and CI"
+                onClick={() => {
+                  setOpen(false)
+                  setShowingTokens(true)
+                }}
+              >
+                API tokens
+              </button>
+              <button
+                type="button"
+                className={item}
                 title="A kubeconfig for the management cluster that runs 'hyve token'; it holds no secret"
                 onClick={async () => {
                   setOpen(false)
@@ -187,6 +199,7 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
         </>
       )}
       {changingPassword && <ChangePassword username={user.username} onClose={() => setChangingPassword(false)} />}
+      {showingTokens && <ApiTokens user={user.username} own onClose={() => setShowingTokens(false)} />}
     </div>
   )
 }

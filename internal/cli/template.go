@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -19,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/delivery"
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/resources"
@@ -30,11 +30,12 @@ func TemplateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "template",
 		Aliases: []string{"templates", "tpl"},
-		Short:   "Manage ClusterTemplates: a ClusterClass with defaults, locks, expiry and resources",
+		Short:   "Manage ClusterTemplates: a ClusterClass with defaults, locks, expiry and adoption",
 	}
 	AddGlobalFlags(cmd)
 	addTemplateNSFlag(cmd)
-	cmd.AddCommand(templateCreateCmd(), applyCmd(), templateListCmd(), templateShowCmd(), templateDeleteCmd(), templateResourceCmd())
+	cmd.AddCommand(templateCreateCmd(), applyCmd(), templateListCmd(), templateShowCmd(), templateDeleteCmd(), templateResourceCmd(),
+		RenderCmd(), ConvertCmd())
 	return cmd
 }
 
@@ -69,9 +70,9 @@ func templateCreateCmd() *cobra.Command {
 		Short: "Create a ClusterTemplate",
 		Long: `Creates a ClusterTemplate in the template namespace, beside its ClusterClass.
 --from-clusterclass also copies every variable the ClusterClass declares,
-with its default (or null), as a starting point to edit. Add resources with
-'hyve template resource add'; for anything more, write the YAML and use
-'hyve template apply -f'.`,
+with its default (or null), as a starting point to edit. For anything
+more, write the YAML and use 'hyve template apply -f'. What its clusters
+run is deployed to it: 'hyve deploy create NAME ... --to template/NAME'.`,
 		Example: `  hyve template create capd-small --class capd --workers 1 --schedule "0 20 * * *"
   hyve template create gke-small --from-clusterclass gke --set project=my-proj --lock project`,
 		Args: cobra.ExactArgs(1),
@@ -159,46 +160,28 @@ func printYAML(v any) error {
 	return err
 }
 
-// applyCmd is `template apply -f` (also `resource apply -f`): it creates
-// or updates ClusterTemplates, Resources, ClusterResources and
-// ClusterClasses from YAML.
+// applyCmd is `template apply -f`: ClusterTemplates and ClusterClasses
+// (with their provider templates) from YAML. 'hyve apply' takes
+// Deployments and groups too.
 func applyCmd() *cobra.Command {
 	var files []string
 	cmd := &cobra.Command{
-		Use:   "apply -f FILE",
-		Short: "Create or update ClusterTemplates, Resources, ClusterResources and ClusterClasses from YAML",
-		Long: `Applies hyve objects from YAML files, and ClusterClasses with their
-provider templates (CivoClusterTemplate, DockerMachineTemplate...). Objects
-without a namespace go in the template namespace (a ClusterResource in the
-environment). A bundle entry
-may give 'path: DIR' instead of resources; the manifests there, relative to
-the file, are sent inline.`,
+		Use:   "apply -f FILE|DIR|-",
+		Short: "Create or update ClusterTemplates and ClusterClasses from YAML",
+		Long: `Applies ClusterTemplates from YAML files, and ClusterClasses with their
+provider templates (CivoClusterTemplate, DockerMachineTemplate...), classes
+first. Objects without a namespace go in the template namespace. For
+Deployments and ClusterGroups use 'hyve deploy apply', or 'hyve apply' for
+everything at once.
+
+A template's resources (before Deployments) are still accepted:
+hyve-controller turns each into a Deployment aimed at the template.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := newSession()
-			if err != nil {
-				return err
-			}
-			for _, f := range files {
-				raw, err := os.ReadFile(f)
-				if err != nil {
-					return err
-				}
-				objs, err := kube.Decode(raw)
-				if err != nil {
-					return fmt.Errorf("%s: %w", f, err)
-				}
-				for _, o := range objs {
-					if err := applyObject(cmd.Context(), s, o, filepath.Dir(f)); err != nil {
-						return fmt.Errorf("%s: %s %s: %w", f, o.GetKind(), o.GetName(), err)
-					}
-					logf("Applied %s %s/%s", o.GetKind(), o.GetNamespace(), o.GetName())
-				}
-			}
-			return nil
+			return applyManifests(cmd, files, applyTemplates, waitFlags{})
 		},
 	}
-	cmd.Flags().StringArrayVarP(&files, "filename", "f", nil, "YAML file (repeatable)")
+	cmd.Flags().StringArrayVarP(&files, "filename", "f", nil, "YAML file, directory, or - for standard input (repeatable)")
 	_ = cmd.MarkFlagRequired("filename")
 	return cmd
 }
@@ -212,8 +195,20 @@ func applyObject(ctx context.Context, s *session, o *unstructured.Unstructured, 
 		}
 		return s.kube.ApplyObject(ctx, o)
 	}
+	// Deployments and groups (Fleet's own objects) go in the template
+	// namespace unless they name one.
+	if g := o.GroupVersionKind().Group; g == "fleet.cattle.io" {
+		switch o.GetKind() {
+		case "GitRepo", "HelmOp", "Bundle", "ClusterGroup":
+			if o.GetNamespace() == "" {
+				o.SetNamespace(s.templateNS())
+			}
+			return s.kube.ApplyObject(ctx, o)
+		}
+		return errors.New("only Fleet GitRepos, HelmOps, Bundles and ClusterGroups; apply others with kubectl")
+	}
 	if o.GroupVersionKind().Group != "hyve.io" {
-		return errors.New("not a hyve.io object or a ClusterClass; apply it with kubectl")
+		return errors.New("not a hyve.io object, a Deployment (Fleet GitRepo, HelmOp or Bundle) or a ClusterClass; apply it with kubectl")
 	}
 	switch o.GetKind() {
 	case "ClusterTemplate":
@@ -284,15 +279,16 @@ func templateListCmd() *cobra.Command {
 				return notInstalled(err)
 			}
 			sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].GetName() < list.Items[j].GetName() })
+			items, _ := delivery.List(cmd.Context(), s.kube.Dynamic, s.templateNS(), []string{s.templateNS()})
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "NAME\tCLASS\tVERSION\tSCHEDULE\tLOCKED\tRESOURCES\tREADY\tDESCRIPTION")
+			fmt.Fprintln(w, "NAME\tCLASS\tVERSION\tSCHEDULE\tLOCKED\tDEPLOYMENTS\tDESCRIPTION")
 			for i := range list.Items {
 				t, err := templates.FromUnstructured(&list.Items[i])
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", t.Name, t.Spec.ClusterClassRef.Name, dash(t.Spec.Version), dash(t.Spec.Schedule),
-					dash(strings.Join(t.Spec.LockedVariables, ",")), len(t.Spec.Resources), readyCondition(&list.Items[i]), t.Spec.Description)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", t.Name, t.Spec.ClusterClassRef.Name, dash(t.Spec.Version), dash(t.Spec.Schedule),
+					dash(strings.Join(t.Spec.LockedVariables, ",")), len(delivery.ForTemplate(items, t.Name, t.Spec.ClusterClassRef.Name)), t.Spec.Description)
 			}
 			return w.Flush()
 		},
@@ -317,7 +313,7 @@ func templateShowCmd() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "show NAME",
-		Short: "Show a ClusterTemplate, its resources' state and its clusters",
+		Short: "Show a ClusterTemplate, the Deployments aimed at it and its clusters",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
@@ -371,19 +367,10 @@ func templateShowCmd() *cobra.Command {
 			for k, v := range t.Spec.Labels {
 				fmt.Printf("Label:         %s=%s\n", k, v)
 			}
-			items, err := resources.List(ctx, s.kube.Dynamic, resources.Selector{Namespace: t.Namespace, OwnerKind: resources.OwnerTemplate, Owner: t.Name})
-			if err == nil {
-				byName := map[string]resources.Item{}
-				for _, it := range items {
-					byName[it.Name] = it
-				}
-				for _, e := range t.Spec.Resources {
-					state := "not created yet"
-					if it, ok := byName[e.Name]; ok {
-						ready, st := it.Ready()
-						state = strings.TrimSpace(dash(ready) + " " + st)
-					}
-					fmt.Printf("Resource:      %s (%s %s): %s\n", e.Name, e.Kind(), e.Describe(), state)
+			if items, err := delivery.List(ctx, s.kube.Dynamic, t.Namespace, []string{t.Namespace}); err == nil {
+				for _, it := range delivery.ForTemplate(items, t.Name, t.Spec.ClusterClassRef.Name) {
+					fmt.Printf("Deployment:    %s (%s %s, to %s): %s\n", it.Name, it.Kind, it.Source, delivery.DescribeTargets(it.Targets),
+						strings.TrimSpace(dash(it.Ready)+" "+it.State))
 				}
 			}
 			list, err := s.kube.Dynamic.Resource(clusters.ClusterGVR).List(ctx, metav1.ListOptions{
@@ -406,10 +393,11 @@ func templateShowCmd() *cobra.Command {
 func templateDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete a ClusterTemplate and its resources (clusters made from it stay)",
-		Long: `Deletes a ClusterTemplate. The Fleet objects made from its resources go with
-it, so Fleet removes those resources from its clusters. The clusters
-themselves stay, and keep their variables.`,
+		Short: "Delete a ClusterTemplate (clusters made from it stay)",
+		Long: `Deletes a ClusterTemplate, and the Fleet group hyve keeps for it, so
+Deployments aimed only at the template reach none of its clusters any more
+and Fleet removes them there. The Deployments themselves, and the clusters,
+stay; the clusters keep their variables.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
@@ -426,100 +414,8 @@ themselves stay, and keep their variables.`,
 }
 
 func templateResourceCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "resource",
-		Aliases: []string{"resources", "res"},
-		Short:   "Add or remove a resource on every cluster made from a template",
-	}
-	var f entryFlags
-	add := &cobra.Command{
-		Use:   "add TEMPLATE (--helm CHART | --git REPO | --path DIR | --ref RESOURCE)",
-		Short: "Add a resource to a template, or replace the one of the same name",
-		Example: `  hyve template resource add civo --helm traefik --repo https://traefik.github.io/charts --version 37.1.0 -N traefik --set service.type=LoadBalancer
-  hyve template resource add civo --ref external-dns --secret cloudflare-dns`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			e, err := f.entry()
-			if err != nil {
-				return err
-			}
-			s, err := newSession()
-			if err != nil {
-				return err
-			}
-			t, err := s.getTemplate(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			replaced := false
-			for i := range t.Spec.Resources {
-				if t.Spec.Resources[i].Name == e.Name {
-					t.Spec.Resources[i], replaced = e, true
-				}
-			}
-			if !replaced {
-				t.Spec.Resources = append(t.Spec.Resources, e)
-			}
-			if err := saveTemplate(cmd.Context(), s, t); err != nil {
-				return err
-			}
-			logf("Resource %s (%s %s) is on template %s; hyve-controller delivers it to its clusters", e.Name, e.Kind(), e.Describe(), t.Name)
-			return nil
-		},
-	}
-	f.add(add, true)
-	remove := &cobra.Command{
-		Use:     "remove TEMPLATE NAME",
-		Aliases: []string{"rm"},
-		Short:   "Remove a resource from a template; Fleet removes it from its clusters",
-		Args:    cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := newSession()
-			if err != nil {
-				return err
-			}
-			t, err := s.getTemplate(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			kept := t.Spec.Resources[:0]
-			for _, r := range t.Spec.Resources {
-				if r.Name != args[1] {
-					kept = append(kept, r)
-				}
-			}
-			if len(kept) == len(t.Spec.Resources) {
-				return fmt.Errorf("template %s has no resource %q", t.Name, args[1])
-			}
-			t.Spec.Resources = kept
-			if err := saveTemplate(cmd.Context(), s, t); err != nil {
-				return err
-			}
-			logf("Removed resource %s from template %s", args[1], t.Name)
-			return nil
-		},
-	}
-	cmd.AddCommand(add, remove)
-	return cmd
-}
-
-// saveTemplate replaces a template's spec outright: list items removed
-// here must go, which server-side apply wouldn't do for fields another
-// manager set.
-func saveTemplate(ctx context.Context, s *session, t *templates.Template) error {
-	if err := templates.Validate(t); err != nil {
-		return err
-	}
-	u, err := t.ToUnstructured()
-	if err != nil {
-		return err
-	}
-	ri := s.kube.Dynamic.Resource(templates.GVR).Namespace(t.Namespace)
-	cur, err := ri.Get(ctx, t.Name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	cur.Object["spec"] = u.Object["spec"]
-	_, err = ri.Update(ctx, cur, metav1.UpdateOptions{FieldManager: kube.FieldManager})
-	return err
+	return movedCmd("resource", "Replaced by 'hyve deploy'",
+		"a template's resources are Deployments now: 'hyve deploy create NAME ... --to template/TEMPLATE' adds one, "+
+			"'hyve deploy update NAME --remove-to template/TEMPLATE' or 'hyve deploy delete NAME' removes one",
+		"add", "remove")
 }

@@ -30,7 +30,13 @@ var (
 	userPasswordStdin    bool
 	userNoPasswordChange bool
 	userInvite           bool
+	userService          bool
 )
+
+// ServiceAnnotation marks a User made for CI and scripts ('hyve user create
+// --service'): it has no password, and signs in with API tokens or as a
+// trusted CI job.
+const ServiceAnnotation = "hyve.io/service"
 
 // UserCmd is `hyve user`.
 var UserCmd = &cobra.Command{
@@ -87,8 +93,9 @@ func readNewPassword(in *input, fromStdin bool) (string, error) {
 }
 
 var userAddCmd = &cobra.Command{
-	Use:   "add NAME --email ADDRESS",
-	Short: "Create a user, and invite them or set their password",
+	Use:     "create NAME (--email ADDRESS | --service)",
+	Aliases: []string{"add"},
+	Short:   "Create a user, and invite them or set their password",
 	Long: `Creates a user. With --invite, the host emails them a link and code to set
 their own password (it works for 7 days; 'hyve user invite' sends another).
 Otherwise you choose their initial password, which they change at first
@@ -96,12 +103,37 @@ sign-in unless --no-password-change, and they're emailed that the account
 exists.
 
 An email address is required: it's where password resets and account
-emails go.`,
+emails go.
+
+With --service, it's a user for CI and scripts: no password and no email.
+It signs in with API tokens ('hyve user token create --user NAME') or as a
+trusted CI job ('hyve user trust add NAME ...').`,
+	Example: `  hyve user create alice --email alice@example.com --invite
+  hyve user create ci --service --group deployers`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		if !signin.ValidUsername(name) {
 			return errors.New("a username must be a DNS label: lowercase letters, digits and '-', at most 63 characters")
+		}
+		if userService {
+			if userInvite || userPasswordStdin || userNoPasswordChange {
+				return errors.New("a --service user has no password: it doesn't go with --invite, --password-stdin or --no-password-change")
+			}
+			uc, err := newUserContext()
+			if err != nil {
+				return err
+			}
+			u := &hyvev1alpha1.User{}
+			u.Name = name
+			u.Annotations = map[string]string{ServiceAnnotation: "true"}
+			u.Spec = hyvev1alpha1.UserSpec{DisplayName: userDisplayName, Email: strings.TrimSpace(userEmail), Groups: userGroups}
+			if err := uc.kc.Create(cmd.Context(), u); err != nil {
+				return fmt.Errorf("creating user %s: %w", name, err)
+			}
+			fmt.Fprintf(os.Stderr, "Created service user %s (Kubernetes user %s%s). Give it access, then an API token ('hyve user token create TOKEN --user %s') or trusted CI ('hyve user trust add %s ...').\n",
+				name, signin.UserPrefix, name, name, name)
+			return nil
 		}
 		if userEmail = strings.TrimSpace(userEmail); userEmail == "" {
 			return errors.New("an email address is required (--email): it's where password resets and account emails go")
@@ -325,9 +357,10 @@ var userEnableCmd = &cobra.Command{
 }
 
 var userRemoveCmd = &cobra.Command{
-	Use:   "remove NAME",
-	Short: "Delete a user, with its password and sessions",
-	Args:  cobra.ExactArgs(1),
+	Use:     "delete NAME",
+	Aliases: []string{"remove", "rm"},
+	Short:   "Delete a user, with its password and sessions",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		uc, err := newUserContext()
 		if err != nil {
@@ -381,6 +414,7 @@ func init() {
 	userAddCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
 	userAddCmd.Flags().StringVar(&userEmail, "email", "", "address for password resets and account emails (required)")
 	userAddCmd.Flags().BoolVar(&userInvite, "invite", false, "email them a link to set their own password instead of choosing one")
+	userAddCmd.Flags().BoolVar(&userService, "service", false, "a user for CI and scripts: no password or email; it signs in with API tokens or as trusted CI")
 	userAddCmd.Flags().StringSliceVar(&userGroups, "group", nil, "group to add the user to (repeatable)")
 	userEditCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
 	userEditCmd.Flags().StringVar(&userEmail, "email", "", `address for password resets and account emails ("" removes it)`)

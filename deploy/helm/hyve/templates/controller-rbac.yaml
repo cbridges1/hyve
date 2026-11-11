@@ -6,8 +6,9 @@ metadata:
   namespace: {{ .Values.namespace }}
 ---
 # hyve-controller fills in and guards templated Clusters, deletes expired
-# ones, and turns templates' resources into Fleet objects, in every
-# namespace (templates and environments are namespaces).
+# ones, keeps a Fleet ClusterGroup per template and environment, and
+# migrates old template resources to Deployments, in every namespace
+# (templates and environments are namespaces).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -22,6 +23,17 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["clustertemplates", "resources", "clusterresources", "clusteraccesses"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Migrating ClusterResources to Deployments deletes them.
+  - apiGroups: ["hyve.io"]
+    resources: ["clusterresources"]
+    verbs: ["delete"]
+  # A ClusterGroup per template and environment, for Deployments to target.
+  - apiGroups: ["fleet.cattle.io"]
+    resources: ["clustergroups"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["hyve.io"]
     resources: ["clusteraccesses"]
     verbs: ["create"]

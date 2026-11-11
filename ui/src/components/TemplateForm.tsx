@@ -1,19 +1,15 @@
 // A ClusterTemplate's form: its ClusterClass, sizes, expiry schedule,
-// variables (with locks), adoption, resources and cluster labels. Read-only when
-// viewing, except the resources: those can be added, edited and removed
-// from the view too, each change saved to the template at once.
-import { useRef, useState } from "react";
+// variables (with locks), adoption and cluster labels. Read-only when
+// viewing. What its clusters get deployed is on the template's page
+// (Deployments aimed at it), not in the template.
+import { useState } from "react";
 import { nextRun } from "../lib/cron";
 import { useLoad } from "../lib/hooks";
-import { can, kube, save, type Obj } from "../lib/kube";
-import { describe, kindOf, validate, type Entry } from "../lib/resources";
+import { save, type Obj } from "../lib/kube";
 import { TYPES } from "../lib/types";
 import { Checkbox, KeyValueEditor, SelectField, TextField } from "./form";
 import { NameNamespace } from "./NameNamespace";
-import { Modal } from "./Modal";
-import { ResourceForm, type ResourceFormHandle } from "./ResourceForm";
 import { Banner } from "./ui";
-import { ViewDialog } from "./ViewDialog";
 
 // A variable's value as text: JSON for anything but plain strings.
 function toText(v: unknown): string {
@@ -47,8 +43,6 @@ export function TemplateForm({
   onCancel: () => void;
 }) {
   const isView = mode === "view";
-  // Resources are changed in the view too, when the user may update templates.
-  const resEditable = !isView || can(TYPES.TEMPLATE, "update");
   const spec = value.spec || {};
   const [name, setName] = useState(value.metadata.name || "");
   const [namespace, setNamespace] = useState(value.metadata.namespace || "");
@@ -97,32 +91,12 @@ export function TemplateForm({
   const [labels, setLabels] = useState<Record<string, string>>({
     ...(spec.labels || {}),
   });
-  // Each entry is Fleet's own spec (or a ref), edited whole in the
-  // resource form.
-  const [resources, setResources] = useState<Entry[]>(() =>
-    JSON.parse(JSON.stringify(spec.resources || [])),
-  );
-  // The entry being edited: its index, -1 for a new one, null for none.
-  const [editing, setEditing] = useState<number | null>(null);
-  const [formError, setFormError] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
-  const [viewing, setViewing] = useState<Entry | null>(null);
   const [busy, setBusy] = useState(false);
-  const rform = useRef<ResourceFormHandle>(null);
 
-  const { data } = useLoad(async (r) => {
-    const [classes, shared] = await Promise.all([
-      r.findAll(TYPES.CLUSTER_CLASS).catch(() => []),
-      r.findAll(TYPES.RESOURCE).catch(() => []),
-    ]);
-    return {
-      classes,
-      shared: shared.map((s) => ({
-        name: s.metadata.name,
-        namespace: s.metadata.namespace!,
-      })),
-    };
-  }, []);
+  const { data } = useLoad(async (r) => ({
+    classes: await r.findAll(TYPES.CLUSTER_CLASS).catch(() => []),
+  }), []);
   const classes = data?.classes || [];
   const classOptions = classes
     .filter((c) => c.metadata.namespace === namespace)
@@ -157,64 +131,6 @@ export function TemplateForm({
   const setRow = (i: number, patch: Partial<Row>) =>
     setRows(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
-  function startEdit(i: number) {
-    setFormError("");
-    setEditing(i);
-  }
-
-  // The resources changed: kept for Save when editing, saved to the
-  // template now when viewing. The page reloads the saved template.
-  async function commit(next: Entry[]) {
-    if (!isView) {
-      setResources(next);
-      return;
-    }
-    setBusy(true);
-    try {
-      // Read it fresh: hyve-controller's status writes move its resourceVersion.
-      const o: Obj = JSON.parse(
-        JSON.stringify(
-          await kube.find(
-            TYPES.TEMPLATE,
-            value.metadata.namespace,
-            value.metadata.name,
-          ),
-        ),
-      );
-      o.spec = { ...(o.spec || {}), resources: next.length ? next : undefined };
-      await save(TYPES.TEMPLATE, o);
-      setResources(next);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveEntry() {
-    setFormError("");
-    try {
-      const e = rform.current!.entry();
-      if (resources.some((r, j) => r.name === e.name && j !== editing))
-        throw new Error(`There's already a resource named ${e.name}.`);
-      await commit(
-        editing! < 0
-          ? [...resources, e]
-          : resources.map((r, j) => (j === editing ? e : r)),
-      );
-      setEditing(null);
-    } catch (err) {
-      setFormError((err as Error).message);
-    }
-  }
-
-  async function dropEntry(i: number) {
-    setFormError("");
-    try {
-      await commit(resources.filter((_, j) => j !== i));
-    } catch (err) {
-      setFormError((err as Error).message);
-    }
-  }
-
   function build(): Obj {
     const o: Obj = JSON.parse(JSON.stringify(value));
     o.metadata.name = name;
@@ -239,9 +155,6 @@ export function TemplateForm({
     for (const k of ["kubernetesVersion", "schedule", "description"])
       if (!s[k]) delete s[k];
     if (!s.lockedVariables.length) delete s.lockedVariables;
-    s.resources = resources.length
-      ? JSON.parse(JSON.stringify(resources))
-      : undefined;
     if (adoptVar) {
       // Empty goes in unset, not as a null: kubectl apply and Helm drop nulls.
       const av: Record<string, unknown> = {};
@@ -266,14 +179,8 @@ export function TemplateForm({
   async function onSave() {
     setErrors([]);
     const o = build();
-    const bad = (o.spec.resources || []).map(validate).filter(Boolean);
-    if (bad.length) {
-      setErrors(bad);
-      return;
-    }
     setBusy(true);
     try {
-      // hyve-controller turns the resources into Fleet objects.
       onSaved(await save(TYPES.TEMPLATE, o));
     } catch (e) {
       setErrors([(e as Error)?.message || String(e)]);
@@ -515,140 +422,6 @@ export function TemplateForm({
       </div>
 
       <div>
-        <h3>Resources</h3>
-        <Banner>
-          Delivered by Fleet to every cluster made from this template, now and
-          later; hyve-controller keeps the Fleet objects in step. Secrets named
-          here must exist in this namespace; Fleet copies them to each cluster.
-          {isView &&
-            resEditable &&
-            " Changes here are saved to the template right away."}
-        </Banner>
-        {resources.length > 0 && (
-          <div className="mb-2.5 overflow-x-auto">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Kind</th>
-                  <th>Source</th>
-                  <th>Target namespace</th>
-                  <th>Secrets to copy</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {resources.map((r, i) => (
-                  <tr key={r.name || i}>
-                    <td>{r.name}</td>
-                    <td>{kindOf(r)}</td>
-                    <td className="break-all">{describe(r)}</td>
-                    <td>{r.namespace || "-"}</td>
-                    <td>{(r.secrets || []).join(", ") || "-"}</td>
-                    <td className="text-right whitespace-nowrap">
-                      <button
-                        type="button"
-                        className="btn btn-tertiary btn-sm"
-                        onClick={() => setViewing(r)}
-                      >
-                        View
-                      </button>
-                      {resEditable && (
-                        <>
-                          <button
-                            type="button"
-                            className="btn btn-tertiary btn-sm"
-                            disabled={busy}
-                            onClick={() => startEdit(i)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-tertiary btn-sm"
-                            disabled={busy}
-                            onClick={() => dropEntry(i)}
-                          >
-                            Remove
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {isView && !resources.length && (
-          <p className="text-muted text-sm">No resources yet.</p>
-        )}
-        {editing === null && formError && (
-          <div className="mb-2.5">
-            <Banner tone="error">{formError}</Banner>
-          </div>
-        )}
-        {resEditable && (
-          <button
-            type="button"
-            className="btn btn-tertiary"
-            disabled={busy}
-            onClick={() => startEdit(-1)}
-          >
-            Add resource
-          </button>
-        )}
-        {editing !== null && (
-          <Modal
-            title={
-              editing < 0 ? "New resource" : `Edit ${resources[editing].name}`
-            }
-            onClose={() => setEditing(null)}
-            wide="xl"
-            persistent
-          >
-            <ResourceForm
-              ref={rform}
-              key={editing}
-              value={editing < 0 ? null : resources[editing]}
-              shared={data?.shared || []}
-              roomy
-            />
-            {formError && (
-              <div className="mt-3">
-                <Banner tone="error">{formError}</Banner>
-              </div>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setEditing(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={busy}
-                onClick={saveEntry}
-              >
-                {isView
-                  ? busy
-                    ? "Saving…"
-                    : editing < 0
-                      ? "Add"
-                      : "Save"
-                  : editing < 0
-                    ? "Add"
-                    : "Done"}
-              </button>
-            </div>
-          </Modal>
-        )}
-      </div>
-
-      <div>
         <h3>Cluster labels</h3>
         <p className="hint mt-0 mb-2">
           Added to every cluster; Fleet sees them through CAAPF.
@@ -681,13 +454,6 @@ export function TemplateForm({
             {mode === "create" ? "Create" : "Save"}
           </button>
         </div>
-      )}
-      {viewing && (
-        <ViewDialog
-          title={viewing.name || ""}
-          sections={[{ label: "As written", object: viewing }]}
-          onClose={() => setViewing(null)}
-        />
       )}
     </div>
   );

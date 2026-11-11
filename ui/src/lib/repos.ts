@@ -1,10 +1,8 @@
-// Fleet GitRepos people add (not the ones hyve makes for template
-// resources) and the bundles Fleet makes from them. Git owns what's in a
-// bundle: the console shows bundles wherever they're useful (the Overview,
-// a cluster's page) but edits only the GitRepo, on its own page.
+// Fleet GitRepos and the bundles Fleet makes from them. Git owns what's in
+// a bundle: the console shows bundles wherever they're useful but edits
+// only the GitRepo (a Deployment's page).
 import type { Tone } from './format'
-import { idOf, type Obj, type Reader } from './kube'
-import { FLEET } from './resources'
+import type { Obj } from './kube'
 import { LABELS } from './types'
 
 export const REPO_LABEL = 'fleet.cattle.io/repo-name'
@@ -49,39 +47,4 @@ export function shortBundleName(repo: Obj, bundle: Obj): string {
   const n = bundle.metadata.name
   const p = prefixes.find((x) => n.startsWith(x) && n.length > x.length)
   return p ? n.slice(p.length) : n
-}
-
-// One bundle from a repo, with its state on each Fleet cluster it targets
-// ("namespace/name": CAAPF registers a CAPI cluster under its own
-// namespace and name; the host cluster is LOCAL_FLEET_CLUSTER).
-// bds: its BundleDeployment on each, what it deployed there.
-export type RepoBundle = { repo: Obj; bundle: Obj; name: string; on: Record<string, string>; bds: Record<string, Obj> }
-
-// Every repo bundle. Its states come from BundleDeployments; without the
-// right to list those, a bundle's own summary gives what isn't ready.
-export async function repoBundles(store: Reader): Promise<RepoBundle[]> {
-  const [repos, bundles, bds, fcs] = await Promise.all(
-    [FLEET.GIT_REPO, FLEET.BUNDLE, FLEET.BUNDLE_DEPLOYMENT, FLEET.CLUSTER].map((t) => store.findAll(t).catch(() => [] as Obj[])),
-  )
-  const userRepos = new Map(repos.filter(isUserRepo).map((g) => [idOf(g), g]))
-  const fleetCluster: Record<string, string> = {}
-  for (const fc of fcs) if (fc.status?.namespace) fleetCluster[fc.status.namespace] = idOf(fc)
-
-  const out = new Map<string, RepoBundle>()
-  for (const b of bundles) {
-    const repo = userRepos.get(`${b.metadata.namespace}/${b.metadata.labels?.[REPO_LABEL]}`)
-    if (!repo) continue
-    const on: Record<string, string> = {}
-    for (const r of b.status?.summary?.nonReadyResources || []) on[r.name] = r.bundleState || 'NotReady'
-    out.set(idOf(b), { repo, bundle: b, name: shortBundleName(repo, b), on, bds: {} })
-  }
-  for (const bd of bds) {
-    const l = bd.metadata.labels || {}
-    const rb = out.get(`${l['fleet.cattle.io/bundle-namespace']}/${l['fleet.cattle.io/bundle-name']}`)
-    const cluster = fleetCluster[bd.metadata.namespace!]
-    if (!rb || !cluster) continue
-    rb.on[cluster] = bd.status?.display?.state || (bd.status?.ready ? 'Ready' : 'Pending')
-    rb.bds[cluster] = bd
-  }
-  return [...out.values()].sort((a, b) => idOf(a.repo).localeCompare(idOf(b.repo)) || a.name.localeCompare(b.name))
 }

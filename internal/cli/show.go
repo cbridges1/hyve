@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/cbridges1/hyve/internal/clusters"
-	"github.com/cbridges1/hyve/internal/resources"
 )
 
 // What the UI's View shows, from the CLI: each object a page lists, as
@@ -72,58 +71,6 @@ func printObjects(output string, objs ...any) error {
 		}
 	}
 	return nil
-}
-
-// repoShowCmd shows one Fleet GitRepo.
-func repoShowCmd() *cobra.Command {
-	var workspace, output string
-	cmd := &cobra.Command{
-		Use:   "show NAME",
-		Short: "Show a Fleet GitRepo",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := checkOutput(output); err != nil {
-				return err
-			}
-			s, err := newSession()
-			if err != nil {
-				return err
-			}
-			ctx := cmd.Context()
-			var found []*unstructured.Unstructured
-			if workspace != "" {
-				g, err := s.kube.Dynamic.Resource(resources.GitRepoGVR).Namespace(workspace).Get(ctx, args[0], metav1.GetOptions{})
-				if err != nil {
-					return err
-				}
-				found = append(found, g)
-			} else {
-				list, err := s.kube.Dynamic.Resource(resources.GitRepoGVR).List(ctx, metav1.ListOptions{})
-				if err != nil {
-					return err
-				}
-				for i := range list.Items {
-					if list.Items[i].GetName() == args[0] {
-						found = append(found, &list.Items[i])
-					}
-				}
-			}
-			switch len(found) {
-			case 0:
-				return fmt.Errorf("no GitRepo %q", args[0])
-			case 1:
-				return printObjects(output, tidy(found[0]))
-			}
-			var where []string
-			for _, g := range found {
-				where = append(where, g.GetNamespace())
-			}
-			return fmt.Errorf("GitRepo %q is in several workspaces (%s); pick one with --workspace", args[0], strings.Join(where, ", "))
-		},
-	}
-	cmd.Flags().StringVar(&workspace, "workspace", "", "the Fleet workspace (default: wherever it is)")
-	addOutputFlag(cmd, &output)
-	return cmd
 }
 
 // providerShowCmd shows a provider: the object it was installed from

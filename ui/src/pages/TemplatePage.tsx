@@ -1,15 +1,14 @@
 // A ClusterTemplate: view, edit or create it, preview what a cluster from
-// it gets, or make one; and the Secrets its resources copy to clusters.
+// it gets, or make one; and the Deployments every cluster from it gets.
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { RenderDialog } from '../components/RenderDialog'
-import { SecretsSection } from '../components/SecretsSection'
 import { TemplateForm, type Mode } from '../components/TemplateForm'
-import { BackLink, Banner, Card, ErrorBanner, Loading, PageHeader } from '../components/ui'
+import { BackLink, Banner, Card, EmptyState, ErrorBanner, Loading, PageHeader, Pill } from '../components/ui'
+import { forTemplate, loadDelivery, readiness, stateTone, targetKey, targetLabel } from '../lib/delivery'
 import { useLoad } from '../lib/hooks'
-import { can, newObject } from '../lib/kube'
+import { can, newObject, type Obj } from '../lib/kube'
 import { paths } from '../lib/routes'
-import { templateSecrets } from '../lib/secrets'
 import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from '../lib/types'
 
 export default function TemplatePage() {
@@ -67,19 +66,69 @@ export default function TemplatePage() {
           onCancel={() => navigate(mode === 'create' ? paths.templates : paths.template(namespace!, name!))}
         />
       </Card>
-      {mode === 'view' && (
-        <Card title="Secrets" className="mt-4">
-          <p className="text-muted mt-0 text-sm">
-            What this template's resources copy to every cluster made from it, from {ns}. Clusters get a change the next time Fleet copies the Secret.
-          </p>
-          <SecretsSection
-            load={(r) => templateSecrets(r, value)}
-            deps={[ns, value.metadata.name, value.metadata.resourceVersion]}
-            hint={`In ${ns}, the template namespace: Fleet copies it to every cluster made from ${value.metadata.name} whose resources name it.`}
-            empty="None of this template's resources copy a Secret."
-          />
-        </Card>
-      )}
+      {mode === 'view' && <DeployedHere template={value} />}
     </div>
+  )
+}
+
+// The Deployments every cluster from the template gets: aimed at it, its
+// class or all clusters.
+function DeployedHere({ template }: { template: Obj }) {
+  const { data, error, loading } = useLoad((r) => loadDelivery(r), [])
+  const name = template.metadata.name
+  const mine = data ? forTemplate(data, template) : []
+  return (
+    <Card
+      title="Deployed to its clusters"
+      className="mt-4"
+      action={
+        can(TYPES.FLEET_HELM_OP, 'create') && (
+          <Link className="btn btn-secondary btn-sm" to={paths.newDeployment([`template/${name}`])}>
+            Deploy to this template
+          </Link>
+        )
+      }
+    >
+      <ErrorBanner error={error} />
+      {loading ? (
+        <Loading />
+      ) : !mine.length ? (
+        <EmptyState>Nothing yet: a Deployment aimed at this template reaches every cluster made from it, now and later.</EmptyState>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Deployment</th>
+              <th>Source</th>
+              <th>Delivered to</th>
+              <th>Clusters ready</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mine.map((d) => {
+              const { ready, state } = readiness(d)
+              return (
+                <tr key={`${d.namespace}/${d.name}`}>
+                  <td>
+                    <Link to={paths.deployment(d.namespace, d.name)}>{d.name}</Link>
+                  </td>
+                  <td className="max-w-80 break-all">{d.source}</td>
+                  <td>
+                    <div className="flex flex-wrap gap-1">
+                      {d.targets.map((t) => (
+                        <Pill key={targetKey(t)} tone={t.kind === 'template' && t.name === name ? 'info' : 'idle'} label={targetLabel(t)} />
+                      ))}
+                    </div>
+                  </td>
+                  <td>
+                    {ready || '-'} {state && <Pill tone={stateTone(state)} label={state} />}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </Card>
   )
 }

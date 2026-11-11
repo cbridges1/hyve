@@ -19,14 +19,15 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
+	"github.com/cbridges1/hyve/internal/delivery"
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 )
 
 // Saved state (HYVE-PROPOSAL.md, "Local mode"): local mode's Cluster API
-// objects, with hyve's templates and resources (their CRDs are labelled
-// for clusterctl move), written as files by clusterctl's move
-// --to-directory. A fresh local cluster restores them before anything
+// objects, with hyve's templates (their CRDs are labelled for clusterctl
+// move), written as files by clusterctl's move --to-directory, and the
+// Deployments, which Fleet's CRDs don't let clusterctl move, beside them. A fresh local cluster restores them before anything
 // else, so losing it, or starting every CI job from nothing, loses no
 // clusters; their agents reconnect to the new host by themselves.
 
@@ -61,6 +62,12 @@ var ErrDeleting = errors.New("a cluster is being deleted; the state is saved onc
 // environments and template namespaces; clusterctl recreates bare ones.
 const namespacesFile = "hyve-namespaces.yaml"
 
+// deploymentsFile keeps the Deployments (Fleet GitRepos, HelmOps and
+// Bundles) and people's own ClusterGroups, whose CRDs clusterctl move
+// doesn't carry. Like namespacesFile it's a List, which clusterctl's
+// restore passes over.
+const deploymentsFile = "hyve-deployments.yaml"
+
 var (
 	namespaceGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
 	// The kinds whose namespaces are saved.
@@ -68,6 +75,7 @@ var (
 		{Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusters"},
 		{Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusterclasses"},
 		{Group: "hyve.io", Version: "v1alpha1", Resource: "clustertemplates"},
+		// Before Deployments; migrated once restored.
 		{Group: "hyve.io", Version: "v1alpha1", Resource: "resources"},
 		{Group: "hyve.io", Version: "v1alpha1", Resource: "clusterresources"},
 	}
@@ -190,6 +198,19 @@ func Save(ctx context.Context, home, dir string) (int, error) {
 	if err := os.WriteFile(filepath.Join(tmp, namespacesFile), raw, 0o600); err != nil {
 		return 0, err
 	}
+	deps, err := saveDeployments(ctx, kc)
+	if err != nil {
+		return 0, err
+	}
+	if len(deps) > 0 {
+		raw, err := yaml.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": deps})
+		if err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(filepath.Join(tmp, deploymentsFile), raw, 0o600); err != nil {
+			return 0, err
+		}
+	}
 	entries, _ := os.ReadDir(tmp)
 	// Swap the new state in whole, so an interrupted save leaves the old.
 	old := dir + ".old"
@@ -280,8 +301,11 @@ func Restore(ctx context.Context, home, dir string, logf func(string, ...any)) (
 			}
 		}
 	}
+	if err := restoreDeployments(ctx, kc, dir); err != nil {
+		return 0, err
+	}
 	if len(objs) == 0 {
-		return 0, nil // only empty environments
+		return 0, nil // only empty environments, and Deployments
 	}
 	var kinds []schema.GroupKind
 	for _, o := range objs {
@@ -335,7 +359,7 @@ func readState(dir string) ([]*unstructured.Unstructured, error) {
 	}
 	var out []*unstructured.Unstructured
 	for _, e := range entries {
-		if e.Name() == namespacesFile || !strings.HasSuffix(e.Name(), ".yaml") {
+		if e.Name() == namespacesFile || e.Name() == deploymentsFile || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -360,4 +384,79 @@ func toAny(m map[string]string) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// saveDeployments returns the Deployments and people's own ClusterGroups,
+// bare: what's needed to make them again, without status or server fields.
+// The groups hyve and CAAPF keep are made again by them.
+func saveDeployments(ctx context.Context, kc *kube.Client) ([]any, error) {
+	nss, err := delivery.Namespaces(ctx, kc.Dynamic, install.DefaultTemplateNamespace)
+	if err != nil {
+		return nil, err
+	}
+	items, err := delivery.List(ctx, kc.Dynamic, install.DefaultTemplateNamespace, nss)
+	if err != nil {
+		return nil, err
+	}
+	var out []any
+	for _, it := range items {
+		out = append(out, bare(it.Object))
+	}
+	groups, err := kc.Dynamic.Resource(delivery.ClusterGroupGVR).Namespace(install.DefaultTemplateNamespace).List(ctx, metav1.ListOptions{})
+	if err != nil && !strings.Contains(err.Error(), "could not find the requested resource") {
+		return nil, err
+	}
+	if groups != nil {
+		for i := range groups.Items {
+			g := &groups.Items[i]
+			if g.GetLabels()[delivery.LabelGroupKind] != "" || delivery.IsClassGroup(g) {
+				continue
+			}
+			out = append(out, bare(g))
+		}
+	}
+	return out, nil
+}
+
+func bare(o *unstructured.Unstructured) map[string]any {
+	ann := map[string]any{}
+	for k, v := range o.GetAnnotations() {
+		if k != "kubectl.kubernetes.io/last-applied-configuration" {
+			ann[k] = v
+		}
+	}
+	md := map[string]any{"name": o.GetName(), "namespace": o.GetNamespace()}
+	if l := toAny(o.GetLabels()); l != nil {
+		md["labels"] = l
+	}
+	if len(ann) > 0 {
+		md["annotations"] = ann
+	}
+	return map[string]any{"apiVersion": o.GetAPIVersion(), "kind": o.GetKind(), "metadata": md, "spec": o.Object["spec"]}
+}
+
+// restoreDeployments applies what saveDeployments kept.
+func restoreDeployments(ctx context.Context, kc *kube.Client, dir string) error {
+	raw, err := os.ReadFile(filepath.Join(dir, deploymentsFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	list, err := kube.Decode(raw)
+	if err != nil {
+		return err
+	}
+	for _, l := range list {
+		items, _, _ := unstructured.NestedSlice(l.Object, "items")
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			o := &unstructured.Unstructured{Object: m}
+			if err := kc.ApplyObject(ctx, o); err != nil {
+				return fmt.Errorf("restoring %s %s/%s: %w", o.GetKind(), o.GetNamespace(), o.GetName(), err)
+			}
+		}
+	}
+	return nil
 }

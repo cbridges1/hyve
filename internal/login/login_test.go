@@ -217,3 +217,49 @@ func TestExecCredential(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{"token":"tok","expirationTimestamp":"2026-10-17T04:00:00Z"}}`, string(out))
 }
+
+// HYVE_URL and HYVE_TOKEN stand in for the saved server, and aren't saved.
+func TestEnvServer(t *testing.T) {
+	home := t.TempDir()
+	cfg, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Put(Server{Name: "prod", URL: "https://hyve.example.com", Kind: KindHyve, Token: "hs-saved"})
+	cfg.Current = "prod"
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HYVE_URL", "https://ci.example.com/")
+	t.Setenv("HYVE_TOKEN", "hs-from-env")
+	cfg, err = Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := cfg.Get("")
+	if err != nil || s.Name != EnvServer || s.URL != "https://ci.example.com" || s.Token != "hs-from-env" {
+		t.Fatalf("current: %+v %v", s, err)
+	}
+	if s, err := cfg.Get("prod"); err != nil || s.Token != "hs-saved" {
+		t.Fatalf("--server prod: %+v %v", s, err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HYVE_URL", "")
+	t.Setenv("HYVE_TOKEN", "")
+	cfg, err = Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Current != "prod" || cfg.Find(EnvServer) != nil {
+		t.Fatalf("the environment's server was saved: current %q, %+v", cfg.Current, cfg.Servers)
+	}
+
+	t.Setenv("HYVE_URL", "https://ci.example.com")
+	if _, err := Load(home); err == nil {
+		t.Fatal("HYVE_URL without HYVE_TOKEN loaded")
+	}
+}

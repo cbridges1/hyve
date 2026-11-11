@@ -116,9 +116,9 @@ func secretsCreateCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "create NAME (--from-literal key=value | --from-env KEY | --from-file key=path)...",
-		Short: "Create a Secret for resources to copy to clusters",
-		Long: `Creates a Secret in the template namespace (or --namespace), for template
-resources and cluster extras to name in their secrets. Values come from
+		Short: "Create a Secret for Deployments to copy to clusters",
+		Long: `Creates a Secret in the template namespace (or --namespace), for the
+Deployments there to copy to clusters (their downstreamResources). Values come from
 --from-literal, environment variables (--from-env) or files (--from-file);
 they're never printed.
 
@@ -130,9 +130,9 @@ Which namespace depends on who reads the Secret:
                       cluster's own namespace, so put them in each environment
                       you create clusters in (-n ENV). Also Secrets a single
                       cluster's extra resources copy.`,
-		Example: `  CF_TOKEN=... hyve secrets create cloudflare-dns --from-env api-token=CF_TOKEN
-  CIVO_TOKEN=... hyve secrets create civo-credentials -n default --from-env token=CIVO_TOKEN
-  hyve secrets create registry --type kubernetes.io/dockerconfigjson --from-file .dockerconfigjson=$HOME/.docker/config.json`,
+		Example: `  CF_TOKEN=... hyve deploy secret create cloudflare-dns --from-env api-token=CF_TOKEN
+  CIVO_TOKEN=... hyve deploy secret create civo-credentials -n default --from-env token=CIVO_TOKEN
+  hyve deploy secret create registry --type kubernetes.io/dockerconfigjson --from-file .dockerconfigjson=$HOME/.docker/config.json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if vals.empty() {
@@ -167,7 +167,7 @@ Which namespace depends on who reads the Secret:
 			}}
 			if _, err := s.kube.Dynamic.Resource(secretGVR).Namespace(ns).Create(cmd.Context(), obj, metav1.CreateOptions{}); err != nil {
 				if apierrors.IsAlreadyExists(err) {
-					return fmt.Errorf("Secret %s/%s exists; change it with 'hyve secrets set'", ns, args[0])
+					return fmt.Errorf("Secret %s/%s exists; change it with 'hyve deploy secret set'", ns, args[0])
 				}
 				return err
 			}
@@ -194,8 +194,8 @@ func secretsSetCmd() *cobra.Command {
 		Long: `Changes a Secret's keys: the values given are added or replace the keys of
 the same name, --remove deletes keys, and the rest stay as they are.
 Clusters get the change the next time Fleet copies the Secret.`,
-		Example: `  CF_TOKEN=... hyve secrets set cloudflare-dns --from-env api-token=CF_TOKEN
-  hyve secrets set registry --remove old-key`,
+		Example: `  CF_TOKEN=... hyve deploy secret set cloudflare-dns --from-env api-token=CF_TOKEN
+  hyve deploy secret set registry --remove old-key`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if vals.empty() && len(remove) == 0 {
@@ -217,7 +217,7 @@ Clusters get the change the next time Fleet copies the Secret.`,
 			sec, err := s.kube.Dynamic.Resource(secretGVR).Namespace(ns).Get(ctx, args[0], metav1.GetOptions{})
 			if err != nil {
 				if apierrors.IsNotFound(err) {
-					return fmt.Errorf("no Secret %s/%s; make it with 'hyve secrets create'", ns, args[0])
+					return fmt.Errorf("no Secret %s/%s; make it with 'hyve deploy secret create'", ns, args[0])
 				}
 				return err
 			}
@@ -257,7 +257,7 @@ func secretsDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "delete NAME",
 		Aliases: []string{"rm"},
-		Short:   "Delete a Secret (resources that name it report it missing)",
+		Short:   "Delete a Secret (Deployments that copy it report it missing)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()

@@ -302,6 +302,10 @@ func Fill(c *unstructured.Unstructured, t *Template, class *unstructured.Unstruc
 	}
 	labels[LabelTemplate] = t.Name
 	labels[LabelTemplateNamespace] = t.Namespace
+	if c.GetNamespace() != "" && c.GetName() != "" {
+		labels[clusters.LabelEnvironment] = c.GetNamespace()
+		labels[clusters.LabelCluster] = c.GetName()
+	}
 	if _, ok := labels[clusters.LabelManagedBy]; !ok {
 		labels[clusters.LabelManagedBy] = clusters.ManagedBy
 	}

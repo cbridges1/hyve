@@ -1,4 +1,4 @@
-// 'hyve import': old hyve Templates and herd ClusterTemplates, pasted or
+// 'hyve template convert': old hyve Templates and herd ClusterTemplates, pasted or
 // loaded from files, converted by the host (the CLI's own code) into hyve
 // ClusterTemplates. Creating them is done here, as the signed-in user, and
 // for herd templates can label the clusters herd made from them.
@@ -86,7 +86,7 @@ export default function ImportPage() {
       <p className="text-sm text-neutral-500">
         Converts old hyve Templates (hyve-capi-module, hyve-civo-module, hyve-unraid-k3s-module) and herd ClusterTemplates into hyve ClusterTemplates:
         flavor presets expanded, params mapped onto the ClusterClass, locks, the schedule, and Helm and git resources. What hyve can't express is listed
-        for each. Also <code>hyve import</code>.
+        for each. Also <code>hyve template convert</code>.
       </p>
       <Card>
         <textarea

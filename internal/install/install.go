@@ -561,7 +561,7 @@ func ProviderObjects(name string) ([]*unstructured.Unstructured, error) {
 }
 
 // The namespaces the CLI uses when none is given: the default environment
-// and the namespace for templates and shared resources.
+// and the namespace for templates and the Deployments aimed at them.
 const (
 	DefaultEnvironment       = "default"
 	DefaultTemplateNamespace = "capi-clusters"

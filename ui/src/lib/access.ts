@@ -1,12 +1,17 @@
 // Who can reach which clusters, as 'hyve access list' reads it: a
 // ClusterAccess in an environment (a role on one cluster or all of them),
-// or environment membership (RoleBindings labelled hyve.io/env-member in
-// the environment and the template namespace). Read by the Access page and,
+// environment membership (RoleBindings labelled hyve.io/env-member in
+// the environment and the template namespace), or deploying to templates
+// (a RoleBinding labelled hyve.io/deployer in the template namespace). Read by the Access page and,
 // per user, by Users.
 import { idOf, type Obj, type Reader } from './kube'
 import { LABELS, TYPES } from './types'
 
 export const ENV_MEMBER = 'hyve.io/env-member'
+// Deployers ('hyve access grant --role deployer'): a RoleBinding of
+// hyve-deployer in the template namespace, so CI can make and change the
+// Deployments aimed at templates.
+export const DEPLOYER = 'hyve.io/deployer'
 
 export type Grant = {
   id: string
@@ -82,6 +87,27 @@ export async function loadAccess(r: Reader): Promise<AccessData> {
         })
       })
     })
+  rbs
+    .filter((rb) => rb.metadata.labels?.[DEPLOYER] === 'true')
+    .forEach((rb) => {
+      ;(rb.subjects || []).forEach((s: any) => {
+        const kind = String(s.kind).toLowerCase() === 'group' ? 'group' : 'user'
+        const who = String(s.name).replace(/^hyve:/, '')
+        grants.push({
+          id: `dep:${idOf(rb)}:${s.name}`,
+          name: rb.metadata.name,
+          ns: rb.metadata.namespace || '',
+          kind,
+          who,
+          subject: `${kind} ${who}`,
+          role: 'deployer',
+          on: `Deployments in ${rb.metadata.namespace}`,
+          ready: '-',
+          model: rb,
+          type: TYPES.ROLE_BINDING,
+        })
+      })
+    })
   grants.sort((a, b) => `${a.ns}/${a.name}`.localeCompare(`${b.ns}/${b.name}`))
   const sorted = [...users].sort((a, b) => a.metadata.name.localeCompare(b.metadata.name))
   return { envs, grants, readable, clusters, users: sorted }
@@ -97,6 +123,7 @@ export function grantsFor(grants: Grant[], user: string, groups: string[] = []):
 // One grant in a few words: "owner of web in prod", "read-only on every
 // cluster in dev", "member of environment dev".
 export function describeGrant(g: Grant): string {
+  if (g.role === 'deployer') return `deploys to templates (${g.ns})`
   if (g.type === TYPES.ROLE_BINDING) return `member of environment ${g.ns}`
   return g.on === 'every cluster' ? `${g.role} on every cluster in ${g.ns}` : `${g.role} of ${g.on} in ${g.ns}`
 }

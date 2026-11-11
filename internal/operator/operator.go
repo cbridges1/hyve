@@ -4,9 +4,11 @@
 //   - templates: a mutating webhook fills in each Cluster labelled with a
 //     ClusterTemplate as it's created, and a validating webhook keeps its
 //     locked variables locked;
-//   - template resources: each ClusterTemplate's resources become Fleet
-//     objects aimed at its clusters, and each ClusterResource one aimed at
-//     its cluster;
+//   - delivery groups: a Fleet ClusterGroup for each ClusterTemplate and
+//     each environment, which Deployments target, and each Cluster
+//     labelled with its environment and name (groups.go); template
+//     resources and ClusterResources from before are migrated to
+//     Deployments (migrate.go);
 //   - expiry: Clusters whose hyve.io/expires-at has passed are deleted;
 //   - imported clusters: the ImportedCluster and ImportedControlPlane of a
 //     cluster 'hyve cluster import' brought in are reported ready while
@@ -23,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -75,6 +76,9 @@ type Options struct {
 	// FleetImage runs push delivery's `fleet` commands; empty means the
 	// image fleet-controller runs.
 	FleetImage string
+	// Workspace is the default template namespace: environment groups are
+	// kept there, and imported clusters are reachable from it.
+	Workspace string
 }
 
 // Run runs hyve-controller until ctx ends.
@@ -101,18 +105,17 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 	if err != nil {
 		return err
 	}
-	dc, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
 	if err := ctrl.NewControllerManagedBy(mgr).Named("hyve-expiry").For(object(clusterGVK)).
 		Complete(&Expiry{Client: mgr.GetClient(), Now: time.Now}); err != nil {
 		return err
 	}
-	if err := setupResources(mgr, dc); err != nil {
+	if err := setupGroups(mgr, o.Workspace); err != nil {
 		return err
 	}
-	if err := setupImported(mgr); err != nil {
+	if err := setupMigrate(mgr); err != nil {
+		return err
+	}
+	if err := setupImported(mgr, o.Workspace); err != nil {
 		return err
 	}
 	// Push delivery, for children whose agent can't reach this cluster.

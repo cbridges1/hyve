@@ -13,7 +13,7 @@ import { errorMessage } from '../lib/api'
 import { useEnvironment } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
 import { kube, newObject, remove, save } from '../lib/kube'
-import { ENV_MEMBER, grantsFor, loadAccess, type Grant } from '../lib/access'
+import { DEPLOYER, ENV_MEMBER, grantsFor, loadAccess, type Grant } from '../lib/access'
 import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from '../lib/types'
 
 const ROLES = [
@@ -21,6 +21,7 @@ const ROLES = [
   { value: 'member', label: 'Member', hint: 'see the cluster, create namespaces' },
   { value: 'read-only', label: 'Read-only', hint: 'read everything but Secrets' },
   { value: 'env-member', label: 'Environment member', hint: 'create and manage clusters in the environment' },
+  { value: 'deployer', label: 'Deployer', hint: 'make and change the Deployments aimed at templates (for CI)' },
 ]
 
 type Form = { kind: 'user' | 'group'; subject: string; role: string; env: string; cluster: string }
@@ -58,7 +59,7 @@ export default function Access() {
     e.preventDefault()
     const f = form
     setError('')
-    if (!f.subject || !f.env) {
+    if (!f.subject || (!f.env && f.role !== 'deployer')) {
       setError('Give a user or group, and an environment.')
       return
     }
@@ -67,7 +68,16 @@ export default function Access() {
     const name = `${subjectKind}-${f.subject}`.toLowerCase()
     setBusy(true)
     try {
-      if (f.role === 'env-member') {
+      if (f.role === 'deployer') {
+        const rbName = `hyve-deployer-${name}`
+        const ns = DEFAULT_TEMPLATE_NAMESPACE
+        const rb =
+          (await kube.maybe(TYPES.ROLE_BINDING, ns, rbName)) ||
+          newObject(TYPES.ROLE_BINDING, { metadata: { name: rbName, namespace: ns, labels: { [LABELS.MANAGED_BY]: 'hyve', [DEPLOYER]: 'true' } } })
+        rb.roleRef = { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'hyve-deployer' }
+        rb.subjects = [{ apiGroup: 'rbac.authorization.k8s.io', kind: subjectKind, name: `hyve:${f.subject}` }]
+        await save(TYPES.ROLE_BINDING, rb)
+      } else if (f.role === 'env-member') {
         for (const [ns, role] of [
           [f.env, 'hyve-environment-member'],
           [DEFAULT_TEMPLATE_NAMESPACE, 'hyve-template-reader'],
@@ -124,7 +134,8 @@ export default function Access() {
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="mb-0 max-w-2xl text-sm text-neutral-500">
-          Roles on clusters: owner, member or read-only, on one cluster or every cluster in an environment (now and later). A cluster's creator owns it. Also{' '}
+          Roles on clusters: owner, member or read-only, on one cluster or every cluster in an environment (now and later). A cluster's creator owns it.
+          Environment members make clusters; deployers (CI) change the Deployments aimed at templates. Also{' '}
           <code>hyve access</code>.
         </p>
         <div className="flex flex-wrap items-center gap-2.5">
@@ -218,8 +229,12 @@ export default function Access() {
               onChange={(v) => set({ role: v })}
               options={ROLES.map((r) => ({ value: r.value, label: `${r.label} — ${r.hint}` }))}
             />
-            <SelectField label="Environment" value={form.env} onChange={(v) => set({ env: v, cluster: '' })} options={envs} />
-            {form.role !== 'env-member' && (
+            {form.role === 'deployer' ? (
+              <p className="hint">In the template namespace ({DEFAULT_TEMPLATE_NAMESPACE}), where the Deployments aimed at templates, classes and all clusters live.</p>
+            ) : (
+              <SelectField label="Environment" value={form.env} onChange={(v) => set({ env: v, cluster: '' })} options={envs} />
+            )}
+            {form.role !== 'env-member' && form.role !== 'deployer' && (
               <SelectField
                 label="Cluster"
                 value={form.cluster}

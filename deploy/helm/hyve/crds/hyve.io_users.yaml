@@ -30,8 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: |-
-          User is a hyve account.
+        description: User is a hyve account.
         properties:
           apiVersion:
             description: |-
@@ -57,7 +56,7 @@ spec:
               metadata.name is the username. The password never lives here: its bcrypt
               hash is a Secret in the host's namespace, owned by this User, the way
               Rancher keeps local passwords in cattle-local-user-passwords — see
-              internal/hostauth.
+              internal/signin.
             properties:
               disabled:
                 description: |-
@@ -66,6 +65,12 @@ spec:
                 type: boolean
               displayName:
                 description: DisplayName is shown in the UI and by `hyve user list`.
+                type: string
+              email:
+                description: |-
+                  Email is where the host sends the user's password resets and account
+                  emails. For an identity provider's user, it's the address the
+                  provider gave at the last sign-in.
                 type: string
               groups:
                 description: |-
@@ -78,7 +83,7 @@ spec:
                 description: |-
                   MustChangePassword makes the next sign-in change the password before
                   it's given a session. Set on the bootstrap admin and by
-                  `hyve user add` without --no-password-change.
+                  `hyve user create` without --no-password-change.
                 type: boolean
               provider:
                 description: |-
@@ -90,12 +95,50 @@ spec:
                   Subject is the identity provider's ID for the user (the ID token's
                   sub claim).
                 type: string
-              email:
+              trustedCI:
                 description: |-
-                  Email is where the host sends the user's password resets and account
-                  emails. For an identity provider's user, it's the address the
-                  provider gave at the last sign-in.
-                type: string
+                  TrustedCI lets CI jobs sign in as this user with the ID token their
+                  CI system gives each job (GitHub Actions, GitLab CI...), so the
+                  pipeline keeps no secret: a token from Issuer, for Audience, whose
+                  claims match one entry gets a one-hour session.
+                items:
+                  description: TrustedCI is a CI system's jobs that may sign in as
+                    a user.
+                  properties:
+                    audience:
+                      description: Audience the job's token must be issued for (default
+                        "hyve").
+                      type: string
+                    claims:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Claims the token must have, such as repository: org/web and
+                        ref: refs/heads/main. A '*' in a value matches anything
+                        (ref: refs/tags/*). At least one is required, and one of them
+                        must say which repository or project: sub, repository,
+                        repository_owner, repository_id, project_path or namespace_path.
+                      minProperties: 1
+                      type: object
+                    issuer:
+                      description: |-
+                        Issuer is the CI system's OIDC issuer, such as
+                        https://token.actions.githubusercontent.com or https://gitlab.com.
+                      pattern: ^https://
+                      type: string
+                    name:
+                      description: |-
+                        Name tells entries apart (in `hyve user trust list`, the UI and the
+                        host's log).
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - claims
+                  - issuer
+                  - name
+                  type: object
+                type: array
             type: object
           status:
             description: UserStatus is written by the host endpoint.
@@ -106,6 +149,10 @@ spec:
                 type: string
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: 'a username must be a DNS label: lowercase letters, digits and
+            ''-'', at most 63 characters'
+          rule: self.metadata.name.size() <= 63 && self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
     served: true
     storage: true
     subresources:

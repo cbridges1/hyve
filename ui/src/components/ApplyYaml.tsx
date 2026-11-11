@@ -1,5 +1,5 @@
-// Creates or updates ClusterTemplates, shared Resources, ClusterResources
-// and ClusterClasses from YAML: 'hyve template apply -f'. Pasted, or
+// Creates or updates ClusterTemplates, Deployments, ClusterGroups
+// and ClusterClasses from YAML: 'hyve apply -f'. Pasted, or
 // loaded from files.
 import { useState } from 'react'
 import { applyObjects, parseDocs, type Applied } from '../lib/apply'
@@ -40,9 +40,8 @@ export function ApplyYaml({ onClose, onApplied }: { onClose: () => void; onAppli
   return (
     <Modal title="Apply YAML" onClose={onClose} wide>
       <p className="text-muted mb-2.5 text-sm">
-        Creates or updates ClusterTemplates, shared Resources and ClusterResources (hyve.io), and ClusterClasses with their provider templates, as{' '}
-        <code>hyve template apply -f</code> does. Without a namespace, templates, Resources and ClusterClasses go in the template namespace and a
-        ClusterResource in the default environment.
+        Creates or updates ClusterTemplates, Deployments (Fleet GitRepos, HelmOps and Bundles), ClusterGroups, and ClusterClasses with their provider
+        templates, as <code>hyve apply -f</code> does. Without a namespace, they go in the template namespace.
       </p>
       <CodeEditor value={text} onChange={setText} minHeight="20rem" />
       <div className="mt-2.5">

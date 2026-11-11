@@ -19,24 +19,24 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/cbridges1/hyve/internal/delivery"
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/operator"
 	"github.com/cbridges1/hyve/internal/render"
-	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
 )
 
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
-// SecretsCmd is `hyve secrets`: resources name the Kubernetes Secrets Fleet
-// copies to their clusters. hyve can make and change them, or the install
+// SecretsCmd is `hyve deploy secret`: Deployments name the Kubernetes Secrets
+// Fleet copies to their clusters. hyve can make and change them, or the install
 // can fill them some other way (HYVE-PROPOSAL.md, "Secrets").
 func SecretsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "secrets",
-		Aliases: []string{"secret"},
-		Short:   "Create, change, list and delete the Secrets resources copy to clusters",
+		Use:     "secret",
+		Aliases: []string{"secrets"},
+		Short:   "Create, change, list and delete the Secrets Deployments copy to clusters",
 	}
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
@@ -44,12 +44,12 @@ func SecretsCmd() *cobra.Command {
 	list := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List the Secrets templates and extras copy to clusters, and which are missing",
-		Long: `Lists, by name only, the Secrets that template resources (in the template
-namespace) and cluster extras (in the environment) have Fleet copy to their
-clusters, and whether each exists, with their keys; it never reads values
-('hyve secrets show NAME --reveal' does).
-Create missing ones with 'hyve secrets create', or however your install
+		Short:   "List the Secrets Deployments copy to clusters, and which are missing",
+		Long: `Lists, by name only, the Secrets that Deployments have Fleet copy to their
+clusters (downstreamResources; each must be in its Deployment's namespace),
+and whether each exists, with their keys; it never reads values
+('hyve deploy secret show NAME --reveal' does).
+Create missing ones with 'hyve deploy secret create', or however your install
 manages secrets: an operator such as Infisical's or External Secrets,
 sealed-secrets.`,
 		Args: cobra.NoArgs,
@@ -61,40 +61,18 @@ sealed-secrets.`,
 			ctx := cmd.Context()
 			type need struct{ ns, name string }
 			users := map[need][]string{}
-			lookup := resources.SharedLookup(s.kube.Dynamic)
-			tl, err := s.kube.Dynamic.Resource(templates.GVR).Namespace(s.templateNS()).List(ctx, metav1.ListOptions{})
+			nss, err := s.deployNamespaces(ctx)
 			if err != nil {
-				return notInstalled(err)
+				return err
 			}
-			for i := range tl.Items {
-				t, err := templates.FromUnstructured(&tl.Items[i])
-				if err != nil {
-					continue
-				}
-				for _, e := range t.Spec.Resources {
-					if r, err := resources.Resolve(ctx, e, t.Namespace, lookup); err == nil {
-						e = r
-					}
-					for _, sec := range e.Secrets {
-						k := need{t.Namespace, sec}
-						users[k] = append(users[k], "template "+t.Name+"/"+e.Name)
-					}
-				}
+			items, err := delivery.List(ctx, s.kube.Dynamic, s.templateNS(), nss)
+			if err != nil {
+				return err
 			}
-			crs, err := s.kube.Dynamic.Resource(resources.ClusterResourceGVR).Namespace(s.env()).List(ctx, metav1.ListOptions{})
-			if err == nil {
-				for i := range crs.Items {
-					e, err := resources.EntryFromSpec(&crs.Items[i])
-					if err != nil {
-						continue
-					}
-					if r, err := resources.Resolve(ctx, e, s.templateNS(), lookup); err == nil {
-						e = r
-					}
-					for _, sec := range e.Secrets {
-						k := need{crs.Items[i].GetNamespace(), sec}
-						users[k] = append(users[k], "extra "+crs.Items[i].GetName())
-					}
+			for _, it := range items {
+				for _, sec := range delivery.Secrets(it.Object) {
+					k := need{it.Namespace, sec}
+					users[k] = append(users[k], "deployment "+it.Name)
 				}
 			}
 			keys := make([]need, 0, len(users))
@@ -133,7 +111,7 @@ sealed-secrets.`,
 	return cmd
 }
 
-// RenderCmd is `hyve render`: the Cluster and Fleet objects a template
+// RenderCmd is `hyve template render`: the Cluster and Fleet objects a template
 // produces, from files, with no cluster at all.
 func RenderCmd() *cobra.Command {
 	var (
@@ -144,12 +122,14 @@ func RenderCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "render -f FILE... [--template NAME] [--name CLUSTER]",
 		Short: "Print the Cluster and Fleet objects a template produces, without a cluster",
-		Long: `Reads ClusterTemplates, shared Resources and ClusterClasses from YAML files and
-prints what hyve would create for a cluster made from the template: the
-filled-in Cluster, and one Fleet object per resource. Nothing is contacted.
+		Long: `Reads ClusterTemplates and ClusterClasses from YAML files and prints the
+Cluster hyve would create from the template, filled in. A template file
+that still lists resources (from before Deployments) also gets the
+Deployments hyve-controller turns them into, aimed at the template's group;
+shared Resources they refer to can be given too. Nothing is contacted.
 Without the ClusterClass among the files, its defaults (version, workers)
 can't be filled in.`,
-		Example: `  hyve render -f fleet/capi/templates/civo.yaml -f fleet/capi/classes/civo.yaml --name demo -e ci`,
+		Example: `  hyve template render -f fleet/capi/templates/civo.yaml -f fleet/capi/classes/civo.yaml --name demo -e ci`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var objs []*unstructured.Unstructured
@@ -200,7 +180,7 @@ can't be filled in.`,
 		},
 	}
 	f := cmd.Flags()
-	f.StringArrayVarP(&files, "filename", "f", nil, "YAML file with ClusterTemplates, Resources or ClusterClasses (repeatable)")
+	f.StringArrayVarP(&files, "filename", "f", nil, "YAML file with ClusterTemplates, ClusterClasses or (older) shared Resources (repeatable)")
 	f.StringVar(&tname, "template", "", "which template, when the files hold several")
 	f.StringVar(&name, "name", "example", "the cluster's name")
 	f.StringVarP(&env, "env", "e", DefaultEnvironment, "the cluster's environment")
@@ -247,6 +227,7 @@ func ControllerCmd() *cobra.Command {
 	f.StringVar(&o.ServiceNamespace, "service-namespace", "hyve-system", "webhook Service namespace")
 	f.StringVar(&o.MutatingWebhookName, "mutating-webhook", install.MutatingWebhook, "MutatingWebhookConfiguration to patch the CA into")
 	f.StringVar(&o.ValidatingWebhook, "validating-webhook", "hyve-controller", "ValidatingWebhookConfiguration to patch the CA into")
+	f.StringVar(&o.Workspace, "template-namespace", install.DefaultTemplateNamespace, "the default template namespace: environment groups go there, and imported clusters are reachable from it")
 	f.BoolVar(&o.LazyProviders, "lazy-providers", false, "add known Cluster API providers when a ClusterClass or a Fleet bundle first needs them (local mode)")
 	f.StringVar(&o.FleetImage, "fleet-image", "", "image for push delivery's fleet commands (default: the image fleet-controller runs)")
 	f.BoolVar(&o.NoWebhook, "no-webhook", false, "run without the webhooks (templates then aren't filled in server-side)")

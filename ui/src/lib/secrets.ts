@@ -1,13 +1,13 @@
-// The Secrets a template or a cluster needs, and whether they exist: what
-// its resources have Fleet copy (downstreamResources), and for a cluster
-// the credentials its Cluster API provider reads. Read by the template
-// page's and the cluster's Resources tab's Secrets sections. Also a
+// The Secrets a Deployment or a cluster needs, and whether they exist:
+// what Deployments have Fleet copy (downstreamResources), and for a cluster
+// the credentials its Cluster API provider reads. Read by a Deployment's
+// page's and a cluster's Deployments tab's Secrets sections. Also a
 // Secret's reads and writes, on the host or (for the explorer) a child.
 import { ApiError, request } from './api'
 import { clusterBase, getObject } from './explorer'
 import { kube, save, typeForKind, urlFor, type Obj, type Reader, type Schema } from './kube'
-import { clusterItems, listItems, type Entry, type Item } from './resources'
-import { LABELS, TYPES } from './types'
+import { secretsOf, type Deployment } from './delivery'
+import { TYPES } from './types'
 
 export type Need = {
   name: string
@@ -21,25 +21,6 @@ export type Need = {
   // The operator object that owns it (InfisicalStaticSecret/x), whose
   // syncs would undo an edit.
   managedBy: string
-}
-
-// Names of the Secrets an object's downstreamResources copy.
-function downstream(o: Obj | undefined): string[] {
-  return ((o?.spec?.downstreamResources || []) as any[]).filter((d) => d?.kind === 'Secret' && d.name).map((d) => String(d.name))
-}
-
-// An entry's Secrets as written: its own, or its shared Resource's too.
-function entrySecrets(e: Entry, ns: string, shared: Obj[]): string[] {
-  const own = e.secrets || []
-  if (!e.ref) return own
-  const res = shared.find((x) => x.metadata.name === e.ref && x.metadata.namespace === (e.refNamespace || ns))
-  return [...(res?.spec?.secrets || []), ...own]
-}
-
-// An item's Secrets as delivered: on its Fleet object, and for a GitRepo
-// on the bundles Fleet made from the repo's fleet.yaml files.
-function itemSecrets(it: Item): string[] {
-  return [...downstream(it.model), ...(it.bundles || []).flatMap(downstream)]
 }
 
 async function state(r: Reader, namespace: string, name: string): Promise<Pick<Need, 'exists' | 'type' | 'keys' | 'managedBy'>> {
@@ -77,17 +58,12 @@ function want(m: Map<string, Set<string>>, secret: string, by: string) {
   m.get(secret)!.add(by)
 }
 
-// A template's: what its resources copy, from the template namespace.
-export async function templateSecrets(r: Reader, tpl: Obj): Promise<Need[]> {
-  const ns = tpl.metadata.namespace!
-  const [shared, items] = await Promise.all([
-    r.findAll(TYPES.RESOURCE).catch(() => [] as Obj[]),
-    listItems(r, [{ kind: 'ClusterTemplate', name: tpl.metadata.name, namespace: ns }]).catch(() => [] as Item[]),
-  ])
+// A Deployment's: what it copies (downstreamResources), from its own
+// namespace, where Fleet reads them.
+export async function deploymentSecrets(r: Reader, d: Deployment): Promise<Need[]> {
   const wanted = new Map<string, Set<string>>()
-  ;(tpl.spec?.resources || []).forEach((e: Entry) => entrySecrets(e, ns, shared).forEach((s) => want(wanted, s, e.name || e.ref || '')))
-  items.forEach((it) => itemSecrets(it).forEach((s) => want(wanted, s, it.name)))
-  return resolve(r, ns, wanted, new Set(tpl.status?.missingSecrets || []))
+  secretsOf(d).forEach((s) => want(wanted, s, d.name))
+  return resolve(r, d.namespace, wanted, new Set())
 }
 
 // The Secret a cluster's infrastructure provider reads its credentials
@@ -107,24 +83,15 @@ async function providerSecret(r: Reader, cluster: Obj): Promise<string> {
   return String(cred.name)
 }
 
-// A cluster's: what its extras copy, and its provider's credentials, from
-// its environment. Its template's are on the template's page.
-export async function clusterSecrets(r: Reader, cluster: Obj): Promise<Need[]> {
+// A cluster's: its provider's credentials, and what the Deployments living
+// in its environment copy, from the environment.
+export async function clusterSecrets(r: Reader, cluster: Obj, deployments: Deployment[] = []): Promise<Need[]> {
   const ns = cluster.metadata.namespace!
-  const [shared, items, crs, provider] = await Promise.all([
-    r.findAll(TYPES.RESOURCE).catch(() => [] as Obj[]),
-    clusterItems(r, cluster).catch(() => [] as Item[]),
-    r.findAll(TYPES.CLUSTER_RESOURCE).catch(() => [] as Obj[]),
-    providerSecret(r, cluster),
-  ])
-  const mine = crs.filter((cr) => cr.metadata.namespace === ns && cr.spec?.clusterName === cluster.metadata.name)
+  const provider = await providerSecret(r, cluster)
   const wanted = new Map<string, Set<string>>()
   if (provider) want(wanted, provider, 'provider credentials')
-  // A ClusterResource is named <cluster>-<resource>; its label has the resource's own name.
-  mine.forEach((cr) => entrySecrets(cr.spec || {}, ns, shared).forEach((s) => want(wanted, s, cr.metadata.labels?.[LABELS.RESOURCE] || cr.metadata.name)))
-  items.filter((it) => it.ownerKind === 'ClusterResource').forEach((it) => itemSecrets(it).forEach((s) => want(wanted, s, it.name)))
-  const missing = new Set<string>(mine.flatMap((cr) => cr.status?.missingSecrets || []))
-  return resolve(r, ns, wanted, missing)
+  deployments.filter((d) => d.namespace === ns).forEach((d) => secretsOf(d).forEach((s) => want(wanted, s, d.name)))
+  return resolve(r, ns, wanted, new Set())
 }
 
 // Reads and writes one cluster's Secrets: the host's through the shared

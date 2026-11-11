@@ -9,9 +9,11 @@
 // a link to them on Access.
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { ApiTokens } from '../components/ApiTokens'
 import { Checkbox, RadioGroup, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
 import { Banner, ErrorBanner, Loading, Pill, ConfirmButton, EmptyState } from '../components/ui'
+import { TrustedCI } from '../components/TrustedCI'
 import { ViewDialog } from '../components/ViewDialog'
 import { describeGrant, grantsFor, loadAccess, type Grant } from '../lib/access'
 import { auth, errorMessage } from '../lib/api'
@@ -24,13 +26,25 @@ import { TYPES } from '../lib/types'
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
 const EMAIL_RE = /^[^\s@]+@[^\s@]+$/
 
-type Form = { name: string; displayName: string; email: string; groups: string; onboard: 'invite' | 'password'; password: string; mustChange: boolean }
+type Form = {
+  name: string
+  displayName: string
+  email: string
+  groups: string
+  onboard: 'invite' | 'password' | 'service'
+  password: string
+  mustChange: boolean
+}
 
 const emptyForm = (): Form => ({ name: '', displayName: '', email: '', groups: '', onboard: 'invite', password: '', mustChange: true })
 
 // On a new User: an invitation is coming, so the host doesn't also send
 // "an account was created for you".
 const INVITE_ANNOTATION = 'hyve.io/invite'
+// A user for CI and scripts (`hyve user create --service`): no password; it
+// signs in with API tokens or as a trusted CI job.
+const SERVICE_ANNOTATION = 'hyve.io/service'
+const isService = (u: Obj) => u.metadata.annotations?.[SERVICE_ANNOTATION] === 'true'
 
 const groupsOf = (s: string) =>
   s
@@ -100,6 +114,8 @@ export default function Users() {
   const [editing, setEditing] = useState<Obj | null>(null)
   const [editForm, setEditForm] = useState<EditForm>({ displayName: '', email: '', groups: '' })
   const [passwordFor, setPasswordFor] = useState('')
+  const [tokensFor, setTokensFor] = useState('')
+  const [trustFor, setTrustFor] = useState<Obj | null>(null)
   const [newPassword, setNewPassword] = useState('')
 
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }))
@@ -127,8 +143,20 @@ export default function Users() {
       setFormError("A username is a DNS label: lowercase letters, digits and '-', at most 63")
       return
     }
-    if (!EMAIL_RE.test(f.email.trim())) {
+    const service = f.onboard === 'service'
+    if (!(service && !f.email.trim()) && !EMAIL_RE.test(f.email.trim())) {
       setFormError(f.email.trim() ? "That email address doesn't look right" : 'An email address is required')
+      return
+    }
+    if (service) {
+      const ok = await act(async () => {
+        await save(TYPES.USER, newObject(TYPES.USER, { metadata: { name: f.name, annotations: { [SERVICE_ANNOTATION]: 'true' } }, spec: withFields({}, f) }))
+        setNotice(`Created service user ${f.name}. Give it access, then an API token or CI sign-in from its row.`)
+      }, setFormError)
+      if (ok) {
+        setAdding(false)
+        setForm(emptyForm())
+      }
       return
     }
     const invite = f.onboard === 'invite'
@@ -251,6 +279,8 @@ export default function Users() {
                         {g}
                       </span>
                     ))}
+                    {isService(u) && <Pill tone="info" label="Service" title="Signs in with API tokens or as trusted CI; no password" />}
+                    {u.spec?.trustedCI?.length > 0 && <Pill tone="idle" label={`CI: ${u.spec.trustedCI.length}`} title="CI systems' jobs that sign in as this user" />}
                     {u.spec?.disabled && <Pill tone="bad" label="Disabled" />}
                     {u.spec?.mustChangePassword && <Pill tone="busy" label="Must change password" />}
                   </div>
@@ -268,7 +298,13 @@ export default function Users() {
                   <button type="button" className="btn btn-tertiary btn-sm" onClick={() => startEdit(u)}>
                     Edit
                   </button>
-                  {u.metadata.name !== me && !u.status?.lastLogin && u.spec?.email && !u.spec?.provider && !u.spec?.disabled && (
+                  <button type="button" className="btn btn-tertiary btn-sm" title="API tokens for scripts and CI" onClick={() => setTokensFor(u.metadata.name)}>
+                    Tokens
+                  </button>
+                  <button type="button" className="btn btn-tertiary btn-sm" title="Let CI jobs sign in with their own ID token" onClick={() => setTrustFor(u)}>
+                    CI sign-in
+                  </button>
+                  {u.metadata.name !== me && !isService(u) && !u.status?.lastLogin && u.spec?.email && !u.spec?.provider && !u.spec?.disabled && (
                     <button
                       type="button"
                       className="btn btn-tertiary btn-sm"
@@ -284,6 +320,7 @@ export default function Users() {
                       <button
                         type="button"
                         className="btn btn-tertiary btn-sm"
+                        hidden={isService(u)}
                         onClick={() => {
                           setPasswordFor(u.metadata.name)
                           setNewPassword('')
@@ -316,10 +353,10 @@ export default function Users() {
               className="mb-3"
               label="Email"
               type="email"
-              required
+              required={form.onboard !== 'service'}
               value={form.email}
               onChange={(v) => set({ email: v })}
-              help="Where their invitation, password resets and account emails go."
+              help={form.onboard === 'service' ? 'Optional for a service user.' : 'Where their invitation, password resets and account emails go.'}
             />
             <TextField className="mb-3" label="Groups" value={form.groups} onChange={(v) => set({ groups: v })} placeholder="comma-separated" />
             <div className="mb-3">
@@ -330,10 +367,13 @@ export default function Users() {
                 options={[
                   { value: 'invite', label: 'Email them a link to set their own password' },
                   { value: 'password', label: 'Set an initial password now' },
+                  { value: 'service', label: 'None: a service user for CI and scripts' },
                 ]}
               />
             </div>
-            {form.onboard === 'invite' ? (
+            {form.onboard === 'service' ? (
+              <p className="hint mb-3">It signs in with API tokens or as a trusted CI job (Tokens and CI sign-in on its row), with the access you grant it.</p>
+            ) : form.onboard === 'invite' ? (
               <p className="hint mb-3">The link works for 7 days; Resend invite sends another. Email has to be set up in Settings.</p>
             ) : (
               <>
@@ -356,7 +396,11 @@ export default function Users() {
               <button type="button" className="btn btn-tertiary" onClick={() => setAdding(false)}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn-primary" disabled={busy || !form.name || !form.email.trim() || (form.onboard === 'password' && !form.password)}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={busy || !form.name || (form.onboard !== 'service' && !form.email.trim()) || (form.onboard === 'password' && !form.password)}
+              >
                 {busy ? 'Creating…' : form.onboard === 'invite' ? 'Create and invite' : 'Create'}
               </button>
             </div>
@@ -434,6 +478,16 @@ export default function Users() {
         </Modal>
       )}
 
+      {tokensFor && <ApiTokens user={tokensFor} own={tokensFor === me} onClose={() => setTokensFor('')} />}
+      {trustFor && (
+        <TrustedCI
+          user={trustFor}
+          onClose={() => {
+            setTrustFor(null)
+            reload(true)
+          }}
+        />
+      )}
       {viewing && <ViewDialog title={`User ${viewing.metadata.name}`} sections={[{ label: 'User', object: viewing }]} onClose={() => setViewing(null)} />}
     </div>
   )

@@ -53,7 +53,37 @@ export async function request<T = any>(method: string, url: string, body?: unkno
   return data as T
 }
 
-export type Me = { username: string; displayName?: string; groups: string[]; version: string; autoSignIn?: boolean }
+export type Me = {
+  username: string
+  displayName?: string
+  groups: string[]
+  version: string
+  autoSignIn?: boolean
+  // '' a sign-in, 'token' an API token, 'federated' a CI job's session.
+  kind?: string
+  expiresAt?: string
+}
+
+// An API token, as the host lists it; the token itself is shown once.
+export type TokenInfo = {
+  user: string
+  name: string
+  id: string
+  description?: string
+  createdBy?: string
+  createdAt: string
+  expiresAt: string
+  lastUsed?: string
+}
+
+// API tokens (for scripts and CI). Your own are yours to manage; another
+// user's take the users/tokens right (admins).
+export const tokens = {
+  list: (user?: string) => request<TokenInfo[]>('GET', `/v1/tokens${user ? `?user=${encodeURIComponent(user)}` : ''}`),
+  create: (t: { user?: string; name: string; description?: string; expiresIn: string }) =>
+    request<TokenInfo & { token: string }>('POST', '/v1/tokens', t),
+  revoke: (user: string, name: string) => request('DELETE', `/v1/tokens/${encodeURIComponent(user)}/${encodeURIComponent(name)}`),
+}
 
 export type SignedIn = { token?: string; expiresAt?: string; userId?: string }
 

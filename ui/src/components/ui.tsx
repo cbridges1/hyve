@@ -104,11 +104,14 @@ export function ConfirmButton({
   confirm,
   onConfirm,
   disabled,
+  variant = 'link',
 }: {
   label: string
   confirm: string
   onConfirm: () => void
   disabled?: boolean
+  // link: red text, for rows; danger: a full-size outlined red button.
+  variant?: 'link' | 'danger'
 }) {
   const [armed, setArmed] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -119,9 +122,13 @@ export function ConfirmButton({
     <button
       type="button"
       disabled={disabled}
-      className={`shrink-0 rounded-lg px-2.5 py-1 text-sm font-medium transition-colors disabled:opacity-50 ${
-        armed ? 'bg-red-600 text-white hover:bg-red-700' : 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40'
-      }`}
+      className={
+        variant === 'danger'
+          ? `btn shrink-0 ${armed ? 'btn-danger' : 'border-red-300 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40'}`
+          : `shrink-0 rounded-lg px-2.5 py-1 text-sm font-medium transition-colors disabled:opacity-50 ${
+              armed ? 'bg-red-600 text-white hover:bg-red-700' : 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40'
+            }`
+      }
       onClick={(e) => {
         e.stopPropagation()
         if (armed) {

@@ -1,4 +1,4 @@
-// 'hyve render' for a template on this cluster: the Cluster and Fleet
+// 'hyve template render' for a template on this cluster: the Cluster and Fleet
 // objects hyve would create for a cluster made from it, without making
 // anything. The host renders them with the CLI's code, from the template,
 // its ClusterClass and the shared Resources it refers to.
@@ -95,7 +95,7 @@ export function RenderDialog({ template, onClose }: { template: Obj; onClose: ()
     <Modal title={`Preview a cluster from ${template.metadata.name}`} onClose={onClose}>
       <form className="space-y-3" onSubmit={render}>
         <p className="text-sm text-neutral-500">
-          What hyve would create, without creating it. Also <code>hyve render</code>.
+          What hyve would create, without creating it. Also <code>hyve template render</code>.
         </p>
         <TextField label="Cluster name" value={name} onChange={setName} />
         <SelectField label="Environment" value={chosen} onChange={setEnv} options={envs} />

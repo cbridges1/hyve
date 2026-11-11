@@ -29,9 +29,9 @@ var (
 	herdTemplateGVR    = schema.GroupVersionResource{Group: "herd.io", Version: "v1alpha1", Resource: "clustertemplates"}
 )
 
-// ImportCmd is `hyve import`: old hyve Templates and herd ClusterTemplates
-// into hyve ClusterTemplates.
-func ImportCmd() *cobra.Command {
+// ConvertCmd is `hyve template convert` (once `hyve template convert`): old hyve
+// Templates and herd ClusterTemplates into hyve ClusterTemplates.
+func ConvertCmd() *cobra.Command {
 	var (
 		files                         []string
 		fromCluster, apply, prefixNS  bool
@@ -39,22 +39,24 @@ func ImportCmd() *cobra.Command {
 		kubeconfig, kubeContext, srNS string
 	)
 	cmd := &cobra.Command{
-		Use:   "import (-f FILE|DIR ... | --from-cluster)",
-		Short: "Convert old hyve Templates and herd ClusterTemplates into hyve ClusterTemplates",
+		Use:     "convert (-f FILE|DIR ... | --from-cluster)",
+		Aliases: []string{"import"},
+		Short:   "Convert old hyve Templates and herd ClusterTemplates into hyve ClusterTemplates",
 		Long: `Reads old hyve Templates (built with hyve-capi-module, hyve-civo-module or
 hyve-unraid-k3s-module) and herd ClusterTemplates (herd.io), from YAML files
 or from a cluster, and converts them into hyve ClusterTemplates: flavor
 presets expanded, params mapped onto the ClusterClass, lockParams onto
-locked variables, the schedule, and Helm and git resources as Fleet specs.
+locked variables, the schedule, and Helm and git resources as Fleet specs
+(which hyve-controller turns into Deployments aimed at the template).
 Prints them as YAML, or creates them in the template namespace with
 --apply. What hyve can't express (workflows, other modules, locks on
 non-variables) is listed on stderr.
 
 --relabel-clusters (with --apply) also labels the clusters herd made from
 each herd template with the new hyve.io/template labels, so they get the
-template's resources and locks.`,
-		Example: `  hyve import -f ./templates                                # print
-  hyve import --from-cluster --source-kubeconfig old.yaml --kubeconfig new.yaml --apply --relabel-clusters`,
+template's Deployments and locks.`,
+		Example: `  hyve template convert -f ./templates                                # print
+  hyve template convert --from-cluster --source-kubeconfig old.yaml --kubeconfig new.yaml --apply --relabel-clusters`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (len(files) > 0) == fromCluster {

@@ -27,6 +27,11 @@ const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	// ManagedBy is LabelManagedBy's value.
 	ManagedBy = "hyve"
+	// LabelEnvironment and LabelCluster name a Cluster's environment and
+	// the Cluster itself; CAAPF copies them to its Fleet cluster, so
+	// Deployments and groups in a template namespace can select it.
+	LabelEnvironment = "hyve.io/environment"
+	LabelCluster     = "hyve.io/cluster"
 
 	// AnnotationClusterLabels on a ClusterClass: "k=v,k2=v2" labels every
 	// Cluster of the class gets (e.g. the one a CNI ClusterResourceSet
@@ -96,7 +101,8 @@ func NewImported(name, namespace string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "cluster.x-k8s.io/v1beta2",
 		"kind":       "Cluster",
-		"metadata":   map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{LabelManagedBy: ManagedBy}},
+		"metadata": map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{
+			LabelManagedBy: ManagedBy, LabelEnvironment: namespace, LabelCluster: name}},
 		"spec": map[string]any{
 			"infrastructureRef": map[string]any{"apiGroup": ImportedGroup, "kind": ImportedClusterKind, "name": name},
 			"controlPlaneRef":   map[string]any{"apiGroup": ImportedGroup, "kind": ImportedControlPlaneKind, "name": name},

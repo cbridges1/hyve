@@ -35,9 +35,10 @@ reached with a kubeconfig you have: your current context unless
 On the cluster, a ServiceAccount (kube-system/hyve-import, cluster-admin)
 gives hyve credentials of its own, so a kubeconfig that runs a command
 (aws, gcloud) works too. In the environment, a Cluster API Cluster points
-at it; Fleet registers it, and access, resources, kubeconfigs and the
-Explorer work as for any cluster. --template gives it a template's
-resources (not its variables, version or expiry).
+at it; Fleet registers it, and access, Deployments, kubeconfigs and the
+Explorer work as for any cluster. --template puts it in a template's group,
+so it gets what's deployed to the template (not its variables, version or
+expiry).
 
 hyve never creates, scales, upgrades or deletes an imported cluster.
 'hyve cluster delete' detaches it: it removes hyve's and Fleet's agents and
@@ -118,7 +119,7 @@ give it with --api-server.`,
 	f.StringVar(&from, "from-kubeconfig", "", "kubeconfig that reaches the cluster (default: $KUBECONFIG or ~/.kube/config)")
 	f.StringVar(&fromContext, "from-context", "", "context in it (default: its current one)")
 	f.StringVar(&apiServer, "api-server", "", "the API server's URL as hyve's host reaches it (default: the kubeconfig's)")
-	f.StringVarP(&template, "template", "t", "", "give the cluster this template's resources")
+	f.StringVarP(&template, "template", "t", "", "put the cluster in this template's group, so it gets what's deployed to the template")
 	f.StringArrayVar(&labels, "label", nil, "label key=value on the Cluster (repeatable; Fleet sees it through CAAPF)")
 	f.BoolVar(&noWait, "no-wait", false, "return once the objects are created")
 	f.DurationVar(&timeout, "timeout", 10*time.Minute, "how long to wait")

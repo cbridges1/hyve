@@ -103,7 +103,7 @@ func localDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Delete the local cluster and its context, keeping its saved state for the next 'hyve local up'",
 		Long: `Deletes the local cluster and its context. Its state (Cluster API objects,
-templates, resources) is saved first and restored by the next 'hyve local
+templates, Deployments) is saved first and restored by the next 'hyve local
 up', whose clusters' agents reconnect by themselves. CAPD clusters are
 containers of their own and keep running; delete them first ('hyve
 cluster delete') if you're done with them.`,

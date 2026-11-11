@@ -101,6 +101,10 @@ type MeResponse struct {
 	// AutoSignIn: this host signs browsers on its machine in without a
 	// password (local mode), so signing out means nothing.
 	AutoSignIn bool `json:"autoSignIn,omitempty"`
+	// Kind is the session's: "" (a sign-in), "token" (an API token) or
+	// "federated" (a CI job's).
+	Kind      string `json:"kind,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +116,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if groups == nil {
 		groups = []string{}
 	}
-	writeJSON(w, http.StatusOK, MeResponse{Username: ident.Username, Groups: groups, Version: s.Version, AutoSignIn: s.LocalUser != ""})
+	me := MeResponse{Username: ident.Username, Groups: groups, Version: s.Version, AutoSignIn: s.LocalUser != "", Kind: ident.Kind}
+	if !ident.ExpiresAt.IsZero() {
+		me.ExpiresAt = ident.ExpiresAt.Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, me)
 }
 
 // handleLocalSession signs the browser in as LocalUser without a password,

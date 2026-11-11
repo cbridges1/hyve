@@ -8,17 +8,17 @@ import (
 
 	jsonpatch5 "github.com/evanphx/json-patch/v5"
 	admissionv1 "k8s.io/api/admission/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	dynfake "k8s.io/client-go/dynamic/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/delivery"
 	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
 )
@@ -157,34 +157,29 @@ func TestLockedWebhookOnlyRefusesChanges(t *testing.T) {
 	}
 }
 
-func TestTemplateResourcesBecomeFleetObjects(t *testing.T) {
+func TestTemplateResourcesMigrateToDeployments(t *testing.T) {
 	shared := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "hyve.io/v1alpha1", "kind": "Resource",
 		"metadata": map[string]any{"name": "external-dns", "namespace": "capi-clusters"},
 		"spec":     map[string]any{"namespace": "external-dns", "helmOp": map[string]any{"helm": map[string]any{"chart": "external-dns", "repo": "https://x"}}},
 	}}
-	stale := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "fleet.cattle.io/v1alpha1", "kind": "HelmOp",
-		"metadata": map[string]any{"name": "tpl-civo-old", "namespace": "capi-clusters", "labels": map[string]any{
-			"app.kubernetes.io/managed-by": "hyve", resources.LabelResource: "old", resources.LabelOwnerKind: resources.OwnerTemplate, resources.LabelOwner: "civo",
-		}},
-	}}
 	tpl := templateObj()
-	cl := fake.NewClientBuilder().WithObjects(tpl, shared, stale).WithStatusSubresource(tpl).Build()
-	scheme := runtime.NewScheme()
-	listKinds := map[schema.GroupVersionResource]string{}
-	for k, gvr := range resources.FleetGVRs {
-		listKinds[gvr] = k + "List"
-	}
-	dc := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme, listKinds, stale.DeepCopy())
-	r := &Resources{Client: cl, Secrets: cl, Dynamic: dc}
-	if _, err := r.ReconcileTemplate(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "capi-clusters", Name: "civo"}}); err != nil {
+	cl := fake.NewClientBuilder().WithObjects(tpl, shared).WithStatusSubresource(tpl).Build()
+	m := &Migrate{Client: cl}
+	if _, err := m.Template(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "capi-clusters", Name: "civo"}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"tpl-civo-traefik", "tpl-civo-dns"} {
 		h := object(resources.HelmOpGVR.GroupVersion().WithKind("HelmOp"))
 		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "capi-clusters", Name: name}, h); err != nil {
 			t.Fatalf("%s: %v", name, err)
+		}
+		targets, _, _ := unstructured.NestedSlice(h.Object, "spec", "targets")
+		if len(targets) != 1 || targets[0].(map[string]any)["clusterGroup"] != "template-civo" {
+			t.Errorf("%s targets = %v", name, targets)
+		}
+		if len(h.GetOwnerReferences()) != 0 || h.GetLabels()[resources.LabelOwner] != "" {
+			t.Errorf("%s is still hyve's: %v %v", name, h.GetOwnerReferences(), h.GetLabels())
 		}
 		if name == "tpl-civo-dns" {
 			ds, _, _ := unstructured.NestedSlice(h.Object, "spec", "downstreamResources")
@@ -196,11 +191,78 @@ func TestTemplateResourcesBecomeFleetObjects(t *testing.T) {
 	}
 	got := object(templateGVK)
 	_ = cl.Get(context.Background(), client.ObjectKey{Namespace: "capi-clusters", Name: "civo"}, got)
-	missing, _, _ := unstructured.NestedStringSlice(got.Object, "status", "missingSecrets")
-	if len(missing) != 1 || missing[0] != "cloudflare-dns" {
-		t.Errorf("status = %v", got.Object["status"])
+	if rs, found, _ := unstructured.NestedSlice(got.Object, "spec", "resources"); found && len(rs) > 0 {
+		t.Errorf("the template still lists resources: %v", rs)
 	}
-	if acts := dc.Actions(); !hasDelete(acts, "tpl-civo-old") {
-		t.Errorf("stale HelmOp not pruned: %v", acts)
+}
+
+func TestClusterResourceMigratesToADeployment(t *testing.T) {
+	cr := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "hyve.io/v1alpha1", "kind": "ClusterResource",
+		"metadata": map[string]any{"name": "web-hello", "namespace": "dev", "labels": map[string]any{resources.LabelResource: "hello"}},
+		"spec":     map[string]any{"clusterName": "web", "helmOp": map[string]any{"helm": map[string]any{"chart": "hello", "repo": "https://x"}}},
+	}}
+	cl := fake.NewClientBuilder().WithObjects(cr).Build()
+	m := &Migrate{Client: cl}
+	if _, err := m.ClusterResource(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "dev", Name: "web-hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	h := object(resources.HelmOpGVR.GroupVersion().WithKind("HelmOp"))
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "dev", Name: "web-hello"}, h); err != nil {
+		t.Fatal(err)
+	}
+	if rn, _, _ := unstructured.NestedString(h.Object, "spec", "helm", "releaseName"); rn != "hello" {
+		t.Errorf("release name = %q", rn)
+	}
+	targets, _, _ := unstructured.NestedSlice(h.Object, "spec", "targets")
+	if len(targets) != 1 || targets[0].(map[string]any)["clusterName"] != "web" {
+		t.Errorf("targets = %v", targets)
+	}
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "dev", Name: "web-hello"}, object(clusterResourceGVK)); err == nil {
+		t.Error("the ClusterResource is still there")
+	}
+}
+
+func TestGroupsForTemplatesAndEnvironments(t *testing.T) {
+	env := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "prod", Labels: map[string]string{"hyve.io/environment": ""}}}
+	stale := group("capi-clusters", "template-gone", delivery.GroupKindTemplate, map[string]any{"x": "y"})
+	gold := object(clusterGroupGVK)
+	gold.SetNamespace("capi-clusters")
+	gold.SetName("gold")
+	gold.Object["spec"] = map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"tier": "gold"}}}
+	cl := fake.NewClientBuilder().WithObjects(templateObj(), env, stale, gold).Build()
+	g := &Groups{Client: cl, Workspace: "capi-clusters"}
+	if _, err := g.Reconcile(context.Background(), groupsKey); err != nil {
+		t.Fatal(err)
+	}
+	// Fleet looks groups up in each cluster's namespace: they're in the
+	// environment too, with copies of the template namespace's own.
+	for _, ns := range []string{"capi-clusters", "prod"} {
+		for name, label := range map[string]string{"template-civo": templates.LabelTemplate, "env-prod": delivery.LabelEnvironment, "gold": "tier"} {
+			if ns == "capi-clusters" && name == "gold" {
+				continue
+			}
+			u := object(clusterGroupGVK)
+			if err := cl.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, u); err != nil {
+				t.Fatalf("%s/%s: %v", ns, name, err)
+			}
+			if ml, _, _ := unstructured.NestedStringMap(u.Object, "spec", "selector", "matchLabels"); ml[label] == "" {
+				t.Errorf("%s/%s selector = %v", ns, name, ml)
+			}
+		}
+	}
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "capi-clusters", Name: "template-gone"}, object(clusterGroupGVK)); err == nil {
+		t.Error("a group for a deleted template is still there")
+	}
+
+	c := capiCluster("prod", "web", nil, nil, nil)
+	cl = fake.NewClientBuilder().WithObjects(c).Build()
+	if _, err := (&ClusterLabels{Client: cl}).Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "prod", Name: "web"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := object(clusterGVK)
+	_ = cl.Get(context.Background(), client.ObjectKey{Namespace: "prod", Name: "web"}, got)
+	if l := got.GetLabels(); l[delivery.LabelEnvironment] != "prod" || l[delivery.LabelCluster] != "web" {
+		t.Errorf("labels = %v", l)
 	}
 }

@@ -1,7 +1,6 @@
 // What the template and shared Resource pages show of their objects (the
 // old ClusterTemplate and Resource models' getters).
 import type { Obj } from './kube'
-import { describe, kindOf } from './resources'
 
 // hyve-controller's Ready condition: True, or why not.
 export function readyDisplay(t: Obj): string {
@@ -21,16 +20,4 @@ export function templateSummary(t: Obj): string {
   ]
     .filter(Boolean)
     .join(' · ')
-}
-
-export function fleetKind(r: Obj): string {
-  return kindOf(r.spec || {})
-}
-
-export function sourceDisplay(r: Obj): string {
-  return describe(r.spec || {})
-}
-
-export function secretsDisplay(r: Obj): string {
-  return (r.spec?.secrets || []).join(', ')
 }

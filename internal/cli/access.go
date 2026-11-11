@@ -29,7 +29,7 @@ or read-only (read everything but Secrets). Without --cluster it covers every
 cluster in the environment, now and later. A cluster's creator is its owner
 automatically.
 
---env-member lets them create and manage clusters in the environment.`,
+--role environment-member lets them create and manage clusters in the environment.`,
 	}
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
@@ -40,13 +40,22 @@ automatically.
 
 func accessGrantCmd() *cobra.Command {
 	var role, group, cluster string
-	var envMember bool
+	var envMember, deployer bool
 	cmd := &cobra.Command{
-		Use:   "grant [USER] (--role owner|member|read-only [--cluster NAME] | --env-member) [--group GROUP]",
-		Short: "Grant a user or group a role on clusters, or membership of the environment",
+		Use:   "grant [USER] --role owner|member|read-only|environment-member|deployer [--cluster NAME] [--group GROUP]",
+		Short: "Grant a user or group a role on clusters, membership of the environment, or deploying to templates",
+		Long: `Grants a role:
+
+  owner, member, read-only   on every cluster in the environment, or --cluster's
+  environment-member         making and managing clusters in the environment, and
+                             the Deployments that target only them
+  deployer                   making and changing the Deployments in the template
+                             namespace (aimed at templates, classes, all clusters):
+                             for a CI user that releases apps`,
 		Example: `  hyve access grant alice --role owner --cluster web
   hyve access grant --group ops --role read-only          # every cluster in the environment
-  hyve access grant bob --env-member -e ci`,
+  hyve access grant bob --role environment-member -e ci
+  hyve access grant ci --role deployer`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			user := ""
@@ -56,8 +65,18 @@ func accessGrantCmd() *cobra.Command {
 			if (user == "") == (group == "") {
 				return errors.New("give a user or --group, not both")
 			}
-			if envMember == (role != "") {
-				return errors.New("give --role or --env-member")
+			// --env-member and --deployer are the older spellings.
+			switch role {
+			case "environment-member", "env-member":
+				envMember, role = true, ""
+			case "deployer":
+				deployer, role = true, ""
+			}
+			if countTrue(envMember, deployer, role != "") != 1 {
+				return errors.New("give one --role: owner, member, read-only, environment-member or deployer")
+			}
+			if (envMember || deployer) && cluster != "" {
+				return errors.New("--cluster goes with owner, member and read-only")
 			}
 			s, err := newSession()
 			if err != nil {
@@ -69,6 +88,19 @@ func accessGrantCmd() *cobra.Command {
 				subjectKind, subject, who = "Group", "hyve:"+group, "group "+group
 			}
 			name := strings.ToLower(subjectKind + "-" + strings.TrimPrefix(subject, "hyve:"))
+			if deployer {
+				obj := &unstructured.Unstructured{Object: map[string]any{
+					"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+					"metadata": map[string]any{"name": "hyve-deployer-" + name, "namespace": s.templateNS(), "labels": map[string]any{"app.kubernetes.io/managed-by": "hyve", "hyve.io/deployer": "true"}},
+					"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "hyve-deployer"},
+					"subjects": []any{map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": subjectKind, "name": subject}},
+				}}
+				if err := s.kube.ApplyObject(ctx, obj); err != nil {
+					return err
+				}
+				logf("%s can deploy to templates (the Deployments in %s)", who, s.templateNS())
+				return nil
+			}
 			if envMember {
 				// Members create clusters here and read the templates they're
 				// made from.
@@ -89,7 +121,7 @@ func accessGrantCmd() *cobra.Command {
 			switch role {
 			case "owner", "member", "read-only":
 			default:
-				return fmt.Errorf("--role %q: want owner, member or read-only", role)
+				return fmt.Errorf("--role %q: want owner, member, read-only, environment-member or deployer", role)
 			}
 			caName := role + "-" + name
 			spec := map[string]any{"role": role}
@@ -122,10 +154,13 @@ func accessGrantCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&role, "role", "", "owner, member or read-only")
+	f.StringVar(&role, "role", "", "owner, member, read-only, environment-member or deployer")
 	f.StringVar(&group, "group", "", "a hyve group instead of a user")
 	f.StringVar(&cluster, "cluster", "", "one cluster (default: every cluster in the environment)")
-	f.BoolVar(&envMember, "env-member", false, "let them create and manage clusters in the environment")
+	f.BoolVar(&envMember, "env-member", false, "the same as --role environment-member")
+	f.BoolVar(&deployer, "deployer", false, "the same as --role deployer")
+	_ = f.MarkHidden("env-member")
+	_ = f.MarkHidden("deployer")
 	return cmd
 }
 
@@ -169,6 +204,16 @@ func accessListCmd() *cobra.Command {
 					}
 				}
 			}
+			rbs, err = s.kube.Dynamic.Resource(roleBindingGVR).Namespace(s.templateNS()).List(ctx, metav1.ListOptions{LabelSelector: "hyve.io/deployer=true"})
+			if err == nil {
+				for _, rb := range rbs.Items {
+					subs, _, _ := unstructured.NestedSlice(rb.Object, "subjects")
+					for _, sub := range subs {
+						m := sub.(map[string]any)
+						fmt.Fprintf(w, "%s\t%s %s\tdeployer\ttemplates (%s)\t-\n", rb.GetName(), strings.ToLower(fmt.Sprint(m["kind"])), strings.TrimPrefix(fmt.Sprint(m["name"]), "hyve:"), s.templateNS())
+					}
+				}
+			}
 			return w.Flush()
 		},
 	}
@@ -195,6 +240,13 @@ func accessRevokeCmd() *cobra.Command {
 				logf("Removed environment membership %s", args[0])
 				return nil
 			}
+			if strings.HasPrefix(args[0], "hyve-deployer-") {
+				if err := s.kube.Dynamic.Resource(roleBindingGVR).Namespace(s.templateNS()).Delete(ctx, args[0], metav1.DeleteOptions{}); err != nil {
+					return err
+				}
+				logf("Removed deployer %s", args[0])
+				return nil
+			}
 			if err := s.kube.Dynamic.Resource(accessGVR).Namespace(s.env()).Delete(ctx, args[0], metav1.DeleteOptions{}); err != nil {
 				return notInstalled(err)
 			}
@@ -202,4 +254,14 @@ func accessRevokeCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func countTrue(bs ...bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
 }

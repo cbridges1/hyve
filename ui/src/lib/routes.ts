@@ -1,29 +1,34 @@
 // Every page's path, so links are built one way.
 import type { Location } from 'react-router-dom'
-import { schemaFor, typeOf, type Obj } from './kube'
-import { LABELS, TYPES } from './types'
+import { schemaFor, type Obj } from './kube'
+import { generated } from './delivery'
+import { TYPES } from './types'
 
 const enc = encodeURIComponent
 
 export const paths = {
   overview: '/overview',
   clusters: '/clusters',
-  cluster: (namespace: string, name: string, tab?: 'resources' | 'explorer') =>
+  cluster: (namespace: string, name: string, tab?: 'deployments' | 'explorer') =>
     `/clusters/${enc(namespace)}/${enc(name)}${tab ? `/${tab}` : ''}`,
   // The host cluster, hyve's management cluster: local, as in the proxy's
   // paths and the CLI. It's in no environment.
-  localCluster: (tab?: 'resources' | 'explorer') => `/clusters/local${tab ? `/${tab}` : ''}`,
+  localCluster: (tab?: 'deployments' | 'explorer') => `/clusters/local${tab ? `/${tab}` : ''}`,
   createCluster: (template?: { namespace: string; name: string }) =>
     `/clusters/new${template ? `?template=${enc(`${template.namespace}/${template.name}`)}` : ''}`,
   importCluster: '/clusters/import',
   templates: '/templates',
   template: (namespace: string, name: string, edit = false) => `/templates/${enc(namespace)}/${enc(name)}${edit ? '?mode=edit' : ''}`,
   newTemplate: (namespace?: string) => `/templates/new${namespace ? `?namespace=${enc(namespace)}` : ''}`,
-  resources: '/resources',
-  resource: (namespace: string, name: string, edit = false) => `/resources/${enc(namespace)}/${enc(name)}${edit ? '?mode=edit' : ''}`,
-  newResource: (namespace?: string) => `/resources/new${namespace ? `?namespace=${enc(namespace)}` : ''}`,
-  repos: '/repos',
-  repo: (namespace: string, name: string) => `/repos/${enc(namespace)}/${enc(name)}`,
+  // Fleet: Deployments (shown and filtered by query: category, item, q,
+  // state, page).
+  // The tab itself, which opens on Deployments; the nav links here so
+  // it's lit on every Fleet page.
+  fleetRoot: '/fleet',
+  fleet: '/fleet/deployments',
+  newDeployment: (to: string[] = []) => `/fleet/deployments/new${to.length ? `?${to.map((t) => `to=${enc(t)}`).join('&')}` : ''}`,
+  deployment: (namespace: string, name: string) => `/fleet/deployments/${enc(namespace)}/${enc(name)}`,
+  editDeployment: (namespace: string, name: string) => `/fleet/deployments/${enc(namespace)}/${enc(name)}/edit`,
   providers: '/providers',
   users: '/users',
   environments: '/environments',
@@ -49,18 +54,14 @@ export function detailPath(type: string, o: Obj): string {
       return paths.cluster(namespace!, name)
     case TYPES.TEMPLATE:
       return paths.template(namespace!, name)
-    case TYPES.RESOURCE:
-      return paths.resource(namespace!, name)
     case TYPES.FLEET_GIT_REPO:
-      return o.metadata.labels?.[LABELS.OWNER_KIND] ? paths.yaml(type, namespace, name) : paths.repo(namespace!, name)
+    case TYPES.FLEET_HELM_OP:
+      return paths.deployment(namespace!, name)
+    case TYPES.FLEET_BUNDLE:
+      return generated(o) ? paths.yaml(type, namespace, name) : paths.deployment(namespace!, name)
     default:
       return paths.yaml(type, namespace, name)
   }
-}
-
-export function pathOf(o: Obj): string {
-  const t = typeOf(o)
-  return t ? detailPath(t, o) : paths.yaml(`${o.apiVersion}`, o.metadata.namespace, o.metadata.name)
 }
 
 // Where a page's back link goes when it was opened from another page (a

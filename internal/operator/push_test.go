@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cbridges1/hyve/internal/helmrel"
 	"github.com/stretchr/testify/assert"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -284,4 +285,13 @@ func TestDriftDue(t *testing.T) {
 	now = now.Add(pushResync / 2)
 	assert.True(t, r.driftDue(bd))
 	assert.False(t, r.driftDue(bd), "just redeployed")
+}
+
+// decodeRelease reads a Helm release Secret's payload.
+func decodeRelease(data []byte) (Release, error) {
+	r, err := helmrel.Decode(data)
+	if err != nil {
+		return Release{}, err
+	}
+	return fromHelm(r), nil
 }

@@ -1,4 +1,4 @@
-// Package render is what 'hyve render' prints, for the CLI and the host's
+// Package render is what 'hyve template render' prints, for the CLI and the host's
 // UI API alike: the Cluster and Fleet objects hyve would create for a
 // cluster made from a ClusterTemplate, from the objects alone (no cluster
 // is contacted).
@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/delivery"
 	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
 )
@@ -112,13 +113,16 @@ func Render(ctx context.Context, objs []*unstructured.Unstructured, o Options) (
 		}
 		return nil, fmt.Errorf("Resource %s isn't given", n)
 	}
+	// A template file's resources become Deployments aimed at its group,
+	// as hyve-controller turns them into on the server.
 	owner := resources.Owner{Kind: resources.OwnerTemplate, Name: t.Name, Namespace: t.Namespace}
+	target := []any{map[string]any{"clusterGroup": delivery.TemplateGroup(t.Name)}}
 	for _, e := range t.Spec.Resources {
 		r, err := resources.Resolve(ctx, e, t.Namespace, lookup)
 		if err != nil {
 			return nil, err
 		}
-		obj, err := resources.Object(r, owner)
+		obj, err := resources.FleetObject(r, resources.ObjectName(owner, e.Name), t.Namespace, target)
 		if err != nil {
 			return nil, err
 		}

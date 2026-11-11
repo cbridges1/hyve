@@ -86,6 +86,12 @@ type Identity struct {
 	Username  string
 	Groups    []string
 	SessionID string
+	// Kind is the session's: KindSession (a sign-in), KindToken (an API
+	// token) or KindFederated (a CI job's, from its ID token).
+	Kind string
+	// ExpiresAt is when the session ends; sessions started from this one
+	// end by then too.
+	ExpiresAt time.Time
 }
 
 // KubeUser is the impersonated Kubernetes username.
@@ -301,22 +307,46 @@ func (s *Store) NewSession(ctx context.Context, ident Identity) (string, time.Ti
 			extra = append(extra, g)
 		}
 	}
-	return s.createSessionWithGroups(ctx, u, extra)
+	return s.createSession(ctx, u, extra, sessionOptions{notAfter: ident.ExpiresAt})
 }
 
 // createSessionWithGroups starts a session for u; groups (from the
 // identity provider) are added to the User's own for its lifetime.
 func (s *Store) createSessionWithGroups(ctx context.Context, u *hyvev1alpha1.User, groups []string) (string, time.Time, error) {
+	return s.createSession(ctx, u, groups, sessionOptions{})
+}
+
+// sessionOptions change how createSession makes a session.
+type sessionOptions struct {
+	// ttl replaces the store's session TTL.
+	ttl time.Duration
+	// notAfter, when set, is the latest it may end: a session started
+	// from another (hyve ui's, from the CLI's) ends with it.
+	notAfter time.Time
+	// annotations are kept on its Secret (a CI job's session kind and
+	// where it came from).
+	annotations map[string]string
+}
+
+func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User, groups []string, opts sessionOptions) (string, time.Time, error) {
 	token, id, hash, err := newSessionToken()
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	expiresAt := s.now().Add(s.ttl()).UTC().Truncate(time.Second)
+	ttl := s.ttl()
+	if opts.ttl > 0 {
+		ttl = opts.ttl
+	}
+	expiresAt := s.now().Add(ttl).UTC().Truncate(time.Second)
+	if !opts.notAfter.IsZero() && opts.notAfter.Before(expiresAt) {
+		expiresAt = opts.notAfter.UTC().Truncate(time.Second)
+	}
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:       s.Namespace,
 			Name:            sessionSecretName(id),
 			Labels:          map[string]string{labelSessionFor: u.Name},
+			Annotations:     opts.annotations,
 			OwnerReferences: []metav1.OwnerReference{ownerRef(u)},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -376,7 +406,10 @@ func (s *Store) Lookup(ctx context.Context, token string) (Identity, error) {
 	if u.Spec.Disabled {
 		return Identity{}, ErrInvalidSession
 	}
-	ident := Identity{Username: u.Name, Groups: append([]string(nil), u.Spec.Groups...), SessionID: id}
+	ident := Identity{Username: u.Name, Groups: append([]string(nil), u.Spec.Groups...), SessionID: id, Kind: sessionKind(&sec), ExpiresAt: expiresAt}
+	if ident.Kind == KindToken {
+		s.noteUse(&sec)
+	}
 	for _, g := range strings.Split(string(sec.Data[keyGroups]), "\n") {
 		if g != "" && !slices.Contains(ident.Groups, g) {
 			ident.Groups = append(ident.Groups, g)
@@ -420,7 +453,9 @@ func (s *Store) Logout(ctx context.Context, token string) error {
 	return client.IgnoreNotFound(s.Client.Delete(ctx, sec))
 }
 
-// RevokeSessions deletes every session of username except keepID.
+// RevokeSessions deletes every session of username except keepID. API
+// tokens stay: they're revoked one by one (RevokeToken), or stop working
+// when the user is disabled.
 func (s *Store) RevokeSessions(ctx context.Context, username, keepID string) error {
 	var list corev1.SecretList
 	if err := s.Client.List(ctx, &list, client.InNamespace(s.Namespace), client.MatchingLabels{labelSessionFor: username}); err != nil {
@@ -428,7 +463,7 @@ func (s *Store) RevokeSessions(ctx context.Context, username, keepID string) err
 	}
 	for i := range list.Items {
 		sec := &list.Items[i]
-		if keepID != "" && sec.Name == sessionSecretName(keepID) {
+		if (keepID != "" && sec.Name == sessionSecretName(keepID)) || sec.Labels[labelTokenName] != "" {
 			continue
 		}
 		s.forget(string(sec.Data[keyHash]))

@@ -29,7 +29,7 @@ func EnvCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "env",
 		Aliases: []string{"environment", "environments"},
-		Short:   "Environments: namespaces that hold clusters and their extras",
+		Short:   "Environments: namespaces that hold clusters and their own Deployments",
 	}
 	AddGlobalFlags(cmd)
 	cmd.AddCommand(envListCmd(), envShowCmd(), envCreateCmd(), envDeleteCmd(), envUseCmd())
@@ -175,7 +175,7 @@ func ContextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "context",
 		Aliases: []string{"contexts", "ctx"},
-		Short:   "List, switch and remove the servers you've signed in to",
+		Short:   "List, switch and forget the servers you've signed in to",
 	}
 	list := &cobra.Command{
 		Use:     "list",
@@ -250,8 +250,8 @@ func ContextCmd() *cobra.Command {
 		},
 	}
 	remove := &cobra.Command{
-		Use:     "remove NAME",
-		Aliases: []string{"rm"},
+		Use:     "delete NAME",
+		Aliases: []string{"remove", "rm"},
 		Short:   "Forget a saved server (run 'hyve logout' first to end its session)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -24,7 +24,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -54,11 +53,6 @@ var ErrUnknownToken = errors.New("unknown registration token")
 // ClusterID is a CAPI cluster's ID in proxy paths: <namespace>.<name>.
 // Both are DNS labels, so the dot is unambiguous.
 func ClusterID(namespace, name string) string { return namespace + "." + name }
-
-// SplitClusterID reverses ClusterID.
-func SplitClusterID(id string) (namespace, name string, ok bool) {
-	return strings.Cut(id, ".")
-}
 
 // SecretName is the agent Secret's name for a cluster: a hash of its ID,
 // since namespace and name together can be longer than a name allows.

@@ -3,7 +3,7 @@
 // API provider (which may mean applying hyve's embedded manifests),
 // rendering a template, converting old templates, and importing a cluster
 // (which reaches the cluster from the host). The same code runs for 'hyve
-// provider add', 'hyve render', 'hyve import' and 'hyve cluster import'.
+// provider add', 'hyve template render', 'hyve template convert' and 'hyve cluster import'.
 // It also streams
 // change notifications for the UI's live updates (watch.go).
 //
@@ -60,6 +60,8 @@ type API struct {
 	ChildAdmin func(ctx context.Context, id string) (*rest.Config, error)
 	// Shells, when set, serves the kubectl shell.
 	Shells *shell.Manager
+	// HostDynamic, when set, replaces the host's own client (tests).
+	HostDynamic dynamic.Interface
 }
 
 // Register adds the routes.
@@ -69,6 +71,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/hyve/import", a.authed(a.importTemplates))
 	mux.HandleFunc("POST /v1/hyve/clusters/import", a.authed(a.importCluster))
 	mux.HandleFunc("GET /v1/hyve/watch", a.authed(a.watchStream))
+	mux.HandleFunc("GET /v1/hyve/deployments/{namespace}/{kind}/{name}/progress", a.authed(a.deploymentProgress))
 	if a.Shells != nil {
 		mux.HandleFunc("POST /v1/hyve/shells", a.authed(a.startShell))
 		mux.HandleFunc("GET /v1/hyve/shells/{cluster}/{id}/exec", a.authed(a.shellExec))
@@ -145,7 +148,7 @@ func (a *API) addProvider(w http.ResponseWriter, r *http.Request, ident signin.I
 	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
 }
 
-// RenderRequest is POST /v1/hyve/render: what 'hyve render' takes, with
+// RenderRequest is POST /v1/hyve/render: what 'hyve template render' takes, with
 // the files' contents instead of their paths.
 type RenderRequest struct {
 	// YAML holds ClusterTemplates, shared Resources and ClusterClasses.

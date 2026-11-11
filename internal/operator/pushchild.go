@@ -78,15 +78,6 @@ func (c *pushChild) Uninstall(ctx context.Context, r Release) error {
 	return helmrel.Uninstall(ctx, c.Client, c.cs, helmrel.Release{Name: r.Name, Namespace: r.Namespace, Manifest: r.Manifest}, r.KeepResources)
 }
 
-// decodeRelease reads a Helm release Secret's payload.
-func decodeRelease(data []byte) (Release, error) {
-	r, err := helmrel.Decode(data)
-	if err != nil {
-		return Release{}, err
-	}
-	return fromHelm(r), nil
-}
-
 func fromHelm(r helmrel.Release) Release {
 	a := r.Annotations
 	return Release{

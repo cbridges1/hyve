@@ -1,7 +1,10 @@
 // The console's hand-rolled 24x24 stroke icons.
 const PATHS: Record<string, string[]> = {
   overview: ['M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 3v6h8V3z'],
-  clusters: ['M4 5a8 3 0 1 0 16 0a8 3 0 1 0-16 0', 'M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5', 'M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6'],
+  // A seven-spoked wheel, as Kubernetes draws a cluster.
+  clusters: ['M12.00 2.20L19.66 5.89L21.55 14.18L16.25 20.83L7.75 20.83L2.45 14.18L4.34 5.89Z', 'M12 12L12.00 5.80M12 12L16.85 8.13M12 12L18.04 13.38M12 12L14.69 17.59M12 12L9.31 17.59M12 12L5.96 13.38M12 12L7.15 8.13'],
+  // A ship under sail: Fleet.
+  fleet: ['M11 2.5v14', 'M11 3.5 19 15h-8', 'M11 7 5 15h6', 'M2.5 18h19l-2.6 3.5H5.1z'],
   plus: ['M12 5v14M5 12h14'],
   templates: [
     'M4 3h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM15 3h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM4 14h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1zM15 14h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z',

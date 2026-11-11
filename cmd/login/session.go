@@ -80,12 +80,12 @@ versions of hyve.`,
 }
 
 // TokenCmd is `hyve token`, the exec credential plugin that kubeconfigs
-// from `hyve kubeconfig` call.
+// from `hyve cluster kubeconfig` call.
 var TokenCmd = &cobra.Command{
 	Use:   "token",
 	Short: "Print the current session as a kubectl exec credential",
 	Long: `Prints the saved session for a server as a client.authentication.k8s.io/v1
-ExecCredential. Kubeconfigs from 'hyve kubeconfig' run this, so they hold
+ExecCredential. Kubeconfigs from 'hyve cluster kubeconfig' run this, so they hold
 no secret themselves. When the session has expired and a terminal is
 available, it signs in again first, prompting on stderr.`,
 	Args: cobra.NoArgs,
@@ -139,7 +139,8 @@ available, it signs in again first, prompting on stderr.`,
 	},
 }
 
-// KubeconfigCmd is `hyve kubeconfig`.
+// KubeconfigCmd was `hyve kubeconfig`; it still works, hidden, and
+// `hyve cluster kubeconfig` replaced it (NAME, or local, for an ID).
 var KubeconfigCmd = &cobra.Command{
 	Use:   "kubeconfig [CLUSTER-ID]",
 	Short: "Print a kubeconfig that reaches a cluster through the hyve host",

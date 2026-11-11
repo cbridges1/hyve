@@ -20,10 +20,10 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/cbridges1/hyve/internal/clusters"
+	"github.com/cbridges1/hyve/internal/delivery"
 	"github.com/cbridges1/hyve/internal/install"
 	"github.com/cbridges1/hyve/internal/kube"
 	"github.com/cbridges1/hyve/internal/login"
-	"github.com/cbridges1/hyve/internal/resources"
 	"github.com/cbridges1/hyve/internal/templates"
 )
 
@@ -38,7 +38,7 @@ func ClusterCmd() *cobra.Command {
 	addEnvFlag(cmd)
 	addTemplateNSFlag(cmd)
 	cmd.AddCommand(clusterCreateCmd(), clusterImportCmd(), clusterAdoptCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(),
-		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterUpgradeCmd(), clusterResourceCmd())
+		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterUpgradeCmd(), clusterDeploymentsCmd(), clusterResourceCmd())
 	return cmd
 }
 
@@ -78,8 +78,8 @@ func clusterCreateCmd() *cobra.Command {
 		Long: `Creates a Cluster API Cluster in the environment. With --template it's
 labelled with the template, and filled in from it and its ClusterClass:
 the same thing hyve-controller does for a labelled Cluster created any
-other way (kubectl, GitOps, the UI). The template's resources then reach
-it through Fleet.
+other way (kubectl, GitOps, the UI). What's deployed to the template (its
+group in Fleet) then reaches it.
 
 --set sets ClusterClass variables; values are parsed as JSON when they are
 valid JSON (numbers, lists, objects), otherwise used as strings. A variable
@@ -248,7 +248,7 @@ By default waits until the cluster is ACTIVE and registered with Fleet.`,
 	f.StringArrayVar(&labels, "label", nil, "label key=value on the Cluster (repeatable; Fleet sees it through CAAPF)")
 	f.BoolVar(&noWait, "no-wait", false, "return once the Cluster object is created")
 	f.BoolVar(&dryRun, "dry-run", false, "print the Cluster instead of creating it")
-	f.BoolVar(&secretsEnv, "secrets-env", false, "create the Secrets the template's resources need from environment variables: Secret my-secret from MY_SECRET (a JSON object of keys, or one value under key \"value\")")
+	f.BoolVar(&secretsEnv, "secrets-env", false, "create the Secrets the Deployments aimed at the template copy, from environment variables: Secret my-secret from MY_SECRET (a JSON object of keys, or one value under key \"value\")")
 	f.DurationVar(&timeout, "timeout", 30*time.Minute, "how long to wait")
 	return cmd
 }
@@ -465,7 +465,7 @@ func clusterShowCmd() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "show NAME",
-		Short: "Show a cluster's spec, Fleet state, resources and conditions",
+		Short: "Show a cluster's spec, Fleet state and conditions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
@@ -584,7 +584,7 @@ func clusterDeleteCmd() *cobra.Command {
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete a cluster, its extras and what Fleet deployed for it",
+		Short: "Delete a cluster and what Fleet deployed for it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
@@ -799,17 +799,17 @@ kubernetesVersion keeps its clusters at its own.`,
 }
 
 // secretsFromEnv creates or updates, in the template's namespace, each
-// Secret the template's resources name for which an environment variable
+// Secret the Deployments reaching the template's clusters name for which an environment variable
 // of the same name (upper case, '-' as '_') is set. Values are never
 // printed.
 func secretsFromEnv(ctx context.Context, s *session, t *templates.Template) error {
-	lookup := resources.SharedLookup(s.kube.Dynamic)
+	items, err := delivery.List(ctx, s.kube.Dynamic, t.Namespace, []string{t.Namespace})
+	if err != nil {
+		return err
+	}
 	seen := map[string]bool{}
-	for _, e := range t.Spec.Resources {
-		if r, err := resources.Resolve(ctx, e, t.Namespace, lookup); err == nil {
-			e = r
-		}
-		for _, name := range e.Secrets {
+	for _, it := range delivery.ForTemplate(items, t.Name, t.Spec.ClusterClassRef.Name) {
+		for _, name := range delivery.Secrets(it.Object) {
 			if seen[name] {
 				continue
 			}
