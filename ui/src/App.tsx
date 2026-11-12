@@ -25,6 +25,7 @@ import ImportPage from './pages/ImportPage'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
 import People from './pages/People'
+import ProviderPage from './pages/ProviderPage'
 import Providers from './pages/Providers'
 import ResetPassword from './pages/ResetPassword'
 import Settings from './pages/Settings'
@@ -123,7 +124,7 @@ export default function App() {
           <Route path="resources/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="repos/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="providers" element={<Providers />} />
-          <Route path="providers/:tab" element={<Providers />} />
+          <Route path="providers/:namespace/:provider" element={<ProviderPage />} />
           <Route element={<People />}>
             <Route path="users" element={<Users />} />
             <Route path="access" element={<Access />} />

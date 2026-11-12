@@ -30,7 +30,7 @@ export const paths = {
   deployment: (namespace: string, name: string) => `/fleet/deployments/${enc(namespace)}/${enc(name)}`,
   editDeployment: (namespace: string, name: string) => `/fleet/deployments/${enc(namespace)}/${enc(name)}/edit`,
   providers: '/providers',
-  providerCredentials: '/providers/credentials',
+  provider: (namespace: string, provider: string) => `/providers/${enc(namespace)}/${enc(provider)}`,
   users: '/users',
   environments: '/environments',
   access: '/access',

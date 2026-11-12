@@ -3,7 +3,7 @@
 // the credentials its Cluster API provider reads. Read by a Deployment's
 // page's and a cluster's Deployments tab's Secrets sections. Also a
 // Secret's reads and writes, on the host or (for the explorer) a child.
-// The Providers page shows what ClusterClasses' clusters read their
+// A provider's page shows what its ClusterClasses' clusters read their
 // credentials from, in every environment.
 import { ApiError, request } from './api'
 import { clusterBase, getObject } from './explorer'
@@ -105,9 +105,10 @@ const CREDENTIALS_PATH = /\/credentialsRef\/name$/
 // template. Each template on the class gives the variable its value, or the
 // class's default does. Providers read it in the cluster's own namespace,
 // so it's wanted in every environment, before any cluster is made there.
-export async function providerCredentials(r: Reader, environments: string[]): Promise<Need[]> {
+// classes: these ClusterClasses' (one provider's), else every one's.
+export async function providerCredentials(r: Reader, environments: string[], only?: Obj[]): Promise<Need[]> {
   const [classes, templates] = await Promise.all([
-    r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[]),
+    only ? Promise.resolve(only) : r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[]),
     r.findAll(TYPES.TEMPLATE).catch(() => [] as Obj[]),
   ])
   const wanted = new Map<string, Set<string>>()
