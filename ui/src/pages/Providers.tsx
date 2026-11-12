@@ -1,13 +1,21 @@
 // The installed Cluster API providers and their health, however they were
 // installed (the CAPI Operator, or local mode's lean install): every
 // provider's controller is a Deployment labelled with its name. Adding and
-// removing do what 'hyve provider add/remove' do.
+// removing do what 'hyve provider add/remove' do. Its Credentials tab,
+// /providers/credentials, is the Secrets providers read each cluster's
+// credentials from, in its environment, to make before the first cluster
+// there.
 import { useState } from 'react'
+import { useParams } from 'react-router-dom'
 import { ProviderAdd } from '../components/ProviderAdd'
-import { Banner, ErrorBanner, Loading, PageHeader } from '../components/ui'
+import { SecretsSection } from '../components/SecretsSection'
+import { Banner, ErrorBanner, Loading, PageHeader, Tabs } from '../components/ui'
 import { ViewDialog, type Section } from '../components/ViewDialog'
 import { useAction, useLoad } from '../lib/hooks'
+import { useEnvironment, useEnvironments } from '../lib/environment'
 import { idOf, kube, remove, schemaFor, typeOf, type Obj, type Reader } from '../lib/kube'
+import { paths } from '../lib/routes'
+import { providerCredentials } from '../lib/secrets'
 
 const DEPLOYMENT = 'apps.deployment'
 const PROVIDER_LABEL = 'cluster.x-k8s.io/provider'
@@ -55,6 +63,58 @@ async function providerObjects(r: Reader): Promise<Obj[]> {
 }
 
 export default function Providers() {
+  const { tab } = useParams()
+  const credentials = tab === 'credentials'
+  const [adding, setAdding] = useState(false)
+  return (
+    <div>
+      <PageHeader
+        title="Providers"
+        subtitle={
+          credentials
+            ? "The Secrets providers read each cluster's credentials from: a ClusterClass's credentialsRef, such as Civo's credentialsSecret. A provider reads it in the cluster's environment, so make it there before the first cluster."
+            : "The Cluster API providers on this cluster and their controllers' health. Adding one does what 'hyve provider add' does: through the Cluster API Operator or, in local mode, hyve's own manifests."
+        }
+      >
+        {!credentials && !adding && (
+          <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+            Add provider
+          </button>
+        )}
+      </PageHeader>
+      <Tabs
+        tabs={[
+          { label: 'Installed', to: paths.providers, active: !credentials },
+          { label: 'Credentials', to: paths.providerCredentials, active: credentials },
+        ]}
+      />
+      {credentials ? <Credentials /> : <Installed adding={adding} setAdding={setAdding} />}
+    </div>
+  )
+}
+
+// What each ClusterClass's clusters read their credentials from, in the
+// environment the header picks, or every one.
+function Credentials() {
+  const [env] = useEnvironment()
+  const envs = useEnvironments()
+  if (envs.loading) return <Loading />
+  const shown = env ? [env] : envs.data || []
+  return (
+    <>
+      <ErrorBanner error={envs.error} />
+      <SecretsSection
+        load={(r) => providerCredentials(r, shown)}
+        deps={[shown.join(',')]}
+        hint="In the environment: the provider reads it for every cluster made there."
+        empty="No ClusterClass here reads its credentials from a Secret: its provider takes them another way, such as its own variables."
+        showNamespace={shown.length > 1}
+      />
+    </>
+  )
+}
+
+function Installed({ adding, setAdding }: { adding: boolean; setAdding: (b: boolean) => void }) {
   const { data, error, loading, reload } = useLoad(async (r) => {
     const deployments = await r.findAll(DEPLOYMENT, { force: true }).catch(() => [] as Obj[])
     const rows = deployments
@@ -63,7 +123,6 @@ export default function Providers() {
       .sort((a, b) => `${a.type}${a.name}`.localeCompare(`${b.type}${b.name}`))
     return { rows, objects: await providerObjects(r) }
   }, [])
-  const [adding, setAdding] = useState(false)
   const [message, setMessage] = useState('')
   const [confirming, setConfirming] = useState('')
   const [viewing, setViewing] = useState<{ title: string; sections: Section[] } | null>(null)
@@ -102,23 +161,6 @@ export default function Providers() {
   const rows = data?.rows || []
   return (
     <div>
-      <PageHeader
-        title="Providers"
-        subtitle="The Cluster API providers on this cluster and their controllers' health. Adding one does what 'hyve provider add' does: through the Cluster API Operator or, in local mode, hyve's own manifests."
-      >
-        {!adding && (
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              setAdding(true)
-              setMessage('')
-            }}
-          >
-            Add provider
-          </button>
-        )}
-      </PageHeader>
       {message && <Banner tone="success">{message}</Banner>}
       <ErrorBanner error={error} />
       <ErrorBanner error={act.error} />

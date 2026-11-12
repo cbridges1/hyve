@@ -307,7 +307,15 @@ func (s *Store) NewSession(ctx context.Context, ident Identity) (string, time.Ti
 			extra = append(extra, g)
 		}
 	}
-	return s.createSession(ctx, u, extra, sessionOptions{notAfter: ident.ExpiresAt})
+	// One from an API token or a CI job's session ends with it, so a
+	// short-lived one can't outlive itself; one from a sign-in gets the
+	// full TTL, as when `hyve ui` and `hyve login` hand a session between
+	// the CLI and the browser.
+	var opts sessionOptions
+	if ident.Kind != "" {
+		opts.notAfter = ident.ExpiresAt
+	}
+	return s.createSession(ctx, u, extra, opts)
 }
 
 // createSessionWithGroups starts a session for u; groups (from the

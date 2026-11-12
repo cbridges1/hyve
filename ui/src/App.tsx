@@ -123,6 +123,7 @@ export default function App() {
           <Route path="resources/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="repos/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="providers" element={<Providers />} />
+          <Route path="providers/:tab" element={<Providers />} />
           <Route element={<People />}>
             <Route path="users" element={<Users />} />
             <Route path="access" element={<Access />} />

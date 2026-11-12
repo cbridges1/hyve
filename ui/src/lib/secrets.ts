@@ -3,6 +3,8 @@
 // the credentials its Cluster API provider reads. Read by a Deployment's
 // page's and a cluster's Deployments tab's Secrets sections. Also a
 // Secret's reads and writes, on the host or (for the explorer) a child.
+// The Providers page shows what ClusterClasses' clusters read their
+// credentials from, in every environment.
 import { ApiError, request } from './api'
 import { clusterBase, getObject } from './explorer'
 import { kube, save, typeForKind, urlFor, type Obj, type Reader, type Schema } from './kube'
@@ -92,6 +94,53 @@ export async function clusterSecrets(r: Reader, cluster: Obj, deployments: Deplo
   if (provider) want(wanted, provider, 'provider credentials')
   deployments.filter((d) => d.namespace === ns).forEach((d) => secretsOf(d).forEach((s) => want(wanted, s, d.name)))
   return resolve(r, ns, wanted, new Set())
+}
+
+// A credentialsRef.name a ClusterClass's patches set from a variable.
+const CREDENTIALS_PATH = /\/credentialsRef\/name$/
+
+// What ClusterClasses' clusters read their provider's credentials from: the
+// Secret the infrastructure template's credentialsRef names, set by a
+// patch from a variable (Civo's credentialsSecret) or fixed in the
+// template. Each template on the class gives the variable its value, or the
+// class's default does. Providers read it in the cluster's own namespace,
+// so it's wanted in every environment, before any cluster is made there.
+export async function providerCredentials(r: Reader, environments: string[]): Promise<Need[]> {
+  const [classes, templates] = await Promise.all([
+    r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[]),
+    r.findAll(TYPES.TEMPLATE).catch(() => [] as Obj[]),
+  ])
+  const wanted = new Map<string, Set<string>>()
+  for (const c of classes) {
+    const cname = c.metadata.name
+    const vars = new Set<string>()
+    for (const p of c.spec?.patches || []) {
+      for (const d of p.definitions || []) {
+        for (const j of d.jsonPatches || []) {
+          if (CREDENTIALS_PATH.test(j.path || '') && j.valueFrom?.variable) vars.add(String(j.valueFrom.variable))
+        }
+      }
+    }
+    const names = new Set<string>()
+    if (vars.size) {
+      const users = templates.filter((t) => t.spec?.clusterClassRef?.name === cname && (t.metadata.namespace === c.metadata.namespace))
+      for (const v of vars) {
+        const def = (c.spec?.variables || []).find((x: any) => x.name === v)?.schema?.openAPIV3Schema?.default
+        if (def) names.add(String(def))
+        users.forEach((t) => t.spec?.variables?.[v] && names.add(String(t.spec.variables[v])))
+      }
+    } else {
+      // Fixed in the infrastructure cluster template.
+      const ref = c.spec?.infrastructure?.templateRef || c.spec?.infrastructure?.ref
+      const type = ref?.kind && typeForKind(ref.apiVersion || '', ref.kind)
+      const infra = type ? await r.maybe(type, c.metadata.namespace, ref.name).catch(() => null) : null
+      const cred = infra?.spec?.template?.spec?.credentialsRef
+      if (cred?.name && (!cred.kind || cred.kind === 'Secret')) names.add(String(cred.name))
+    }
+    names.forEach((n) => want(wanted, n, `${cname} clusters`))
+  }
+  const per = await Promise.all(environments.map((env) => resolve(r, env, wanted, new Set())))
+  return per.flat()
 }
 
 // Reads and writes one cluster's Secrets: the host's through the shared

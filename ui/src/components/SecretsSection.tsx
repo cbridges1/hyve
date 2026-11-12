@@ -1,4 +1,4 @@
-// The Secrets a template or a cluster needs (lib/secrets.ts), whether each
+// The Secrets a Deployment, a cluster or a provider's clusters need (lib/secrets.ts), whether each
 // exists, and its keys: view, create or change them here, as the signed-in
 // user. One an operator syncs (Infisical's, External Secrets) is shown as
 // managed by it, and not edited here: its next sync would undo the edit.
@@ -16,6 +16,7 @@ export function SecretsSection({
   deps,
   hint,
   empty,
+  showNamespace = false,
 }: {
   load: (r: Reader) => Promise<Need[]>
   deps: unknown[]
@@ -23,6 +24,8 @@ export function SecretsSection({
   hint: string
   // Said when nothing needs a Secret.
   empty: ReactNode
+  // A column for each Secret's namespace, when they're in several.
+  showNamespace?: boolean
 }) {
   const { data, error, loading, reload } = useLoad(load, deps)
   const [viewing, setViewing] = useState<Need | null>(null)
@@ -42,6 +45,7 @@ export function SecretsSection({
             <thead>
               <tr>
                 <th>Name</th>
+                {showNamespace && <th>Environment</th>}
                 <th>Keys</th>
                 <th>State</th>
                 <th>Needed by</th>
@@ -50,11 +54,12 @@ export function SecretsSection({
             </thead>
             <tbody>
               {needs.map((n) => (
-                <tr key={n.name}>
+                <tr key={`${n.namespace}/${n.name}`}>
                   <td>
                     {n.name}
                     {n.type && n.type !== 'Opaque' && <div className="text-muted text-xs">{n.type}</div>}
                   </td>
+                  {showNamespace && <td>{n.namespace}</td>}
                   <td className="text-xs">{n.keys.join(', ') || '-'}</td>
                   <td>
                     {n.exists === null ? (

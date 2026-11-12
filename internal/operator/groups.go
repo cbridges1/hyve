@@ -43,6 +43,10 @@ func setupGroups(mgr manager.Manager, workspace string) error {
 		Complete(g); err != nil {
 		return err
 	}
+	if err := ctrl.NewControllerManagedBy(mgr).Named("hyve-template-status").For(object(templateGVK)).
+		Complete(&TemplateStatus{Client: mgr.GetClient()}); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).Named("hyve-cluster-labels").For(object(clusterGVK)).
 		Complete(&ClusterLabels{Client: mgr.GetClient()})
 }

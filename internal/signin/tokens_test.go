@@ -98,6 +98,22 @@ func TestSessionFromTokenEndsWithIt(t *testing.T) {
 	assert.Equal(t, clk.t.Add(time.Hour), expiresAt)
 }
 
+// A session handed on from a sign-in (hyve ui, hyve login through the
+// browser) gets the full TTL, not what's left of the first.
+func TestSessionFromSignInGetsFullTTL(t *testing.T) {
+	s, clk := newStore(t, nil)
+	ctx := context.Background()
+	addUser(t, s, "alice", "correct-horse-battery")
+	token, _, err := s.Login(ctx, "alice", "correct-horse-battery", "")
+	require.NoError(t, err)
+	clk.t = clk.t.Add(10 * time.Hour)
+	ident, err := s.Lookup(ctx, token)
+	require.NoError(t, err)
+	_, expiresAt, err := s.NewSession(ctx, ident)
+	require.NoError(t, err)
+	assert.Equal(t, clk.t.Add(DefaultSessionTTL), expiresAt)
+}
+
 func TestTokenEndpoints(t *testing.T) {
 	allow := func(sar *authorizationv1.SubjectAccessReview) bool {
 		ra := sar.Spec.ResourceAttributes
