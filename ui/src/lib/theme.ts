@@ -23,6 +23,9 @@ function apply() {
   const dark = current === 'dark' || (current === 'system' && media.matches)
   document.documentElement.classList.toggle('dark', dark)
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+  // The browser's (and an installed app's) bar matches the header, as
+  // chosen here rather than as the OS prefers.
+  document.querySelectorAll('meta[name=theme-color]').forEach((m) => m.setAttribute('content', dark ? '#171717' : '#FFFFFF'))
 }
 
 export function setTheme(t: Theme) {

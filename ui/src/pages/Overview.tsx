@@ -113,79 +113,83 @@ export default function Overview() {
           {view.failing.length > 0 && (
             <>
               <h2>Failing deployments</h2>
-              <table className="table mb-5">
-                <thead>
-                  <tr>
-                    <th>Deployment</th>
-                    <th>Where it's failing</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {view.failing.map((f) => (
-                    <tr key={`${f.d.namespace}/${f.d.name}`}>
-                      <td>
-                        <Link to={paths.deployment(f.d.namespace, f.d.name)}>{f.d.name}</Link>
-                        <div className="text-muted text-xs">{f.d.source}</div>
-                      </td>
-                      <td>
-                        {f.own && <div className="text-error">{f.own}</div>}
-                        {f.on.map((x) => (
-                          <div key={x.cluster}>
-                            {x.c ? (
-                              <Link to={paths.cluster(x.c.metadata.namespace!, x.c.metadata.name, 'deployments')}>{x.cluster}</Link>
-                            ) : x.cluster.startsWith(`${HOST_WORKSPACE}/`) ? (
-                              <Link to={paths.localCluster('deployments')}>local</Link>
-                            ) : (
-                              <span>{x.cluster}</span>
-                            )}
-                            : <span className={stateColor(x.state)}>{x.state}</span>
-                            {x.message && (
-                              <div className="text-muted line-clamp-2 max-w-xl text-xs" title={x.message}>
-                                {x.message}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </td>
+              <div className="overflow-x-auto mb-5">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Deployment</th>
+                      <th>Where it's failing</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {view.failing.map((f) => (
+                      <tr key={`${f.d.namespace}/${f.d.name}`}>
+                        <td>
+                          <Link to={paths.deployment(f.d.namespace, f.d.name)}>{f.d.name}</Link>
+                          <div className="text-muted text-xs">{f.d.source}</div>
+                        </td>
+                        <td>
+                          {f.own && <div className="text-error">{f.own}</div>}
+                          {f.on.map((x) => (
+                            <div key={x.cluster}>
+                              {x.c ? (
+                                <Link to={paths.cluster(x.c.metadata.namespace!, x.c.metadata.name, 'deployments')}>{x.cluster}</Link>
+                              ) : x.cluster.startsWith(`${HOST_WORKSPACE}/`) ? (
+                                <Link to={paths.localCluster('deployments')}>local</Link>
+                              ) : (
+                                <span>{x.cluster}</span>
+                              )}
+                              : <span className={stateColor(x.state)}>{x.state}</span>
+                              {x.message && (
+                                <div className="text-muted line-clamp-2 max-w-xl text-xs" title={x.message}>
+                                  {x.message}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
 
           {(canExplore || view.live.length > 0) && (
             <>
               <h2>Resources</h2>
-              <table className="table mb-5">
-                <thead>
-                  <tr>
-                    <th>Cluster</th>
-                    <th>CPU</th>
-                    <th>Memory</th>
-                    <th>Pods</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {canExplore && (
+              <div className="overflow-x-auto mb-5">
+                <table className="table">
+                  <thead>
                     <tr>
-                      <td>
-                        <Link to={paths.localCluster()}>local</Link>
-                      </td>
-                      <ResourceSummaryCells clusterId={LOCAL_CLUSTER} />
+                      <th>Cluster</th>
+                      <th>CPU</th>
+                      <th>Memory</th>
+                      <th>Pods</th>
                     </tr>
-                  )}
-                  {view.live.slice(0, MAX_MONITORED).map((c) => (
-                    <tr key={idOf(c)}>
-                      <td>
-                        <Link to={paths.cluster(c.metadata.namespace!, c.metadata.name)}>{c.metadata.name}</Link>
-                        <span className="text-muted ml-1 text-xs">{c.metadata.namespace}</span>
-                      </td>
-                      <ResourceSummaryCells clusterId={`${c.metadata.namespace}.${c.metadata.name}`} />
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {canExplore && (
+                      <tr>
+                        <td>
+                          <Link to={paths.localCluster()}>local</Link>
+                        </td>
+                        <ResourceSummaryCells clusterId={LOCAL_CLUSTER} />
+                      </tr>
+                    )}
+                    {view.live.slice(0, MAX_MONITORED).map((c) => (
+                      <tr key={idOf(c)}>
+                        <td>
+                          <Link to={paths.cluster(c.metadata.namespace!, c.metadata.name)}>{c.metadata.name}</Link>
+                          <span className="text-muted ml-1 text-xs">{c.metadata.namespace}</span>
+                        </td>
+                        <ResourceSummaryCells clusterId={`${c.metadata.namespace}.${c.metadata.name}`} />
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {view.live.length > MAX_MONITORED && (
                 <p className="hint -mt-3 mb-5">
                   The first {MAX_MONITORED} of {view.live.length} running clusters; pick an environment to narrow it, or open a cluster for its own.
@@ -195,70 +199,72 @@ export default function Overview() {
           )}
 
           <h2>Clusters</h2>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Environment</th>
-                <th>Provider</th>
-                <th>Template</th>
-                <th>Phase</th>
-                <th>Expires</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {canExplore && (
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
                 <tr>
-                  <td>
-                    <Link to={paths.localCluster()}>local</Link>
-                  </td>
-                  <td className="text-muted">-</td>
-                  <td>Host</td>
-                  <td className="text-muted">-</td>
-                  <td className="text-muted">-</td>
-                  <td>Never</td>
-                  <td />
+                  <th>Name</th>
+                  <th>Environment</th>
+                  <th>Provider</th>
+                  <th>Template</th>
+                  <th>Phase</th>
+                  <th>Expires</th>
+                  <th />
                 </tr>
-              )}
-              {!view.rows.length && !canExplore && (
-                <tr>
-                  <td colSpan={7} className="text-muted">
-                    No clusters yet.
-                  </td>
-                </tr>
-              )}
-              {view.rows.map((r) => (
-                <tr key={idOf(r.cluster)}>
-                  <td>
-                    <Link to={paths.cluster(r.cluster.metadata.namespace!, r.cluster.metadata.name)}>{r.cluster.metadata.name}</Link>
-                  </td>
-                  <td>{r.cluster.metadata.namespace}</td>
-                  <td>{r.provider}</td>
-                  <td>{r.template}</td>
-                  <td>{r.phase}</td>
-                  <td className={r.soon ? 'text-warning' : ''}>{r.expires || 'Never'}</td>
-                  <td className="text-right">
-                    {r.expires && (
-                      <button
-                        type="button"
-                        className="btn btn-tertiary btn-sm"
-                        disabled={action.busy}
-                        onClick={() =>
-                          action.run(async () => {
-                            await extendExpiry(r.cluster)
-                            await reload(true)
-                          })
-                        }
-                      >
-                        Extend expiry by 8 hours
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {canExplore && (
+                  <tr>
+                    <td>
+                      <Link to={paths.localCluster()}>local</Link>
+                    </td>
+                    <td className="text-muted">-</td>
+                    <td>Host</td>
+                    <td className="text-muted">-</td>
+                    <td className="text-muted">-</td>
+                    <td>Never</td>
+                    <td />
+                  </tr>
+                )}
+                {!view.rows.length && !canExplore && (
+                  <tr>
+                    <td colSpan={7} className="text-muted">
+                      No clusters yet.
+                    </td>
+                  </tr>
+                )}
+                {view.rows.map((r) => (
+                  <tr key={idOf(r.cluster)}>
+                    <td>
+                      <Link to={paths.cluster(r.cluster.metadata.namespace!, r.cluster.metadata.name)}>{r.cluster.metadata.name}</Link>
+                    </td>
+                    <td>{r.cluster.metadata.namespace}</td>
+                    <td>{r.provider}</td>
+                    <td>{r.template}</td>
+                    <td>{r.phase}</td>
+                    <td className={r.soon ? 'text-warning' : ''}>{r.expires || 'Never'}</td>
+                    <td className="text-right">
+                      {r.expires && (
+                        <button
+                          type="button"
+                          className="btn btn-tertiary btn-sm"
+                          disabled={action.busy}
+                          onClick={() =>
+                            action.run(async () => {
+                              await extendExpiry(r.cluster)
+                              await reload(true)
+                            })
+                          }
+                        >
+                          Extend expiry by 8 hours
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </div>

@@ -409,7 +409,7 @@ func ensurePKI(dir, ip, name string) (caPEM, certPEM, keyPEM []byte, err error) 
 	}
 	certPEM, err1 = os.ReadFile(hostCrt)
 	keyPEM, err2 = os.ReadFile(hostKey)
-	if err1 == nil && err2 == nil && certCovers(certPEM, ip) && certCovers(certPEM, name) {
+	if err1 == nil && err2 == nil && signedBy(certPEM, caPEM) && certCovers(certPEM, ip) && certCovers(certPEM, name) {
 		return caPEM, certPEM, keyPEM, nil
 	}
 	certPEM, keyPEM, err = newCert(caPEM, caKeyPEM, "hyve-local-host", []string{ip, "127.0.0.1", "localhost", name})
@@ -420,6 +420,19 @@ func ensurePKI(dir, ip, name string) (caPEM, certPEM, keyPEM []byte, err error) 
 		return nil, nil, nil, err
 	}
 	return caPEM, certPEM, keyPEM, os.WriteFile(hostKey, keyPEM, 0o600)
+}
+
+// signedBy reports whether certPEM was signed by the CA in caPEM: a CA
+// made again (its files were lost) needs a new host certificate.
+func signedBy(certPEM, caPEM []byte) bool {
+	cb, _ := pem.Decode(certPEM)
+	ab, _ := pem.Decode(caPEM)
+	if cb == nil || ab == nil {
+		return false
+	}
+	c, err1 := x509.ParseCertificate(cb.Bytes)
+	ca, err2 := x509.ParseCertificate(ab.Bytes)
+	return err1 == nil && err2 == nil && c.CheckSignatureFrom(ca) == nil
 }
 
 func certCovers(certPEM []byte, host string) bool {

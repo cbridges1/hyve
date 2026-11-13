@@ -22,8 +22,8 @@ import { SecretKeys } from './SecretKeys'
 // buttons above it (Expand, Refresh, Edit) and, while editing, Save and
 // Cancel below it all fit in the window. A long object scrolls in the
 // pane. The rems are those rows, the card's padding and the main area's.
-const YAML_MAX_HEIGHT = 'min(48rem, calc(100dvh - var(--sticky-header, 3.5rem) - 7rem))'
-const YAML_EDIT_MAX_HEIGHT = 'min(48rem, calc(100dvh - var(--sticky-header, 3.5rem) - 11.5rem))'
+const YAML_MAX_HEIGHT = 'min(48rem, calc(100dvh - var(--sticky-header, var(--app-header)) - 7rem))'
+const YAML_EDIT_MAX_HEIGHT = 'min(48rem, calc(100dvh - var(--sticky-header, var(--app-header)) - 11.5rem))'
 // Short windows: the cap above wins over the editor's usual 20rem floor.
 const YAML_MIN_HEIGHT = '8rem'
 

@@ -9,4 +9,6 @@
   var dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   document.documentElement.classList.toggle('dark', dark)
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+  var metas = document.querySelectorAll('meta[name=theme-color]')
+  for (var i = 0; i < metas.length; i++) metas[i].setAttribute('content', dark ? '#171717' : '#FFFFFF')
 })()

@@ -38,6 +38,10 @@
    override the OS preference. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* The app's header (AppShell): 3.5rem, under an installed app's status
+   bar or notch (index.html's viewport-fit=cover). */
+:root { --app-header: calc(3.5rem + env(safe-area-inset-top)); }
+
 body {
   margin: 0;
   font-family: 'Inter', system-ui, sans-serif;
@@ -70,6 +74,11 @@ body {
     background-position: right 0.75rem center;
   }
   input[type=checkbox], input[type=radio] { @apply accent-neutral-900 dark:accent-white; }
+  @media (pointer: coarse) {
+    input:not([type=checkbox]):not([type=radio]):not([type=file]), select { @apply h-11; }
+    input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea { @apply text-base; }
+    input[type=checkbox], input[type=radio] { @apply h-5 w-5; }
+  }
 }
 
 @layer components {
@@ -88,6 +97,13 @@ body {
   .banner-warning { @apply bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300; }
   .banner-error { @apply bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300; }
 
+  /* A touch screen: controls and buttons at least 44px tall, and inputs
+     at 16px, below which iOS zooms the page on focus. */
+  @media (pointer: coarse) {
+    .btn { @apply h-11; }
+    .btn-sm { @apply h-9; }
+  }
+
   .text-muted { @apply text-neutral-500; }
   .text-success { @apply text-green-700 dark:text-green-400; }
   .text-warning { @apply text-amber-700 dark:text-amber-400; }
@@ -100,7 +116,7 @@ body {
   .table th {
     @apply border-b border-neutral-200 bg-neutral-50/60 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap text-neutral-500 uppercase dark:border-neutral-800 dark:bg-neutral-900;
   }
-  .table th, .table td { @apply px-4 py-2.5; }
+  .table th, .table td { @apply px-3 py-2.5 sm:px-4; }
   .table td { @apply border-t border-neutral-100 align-top text-neutral-800 dark:border-neutral-800 dark:text-neutral-200; }
   .table tbody tr:first-child td { @apply border-t-0; }
   .table tbody tr:hover td { @apply bg-neutral-50 dark:bg-neutral-800/40; }
@@ -143,3 +159,8 @@ body {
 :root.dark .tok-punctuation, :root.dark .tok-operator { color: rgb(163 163 163); }
 .tok-labelName, .tok-meta, .tok-typeName { color: rgb(220 38 38); }
 :root.dark .tok-labelName, :root.dark .tok-meta, :root.dark .tok-typeName { color: rgb(248 113 113); }
+/* A touch screen: the editor's text and its search panel at 16px, so iOS
+   doesn't zoom the page on focus. */
+@media (pointer: coarse) {
+  .code-editor .cm-editor, .code-editor .cm-panels input, .code-editor .cm-panels button { font-size: 16px; }
+}

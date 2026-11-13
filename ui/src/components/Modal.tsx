@@ -5,7 +5,8 @@ import { createPortal } from 'react-dom'
 // pops up over a page. A persistent one closes only from its own buttons,
 // not Escape or a click outside: for forms that would lose much typing.
 // The page behind doesn't scroll while one is open; an 'xl' one fits the
-// window and scrolls inside, so an editor in it is seen whole.
+// window and scrolls inside, so an editor in it is seen whole. On a phone
+// every one fills the screen, as a sheet.
 export function Modal({
   title,
   onClose,
@@ -41,7 +42,7 @@ export function Modal({
   }, [])
 
   return createPortal(
-    <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain p-4 ${wide === 'xl' ? 'pt-[4vh]' : 'pt-[10vh]'}`}>
+    <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain sm:p-4 ${wide === 'xl' ? 'sm:pt-[4vh]' : 'sm:pt-[10vh]'}`}>
       <button
         type="button"
         aria-label="Close"
@@ -50,20 +51,23 @@ export function Modal({
         onClick={persistent ? undefined : onClose}
       />
       <div
-        className={`relative w-full ${wide === 'xl' ? 'flex max-h-[92vh] max-w-6xl flex-col' : wide ? 'max-w-3xl' : 'max-w-lg'} rounded-2xl border border-neutral-200 bg-white p-5 shadow-2xl ring-1 ring-black/5 dark:border-neutral-700 dark:bg-neutral-800 dark:ring-white/10`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`relative min-h-dvh w-full ${wide === 'xl' ? 'flex h-dvh max-w-6xl flex-col sm:h-auto sm:max-h-[92vh]' : wide ? 'max-w-3xl' : 'max-w-lg'} bg-white px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:min-h-0 sm:rounded-2xl sm:border sm:border-neutral-200 sm:p-5 sm:ring-1 sm:ring-black/5 dark:bg-neutral-800 sm:dark:border-neutral-700 sm:dark:ring-white/10`}
       >
-        <div className="mb-4 flex shrink-0 items-center justify-between">
-          <h2 className="mb-0 text-base font-semibold text-neutral-900 dark:text-neutral-100">{title}</h2>
+        <div className="mb-4 flex shrink-0 items-center justify-between gap-3">
+          <h2 className="mb-0 min-w-0 text-base font-semibold break-words text-neutral-900 dark:text-neutral-100">{title}</h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded-lg p-1 text-lg leading-none text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+            className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none text-neutral-400 sm:mr-0 sm:h-8 sm:w-8 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
           >
             ✕
           </button>
         </div>
-        {wide === 'xl' ? <div className="-mx-5 min-h-0 overflow-y-auto overscroll-contain px-5">{children}</div> : children}
+        {wide === 'xl' ? <div className="-mx-4 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:-mx-5 sm:flex-initial sm:px-5">{children}</div> : children}
       </div>
     </div>,
     document.body,

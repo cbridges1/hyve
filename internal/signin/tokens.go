@@ -197,8 +197,9 @@ func sessionKind(sec *corev1.Secret) string {
 	return KindSession
 }
 
-// noteUse writes down when a token was last used, at most once an hour,
-// in the background: it's for 'hyve user token list', not for security.
+// noteUse writes down when a token or session was last used, at most
+// once an hour, in the background: it's for 'hyve user token list' and
+// the sessions list, not for security.
 func (s *Store) noteUse(sec *corev1.Secret) {
 	now := s.now().UTC().Truncate(time.Second)
 	if last, err := time.Parse(time.RFC3339, sec.Annotations[annotationLastUsed]); err == nil && now.Sub(last) < lastUsedEvery {

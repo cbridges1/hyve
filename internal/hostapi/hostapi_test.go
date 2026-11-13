@@ -38,7 +38,7 @@ func post(t *testing.T, srv *httptest.Server, path string, body any) (int, map[s
 func TestNeedsASession(t *testing.T) {
 	srv := server(false)
 	defer srv.Close()
-	for _, p := range []string{"/v1/hyve/providers", "/v1/hyve/clusterclasses", "/v1/hyve/render", "/v1/hyve/import"} {
+	for _, p := range []string{"/v1/hyve/providers", "/v1/hyve/clusterclasses", "/v1/hyve/render", "/v1/hyve/import", "/v1/hyve/clusters/dev/web/release"} {
 		if code, _ := post(t, srv, p, map[string]any{}); code != http.StatusUnauthorized {
 			t.Errorf("%s without a session: %d, want 401", p, code)
 		}

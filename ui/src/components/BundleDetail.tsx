@@ -111,40 +111,42 @@ export function BundleDetail({ bundle, bds, backLabel }: { bundle: Obj; bds: Obj
         </div>
       )}
       {resources.length ? (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Namespace</th>
-              <th>Name</th>
-              <th>State</th>
-            </tr>
-          </thead>
-          <tbody>
-            {resources.map((r) => {
-              const to = objectPath(r)
-              return (
-                <tr key={`${r.apiVersion}/${r.kind}/${r.namespace}/${r.name}`}>
-                  <td>{r.kind}</td>
-                  <td className="text-muted">{r.namespace || '-'}</td>
-                  <td className="break-all">
-                    {to ? (
-                      <Link to={to} state={back}>
-                        {r.name}
-                      </Link>
-                    ) : (
-                      r.name
-                    )}
-                  </td>
-                  <td>
-                    <Pill tone={resTone(r.state)} label={r.state} />
-                    {r.message && <div className="text-muted mt-1 text-xs break-words">{r.message}</div>}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Kind</th>
+                <th>Namespace</th>
+                <th>Name</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resources.map((r) => {
+                const to = objectPath(r)
+                return (
+                  <tr key={`${r.apiVersion}/${r.kind}/${r.namespace}/${r.name}`}>
+                    <td>{r.kind}</td>
+                    <td className="text-muted">{r.namespace || '-'}</td>
+                    <td className="break-all">
+                      {to ? (
+                        <Link to={to} state={back}>
+                          {r.name}
+                        </Link>
+                      ) : (
+                        r.name
+                      )}
+                    </td>
+                    <td>
+                      <Pill tone={resTone(r.state)} label={r.state} />
+                      {r.message && <div className="text-muted mt-1 text-xs break-words">{r.message}</div>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <p className="text-muted text-sm">Nothing deployed yet.</p>
       )}

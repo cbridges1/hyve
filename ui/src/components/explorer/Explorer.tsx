@@ -169,7 +169,7 @@ function TypeList({ schemas, current, onPick }: { schemas: Record<string, Schema
 
   const cur = schemas[current]
   return (
-    <aside className="min-w-0 lg:sticky lg:top-[var(--sticky-header,3.5rem)] lg:self-start">
+    <aside className="min-w-0 lg:sticky lg:top-[var(--sticky-header,var(--app-header))] lg:self-start">
       <button
         type="button"
         className="btn btn-secondary w-full justify-between lg:hidden"
@@ -437,7 +437,7 @@ function ResourceTable({
   }
 
   return (
-    <div ref={top} className="scroll-mt-[var(--sticky-header,3.5rem)] space-y-3">
+    <div ref={top} className="scroll-mt-[var(--sticky-header,var(--app-header))] space-y-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="mb-0 text-base">{schema.kind}</h2>
         {table && (

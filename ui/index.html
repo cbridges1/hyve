@@ -3,8 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: installed, the app draws under the notch and
+         home bar, and AppShell pads by the safe-area insets. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>hyve</title>
+    <!-- Installable (a PWA): the manifest (a .json, which the host serves
+         as JSON), its icons, and iOS's own tags. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="hyve" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <!-- The header's colour (white, neutral-900 dark); lib/theme.ts
+         follows an explicit theme choice. -->
+    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#171717" media="(prefers-color-scheme: dark)" />
     <!-- Before first paint, so there's no flash of the wrong theme. A file,
          not an inline script: the host's Content-Security-Policy allows
          only its own scripts. -->

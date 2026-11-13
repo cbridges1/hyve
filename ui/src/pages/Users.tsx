@@ -10,6 +10,7 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiTokens } from '../components/ApiTokens'
+import { Sessions } from '../components/Sessions'
 import { Checkbox, RadioGroup, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
 import { Banner, ErrorBanner, Loading, Pill, ConfirmButton, EmptyState } from '../components/ui'
@@ -115,6 +116,7 @@ export default function Users() {
   const [editForm, setEditForm] = useState<EditForm>({ displayName: '', email: '', groups: '' })
   const [passwordFor, setPasswordFor] = useState('')
   const [tokensFor, setTokensFor] = useState('')
+  const [sessionsFor, setSessionsFor] = useState('')
   const [trustFor, setTrustFor] = useState<Obj | null>(null)
   const [newPassword, setNewPassword] = useState('')
 
@@ -301,6 +303,11 @@ export default function Users() {
                   <button type="button" className="btn btn-tertiary btn-sm" title="API tokens for scripts and CI" onClick={() => setTokensFor(u.metadata.name)}>
                     Tokens
                   </button>
+                  {!isService(u) && (
+                    <button type="button" className="btn btn-tertiary btn-sm" title="Where they're signed in; sign them out" onClick={() => setSessionsFor(u.metadata.name)}>
+                      Sessions
+                    </button>
+                  )}
                   <button type="button" className="btn btn-tertiary btn-sm" title="Let CI jobs sign in with their own ID token" onClick={() => setTrustFor(u)}>
                     CI sign-in
                   </button>
@@ -478,6 +485,7 @@ export default function Users() {
         </Modal>
       )}
 
+      {sessionsFor && <Sessions user={sessionsFor} own={sessionsFor === me} onClose={() => setSessionsFor('')} />}
       {tokensFor && <ApiTokens user={tokensFor} own={tokensFor === me} onClose={() => setTokensFor('')} />}
       {trustFor && (
         <TrustedCI

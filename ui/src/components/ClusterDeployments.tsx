@@ -50,67 +50,69 @@ export function ClusterDeployments({ cluster }: { cluster: Obj | 'host' }) {
       {!rows.length ? (
         <EmptyState>Nothing is deployed here yet.</EmptyState>
       ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th />
-              <th>Deployment</th>
-              <th>Source</th>
-              <th>Why it's here</th>
-              <th>State here</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(({ d, why, state }) => {
-              const id = `${d.namespace}/${d.name}`
-              const bds = d.bds.filter((bd) => `${bd.metadata.labels?.['fleet.cattle.io/cluster-namespace']}/${bd.metadata.labels?.['fleet.cattle.io/cluster']}` === fleetId)
-              return (
-                <Fragment key={id}>
-                  <tr className="cursor-pointer" onClick={() => toggle(id)}>
-                    <td className="w-6">
-                      <span className={`inline-block transition-transform ${open.has(id) ? 'rotate-90' : ''}`}>
-                        <Icon name="chevronRight" size={14} />
-                      </span>
-                    </td>
-                    <td>
-                      <Link to={paths.deployment(d.namespace, d.name)} onClick={(e) => e.stopPropagation()}>
-                        {d.name}
-                      </Link>
-                      {d.paused && (
-                        <span className="ml-1">
-                          <Pill tone="busy" label="Paused" />
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th />
+                <th>Deployment</th>
+                <th>Source</th>
+                <th>Why it's here</th>
+                <th>State here</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ d, why, state }) => {
+                const id = `${d.namespace}/${d.name}`
+                const bds = d.bds.filter((bd) => `${bd.metadata.labels?.['fleet.cattle.io/cluster-namespace']}/${bd.metadata.labels?.['fleet.cattle.io/cluster']}` === fleetId)
+                return (
+                  <Fragment key={id}>
+                    <tr className="cursor-pointer" onClick={() => toggle(id)}>
+                      <td className="w-6">
+                        <span className={`inline-block transition-transform ${open.has(id) ? 'rotate-90' : ''}`}>
+                          <Icon name="chevronRight" size={14} />
                         </span>
-                      )}
-                    </td>
-                    <td className="max-w-80 break-all">
-                      <span className="text-muted text-xs">{SOURCE_LABEL[d.sourceKind]}</span> {d.source}
-                    </td>
-                    <td className="text-sm">{why.join(', ') || <span className="text-muted">no longer targeted</span>}</td>
-                    <td>
-                      {state ? <Pill tone={stateTone(state.state)} label={state.state} /> : <Pill tone="idle" label={data?.dl.detailed ? 'Not yet' : '?'} />}
-                      {state?.message && <div className="text-muted mt-1 line-clamp-2 max-w-md text-xs">{state.message}</div>}
-                    </td>
-                  </tr>
-                  {open.has(id) && (
-                    <tr>
-                      <td />
-                      <td colSpan={4}>
-                        {d.bundles.map((b) => (
-                          <BundleDetail
-                            key={b.metadata.name}
-                            bundle={b}
-                            bds={bds.filter((bd) => bd.metadata.labels?.['fleet.cattle.io/bundle-name'] === b.metadata.name)}
-                            backLabel={name}
-                          />
-                        ))}
+                      </td>
+                      <td>
+                        <Link to={paths.deployment(d.namespace, d.name)} onClick={(e) => e.stopPropagation()}>
+                          {d.name}
+                        </Link>
+                        {d.paused && (
+                          <span className="ml-1">
+                            <Pill tone="busy" label="Paused" />
+                          </span>
+                        )}
+                      </td>
+                      <td className="max-w-80 break-all">
+                        <span className="text-muted text-xs">{SOURCE_LABEL[d.sourceKind]}</span> {d.source}
+                      </td>
+                      <td className="text-sm">{why.join(', ') || <span className="text-muted">no longer targeted</span>}</td>
+                      <td>
+                        {state ? <Pill tone={stateTone(state.state)} label={state.state} /> : <Pill tone="idle" label={data?.dl.detailed ? 'Not yet' : '?'} />}
+                        {state?.message && <div className="text-muted mt-1 line-clamp-2 max-w-md text-xs">{state.message}</div>}
                       </td>
                     </tr>
-                  )}
-                </Fragment>
-              )
-            })}
-          </tbody>
-        </table>
+                    {open.has(id) && (
+                      <tr>
+                        <td />
+                        <td colSpan={4}>
+                          {d.bundles.map((b) => (
+                            <BundleDetail
+                              key={b.metadata.name}
+                              bundle={b}
+                              bds={bds.filter((bd) => bd.metadata.labels?.['fleet.cattle.io/bundle-name'] === b.metadata.name)}
+                              backLabel={name}
+                            />
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
       {can(TYPES.FLEET_HELM_OP, 'create') && (
         <div className="mt-4 flex flex-wrap gap-2">

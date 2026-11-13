@@ -147,8 +147,8 @@ subjects:
     name: "hyve:admin"
 ---
 # Lets a hyve user manage Users, set their passwords and manage their API
-# tokens (`hyve user`, `hyve user token`). Bound to nobody by default;
-# cluster-admin already includes it.
+# tokens and sessions (`hyve user`, `hyve user token`, `hyve user
+# session`). Bound to nobody by default; cluster-admin already includes it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -163,6 +163,9 @@ rules:
   - apiGroups: ["hyve.io"]
     resources: ["users/tokens"]
     verbs: ["list", "create", "delete"]
+  - apiGroups: ["hyve.io"]
+    resources: ["users/sessions"]
+    verbs: ["list", "delete"]
 ---
 apiVersion: apps/v1
 kind: Deployment

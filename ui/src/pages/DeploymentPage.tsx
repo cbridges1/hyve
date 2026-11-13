@@ -115,28 +115,30 @@ export default function DeploymentPage() {
         {!d.states.length ? (
           <EmptyState>{data.dl.detailed ? 'No cluster has it yet.' : 'Not shown.'}</EmptyState>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Cluster</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.states.map((s) => {
-                const [cns, cname] = s.cluster.split('/')
-                return (
-                  <tr key={s.cluster}>
-                    <td>{cns === 'fleet-local' ? <Link to={paths.localCluster('deployments')}>local (host)</Link> : <Link to={paths.cluster(cns, cname, 'deployments')}>{s.cluster}</Link>}</td>
-                    <td>
-                      <Pill tone={stateTone(s.state)} label={s.state} />
-                      {s.message && <div className="text-muted mt-1 max-w-2xl text-xs break-words">{s.message}</div>}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Cluster</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.states.map((s) => {
+                  const [cns, cname] = s.cluster.split('/')
+                  return (
+                    <tr key={s.cluster}>
+                      <td>{cns === 'fleet-local' ? <Link to={paths.localCluster('deployments')}>local (host)</Link> : <Link to={paths.cluster(cns, cname, 'deployments')}>{s.cluster}</Link>}</td>
+                      <td>
+                        <Pill tone={stateTone(s.state)} label={s.state} />
+                        {s.message && <div className="text-muted mt-1 max-w-2xl text-xs break-words">{s.message}</div>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
@@ -144,50 +146,52 @@ export default function DeploymentPage() {
         {!d.bundles.length ? (
           <EmptyState>Fleet hasn't made its bundle yet.</EmptyState>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th />
-                <th>Bundle</th>
-                <th>Clusters ready</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.bundles.map((b) => {
-                const id = b.metadata.name
-                const st = bundleState(b)
-                const msg = bundleMessage(b)
-                return (
-                  <Fragment key={id}>
-                    <tr className="cursor-pointer" onClick={() => toggle(id)}>
-                      <td className="w-6">
-                        <span className={`inline-block transition-transform ${open.has(id) ? 'rotate-90' : ''}`}>
-                          <Icon name="chevronRight" size={14} />
-                        </span>
-                      </td>
-                      <td>
-                        {d.kind === 'GitRepo' ? shortBundleName(d.model, b) : id}
-                        {msg && <div className="text-muted line-clamp-1 max-w-xl text-xs">{msg}</div>}
-                      </td>
-                      <td>{b.status?.display?.readyClusters || '-'}</td>
-                      <td>
-                        <Pill tone={stateTone(st)} label={st} />
-                      </td>
-                    </tr>
-                    {open.has(id) && (
-                      <tr>
-                        <td />
-                        <td colSpan={3}>
-                          <BundleDetail bundle={b} bds={d.bds.filter((bd) => bd.metadata.labels?.['fleet.cattle.io/bundle-name'] === id)} backLabel={name} />
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>Bundle</th>
+                  <th>Clusters ready</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.bundles.map((b) => {
+                  const id = b.metadata.name
+                  const st = bundleState(b)
+                  const msg = bundleMessage(b)
+                  return (
+                    <Fragment key={id}>
+                      <tr className="cursor-pointer" onClick={() => toggle(id)}>
+                        <td className="w-6">
+                          <span className={`inline-block transition-transform ${open.has(id) ? 'rotate-90' : ''}`}>
+                            <Icon name="chevronRight" size={14} />
+                          </span>
+                        </td>
+                        <td>
+                          {d.kind === 'GitRepo' ? shortBundleName(d.model, b) : id}
+                          {msg && <div className="text-muted line-clamp-1 max-w-xl text-xs">{msg}</div>}
+                        </td>
+                        <td>{b.status?.display?.readyClusters || '-'}</td>
+                        <td>
+                          <Pill tone={stateTone(st)} label={st} />
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
+                      {open.has(id) && (
+                        <tr>
+                          <td />
+                          <td colSpan={3}>
+                            <BundleDetail bundle={b} bds={d.bds.filter((bd) => bd.metadata.labels?.['fleet.cattle.io/bundle-name'] === id)} backLabel={name} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 

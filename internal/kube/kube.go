@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -194,4 +195,46 @@ func (c *Client) Unserved(gks []schema.GroupKind) []schema.GroupKind {
 		}
 	}
 	return out
+}
+
+// Mapping is the resource a kind is served as: at version, or its
+// preferred version when version is "".
+func (c *Client) Mapping(gk schema.GroupKind, version string) (schema.GroupVersionResource, error) {
+	var versions []string
+	if version != "" {
+		versions = []string{version}
+	}
+	m, err := c.mapper.RESTMapping(gk, versions...)
+	if meta.IsNoMatchError(err) {
+		c.mapper.Reset()
+		m, err = c.mapper.RESTMapping(gk, versions...)
+	}
+	if err != nil {
+		return schema.GroupVersionResource{}, err
+	}
+	return m.Resource, nil
+}
+
+// NamespacedResources are the namespaced resources the API server serves
+// and lists, at their preferred versions. A group whose discovery fails
+// is left out.
+func (c *Client) NamespacedResources() ([]schema.GroupVersionResource, error) {
+	c.cached.Invalidate()
+	lists, err := discovery.ServerPreferredNamespacedResources(c.cached)
+	if err != nil && !discovery.IsGroupDiscoveryFailedError(err) {
+		return nil, err
+	}
+	var out []schema.GroupVersionResource
+	for _, l := range lists {
+		gv, err := schema.ParseGroupVersion(l.GroupVersion)
+		if err != nil {
+			continue
+		}
+		for _, r := range l.APIResources {
+			if slices.Contains(r.Verbs, "list") {
+				out = append(out, gv.WithResource(r.Name))
+			}
+		}
+	}
+	return out, nil
 }

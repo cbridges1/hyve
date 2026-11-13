@@ -7,10 +7,10 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ClusterDeployments } from "../components/ClusterDeployments";
+import { ClusterRemove, type RemoveMode } from "../components/ClusterRemove";
 import {
   BackLink,
   Card,
-  ConfirmButton,
   ErrorBanner,
   Field,
   Loading,
@@ -93,6 +93,7 @@ export default function ClusterDetail() {
   });
   const [pristine, setPristine] = useState<Form>(form);
   const [upgradeTo, setUpgradeTo] = useState("");
+  const [removing, setRemoving] = useState<RemoveMode | null>(null);
 
   const reset = (c: Obj) => {
     const f = formOf(c);
@@ -198,11 +199,10 @@ export default function ClusterDetail() {
       ),
     );
 
-  const del = () =>
-    action.run(async () => {
-      await remove(TYPES.CLUSTER, value);
-      navigate(paths.clusters);
-    });
+  const del = async () => {
+    await remove(TYPES.CLUSTER, value);
+    navigate(paths.clusters);
+  };
 
   const sizeChanged =
     (topo.controlPlane &&
@@ -318,7 +318,7 @@ export default function ClusterDetail() {
               <StatusPill status={expiry(expires)} />
               <StatusPill status={clusterStatus(value)} />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -348,19 +348,34 @@ export default function ClusterDetail() {
               </Link>
               {!m.deletionTimestamp &&
                 (imported ? (
-                  <ConfirmButton
-                    label="Detach"
-                    confirm={`Detach ${m.name}? It keeps running.`}
+                  <button
+                    type="button"
+                    className="btn border-red-300 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
                     disabled={action.busy}
-                    onConfirm={del}
-                  />
+                    onClick={() => setRemoving("detach")}
+                  >
+                    Detach
+                  </button>
                 ) : (
-                  <ConfirmButton
-                    label="Delete"
-                    confirm={`Delete ${m.name}?`}
-                    disabled={action.busy}
-                    onConfirm={del}
-                  />
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      title="Stop managing it with hyve and leave it running"
+                      disabled={action.busy}
+                      onClick={() => setRemoving("release")}
+                    >
+                      Release
+                    </button>
+                    <button
+                      type="button"
+                      className="btn border-red-300 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+                      disabled={action.busy}
+                      onClick={() => setRemoving("delete")}
+                    >
+                      Delete
+                    </button>
+                  </>
                 ))}
             </div>
           </div>
@@ -369,6 +384,17 @@ export default function ClusterDetail() {
       </StickyHeader>
       <ErrorBanner error={error} />
       <ErrorBanner error={action.error} />
+      {removing && (
+        <ClusterRemove
+          cluster={value}
+          mode={removing}
+          onClose={() => setRemoving(null)}
+          onDelete={del}
+          onDone={(message) =>
+            navigate(paths.clusters, { state: { message } })
+          }
+        />
+      )}
 
       {tab === "deployments" ? (
         <Card>

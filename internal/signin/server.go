@@ -92,6 +92,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tokens", s.handleListTokens)
 	mux.HandleFunc("POST /v1/tokens", s.handleCreateToken)
 	mux.HandleFunc("DELETE /v1/tokens/{user}/{name}", s.handleRevokeToken)
+	mux.HandleFunc("GET /v1/sessions", s.handleListSessions)
+	mux.HandleFunc("DELETE /v1/sessions/{user}", s.handleRevokeSessions)
+	mux.HandleFunc("DELETE /v1/sessions/{user}/{id}", s.handleRevokeSession)
 	mux.HandleFunc("POST /v1-public/ci-login", s.handleCILogin)
 	mux.HandleFunc("POST /v1/users/{name}/invite", s.handleInvite)
 	mux.HandleFunc("POST /v1-public/password-reset", s.handleResetRequest)
@@ -109,7 +112,7 @@ func (s *Server) Handler() http.Handler {
 	if s.UI != nil {
 		mux.Handle("/", s.UI)
 	}
-	return mux
+	return withClient(mux)
 }
 
 type apiError struct {

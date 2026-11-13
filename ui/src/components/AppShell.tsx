@@ -1,6 +1,6 @@
 // The console's shell: a full-width header (logo, theme, account menu)
 // over a grouped sidebar and the page.
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { auth, errorMessage } from '../lib/api'
 import { download, kubeconfig } from '../lib/format'
@@ -10,6 +10,7 @@ import { paths, peoplePath } from '../lib/routes'
 import { setSession, useSession } from '../lib/session'
 import { TYPES } from '../lib/types'
 import { ApiTokens } from './ApiTokens'
+import { Sessions } from './Sessions'
 import { ChangePassword } from './ChangePassword'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Icon } from './Icon'
@@ -57,7 +58,7 @@ const groups: { label: string; items: Item[] }[] = [
 ]
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
-  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium no-underline transition-colors hover:no-underline ${
+  `flex min-h-11 items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium md:min-h-0 no-underline transition-colors hover:no-underline ${
     isActive
       ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-900'
       : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800/70'
@@ -70,7 +71,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     .map((g) => ({ ...g, items: g.items.filter((i) => (!i.type || schemaFor(i.type)) && (!i.settings || canSettings)) }))
     .filter((g) => g.items.length)
   return (
-    <nav className="w-full flex-1 space-y-3 overflow-y-auto px-2.5 pb-3">
+    <nav className="w-full flex-1 space-y-3 overflow-y-auto px-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       {visible.map((g) => (
         <div key={g.label}>
           <div className="px-3 pt-4 pb-1 text-[11px] font-semibold tracking-wider text-neutral-400 uppercase dark:text-neutral-600">{g.label}</div>
@@ -99,6 +100,7 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
   const [open, setOpen] = useState(false)
   const [changingPassword, setChangingPassword] = useState(false)
   const [showingTokens, setShowingTokens] = useState(false)
+  const [showingSessions, setShowingSessions] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -109,7 +111,7 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
 
   if (!user) return null
   const item =
-    'w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100'
+    'min-h-11 w-full rounded-lg px-2.5 py-1.5 text-left text-sm font-medium md:min-h-0 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-100'
 
   return (
     <div className="relative">
@@ -128,7 +130,7 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
       {open && (
         <>
           <button type="button" aria-label="Close menu" className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-50 mt-2 w-56 rounded-xl border border-neutral-200 bg-white p-3 shadow-lg ring-1 ring-black/5 dark:border-neutral-700 dark:bg-neutral-800 dark:ring-white/10">
+          <div className="absolute right-0 z-50 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-neutral-200 bg-white p-3 shadow-lg ring-1 ring-black/5 dark:border-neutral-700 dark:bg-neutral-800 dark:ring-white/10">
             <div className="flex items-center justify-between">
               <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{user.username}</span>
               {user.groups?.length > 0 && (
@@ -171,6 +173,17 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
               <button
                 type="button"
                 className={item}
+                title="Where you're signed in; sign out other browsers and CLIs"
+                onClick={() => {
+                  setOpen(false)
+                  setShowingSessions(true)
+                }}
+              >
+                Sessions
+              </button>
+              <button
+                type="button"
+                className={item}
                 title="A kubeconfig for the management cluster that runs 'hyve token'; it holds no secret"
                 onClick={async () => {
                   setOpen(false)
@@ -202,12 +215,76 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
       )}
       {changingPassword && <ChangePassword username={user.username} onClose={() => setChangingPassword(false)} />}
       {showingTokens && <ApiTokens user={user.username} own onClose={() => setShowingTokens(false)} />}
+      {showingSessions && <Sessions user={user.username} own onClose={() => setShowingSessions(false)} />}
+    </div>
+  )
+}
+
+// The sidebar on a phone: a drawer over the page, from the header's menu
+// button. It closes on a link, Escape, or a tap beside it; focus goes into
+// it on opening, stays in it, and returns to the menu button on closing.
+function Drawer({ onClose, opener }: { onClose: () => void; opener: RefObject<HTMLButtonElement | null> }) {
+  const panel = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = panel.current
+    const back = opener.current
+    el?.querySelector<HTMLElement>('button, a')?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Tab' || !el) return
+      const all = el.querySelectorAll<HTMLElement>('button, a[href]')
+      const first = all[0]
+      const last = all[all.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last?.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    const root = document.documentElement
+    const was = root.style.overflow
+    root.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      root.style.overflow = was
+      back?.focus()
+    }
+  }, [onClose, opener])
+  return (
+    <div className="fixed inset-0 z-40 md:hidden">
+      <button type="button" aria-label="Close menu" tabIndex={-1} className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Menu"
+        className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col overflow-y-auto border-r border-neutral-200 bg-white pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <div className="flex items-center justify-between p-2 pl-3">
+          <Logo />
+          <button
+            type="button"
+            aria-label="Close menu"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            onClick={onClose}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+        <Sidebar onNavigate={onClose} />
+      </div>
     </div>
   )
 }
 
 export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const menuButton = useRef<HTMLButtonElement>(null)
+  // Stable, so the drawer's focus handling runs once per opening.
+  const closeMenu = useCallback(() => setMobileOpen(false), [])
   const [error, setError] = useState('')
   const location = useLocation()
   const shell = useShellTarget()
@@ -216,19 +293,24 @@ export function AppShell() {
     setError('')
   }, [location.pathname])
 
+  // Installed (standalone), the page runs under the status bar and beside
+  // a landscape notch: the header and main area pad by the safe-area
+  // insets (0 in a browser tab).
   return (
-    <div className="flex min-h-screen flex-col bg-neutral-50 dark:bg-neutral-950">
-      <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 bg-white px-4 sm:px-6 dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="flex items-center gap-3">
+    <div className="flex min-h-dvh flex-col bg-neutral-50 dark:bg-neutral-950">
+      <header className="sticky top-0 z-30 flex h-[var(--app-header)] shrink-0 items-center justify-between border-b border-neutral-200 bg-white pt-[env(safe-area-inset-top)] pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1.5rem,env(safe-area-inset-right))] sm:pl-[max(1.5rem,env(safe-area-inset-left))] dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex items-center gap-1">
           <button
+            ref={menuButton}
             type="button"
             aria-label="Open menu"
+            aria-expanded={mobileOpen}
             onClick={() => setMobileOpen(true)}
-            className="-ml-1.5 rounded-lg p-1.5 text-neutral-600 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="-ml-2.5 flex h-11 w-11 items-center justify-center rounded-lg text-neutral-600 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
             <Icon name="menu" size={22} />
           </button>
-          <Link to="/" className="hidden md:block">
+          <Link to="/" className="flex items-center" aria-label="hyve home">
             <Logo />
           </Link>
         </div>
@@ -241,31 +323,15 @@ export function AppShell() {
         </div>
       </header>
 
-      {mobileOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
-          <button type="button" aria-label="Close menu" className="absolute inset-0 bg-black/40" onClick={() => setMobileOpen(false)} />
-          <div className="absolute inset-y-0 left-0 w-72 max-w-[85vw] overflow-y-auto border-r border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex items-center justify-between p-2 pl-3">
-              <Logo />
-              <button
-                type="button"
-                aria-label="Close menu"
-                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                onClick={() => setMobileOpen(false)}
-              >
-                <Icon name="close" />
-              </button>
-            </div>
-            <Sidebar onNavigate={() => setMobileOpen(false)} />
-          </div>
-        </div>
-      )}
+      {mobileOpen && <Drawer opener={menuButton} onClose={closeMenu} />}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-60 shrink-0 border-r border-neutral-200 bg-white md:flex dark:border-neutral-800 dark:bg-neutral-900">
+        <aside className="sticky top-[var(--app-header)] hidden h-[calc(100dvh-var(--app-header))] w-60 shrink-0 border-r border-neutral-200 bg-white pl-[env(safe-area-inset-left)] md:flex dark:border-neutral-800 dark:bg-neutral-900">
           <Sidebar />
         </aside>
-        <main className={`min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8 ${shell ? 'pb-[calc(40vh+4rem)]' : ''}`}>
+        <main
+          className={`min-w-0 flex-1 py-5 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] sm:py-6 sm:pr-6 sm:pl-6 lg:px-8 ${shell ? 'pb-[calc(40vh+4rem)]' : 'pb-[max(1.25rem,env(safe-area-inset-bottom))]'}`}
+        >
           {/* The explorer and YAML pages use a wide screen's width. */}
           <div className={`mx-auto ${/\/explorer$|^\/yaml\//.test(location.pathname) ? 'max-w-[1600px]' : 'max-w-6xl'}`}>
             <ErrorBanner error={error} />

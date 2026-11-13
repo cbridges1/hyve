@@ -121,36 +121,38 @@ export default function ProviderPage() {
             {!classes.length ? (
               <EmptyState>It doesn't publish a ClusterClass here. Add one with 'hyve provider add {p.name} --clusterclass NAME'.</EmptyState>
             ) : (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Class</th>
-                    <th>Namespace</th>
-                    <th>Templates</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {classes.map((c) => {
-                    const on = templates.filter((t) => t.spec?.clusterClassRef?.name === c.metadata.name && t.metadata.namespace === c.metadata.namespace)
-                    return (
-                      <tr key={`${c.metadata.namespace}/${c.metadata.name}`}>
-                        <td>{c.metadata.name}</td>
-                        <td>{c.metadata.namespace}</td>
-                        <td>
-                          {on.length
-                            ? on.map((t, i) => (
-                                <span key={t.metadata.name}>
-                                  {i > 0 && ', '}
-                                  <Link to={paths.template(t.metadata.namespace!, t.metadata.name)}>{t.metadata.name}</Link>
-                                </span>
-                              ))
-                            : '-'}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Class</th>
+                      <th>Namespace</th>
+                      <th>Templates</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {classes.map((c) => {
+                      const on = templates.filter((t) => t.spec?.clusterClassRef?.name === c.metadata.name && t.metadata.namespace === c.metadata.namespace)
+                      return (
+                        <tr key={`${c.metadata.namespace}/${c.metadata.name}`}>
+                          <td>{c.metadata.name}</td>
+                          <td>{c.metadata.namespace}</td>
+                          <td>
+                            {on.length
+                              ? on.map((t, i) => (
+                                  <span key={t.metadata.name}>
+                                    {i > 0 && ', '}
+                                    <Link to={paths.template(t.metadata.namespace!, t.metadata.name)}>{t.metadata.name}</Link>
+                                  </span>
+                                ))
+                              : '-'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </Card>
 

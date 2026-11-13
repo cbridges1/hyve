@@ -3,9 +3,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
+import { AppStatus } from './components/AppStatus'
 import { Loading } from './components/ui'
-import { auth, setUnauthorizedHandler } from './lib/api'
+import { ApiError, auth, setUnauthorizedHandler } from './lib/api'
 import { stopLive } from './lib/live'
+import { setUnreachable } from './lib/pwa'
 import { paths } from './lib/routes'
 import { getSession, rememberCLIServer, setSession, useSession } from './lib/session'
 import { startSession } from './lib/start'
@@ -56,7 +58,10 @@ async function boot() {
     // sign-in page shows.
     await auth.me().catch((e) => auth.local().catch(() => Promise.reject(e)))
     await startSession()
-  } catch {
+  } catch (e) {
+    // No answer at all (not an HTTP error): the installed app opened its
+    // stored shell without the host.
+    if (!(e instanceof ApiError)) setUnreachable(true)
     setSession({ user: null })
   }
 }
@@ -93,6 +98,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <AppStatus />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/cli-login" element={<CliLogin />} />

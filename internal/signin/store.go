@@ -354,7 +354,7 @@ func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User, groups 
 			Namespace:       s.Namespace,
 			Name:            sessionSecretName(id),
 			Labels:          map[string]string{labelSessionFor: u.Name},
-			Annotations:     opts.annotations,
+			Annotations:     annotateClient(ctx, opts.annotations),
 			OwnerReferences: []metav1.OwnerReference{ownerRef(u)},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -415,9 +415,7 @@ func (s *Store) Lookup(ctx context.Context, token string) (Identity, error) {
 		return Identity{}, ErrInvalidSession
 	}
 	ident := Identity{Username: u.Name, Groups: append([]string(nil), u.Spec.Groups...), SessionID: id, Kind: sessionKind(&sec), ExpiresAt: expiresAt}
-	if ident.Kind == KindToken {
-		s.noteUse(&sec)
-	}
+	s.noteUse(&sec)
 	for _, g := range strings.Split(string(sec.Data[keyGroups]), "\n") {
 		if g != "" && !slices.Contains(ident.Groups, g) {
 			ident.Groups = append(ident.Groups, g)

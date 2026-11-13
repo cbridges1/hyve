@@ -167,42 +167,44 @@ export default function Access() {
       {loading ? (
         <Loading />
       ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Subject</th>
-              <th>Role</th>
-              <th>Environment</th>
-              <th>On</th>
-              <th>Ready</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {!shown.length && (
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
               <tr>
-                <td colSpan={6} className="text-muted">
-                  No grants here.
-                </td>
+                <th>Subject</th>
+                <th>Role</th>
+                <th>Environment</th>
+                <th>On</th>
+                <th>Ready</th>
+                <th />
               </tr>
-            )}
-            {shown.map((g) => (
-              <tr key={g.id}>
-                <td>{g.subject}</td>
-                <td>{g.role}</td>
-                <td>{g.ns}</td>
-                <td>{g.on}</td>
-                <td>{g.ready}</td>
-                <td className="text-right whitespace-nowrap">
-                  <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(g)}>
-                    View
-                  </button>
-                  <ConfirmButton label="Revoke" confirm={`Revoke ${g.role} for ${g.subject}?`} onConfirm={() => revoke(g)} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {!shown.length && (
+                <tr>
+                  <td colSpan={6} className="text-muted">
+                    No grants here.
+                  </td>
+                </tr>
+              )}
+              {shown.map((g) => (
+                <tr key={g.id}>
+                  <td>{g.subject}</td>
+                  <td>{g.role}</td>
+                  <td>{g.ns}</td>
+                  <td>{g.on}</td>
+                  <td>{g.ready}</td>
+                  <td className="text-right whitespace-nowrap">
+                    <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(g)}>
+                      View
+                    </button>
+                    <ConfirmButton label="Revoke" confirm={`Revoke ${g.role} for ${g.subject}?`} onConfirm={() => revoke(g)} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {adding && (

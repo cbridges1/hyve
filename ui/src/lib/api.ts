@@ -4,6 +4,8 @@
 // every request carries X-Hyve-UI, which the host requires of
 // cookie-authenticated writes.
 
+import { clearAppCaches } from './pwa'
+
 export const LOCAL = '/k8s/clusters/local'
 
 export class ApiError extends Error {
@@ -85,6 +87,27 @@ export const tokens = {
   revoke: (user: string, name: string) => request('DELETE', `/v1/tokens/${encodeURIComponent(user)}/${encodeURIComponent(name)}`),
 }
 
+export type SessionInfo = {
+  user: string
+  id: string
+  kind: string
+  userAgent?: string
+  address?: string
+  createdAt: string
+  expiresAt: string
+  lastUsed?: string
+  current?: boolean
+}
+
+// Signed-in sessions (browsers, CLIs, CI jobs). Your own are yours to
+// manage; another user's take the users/sessions right (admins).
+export const sessions = {
+  list: (user?: string) => request<SessionInfo[]>('GET', `/v1/sessions${user ? `?user=${encodeURIComponent(user)}` : ''}`),
+  revoke: (user: string, id: string) => request('DELETE', `/v1/sessions/${encodeURIComponent(user)}/${encodeURIComponent(id)}`),
+  // Every session of user's but this one.
+  revokeOthers: (user: string) => request('DELETE', `/v1/sessions/${encodeURIComponent(user)}`),
+}
+
 export type SignedIn = { token?: string; expiresAt?: string; userId?: string }
 
 // Sign-in.
@@ -102,7 +125,8 @@ export const auth = {
   // Local mode: the host signs a browser on its machine in without a
   // password (404 elsewhere).
   local: () => request('POST', '/v1-public/local-session', {}, { quiet401: true }),
-  logout: () => request('POST', '/v1/logout', {}, { quiet401: true }),
+  // Signing out also clears what the app's service worker stored.
+  logout: () => request('POST', '/v1/logout', {}, { quiet401: true }).finally(clearAppCaches),
   password: (username: string, currentPassword: string, newPassword: string) =>
     request('PUT', `/v1/users/${encodeURIComponent(username)}/password`, { currentPassword, newPassword }),
   // Emails a user a link and code to set their own password (onboarding,

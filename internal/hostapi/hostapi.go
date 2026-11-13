@@ -72,6 +72,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/hyve/render", a.authed(a.render))
 	mux.HandleFunc("POST /v1/hyve/import", a.authed(a.importTemplates))
 	mux.HandleFunc("POST /v1/hyve/clusters/import", a.authed(a.importCluster))
+	mux.HandleFunc("POST /v1/hyve/clusters/{namespace}/{name}/release", a.authed(a.releaseCluster))
 	mux.HandleFunc("GET /v1/hyve/watch", a.authed(a.watchStream))
 	mux.HandleFunc("GET /v1/hyve/deployments/{namespace}/{kind}/{name}/progress", a.authed(a.deploymentProgress))
 	if a.Shells != nil {

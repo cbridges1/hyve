@@ -165,15 +165,17 @@ export function PageHeader({ title, children, subtitle }: { title: ReactNode; ch
 // negative top margin takes in the main area's top padding, so it looks
 // the same before it sticks. The gap below it is its own padding (mb-0
 // overrides the page's space-y, which would add to it), so what follows
-// never starts under it.
+// never starts under it. On a phone it scrolls away with the page: kept, it
+// would take much of the screen.
 export function StickyHeader({ children }: { children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = box.current
     if (!el) return
     const root = document.documentElement
-    // 3.5rem: the app's header (AppShell), which this sits under.
-    const update = () => root.style.setProperty('--sticky-header', `calc(3.5rem + ${el.offsetHeight}px)`)
+    // --app-header: the app's header (AppShell), which this sits under.
+    const update = () =>
+      root.style.setProperty('--sticky-header', getComputedStyle(el).position === 'sticky' ? `calc(var(--app-header) + ${el.offsetHeight}px)` : 'var(--app-header)')
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)
@@ -185,7 +187,7 @@ export function StickyHeader({ children }: { children: ReactNode }) {
   return (
     <div
       ref={box}
-      className="sticky top-14 z-20 -mt-5 mb-0 space-y-4 bg-neutral-50 pt-5 pb-4 sm:-mt-6 sm:pt-6 dark:bg-neutral-950"
+      className="z-20 -mt-5 md:sticky md:top-[var(--app-header)] mb-0 space-y-4 bg-neutral-50 pt-5 pb-4 sm:-mt-6 sm:pt-6 dark:bg-neutral-950"
     >
       {children}
     </div>
@@ -195,12 +197,15 @@ export function StickyHeader({ children }: { children: ReactNode }) {
 // Tabs that are links (a detail page's sections).
 export function Tabs({ tabs, className = 'mb-4' }: { tabs: { label: string; to: string; active: boolean }[]; className?: string }) {
   return (
-    <div className={`flex gap-1 border-b border-neutral-200 dark:border-neutral-800 ${className}`}>
+    // A phone scrolls them sideways rather than wrapping; the rule under
+    // them is a shadow, which the scrolling box doesn't clip as it would
+    // the active tab's border over a border of its own.
+    <div className={`flex gap-1 overflow-x-auto shadow-[inset_0_-1px_0] shadow-neutral-200 [scrollbar-width:none] dark:shadow-neutral-800 ${className}`}>
       {tabs.map((t) => (
         <Link
           key={t.to}
           to={t.to}
-          className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium no-underline hover:no-underline ${
+          className={`shrink-0 border-b-2 px-3 py-2.5 text-sm font-medium whitespace-nowrap no-underline hover:no-underline ${
             t.active
               ? 'border-neutral-900 text-neutral-900 dark:border-white dark:text-white'
               : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'

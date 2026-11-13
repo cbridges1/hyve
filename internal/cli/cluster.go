@@ -37,7 +37,7 @@ func ClusterCmd() *cobra.Command {
 	AddGlobalFlags(cmd)
 	addEnvFlag(cmd)
 	addTemplateNSFlag(cmd)
-	cmd.AddCommand(clusterCreateCmd(), clusterImportCmd(), clusterAdoptCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(),
+	cmd.AddCommand(clusterCreateCmd(), clusterImportCmd(), clusterAdoptCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(), clusterReleaseCmd(),
 		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterUpgradeCmd(), clusterDeploymentsCmd(), clusterResourceCmd())
 	return cmd
 }
@@ -580,12 +580,19 @@ func clusterShowCmd() *cobra.Command {
 }
 
 func clusterDeleteCmd() *cobra.Command {
-	var wait bool
+	var wait, yes bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "delete NAME",
 		Short: "Delete a cluster and what Fleet deployed for it",
-		Args:  cobra.ExactArgs(1),
+		Long: `Deletes a cluster: its provider deletes the cluster itself (unless its
+template retains it), and Fleet what it deployed for it. An imported
+cluster is detached instead, and keeps running. To stop managing a
+cluster hyve made or adopted and keep it running, use 'hyve cluster
+release'.
+
+Asks you to type the cluster's name; --yes doesn't (scripts).`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := newSession()
 			if err != nil {
@@ -599,6 +606,13 @@ func clusterDeleteCmd() *cobra.Command {
 			ri := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(ns)
 			c, err := s.getCluster(ctx, name)
 			if err != nil {
+				return err
+			}
+			what := "delete it and the cluster itself"
+			if clusters.Origin(c) == clusters.OriginImported {
+				what = "detach it (it keeps running)"
+			}
+			if err := confirmName(cmd, name, what, yes); err != nil {
 				return err
 			}
 			if err := ri.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
@@ -627,6 +641,7 @@ func clusterDeleteCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&wait, "wait", true, "wait until the cluster is gone")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "don't ask to type the cluster's name")
 	cmd.Flags().DurationVar(&timeout, "timeout", 15*time.Minute, "how long to wait")
 	return cmd
 }

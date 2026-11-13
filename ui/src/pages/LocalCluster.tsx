@@ -68,7 +68,7 @@ export default function LocalCluster() {
               <h1 className="mb-0 truncate">local</h1>
               <Pill tone="info" label="Host" title="hyve's management cluster" />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 className="btn btn-secondary"

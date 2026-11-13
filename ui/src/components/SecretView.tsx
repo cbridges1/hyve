@@ -64,46 +64,48 @@ export function SecretView({ namespace, name, api, onClose }: { namespace: strin
       ) : (
         <>
           <div className="text-muted mb-2.5 text-sm">Type: {secret?.type || 'Opaque'}</div>
-          <table className="table mb-4">
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Value</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {!keys.length && (
+          <div className="overflow-x-auto mb-4">
+            <table className="table">
+              <thead>
                 <tr>
-                  <td colSpan={3} className="text-muted">
-                    This Secret has no keys.
-                  </td>
+                  <th>Key</th>
+                  <th>Value</th>
+                  <th />
                 </tr>
-              )}
-              {keys.map((k) => (
-                <tr key={k}>
-                  <td className="align-middle!">
-                    <code>{k}</code>
-                  </td>
-                  <td className="align-middle!">
-                    {revealed[k] ? (
-                      <pre className="m-0 max-h-[200px] overflow-auto font-mono text-xs break-all whitespace-pre-wrap">{decode(secret!.data![k])}</pre>
-                    ) : (
-                      <span>••••••••</span>
-                    )}
-                  </td>
-                  <td className="text-right align-middle! whitespace-nowrap">
-                    <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setRevealed({ ...revealed, [k]: !revealed[k] })}>
-                      {revealed[k] ? 'Hide' : 'Show'}
-                    </button>
-                    <button type="button" className="btn btn-tertiary btn-sm" onClick={() => copy(k)}>
-                      {copied === k ? 'Copied' : 'Copy'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {!keys.length && (
+                  <tr>
+                    <td colSpan={3} className="text-muted">
+                      This Secret has no keys.
+                    </td>
+                  </tr>
+                )}
+                {keys.map((k) => (
+                  <tr key={k}>
+                    <td className="align-middle!">
+                      <code>{k}</code>
+                    </td>
+                    <td className="align-middle!">
+                      {revealed[k] ? (
+                        <pre className="m-0 max-h-[200px] overflow-auto font-mono text-xs break-all whitespace-pre-wrap">{decode(secret!.data![k])}</pre>
+                      ) : (
+                        <span>••••••••</span>
+                      )}
+                    </td>
+                    <td className="text-right align-middle! whitespace-nowrap">
+                      <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setRevealed({ ...revealed, [k]: !revealed[k] })}>
+                        {revealed[k] ? 'Hide' : 'Show'}
+                      </button>
+                      <button type="button" className="btn btn-tertiary btn-sm" onClick={() => copy(k)}>
+                        {copied === k ? 'Copied' : 'Copy'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </ViewDialog>

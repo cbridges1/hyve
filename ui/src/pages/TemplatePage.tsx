@@ -95,39 +95,41 @@ function DeployedHere({ template }: { template: Obj }) {
       ) : !mine.length ? (
         <EmptyState>Nothing yet: a Deployment aimed at this template reaches every cluster made from it, now and later.</EmptyState>
       ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Deployment</th>
-              <th>Source</th>
-              <th>Delivered to</th>
-              <th>Clusters ready</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mine.map((d) => {
-              const { ready, state } = readiness(d)
-              return (
-                <tr key={`${d.namespace}/${d.name}`}>
-                  <td>
-                    <Link to={paths.deployment(d.namespace, d.name)}>{d.name}</Link>
-                  </td>
-                  <td className="max-w-80 break-all">{d.source}</td>
-                  <td>
-                    <div className="flex flex-wrap gap-1">
-                      {d.targets.map((t) => (
-                        <Pill key={targetKey(t)} tone={t.kind === 'template' && t.name === name ? 'info' : 'idle'} label={targetLabel(t)} />
-                      ))}
-                    </div>
-                  </td>
-                  <td>
-                    {ready || '-'} {state && <Pill tone={stateTone(state)} label={state} />}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Deployment</th>
+                <th>Source</th>
+                <th>Delivered to</th>
+                <th>Clusters ready</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mine.map((d) => {
+                const { ready, state } = readiness(d)
+                return (
+                  <tr key={`${d.namespace}/${d.name}`}>
+                    <td>
+                      <Link to={paths.deployment(d.namespace, d.name)}>{d.name}</Link>
+                    </td>
+                    <td className="max-w-80 break-all">{d.source}</td>
+                    <td>
+                      <div className="flex flex-wrap gap-1">
+                        {d.targets.map((t) => (
+                          <Pill key={targetKey(t)} tone={t.kind === 'template' && t.name === name ? 'info' : 'idle'} label={targetLabel(t)} />
+                        ))}
+                      </div>
+                    </td>
+                    <td>
+                      {ready || '-'} {state && <Pill tone={stateTone(state)} label={state} />}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   )

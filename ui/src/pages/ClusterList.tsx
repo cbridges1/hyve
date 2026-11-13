@@ -3,9 +3,10 @@
 // local, comes first for whoever can reach it, whatever the environment:
 // it's in none.
 import type { ReactNode } from "react";
-import { Link, useNavigate, type NavigateFunction } from "react-router-dom";
+import { Link, useLocation, useNavigate, type NavigateFunction } from "react-router-dom";
 import { EnvironmentPicker } from "../components/EnvironmentPicker";
 import {
+  Banner,
   ErrorBanner,
   Loading,
   PageHeader,
@@ -24,6 +25,9 @@ import { useSession } from "../lib/session";
 import { ANNOTATIONS, LABELS, TYPES } from "../lib/types";
 
 export default function ClusterList() {
+  // What a release on the cluster's page said.
+  const message = (useLocation().state as { message?: string } | null)
+    ?.message;
   const [environment] = useEnvironment();
   const navigate = useNavigate();
   const { canExplore } = useSession();
@@ -109,6 +113,7 @@ export default function ClusterList() {
           New cluster
         </Link>
       </PageHeader>
+      {message && <Banner tone="success">{message}</Banner>}
       <ErrorBanner error={error} />
       {loading ? (
         <Loading />

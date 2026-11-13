@@ -24,33 +24,35 @@ export default function GenericList() {
         )}
       </PageHeader>
       <ErrorBanner error={error} />
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            {schema?.namespaced && <th>Namespace</th>}
-            <th>Age</th>
-          </tr>
-        </thead>
-        <tbody>
-          {!rows?.length && (
+      <div className="overflow-x-auto">
+        <table className="table">
+          <thead>
             <tr>
-              <td colSpan={3} className="text-muted">
-                Nothing here yet.
-              </td>
+              <th>Name</th>
+              {schema?.namespaced && <th>Namespace</th>}
+              <th>Age</th>
             </tr>
-          )}
-          {rows?.map((r) => (
-            <tr key={idOf(r)}>
-              <td>
-                <Link to={detailPath(type, r)}>{r.metadata.name}</Link>
-              </td>
-              {schema?.namespaced && <td>{r.metadata.namespace}</td>}
-              <td>{age(r.metadata.creationTimestamp)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {!rows?.length && (
+              <tr>
+                <td colSpan={3} className="text-muted">
+                  Nothing here yet.
+                </td>
+              </tr>
+            )}
+            {rows?.map((r) => (
+              <tr key={idOf(r)}>
+                <td>
+                  <Link to={detailPath(type, r)}>{r.metadata.name}</Link>
+                </td>
+                {schema?.namespaced && <td>{r.metadata.namespace}</td>}
+                <td>{age(r.metadata.creationTimestamp)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
