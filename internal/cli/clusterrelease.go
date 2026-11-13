@@ -77,9 +77,9 @@ Asks you to type the cluster's name; --yes doesn't (scripts).`,
 				return err
 			}
 			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "Releasing %s would remove from hyve (nothing on the cluster but hyve's and Fleet's agents):\n", name)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Releasing %s would remove from hyve (nothing on the cluster but hyve's and Fleet's agents):\n", name)
 				for _, r := range res.Removed {
-					fmt.Fprintln(cmd.OutOrStdout(), "  "+r)
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  "+r)
 				}
 				return nil
 			}
@@ -122,7 +122,7 @@ func confirmName(cmd *cobra.Command, name, what string, yes bool) error {
 }
 
 func confirmFrom(cmd *cobra.Command, r io.Reader, name, what string) error {
-	fmt.Fprintf(cmd.ErrOrStderr(), "Type the cluster's name (%s) to %s: ", name, what)
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Type the cluster's name (%s) to %s: ", name, what)
 	line, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err

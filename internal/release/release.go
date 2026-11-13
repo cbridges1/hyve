@@ -221,7 +221,8 @@ func objectsOf(ctx context.Context, kc *kube.Client, c *unstructured.Unstructure
 	}
 	sel := metav1.ListOptions{LabelSelector: importer.ClusterNameLabel + "=" + name}
 	for _, gvr := range res {
-		if !(gvr.Group == "" && gvr.Resource == "secrets") && !strings.HasSuffix(gvr.Group, "cluster.x-k8s.io") {
+		secrets := gvr.Group == "" && gvr.Resource == "secrets"
+		if !secrets && !strings.HasSuffix(gvr.Group, "cluster.x-k8s.io") {
 			continue
 		}
 		if gvr == clusters.ClusterGVR || gvr.Resource == "clusterclasses" {
