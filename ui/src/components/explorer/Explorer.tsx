@@ -426,6 +426,15 @@ function ResourceTable({
     }
   }
 
+  // A row (a card, on a phone) opens its object when clicked anywhere,
+  // except on its own links or while selecting text to copy it.
+  const openRow = (e: { target: EventTarget; metaKey: boolean; ctrlKey: boolean }, md: TableRow['object']['metadata']) => {
+    if ((e.target as HTMLElement).closest('a, button')) return
+    if (window.getSelection()?.toString()) return
+    if (e.metaKey || e.ctrlKey) window.open(hrefFor(md.name, md.namespace), '_blank')
+    else navigate(hrefFor(md.name, md.namespace))
+  }
+
   const nameBlock = (r: TableRow) => {
     const md = r.object.metadata
     return (
@@ -543,10 +552,11 @@ function ResourceTable({
               </div>
             ) : (
               <>
-                {/* Phones: a card per object, so nothing scrolls sideways. */}
-                <ul className="divide-y divide-neutral-100 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm md:hidden dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+                {/* Phones: a card per object (.card-list), so nothing
+                    scrolls sideways. */}
+                <ul className="card-list md:hidden">
                   {pageRows.map((r) => (
-                    <li key={`${r.object.metadata.namespace}/${r.object.metadata.name}`} className="px-4 py-3">
+                    <li key={`${r.object.metadata.namespace}/${r.object.metadata.name}`} className="cursor-pointer" onClick={(e) => openRow(e, r.object.metadata)}>
                       {nameBlock(r)}
                       {otherCols.length > 0 && (
                         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
@@ -585,12 +595,7 @@ function ResourceTable({
                           <tr
                             key={`${md.namespace}/${md.name}`}
                             className="cursor-pointer"
-                            onClick={(e) => {
-                              // Not when selecting text to copy it.
-                              if (window.getSelection()?.toString()) return
-                              if (e.metaKey || e.ctrlKey) window.open(hrefFor(md.name, md.namespace), '_blank')
-                              else navigate(hrefFor(md.name, md.namespace))
-                            }}
+                            onClick={(e) => openRow(e, md)}
                           >
                             <td>{nameBlock(r)}</td>
                             {otherCols.map((c) => (
