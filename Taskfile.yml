@@ -72,6 +72,13 @@ tasks:
     desc: Run go vet
     cmd: go vet ./...
 
+  lint:
+    desc: Run golangci-lint as CI does, on what's changed since origin/v2 (CI checks only new issues)
+    vars:
+      # Keep in step with .github/workflows/ci.yml.
+      GOLANGCI_LINT: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+    cmd: go run {{.GOLANGCI_LINT}} run --timeout=10m --new-from-rev=origin/v2 {{.CLI_ARGS}}
+
   tidy:
     desc: Tidy go modules
     cmd: go mod tidy
@@ -85,5 +92,5 @@ tasks:
         platforms: [linux, darwin]
 
   check:
-    desc: Run vet and tests
-    deps: [vet, test]
+    desc: Run vet, lint and tests
+    deps: [vet, lint, test]

@@ -62,7 +62,7 @@ openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 -
 
 step "installing hyve (CAPI and Fleet CRDs only; no providers needed)"
 export KUBECONFIG="$work/mgmt.kubeconfig"
-curl -sSfL https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.12.11/core-components.yaml \
+curl -sSfL --retry 5 --retry-all-errors https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.12.11/core-components.yaml \
   | python3 -c '
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind") == "CustomResourceDefinition" and d["metadata"]["name"] in ("clusters.cluster.x-k8s.io", "clusterclasses.cluster.x-k8s.io")]

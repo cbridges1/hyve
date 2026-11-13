@@ -101,6 +101,7 @@ jobs:
       # `golangci-lint run ./...` is clean.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
+          # Keep in step with Taskfile.yml's lint task.
           version: v2.12.2
           only-new-issues: true
           args: --timeout=10m
@@ -162,7 +163,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install k3d
-        run: curl -fsSL "https://raw.githubusercontent.com/k3d-io/k3d/$K3D_VERSION/install.sh" | TAG="$K3D_VERSION" bash
+        # Retried: raw.githubusercontent.com answers 5xx now and then.
+        run: curl -fsSL --retry 5 --retry-all-errors "https://raw.githubusercontent.com/k3d-io/k3d/$K3D_VERSION/install.sh" | TAG="$K3D_VERSION" bash
       - name: Agent test
         run: hack/e2e-agent.sh
 
@@ -223,7 +225,7 @@ jobs:
         run: |
           set -euo pipefail
           tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$tarball" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
