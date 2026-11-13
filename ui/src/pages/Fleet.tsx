@@ -195,11 +195,16 @@ export default function Fleet() {
         )}
       </div>
       <ErrorBanner error={error} />
-      <ErrorBanner error={act.error} />
+      {/* While adding, the dialog shows it. */}
+      {!adding && <ErrorBanner error={act.error} />}
       {cat.value === 'groups' && adding && (
         <NewGroup
           busy={act.busy}
-          onCancel={() => setAdding(false)}
+          error={act.error}
+          onCancel={() => {
+            setAdding(false)
+            act.setError('')
+          }}
           onCreate={(name, labels) =>
             act.run(async () => {
               await save(CLUSTER_GROUP, newObject(CLUSTER_GROUP, { metadata: { name, namespace: DEFAULT_TEMPLATE_NAMESPACE }, spec: { selector: { matchLabels: labels } } }))

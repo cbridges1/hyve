@@ -1,9 +1,12 @@
-// Adds a Cluster API provider: 'hyve provider add'. The host runs the
-// CLI's own code (the Cluster API Operator, or local mode's manifests).
+// Adds a Cluster API provider, in a dialog as other things are made:
+// 'hyve provider add'. The host runs the CLI's own code (the Cluster API
+// Operator, or local mode's manifests). The dialog closes only from its
+// buttons, since it may hold typed credentials.
 import { useState, type ChangeEvent } from 'react'
 import { useAction } from '../lib/hooks'
 import { host } from '../lib/kube'
-import { Card, ErrorBanner } from './ui'
+import { Modal } from './Modal'
+import { ErrorBanner } from './ui'
 import { SelectField, TextField } from './form'
 
 const TYPES = ['infrastructure', 'bootstrap', 'controlPlane', 'core', 'addon', 'ipam', 'runtimeExtension']
@@ -80,7 +83,7 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
     })
 
   return (
-    <Card title="Add provider" className="mb-5">
+    <Modal title="Add provider" onClose={onClose} wide persistent>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <TextField label="Name" required placeholder="docker, aws, civo..." value={name} onChange={setName} />
         <SelectField
@@ -140,14 +143,14 @@ export function ProviderAdd({ onClose, onAdded }: { onClose: () => void; onAdded
         Add variable
       </button>
       <ErrorBanner error={act.error} />
-      <div className="flex gap-2.5">
+      <div className="flex justify-end gap-2">
+        <button type="button" className="btn btn-tertiary" onClick={onClose}>
+          Cancel
+        </button>
         <button type="button" className="btn btn-primary" disabled={act.busy} onClick={submit}>
           {act.busy ? 'Adding…' : 'Add'}
         </button>
-        <button type="button" className="btn btn-secondary" onClick={onClose}>
-          Cancel
-        </button>
       </div>
-    </Card>
+    </Modal>
   )
 }

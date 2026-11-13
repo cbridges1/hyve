@@ -8,7 +8,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApplyYaml } from '../components/ApplyYaml'
 import { RadioGroup, SelectField, TextField } from '../components/form'
-import { Banner, Card, ConfirmButton, EmptyState, ErrorBanner, Loading, PageHeader } from '../components/ui'
+import { Modal } from '../components/Modal'
+import { Banner, ConfirmButton, EmptyState, ErrorBanner, Loading, PageHeader } from '../components/ui'
 import { useAction, useLoad } from '../lib/hooks'
 import { can, host, idOf, remove, type Obj } from '../lib/kube'
 import { classesOf, loadProviders, operatorObject, providerObjects, type Provider } from '../lib/providers'
@@ -192,8 +193,9 @@ const MODES = [
   { value: 'yaml', label: 'From YAML' },
 ]
 
-// Adding a ClusterClass: one a provider publishes beside its components
-// (named), a file's URL, or YAML (pasted, in a dialog).
+// Adding a ClusterClass, in a dialog as other things are made: one a
+// provider publishes beside its components (named), a file's URL, or YAML
+// (the Apply YAML dialog).
 function AddClass({
   providers,
   urls,
@@ -234,22 +236,29 @@ function AddClass({
     })
 
   return (
-    <Card title="Add ClusterClass" className="mb-5">
+    <Modal title="Add ClusterClass" onClose={onClose} persistent={act.busy}>
       <RadioGroup value={mode} onChange={setMode} options={MODES} />
       {mode === 'yaml' ? (
-        <div className="mt-4 flex gap-2.5">
-          <p className="text-muted m-0 flex-1 text-sm">Paste or load a ClusterClass and the provider templates it refers to; they go in the template namespace unless they name another.</p>
-          <button type="button" className="btn btn-primary" onClick={onYaml}>
-            Open YAML editor
-          </button>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-        </div>
-      ) : (
         <>
+          <p className="text-muted mt-4 text-sm">Paste or load a ClusterClass and the provider templates it refers to; they go in the template namespace unless they name another.</p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" className="btn btn-tertiary" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" onClick={onYaml}>
+              Open YAML editor
+            </button>
+          </div>
+        </>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            submit()
+          }}
+        >
           <ErrorBanner error={act.error} />
-          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="mt-4 grid grid-cols-1 gap-4">
             {mode === 'provider' ? (
               <>
                 <SelectField
@@ -272,20 +281,20 @@ function AddClass({
                 />
               </>
             ) : (
-              <TextField className="sm:col-span-2" label="URL" required placeholder="https://.../clusterclass-NAME.yaml" value={url} onChange={setUrl} />
+              <TextField label="URL" required placeholder="https://.../clusterclass-NAME.yaml" value={url} onChange={setUrl} autoFocus />
             )}
             <TextField label="Namespace" hint="Where templates build from it." value={namespace} onChange={setNamespace} />
           </div>
-          <div className="mt-4 flex gap-2.5">
-            <button type="button" className="btn btn-primary" disabled={act.busy} onClick={submit}>
-              {act.busy ? 'Adding…' : 'Add'}
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" className="btn btn-tertiary" onClick={onClose}>
               Cancel
             </button>
+            <button type="submit" className="btn btn-primary" disabled={act.busy}>
+              {act.busy ? 'Adding…' : 'Add'}
+            </button>
           </div>
-        </>
+        </form>
       )}
-    </Card>
+    </Modal>
   )
 }
