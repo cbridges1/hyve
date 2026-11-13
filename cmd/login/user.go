@@ -419,6 +419,11 @@ func init() {
 	userEditCmd.Flags().StringVar(&userDisplayName, "display-name", "", "name shown in the UI")
 	userEditCmd.Flags().StringVar(&userEmail, "email", "", `address for password resets and account emails ("" removes it)`)
 	userEditCmd.Flags().StringSliceVar(&userGroups, "group", nil, "the user's groups, replacing the current ones (repeatable)")
+	// Not asked for any more (single sign-on fills it); kept so scripts
+	// that pass it still work.
+	for _, c := range []*cobra.Command{userAddCmd, userEditCmd} {
+		_ = c.Flags().MarkDeprecated("display-name", "users are known by username and email; single sign-on sets a display name from the identity provider")
+	}
 	userAddCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read the initial password from stdin")
 	userAddCmd.Flags().BoolVar(&userNoPasswordChange, "no-password-change", false, "don't make the user change the password at first sign-in")
 	userPasswdCmd.Flags().BoolVar(&userPasswordStdin, "password-stdin", false, "read passwords from stdin: the current one then the new one for your own, just the new one for another user")

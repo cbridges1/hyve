@@ -12,7 +12,8 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiTokens } from '../components/ApiTokens'
 import { Sessions } from '../components/Sessions'
-import { Checkbox, RadioGroup, SelectField, TextField } from '../components/form'
+import { Checkbox, RadioGroup, TextField } from '../components/form'
+import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { Banner, ErrorBanner, Loading, Pill, ConfirmButton, EmptyState } from '../components/ui'
 import { TrustedCI } from '../components/TrustedCI'
@@ -30,7 +31,6 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+$/
 
 type Form = {
   name: string
-  displayName: string
   email: string
   groups: string
   onboard: 'invite' | 'password' | 'service'
@@ -38,20 +38,19 @@ type Form = {
   mustChange: boolean
   // The username follows the email until it's edited.
   nameEdited: boolean
-  // Role per environment ('' for none).
-  access: Record<string, string>
+  // The environments they're given, each once, with a role.
+  access: { env: string; role: string }[]
 }
 
 const emptyForm = (): Form => ({
   name: '',
-  displayName: '',
   email: '',
   groups: '',
   onboard: 'invite',
   password: '',
   mustChange: true,
   nameEdited: false,
-  access: {},
+  access: [],
 })
 
 // A username from an email address's local part: "Ada.Lovelace+x@..." is
@@ -87,19 +86,20 @@ const groupsOf = (s: string) =>
     .map((g) => g.trim())
     .filter(Boolean)
 
-// The spec with these fields set, leaving out the empty ones.
-function withFields(spec: any, f: { displayName: string; email: string; groups: string }) {
-  const { displayName: _d, email: _e, groups: _g, ...rest } = spec || {}
+// The spec with these fields set, leaving out the empty ones. A display
+// name isn't asked for; single sign-on fills it from the identity
+// provider, and it's kept.
+function withFields(spec: any, f: { email: string; groups: string }) {
+  const { email: _e, groups: _g, ...rest } = spec || {}
   const groups = groupsOf(f.groups)
   return {
     ...rest,
-    ...(f.displayName.trim() ? { displayName: f.displayName.trim() } : {}),
     ...(f.email.trim() ? { email: f.email.trim() } : {}),
     ...(groups.length ? { groups } : {}),
   }
 }
 
-type EditForm = { displayName: string; email: string; groups: string }
+type EditForm = { email: string; groups: string }
 
 // The first few of a user's grants, in words (a group's say which group;
 // all of them on hover), and a link to them on Access.
@@ -153,7 +153,7 @@ export default function Users() {
   const [viewing, setViewing] = useState<Obj | null>(null)
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Obj | null>(null)
-  const [editForm, setEditForm] = useState<EditForm>({ displayName: '', email: '', groups: '' })
+  const [editForm, setEditForm] = useState<EditForm>({ email: '', groups: '' })
   const [passwordFor, setPasswordFor] = useState('')
   const [tokensFor, setTokensFor] = useState('')
   const [sessionsFor, setSessionsFor] = useState('')
@@ -186,7 +186,7 @@ export default function Users() {
       return
     }
     const service = f.onboard === 'service'
-    const wanted = Object.entries(f.access).filter(([env, role]) => role && envs.includes(env))
+    const wanted = f.access.filter((a) => a.env && a.role && envs.includes(a.env)).map((a) => [a.env, a.role])
     // Grants follow the user; a failed one leaves the user made, and says
     // so, rather than undoing it.
     const grant = async () => {
@@ -264,7 +264,7 @@ export default function Users() {
 
   function startEdit(u: Obj) {
     setEditing(u)
-    setEditForm({ displayName: u.spec?.displayName || '', email: u.spec?.email || '', groups: (u.spec?.groups || []).join(', ') })
+    setEditForm({ email: u.spec?.email || '', groups: (u.spec?.groups || []).join(', ') })
     setFormError('')
   }
 
@@ -418,32 +418,68 @@ export default function Users() {
               onChange={(v) => set({ email: v, ...(form.nameEdited ? {} : { name: nameFromEmail(v) }) })}
               help={form.onboard === 'service' ? 'Optional for a service user.' : 'Where their invitation, password resets and account emails go.'}
             />
-            <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              <TextField
-                label="Username"
-                value={form.name}
-                onChange={(v) => set({ name: v, nameEdited: true })}
-                help={<>Kubernetes sees them as <code>hyve:{form.name || 'username'}</code>.</>}
-              />
-              <TextField label="Display name" value={form.displayName} onChange={(v) => set({ displayName: v })} />
-            </div>
+            <TextField
+              className="mb-3"
+              label="Username"
+              value={form.name}
+              onChange={(v) => set({ name: v, nameEdited: true })}
+              help={<>Kubernetes sees them as <code>hyve:{form.name || 'username'}</code>.</>}
+            />
             <TextField className="mb-3" label="Groups" value={form.groups} onChange={(v) => set({ groups: v })} placeholder="comma-separated" />
             {envs.length > 0 && (
               <fieldset className="mb-3">
                 <legend className="mb-1 text-sm font-medium">Environment access</legend>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {envs.map((env) => (
-                    <SelectField
-                      key={env}
-                      label={env}
-                      value={form.access[env] || ''}
-                      onChange={(v) => set({ access: { ...form.access, [env]: v } })}
-                      placeholder="No access"
-                      options={ENV_ROLES}
-                    />
-                  ))}
-                </div>
-                <span className="hint">More, such as one cluster or deploying to templates, on Access.</span>
+                {/* Only the environments chosen, each once: a row per grant,
+                    so the dialog stays short however many there are. */}
+                {form.access.map((a, i) => {
+                  const taken = new Set(form.access.filter((_, j) => j !== i).map((x) => x.env))
+                  const setRow = (patch: Partial<{ env: string; role: string }>) =>
+                    set({ access: form.access.map((x, j) => (j === i ? { ...x, ...patch } : x)) })
+                  return (
+                    <div key={i} className="mb-2 flex items-center gap-2">
+                      <select className="min-w-0 flex-1" aria-label="Environment" value={a.env} onChange={(e) => setRow({ env: e.target.value })}>
+                        {envs
+                          .filter((e) => e === a.env || !taken.has(e))
+                          .map((e) => (
+                            <option key={e} value={e}>
+                              {e}
+                            </option>
+                          ))}
+                      </select>
+                      <select className="min-w-0 flex-1" aria-label={`Role in ${a.env}`} value={a.role} onChange={(e) => setRow({ role: e.target.value })}>
+                        {ENV_ROLES.map((r) => (
+                          <option key={r.value} value={r.value}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="btn btn-tertiary btn-sm shrink-0"
+                        aria-label={`Remove access to ${a.env}`}
+                        onClick={() => set({ access: form.access.filter((_, j) => j !== i) })}
+                      >
+                        <Icon name="close" size={16} />
+                      </button>
+                    </div>
+                  )
+                })}
+                {form.access.length < envs.length && (
+                  <button
+                    type="button"
+                    className="btn btn-tertiary btn-sm"
+                    onClick={() => {
+                      const taken = new Set(form.access.map((x) => x.env))
+                      const next = envs.find((e) => !taken.has(e))!
+                      set({ access: [...form.access, { env: next, role: 'env-member' }] })
+                    }}
+                  >
+                    + Add environment access
+                  </button>
+                )}
+                <span className="hint block">
+                  {form.access.length ? '' : 'None yet: they can sign in but reach no clusters. '}More, such as one cluster or deploying to templates, on Access.
+                </span>
               </fieldset>
             )}
             <div className="mb-3">
@@ -500,15 +536,9 @@ export default function Users() {
           <form onSubmit={saveEdit}>
             <TextField
               className="mb-3"
-              label="Display name"
-              value={editForm.displayName}
-              onChange={(v) => setEditForm((f) => ({ ...f, displayName: v }))}
-              autoFocus
-            />
-            <TextField
-              className="mb-3"
               label="Email"
               type="email"
+              autoFocus
               value={editForm.email}
               onChange={(v) => setEditForm((f) => ({ ...f, email: v }))}
               disabled={editing.spec?.provider === 'oidc'}
