@@ -19,7 +19,12 @@ func LocalCmd() *cobra.Command {
 		Long: `Local mode runs a standalone hyve on a K3s cluster in Docker that the CLI
 manages: the same templates and commands as a server, with nothing to run.
 'hyve local up' creates it and signs you in as its admin, as the "local"
-context. CAPD clusters run as containers next to it.`,
+context. CAPD clusters run as containers next to it.
+
+The local cluster runs the CLI's own release: after upgrading the CLI, the
+next local-mode command upgrades it with the settings 'hyve local up' was
+given. A CLI built from source never upgrades it, and one started with
+--image keeps that image.`,
 	}
 	cmd.AddCommand(localUpCmd(), localStatusCmd(), localStopCmd(), localDownCmd(), localSaveCmd(), localRestoreCmd(), localUICmd())
 	return cmd
@@ -75,6 +80,9 @@ func localStatusCmd() *cobra.Command {
 				fmt.Println("running")
 			default:
 				fmt.Println("stopped ('hyve local up' starts it)")
+			}
+			if v := local.Version(Home()); ex && v != "" {
+				fmt.Printf("hyve %s\n", v)
 			}
 			return nil
 		},

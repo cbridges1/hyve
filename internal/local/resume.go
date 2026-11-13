@@ -16,7 +16,8 @@ import (
 )
 
 // Resume makes the local cluster usable for a command: starts it if it's
-// been stopped, and signs in again if the session has expired.
+// been stopped, signs in again if the session has expired, and upgrades it
+// when this CLI is a newer release than the one it runs.
 func Resume(ctx context.Context, home string, logf func(string, ...any)) error {
 	ex, running := Running(ctx)
 	if !ex || !ours(ctx, node(ctx)) {
@@ -56,7 +57,7 @@ func Resume(ctx context.Context, home string, logf func(string, ...any)) error {
 			return err
 		}
 	}
-	return nil
+	return upgrade(ctx, home, logf)
 }
 
 // waitAPI waits until the management cluster's API answers through the

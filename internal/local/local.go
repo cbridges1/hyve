@@ -104,6 +104,10 @@ func Up(ctx context.Context, o Options) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("docker not found on PATH: local mode needs Docker")
 	}
+	if err := checkDowngrade(o.Home); err != nil {
+		return err
+	}
+	chosen := o.Image
 	if o.Image == "" && install.IsDevBuild() {
 		// A build from source has no published image: use the one the
 		// checkout builds, before creating anything.
@@ -228,6 +232,9 @@ func Up(ctx context.Context, o Options) error {
 		},
 		Log: o.Log,
 	}); err != nil {
+		return err
+	}
+	if err := saveSettings(o.Home, o, chosen); err != nil {
 		return err
 	}
 	if err := signIn(ctx, o, dir, password); err != nil {
