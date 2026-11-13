@@ -10,7 +10,7 @@ import { Modal } from '../components/Modal'
 import { ConfirmButton, ErrorBanner, Loading } from '../components/ui'
 import { ViewDialog } from '../components/ViewDialog'
 import { errorMessage } from '../lib/api'
-import { useEnvironment } from '../lib/environment'
+import { useEnvironment, useEnvironmentScope } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
 import { kube, remove } from '../lib/kube'
 import { grantAccess, grantsFor, loadAccess, ROLES, type Grant, type GrantRequest } from '../lib/access'
@@ -21,13 +21,13 @@ import { Table } from '../components/Table'
 type Form = GrantRequest
 
 export default function Access() {
-  const [picked] = useEnvironment()
+  const [env] = useEnvironment()
+  useEnvironmentScope()
   const { data, error: loadError, loading, reload } = useLoad(loadAccess, [])
   // ?user=<name>: that user's grants, their groups' too (from Users).
   const [params, setParams] = useSearchParams()
   const forUser = params.get('user') || ''
 
-  const [env, setEnv] = useState(picked)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<Form>({ kind: 'user', subject: '', role: 'owner', env: '', cluster: '' })
   const [error, setError] = useState('')
@@ -94,14 +94,6 @@ export default function Access() {
           <code>hyve access</code>.
         </p>
         <div className="flex flex-wrap items-center gap-2.5">
-          <select className="w-auto!" aria-label="Environment" value={env} onChange={(e) => setEnv(e.target.value)}>
-            <option value="">All environments</option>
-            {envs.map((e) => (
-              <option key={e} value={e}>
-                {e}
-              </option>
-            ))}
-          </select>
           <button type="button" className="btn btn-primary" onClick={startAdd}>
             Grant access
           </button>

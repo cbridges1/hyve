@@ -10,7 +10,7 @@ import { SecretsSection } from '../components/SecretsSection'
 import { SecretView } from '../components/SecretView'
 import { BackLink, Card, ConfirmButton, EmptyState, ErrorBanner, Field, Loading, PageHeader, Pill } from '../components/ui'
 import { ViewDialog, type Section } from '../components/ViewDialog'
-import { useEnvironment, useEnvironments } from '../lib/environment'
+import { useEnvironments } from '../lib/environment'
 import { useAction, useLoad } from '../lib/hooks'
 import { remove, typeOf, type Obj } from '../lib/kube'
 import { classesOf, loadProviders, operatorObject, providerObjects } from '../lib/providers'
@@ -25,7 +25,6 @@ export default function ProviderPage() {
   const act = useAction()
   const [viewing, setViewing] = useState<{ title: string; sections: Section[] } | null>(null)
   const [showVars, setShowVars] = useState(false)
-  const [env] = useEnvironment()
   const envs = useEnvironments()
   const { data, error, loading } = useLoad(
     async (r) => {
@@ -53,7 +52,7 @@ export default function ProviderPage() {
       </div>
     )
   const { p, op, classes, templates, vars } = data
-  const shown = env ? [env] : envs.data || []
+  const shown = envs.data || []
   const url = op?.spec?.fetchConfig?.url
 
   const removeIt = () =>
@@ -160,7 +159,7 @@ export default function ProviderPage() {
           <Card title="Credentials" className="mt-4">
             <p className="text-muted mt-0 text-sm">
               The Secrets its clusters read their credentials from (the ClusterClass's credentialsRef), in the cluster's environment: make one in each
-              environment before the first cluster there.{env ? ` Showing ${env}; pick all environments in the header to see each.` : ''}
+              environment before the first cluster there.
             </p>
             {envs.loading ? (
               <Loading />

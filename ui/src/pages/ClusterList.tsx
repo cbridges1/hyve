@@ -1,10 +1,9 @@
 // The console's cluster list: one row per cluster, its environment,
 // expiry and state as pills; a row opens the cluster. The host cluster,
-// local, comes first for whoever can reach it, whatever the environment:
-// it's in none.
+// local, comes first for whoever can reach it, with all environments or
+// the default one: it's in none (lib/environment.ts).
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate, type NavigateFunction } from "react-router-dom";
-import { EnvironmentPicker } from "../components/EnvironmentPicker";
 import {
   Banner,
   ErrorBanner,
@@ -16,7 +15,7 @@ import {
 import { request } from "../lib/api";
 import { originOf } from "../lib/clusters";
 import { clusterBase, LOCAL_CLUSTER } from "../lib/explorer";
-import { useEnvironment } from "../lib/environment";
+import { showsLocal, useEnvironment, useEnvironmentScope } from "../lib/environment";
 import { clusterStatus, expiry } from "../lib/format";
 import { useLoad } from "../lib/hooks";
 import { idOf, type Obj } from "../lib/kube";
@@ -29,8 +28,10 @@ export default function ClusterList() {
   const message = (useLocation().state as { message?: string } | null)
     ?.message;
   const [environment] = useEnvironment();
+  useEnvironmentScope();
   const navigate = useNavigate();
   const { canExplore } = useSession();
+  const showLocal = canExplore && showsLocal(environment);
   const { data, error, loading } = useLoad(
     async (r) => {
       const [clusters, version, imported] = await Promise.all([
@@ -101,7 +102,6 @@ export default function ClusterList() {
   return (
     <div>
       <PageHeader title="Clusters">
-        <EnvironmentPicker />
         <Link
           className="btn btn-secondary"
           to={paths.importCluster}
@@ -119,13 +119,13 @@ export default function ClusterList() {
         <Loading />
       ) : (
         <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-          {!rows.length && !canExplore && (
+          {!rows.length && !showLocal && (
             <p className="p-6 text-center text-sm text-neutral-500">
               No clusters yet.
             </p>
           )}
           <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {canExplore && (
+            {showLocal && (
               <Row to={paths.localCluster()} navigate={navigate}>
                 <div className="min-w-0">
                   <div className="font-medium text-neutral-900 dark:text-neutral-100">

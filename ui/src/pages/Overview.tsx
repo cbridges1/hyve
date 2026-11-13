@@ -1,16 +1,16 @@
 // Every cluster with its provider, template, environment, phase and
-// expiry, the host cluster (local) first for whoever can reach it; each
+// expiry, the host cluster (local) first for whoever can reach it (with
+// all environments or the default one, lib/environment.ts); each
 // running cluster's CPU, memory and pods (components/ResourceMonitor.tsx);
 // Deployments failing anywhere (the host's included); and clusters
 // expiring soon.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApplyYaml } from '../components/ApplyYaml'
-import { EnvironmentPicker } from '../components/EnvironmentPicker'
 import { ResourceSummaryCells } from '../components/ResourceMonitor'
 import { ErrorBanner, Loading, PageHeader } from '../components/ui'
 import { classOf, extendExpiry, providerOfClass } from '../lib/clusters'
-import { useEnvironment } from '../lib/environment'
+import { showsLocal, useEnvironment, useEnvironmentScope } from '../lib/environment'
 import { useAction, useLoad } from '../lib/hooks'
 import { LOCAL_CLUSTER } from '../lib/explorer'
 import { idOf, type Obj } from '../lib/kube'
@@ -36,8 +36,10 @@ function Stat({ count, label, tone = '' }: { count: number; label: string; tone?
 
 export default function Overview() {
   const [environment] = useEnvironment()
+  useEnvironmentScope()
   const [applying, setApplying] = useState(false)
   const { canExplore } = useSession()
+  const showLocal = canExplore && showsLocal(environment)
   const action = useAction()
   const { data, error, loading, reload } = useLoad(async (r) => {
     const [dl, classes] = await Promise.all([loadDelivery(r), r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[])])
@@ -90,7 +92,6 @@ export default function Overview() {
   return (
     <div>
       <PageHeader title="Overview">
-        <EnvironmentPicker />
         <button type="button" className="btn btn-secondary" onClick={() => setApplying(true)}>
           Apply YAML
         </button>
@@ -102,7 +103,7 @@ export default function Overview() {
       {view && (
         <>
           <div className="mb-5 flex flex-wrap gap-5">
-            <Stat count={view.shown.length + (canExplore ? 1 : 0)} label="clusters" />
+            <Stat count={view.shown.length + (showLocal ? 1 : 0)} label="clusters" />
             <Stat
               count={view.failing.length}
               label="deployments failing"
@@ -157,7 +158,7 @@ export default function Overview() {
             </>
           )}
 
-          {(canExplore || view.live.length > 0) && (
+          {(showLocal || view.live.length > 0) && (
             <>
               <h2>Resources</h2>
               <div className="overflow-x-auto mb-5">
@@ -171,7 +172,7 @@ export default function Overview() {
                     </tr>
                   </thead>
                   <tbody>
-                    {canExplore && (
+                    {showLocal && (
                       <tr>
                         <td>
                           <Link to={paths.localCluster()}>local</Link>
@@ -214,7 +215,7 @@ export default function Overview() {
                 </tr>
               </thead>
               <tbody>
-                {canExplore && (
+                {showLocal && (
                   <tr>
                     <td>
                       <Link to={paths.localCluster()}>local</Link>

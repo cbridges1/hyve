@@ -16,6 +16,8 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { Icon } from './Icon'
 import { Logo } from './Logo'
 import { ThemeToggle } from './ThemeToggle'
+import { EnvironmentPicker } from './EnvironmentPicker'
+import { useEnvironmentScoped } from '../lib/environment'
 import { ErrorBanner } from './ui'
 
 // type: shown only when the management cluster serves it; explore: only
@@ -282,6 +284,7 @@ function Drawer({ onClose, opener }: { onClose: () => void; opener: RefObject<HT
 
 export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const scoped = useEnvironmentScoped()
   const menuButton = useRef<HTMLButtonElement>(null)
   // Stable, so the drawer's focus handling runs once per opening.
   const closeMenu = useCallback(() => setMobileOpen(false), [])
@@ -321,7 +324,8 @@ export function AppShell() {
             <Logo />
           </Link>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+          {scoped && <EnvironmentPicker />}
           <div className="hidden lg:block">
             <ThemeToggle />
           </div>
