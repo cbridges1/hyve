@@ -8,6 +8,7 @@ import { errorMessage, sessions, type SessionInfo } from '../lib/api'
 import { useAction } from '../lib/hooks'
 import { Modal } from './Modal'
 import { ConfirmButton, EmptyState, ErrorBanner, Loading, Pill } from './ui'
+import { Table } from './Table'
 
 const when = (ts?: string) => (ts ? new Date(ts).toLocaleString() : '-')
 
@@ -47,7 +48,7 @@ export function Sessions({ user, own, onClose }: { user: string; own: boolean; o
       ) : (
         list && (
           <div className="mb-4 overflow-x-auto">
-            <table className="w-full text-sm">
+            <Table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-neutral-500 uppercase">
                   <th className="py-2 pr-3 font-medium">Client</th>
@@ -90,7 +91,7 @@ export function Sessions({ user, own, onClose }: { user: string; own: boolean; o
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           </div>
         )
       )}

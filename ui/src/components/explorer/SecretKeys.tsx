@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { Obj } from '../../lib/kube'
 import { asText, fromBase64 } from '../../lib/secrets'
+import { Table } from '../Table'
 
 export function SecretKeys({ secret }: { secret: Obj }) {
   const [shown, setShown] = useState<Record<string, boolean>>({})
@@ -22,7 +23,7 @@ export function SecretKeys({ secret }: { secret: Obj }) {
   if (!keys.length) return <p className="text-muted mb-0 text-sm">This Secret has no keys.</p>
   return (
     <div className="overflow-x-auto">
-      <table className="table mb-0">
+      <Table className="table mb-0">
         <thead>
           <tr>
             <th>Key</th>
@@ -64,7 +65,7 @@ export function SecretKeys({ secret }: { secret: Obj }) {
             )
           })}
         </tbody>
-      </table>
+      </Table>
     </div>
   )
 }

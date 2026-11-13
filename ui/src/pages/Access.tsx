@@ -15,6 +15,7 @@ import { useLoad } from '../lib/hooks'
 import { kube, newObject, remove, save } from '../lib/kube'
 import { DEPLOYER, ENV_MEMBER, grantsFor, loadAccess, type Grant } from '../lib/access'
 import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 const ROLES = [
   { value: 'owner', label: 'Owner', hint: 'everything on the cluster' },
@@ -168,7 +169,7 @@ export default function Access() {
         <Loading />
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
                 <th>Subject</th>
@@ -203,7 +204,7 @@ export default function Access() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
 

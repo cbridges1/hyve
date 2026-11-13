@@ -12,6 +12,7 @@ import { useAction, useLoad } from '../lib/hooks'
 import { can, newObject, remove, save, type Obj } from '../lib/kube'
 import { paths } from '../lib/routes'
 import { DEFAULT_TEMPLATE_NAMESPACE } from '../lib/types'
+import { Table } from '../components/Table'
 
 const KIND_LABEL = { template: 'Template', environment: 'Environment', class: 'Cluster class', custom: 'Custom' }
 const ORDER = ['custom', 'template', 'environment', 'class']
@@ -86,7 +87,7 @@ export default function Groups() {
         <EmptyState>No groups yet: hyve makes one for each template and environment.</EmptyState>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
                 <th>Name</th>
@@ -138,7 +139,7 @@ export default function Groups() {
                 )
               })}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
     </div>

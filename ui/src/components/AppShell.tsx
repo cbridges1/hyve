@@ -140,7 +140,7 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
               )}
             </div>
             <span className="mt-0.5 block truncate text-xs text-neutral-500">hyve {version}</span>
-            <div className="mt-3 border-t border-neutral-100 pt-3 md:hidden dark:border-neutral-700">
+            <div className="mt-3 border-t border-neutral-100 pt-3 lg:hidden dark:border-neutral-700">
               <span className="mb-1.5 block text-xs font-medium text-neutral-500">Theme</span>
               <ThemeToggle />
             </div>
@@ -220,9 +220,9 @@ function UserMenu({ onError }: { onError: (e: string) => void }) {
   )
 }
 
-// The sidebar on a phone: a drawer over the page, from the header's menu
-// button. It closes on a link, Escape, or a tap beside it; focus goes into
-// it on opening, stays in it, and returns to the menu button on closing.
+// The sidebar below lg (phones and tablets): a drawer over the page,
+// from the header's menu button. It closes on a link, Escape, or a tap
+// beside it; focus goes into it on opening, stays in it, and returns to the menu button on closing.
 function Drawer({ onClose, opener }: { onClose: () => void; opener: RefObject<HTMLButtonElement | null> }) {
   const panel = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -254,7 +254,7 @@ function Drawer({ onClose, opener }: { onClose: () => void; opener: RefObject<HT
     }
   }, [onClose, opener])
   return (
-    <div className="fixed inset-0 z-40 md:hidden">
+    <div className="fixed inset-0 z-40 lg:hidden">
       <button type="button" aria-label="Close menu" tabIndex={-1} className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
         ref={panel}
@@ -292,6 +292,13 @@ export function AppShell() {
     setMobileOpen(false)
     setError('')
   }, [location.pathname])
+  // Wide enough for the sidebar, the drawer (and its scroll lock) goes.
+  useEffect(() => {
+    const wide = window.matchMedia('(width >= 64rem)')
+    const onChange = () => wide.matches && setMobileOpen(false)
+    wide.addEventListener('change', onChange)
+    return () => wide.removeEventListener('change', onChange)
+  }, [])
 
   // Installed (standalone), the page runs under the status bar and beside
   // a landscape notch: the header and main area pad by the safe-area
@@ -306,7 +313,7 @@ export function AppShell() {
             aria-label="Open menu"
             aria-expanded={mobileOpen}
             onClick={() => setMobileOpen(true)}
-            className="-ml-2.5 flex h-11 w-11 items-center justify-center rounded-lg text-neutral-600 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="-ml-2.5 flex h-11 w-11 items-center justify-center rounded-lg text-neutral-600 hover:bg-neutral-100 lg:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
             <Icon name="menu" size={22} />
           </button>
@@ -315,10 +322,10 @@ export function AppShell() {
           </Link>
         </div>
         <div className="flex items-center gap-4">
-          <div className="hidden md:block">
+          <div className="hidden lg:block">
             <ThemeToggle />
           </div>
-          <div className="hidden h-6 w-px bg-neutral-200 md:block dark:bg-neutral-800" />
+          <div className="hidden h-6 w-px bg-neutral-200 lg:block dark:bg-neutral-800" />
           <UserMenu onError={setError} />
         </div>
       </header>
@@ -326,7 +333,7 @@ export function AppShell() {
       {mobileOpen && <Drawer opener={menuButton} onClose={closeMenu} />}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="sticky top-[var(--app-header)] hidden h-[calc(100dvh-var(--app-header))] w-60 shrink-0 border-r border-neutral-200 bg-white pl-[env(safe-area-inset-left)] md:flex dark:border-neutral-800 dark:bg-neutral-900">
+        <aside className="sticky top-[var(--app-header)] hidden h-[calc(100dvh-var(--app-header))] w-52 shrink-0 border-r border-neutral-200 bg-white pl-[env(safe-area-inset-left)] lg:flex xl:w-60 dark:border-neutral-800 dark:bg-neutral-900">
           <Sidebar />
         </aside>
         <main

@@ -14,6 +14,7 @@ import { can, host, idOf, remove, type Obj } from '../lib/kube'
 import { classesOf, loadProviders, operatorObject, providerObjects, type Provider } from '../lib/providers'
 import { paths } from '../lib/routes'
 import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 type Row = { c: Obj; provider?: Provider; templates: Obj[]; clusters: Obj[] }
 
@@ -111,7 +112,7 @@ export default function ClusterClasses() {
         <EmptyState>No ClusterClasses yet. Add one its provider publishes, or write your own.</EmptyState>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
                 <th>Name</th>
@@ -170,7 +171,7 @@ export default function ClusterClasses() {
                 )
               })}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
       {yaml && (

@@ -7,6 +7,7 @@ import { useLoad } from '../lib/hooks'
 import type { SecretApi } from '../lib/secrets'
 import { TYPES } from '../lib/types'
 import { ViewDialog } from './ViewDialog'
+import { Table } from './Table'
 
 function decode(b64: string) {
   try {
@@ -65,7 +66,7 @@ export function SecretView({ namespace, name, api, onClose }: { namespace: strin
         <>
           <div className="text-muted mb-2.5 text-sm">Type: {secret?.type || 'Opaque'}</div>
           <div className="overflow-x-auto mb-4">
-            <table className="table">
+            <Table>
               <thead>
                 <tr>
                   <th>Key</th>
@@ -104,7 +105,7 @@ export function SecretView({ namespace, name, api, onClose }: { namespace: strin
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           </div>
         </>
       )}

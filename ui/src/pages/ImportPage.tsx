@@ -10,6 +10,7 @@ import { applyObjects } from '../lib/apply'
 import { host, kube, patch } from '../lib/kube'
 import { paths } from '../lib/routes'
 import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 type Result = { kind: string; source: string; name?: string; template?: any; skipped?: string; notes?: string[]; herd?: { namespace: string; name: string } }
 type Done = { object: string; action?: string; error?: string }
@@ -130,7 +131,7 @@ export default function ImportPage() {
       {results && (
         <Card title="Result">
           <div className="overflow-x-auto">
-            <table className="table">
+            <Table>
               <thead>
                 <tr>
                   <th>From</th>
@@ -170,7 +171,7 @@ export default function ImportPage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           </div>
           {importable.length > 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-3">

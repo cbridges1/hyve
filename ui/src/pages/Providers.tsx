@@ -9,6 +9,7 @@ import { Banner, ErrorBanner, Loading, PageHeader } from '../components/ui'
 import { useLoad } from '../lib/hooks'
 import { loadProviders } from '../lib/providers'
 import { paths } from '../lib/routes'
+import { Table } from '../components/Table'
 
 export default function Providers() {
   const { data, error, loading, reload } = useLoad(loadProviders, [])
@@ -50,7 +51,7 @@ export default function Providers() {
         />
       )}
       <div className="overflow-x-auto">
-        <table className="table">
+        <Table>
           <thead>
             <tr>
               <th>Name</th>
@@ -82,7 +83,7 @@ export default function Providers() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       </div>
     </div>
   )

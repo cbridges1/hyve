@@ -14,6 +14,7 @@ import { BundleDetail } from './BundleDetail'
 import { Icon } from './Icon'
 import { SecretsSection } from './SecretsSection'
 import { Banner, EmptyState, ErrorBanner, Loading, Pill } from './ui'
+import { Table } from './Table'
 
 const SOURCE_LABEL = { git: 'Git', helm: 'Helm', manifests: 'Manifests' }
 
@@ -51,10 +52,9 @@ export function ClusterDeployments({ cluster }: { cluster: Obj | 'host' }) {
         <EmptyState>Nothing is deployed here yet.</EmptyState>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
-                <th />
                 <th>Deployment</th>
                 <th>Source</th>
                 <th>Why it's here</th>
@@ -68,12 +68,10 @@ export function ClusterDeployments({ cluster }: { cluster: Obj | 'host' }) {
                 return (
                   <Fragment key={id}>
                     <tr className="cursor-pointer" onClick={() => toggle(id)}>
-                      <td className="w-6">
-                        <span className={`inline-block transition-transform ${open.has(id) ? 'rotate-90' : ''}`}>
+                      <td>
+                        <span className={`mr-1.5 inline-block align-middle transition-transform ${open.has(id) ? 'rotate-90' : ''}`}>
                           <Icon name="chevronRight" size={14} />
                         </span>
-                      </td>
-                      <td>
                         <Link to={paths.deployment(d.namespace, d.name)} onClick={(e) => e.stopPropagation()}>
                           {d.name}
                         </Link>
@@ -94,7 +92,6 @@ export function ClusterDeployments({ cluster }: { cluster: Obj | 'host' }) {
                     </tr>
                     {open.has(id) && (
                       <tr>
-                        <td />
                         <td colSpan={4}>
                           {d.bundles.map((b) => (
                             <BundleDetail
@@ -111,7 +108,7 @@ export function ClusterDeployments({ cluster }: { cluster: Obj | 'host' }) {
                 )
               })}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
       {can(TYPES.FLEET_HELM_OP, 'create') && (

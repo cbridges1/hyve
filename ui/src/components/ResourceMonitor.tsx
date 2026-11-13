@@ -7,6 +7,7 @@ import { age } from '../lib/format'
 import { usePolled } from '../lib/hooks'
 import { bytes, cores, loadResources, percent, type ClusterResources, type Usage } from '../lib/metrics'
 import { Card, EmptyState, ErrorBanner, Loading, Pill } from './ui'
+import { Table } from './Table'
 
 const EVERY = 15_000
 
@@ -107,7 +108,7 @@ export function ResourceMonitor({ clusterId }: { clusterId: string }) {
 
             <h3 className="mb-2 text-sm font-semibold">Nodes</h3>
             <div className="mb-4 overflow-x-auto">
-              <table className="table">
+              <Table>
                 <thead>
                   <tr>
                     <th>Name</th>
@@ -157,7 +158,7 @@ export function ResourceMonitor({ clusterId }: { clusterId: string }) {
                     )
                   })}
                 </tbody>
-              </table>
+              </Table>
             </div>
 
             <h3 className="mb-2 text-sm font-semibold">Recent warnings</h3>
@@ -167,7 +168,7 @@ export function ResourceMonitor({ clusterId }: { clusterId: string }) {
               <EmptyState>No warning events.</EmptyState>
             ) : (
               <div className="overflow-x-auto">
-                <table className="table">
+                <Table>
                   <thead>
                     <tr>
                       <th>When</th>
@@ -192,7 +193,7 @@ export function ResourceMonitor({ clusterId }: { clusterId: string }) {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </Table>
               </div>
             )}
           </>

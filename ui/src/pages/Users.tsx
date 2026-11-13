@@ -268,7 +268,8 @@ export default function Users() {
           {!users?.length && <EmptyState>No users yet.</EmptyState>}
           <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {users?.map((u) => (
-              <div key={u.metadata.name} className="flex items-center justify-between gap-3 px-4 py-3">
+              // The buttons go under the user until there's room beside.
+              <div key={u.metadata.name} className="flex flex-col gap-2 px-4 py-3 xl:flex-row xl:items-center xl:justify-between xl:gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-neutral-900 dark:text-neutral-100">{u.metadata.name}</span>
@@ -293,7 +294,7 @@ export default function Users() {
                   </div>
                   {data?.readable && <AccessSummary user={u} grants={grants} />}
                 </div>
-                <div className="flex shrink-0 items-center gap-1">
+                <div className="-ml-2.5 flex flex-wrap items-center gap-1 xl:ml-0 xl:shrink-0 xl:justify-end">
                   <button type="button" className="btn btn-tertiary btn-sm" onClick={() => setViewing(u)}>
                     View
                   </button>

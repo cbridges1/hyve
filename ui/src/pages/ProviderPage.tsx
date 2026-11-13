@@ -17,6 +17,7 @@ import { classesOf, loadProviders, operatorObject, providerObjects } from '../li
 import { paths } from '../lib/routes'
 import { providerCredentials } from '../lib/secrets'
 import { TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 export default function ProviderPage() {
   const { namespace = '', provider = '' } = useParams()
@@ -122,7 +123,7 @@ export default function ProviderPage() {
               <EmptyState>It doesn't publish a ClusterClass here. Add one with 'hyve provider add {p.name} --clusterclass NAME'.</EmptyState>
             ) : (
               <div className="overflow-x-auto">
-                <table className="table">
+                <Table>
                   <thead>
                     <tr>
                       <th>Class</th>
@@ -151,7 +152,7 @@ export default function ProviderPage() {
                       )
                     })}
                   </tbody>
-                </table>
+                </Table>
               </div>
             )}
           </Card>

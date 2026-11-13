@@ -32,6 +32,7 @@ import { useAction, useLoad } from '../lib/hooks'
 import { can, idOf, newObject, remove, save, type Obj } from '../lib/kube'
 import { paths } from '../lib/routes'
 import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 const SOURCE_LABEL = { git: 'Git', helm: 'Helm', manifests: 'Manifests' }
 const HOST_ID = `${HOST_WORKSPACE}/local`
@@ -402,7 +403,7 @@ function DeploymentTable({
     <div className="overflow-x-auto">
       {category === 'none' && <p className="text-muted mt-0 mb-3 text-sm">Their targets select no cluster yet, or Fleet hasn't made their bundles.</p>}
       {category === 'clusters' && !dl.detailed && <p className="text-muted mt-0 mb-3 text-sm">Each cluster's own state needs access to Fleet's per-cluster namespaces; the states shown are overall.</p>}
-      <table className="table">
+      <Table>
         <thead>
           <tr>
             <th>Name</th>
@@ -463,7 +464,7 @@ function DeploymentTable({
             })}
           </tbody>
         ))}
-      </table>
+      </Table>
       {pg.total > PAGE_SIZES[0] && (
         <div className="mt-3 flex flex-wrap items-center justify-end gap-2 text-sm">
           <select className="mr-auto w-auto" value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))} aria-label="Rows per page">

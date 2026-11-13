@@ -8,6 +8,7 @@ import { useAction } from '../lib/hooks'
 import { SelectField, TextField } from './form'
 import { Modal } from './Modal'
 import { ConfirmButton, EmptyState, ErrorBanner, Loading } from './ui'
+import { Table } from './Table'
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
 
@@ -98,7 +99,7 @@ export function ApiTokens({ user, own, onClose }: { user: string; own: boolean; 
       ) : (
         list && (
           <div className="mb-4 overflow-x-auto">
-            <table className="w-full text-sm">
+            <Table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-neutral-500 uppercase">
                   <th className="py-2 pr-3 font-medium">Name</th>
@@ -134,7 +135,7 @@ export function ApiTokens({ user, own, onClose }: { user: string; own: boolean; 
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           </div>
         )
       )}

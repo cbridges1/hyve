@@ -10,6 +10,7 @@ import type { Need } from '../lib/secrets'
 import { SecretEdit } from './SecretEdit'
 import { SecretView } from './SecretView'
 import { ErrorBanner, Loading, Pill } from './ui'
+import { Table } from './Table'
 
 export function SecretsSection({
   load,
@@ -41,7 +42,7 @@ export function SecretsSection({
         <p className="text-muted text-sm">{empty}</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
                 <th>Name</th>
@@ -93,7 +94,7 @@ export function SecretsSection({
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
       {viewing && <SecretView namespace={viewing.namespace} name={viewing.name} onClose={() => setViewing(null)} />}

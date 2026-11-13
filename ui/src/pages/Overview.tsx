@@ -19,6 +19,7 @@ import { stateColor } from '../lib/resources'
 import { paths } from '../lib/routes'
 import { useSession } from '../lib/session'
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 const SOON_HOURS = 24
 // Clusters whose resources the overview reads at once (each every 30s).
@@ -114,7 +115,7 @@ export default function Overview() {
             <>
               <h2>Failing deployments</h2>
               <div className="overflow-x-auto mb-5">
-                <table className="table">
+                <Table>
                   <thead>
                     <tr>
                       <th>Deployment</th>
@@ -151,7 +152,7 @@ export default function Overview() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </Table>
               </div>
             </>
           )}
@@ -160,7 +161,7 @@ export default function Overview() {
             <>
               <h2>Resources</h2>
               <div className="overflow-x-auto mb-5">
-                <table className="table">
+                <Table>
                   <thead>
                     <tr>
                       <th>Cluster</th>
@@ -188,7 +189,7 @@ export default function Overview() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </Table>
               </div>
               {view.live.length > MAX_MONITORED && (
                 <p className="hint -mt-3 mb-5">
@@ -200,7 +201,7 @@ export default function Overview() {
 
           <h2>Clusters</h2>
           <div className="overflow-x-auto">
-            <table className="table">
+            <Table>
               <thead>
                 <tr>
                   <th>Name</th>
@@ -263,7 +264,7 @@ export default function Overview() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           </div>
         </>
       )}

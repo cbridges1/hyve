@@ -15,6 +15,7 @@ import { can, patch, remove } from '../lib/kube'
 import { bundleMessage, bundleState, shortBundleName } from '../lib/repos'
 import { backFrom, paths } from '../lib/routes'
 import { deploymentSecrets } from '../lib/secrets'
+import { Table } from '../components/Table'
 
 const SOURCE_LABEL = { git: 'Git', helm: 'Helm chart', manifests: 'Manifests' }
 
@@ -116,7 +117,7 @@ export default function DeploymentPage() {
           <EmptyState>{data.dl.detailed ? 'No cluster has it yet.' : 'Not shown.'}</EmptyState>
         ) : (
           <div className="overflow-x-auto">
-            <table className="table">
+            <Table>
               <thead>
                 <tr>
                   <th>Cluster</th>
@@ -137,7 +138,7 @@ export default function DeploymentPage() {
                   )
                 })}
               </tbody>
-            </table>
+            </Table>
           </div>
         )}
       </Card>
@@ -147,7 +148,7 @@ export default function DeploymentPage() {
           <EmptyState>Fleet hasn't made its bundle yet.</EmptyState>
         ) : (
           <div className="overflow-x-auto">
-            <table className="table">
+            <Table>
               <thead>
                 <tr>
                   <th />
@@ -190,7 +191,7 @@ export default function DeploymentPage() {
                   )
                 })}
               </tbody>
-            </table>
+            </Table>
           </div>
         )}
       </Card>

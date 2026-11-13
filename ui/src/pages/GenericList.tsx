@@ -5,6 +5,7 @@ import { age } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { can, idOf, schemaFor } from '../lib/kube'
 import { detailPath, paths } from '../lib/routes'
+import { Table } from '../components/Table'
 
 export default function GenericList() {
   const type = useParams().type!
@@ -25,7 +26,7 @@ export default function GenericList() {
       </PageHeader>
       <ErrorBanner error={error} />
       <div className="overflow-x-auto">
-        <table className="table">
+        <Table>
           <thead>
             <tr>
               <th>Name</th>
@@ -51,7 +52,7 @@ export default function GenericList() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       </div>
     </div>
   )

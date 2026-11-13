@@ -121,6 +121,37 @@ body {
   .table tbody tr:first-child td { @apply border-t-0; }
   .table tbody tr:hover td { @apply bg-neutral-50 dark:bg-neutral-800/40; }
 
+  /* Below md, a Table (components/Table.tsx) is a list of cards: a row's
+     first cell is its title, the others are labelled with their column's
+     heading (data-label), and an unheaded one (actions) ends the card. */
+  @media (width < 48rem) {
+    .table-cards { @apply block overflow-visible rounded-none border-0 bg-transparent shadow-none dark:bg-transparent; }
+    .table-cards thead { @apply hidden; }
+    .table-cards tbody { @apply block space-y-3; }
+    .table-cards tbody tr {
+      @apply block overflow-hidden rounded-xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900;
+    }
+    /* The label floats left of the cell's content, which may be several
+       elements, so they flow beside and under it as they would in a row. */
+    .table-cards td,
+    .table-cards tbody tr:first-child td { @apply block min-w-0 border-0 px-0 py-1 text-right break-words; }
+    .table-cards td::before {
+      content: attr(data-label);
+      @apply float-left mr-4 pt-0.5 text-left text-[11px] font-semibold tracking-wider text-neutral-500 uppercase;
+    }
+    .table-cards td::after { content: ""; @apply table clear-both; }
+    .table-cards tbody tr td:first-child { @apply pb-1.5 text-left text-base font-medium; }
+    .table-cards tbody tr td[colspan]:first-child { @apply text-sm font-normal; }
+    .table-cards td:first-child::before,
+    .table-cards td[data-label=""]::before { @apply hidden; }
+    .table-cards td[data-label=""]:not(:first-child) {
+      @apply mt-2 flex flex-wrap justify-end gap-2 border-t border-neutral-100 pt-2 dark:border-neutral-800;
+    }
+    .table-cards td:empty,
+    .table-cards td.hidden { @apply hidden; }
+    .table-cards tbody tr:hover td { @apply bg-transparent dark:bg-transparent; }
+  }
+
   .label { @apply mb-1 block text-sm text-neutral-600 dark:text-neutral-400; }
   .hint { @apply mt-1 block text-xs text-neutral-500; }
   .preview { @apply rounded-lg bg-neutral-50 p-3 font-mono text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300; }

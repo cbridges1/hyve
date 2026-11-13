@@ -10,6 +10,7 @@ import { bundleMessage, fleetTone, LOCAL_FLEET_CLUSTER } from '../lib/repos'
 import { FLEET } from '../lib/resources'
 import { backFrom, paths } from '../lib/routes'
 import { CodeBlock, Pill } from './ui'
+import { Table } from './Table'
 
 type Res = { apiVersion: string; kind: string; namespace?: string; name: string; state: string; message: string; clusters: string[] }
 
@@ -112,7 +113,7 @@ export function BundleDetail({ bundle, bds, backLabel }: { bundle: Obj; bds: Obj
       )}
       {resources.length ? (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
                 <th>Kind</th>
@@ -145,7 +146,7 @@ export function BundleDetail({ bundle, bds, backLabel }: { bundle: Obj; bds: Obj
                 )
               })}
             </tbody>
-          </table>
+          </Table>
         </div>
       ) : (
         <p className="text-muted text-sm">Nothing deployed yet.</p>

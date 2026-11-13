@@ -10,6 +10,7 @@ import { useLoad } from '../lib/hooks'
 import { can, newObject, type Obj } from '../lib/kube'
 import { paths } from '../lib/routes'
 import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from '../lib/types'
+import { Table } from '../components/Table'
 
 export default function TemplatePage() {
   const { namespace, name } = useParams()
@@ -96,7 +97,7 @@ function DeployedHere({ template }: { template: Obj }) {
         <EmptyState>Nothing yet: a Deployment aimed at this template reaches every cluster made from it, now and later.</EmptyState>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table">
+          <Table>
             <thead>
               <tr>
                 <th>Deployment</th>
@@ -128,7 +129,7 @@ function DeployedHere({ template }: { template: Obj }) {
                 )
               })}
             </tbody>
-          </table>
+          </Table>
         </div>
       )}
     </Card>
