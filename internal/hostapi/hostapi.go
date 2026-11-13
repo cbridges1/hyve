@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -67,6 +68,7 @@ type API struct {
 // Register adds the routes.
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/hyve/providers", a.authed(a.addProvider))
+	mux.HandleFunc("POST /v1/hyve/clusterclasses", a.authed(a.addClusterClass))
 	mux.HandleFunc("POST /v1/hyve/render", a.authed(a.render))
 	mux.HandleFunc("POST /v1/hyve/import", a.authed(a.importTemplates))
 	mux.HandleFunc("POST /v1/hyve/clusters/import", a.authed(a.importCluster))
@@ -146,6 +148,52 @@ func (a *API) addProvider(w http.ResponseWriter, r *http.Request, ident signin.I
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
+}
+
+// ClusterClassRequest is POST /v1/hyve/clusterclasses: a ClusterClass a
+// provider publishes (clusterclass-NAME.yaml beside its components, or
+// any file of a ClusterClass and its provider templates), installed for a
+// provider that's already there.
+type ClusterClassRequest struct {
+	// URL is the file, or with FetchURL the class's name.
+	URL string `json:"url"`
+	// FetchURL is the provider's components URL, which a name is beside.
+	FetchURL string `json:"fetchURL,omitempty"`
+	// Namespace is where it goes: the default template namespace unless
+	// given.
+	Namespace string            `json:"namespace,omitempty"`
+	Variables map[string]string `json:"variables,omitempty"`
+}
+
+func (a *API) addClusterClass(w http.ResponseWriter, r *http.Request, ident signin.Identity) {
+	var req ClusterClassRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.URL) == "" {
+		writeError(w, http.StatusBadRequest, "give the ClusterClass's URL, or its name and the provider's components URL")
+		return
+	}
+	url, err := install.ClassURL(req.FetchURL, strings.TrimSpace(req.URL))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ns := req.Namespace
+	if ns == "" {
+		ns = a.DefaultTemplateNamespace
+	}
+	kc, err := a.kubeAs(ident)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	applied, err := install.AddClusterClass(r.Context(), kc, url, ns, req.Variables, 20*time.Second)
+	if err != nil {
+		writeError(w, statusOf(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "Installed " + strings.Join(applied, ", "), "applied": applied})
 }
 
 // RenderRequest is POST /v1/hyve/render: what 'hyve template render' takes, with

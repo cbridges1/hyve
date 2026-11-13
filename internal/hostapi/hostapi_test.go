@@ -38,9 +38,21 @@ func post(t *testing.T, srv *httptest.Server, path string, body any) (int, map[s
 func TestNeedsASession(t *testing.T) {
 	srv := server(false)
 	defer srv.Close()
-	for _, p := range []string{"/v1/hyve/providers", "/v1/hyve/render", "/v1/hyve/import"} {
+	for _, p := range []string{"/v1/hyve/providers", "/v1/hyve/clusterclasses", "/v1/hyve/render", "/v1/hyve/import"} {
 		if code, _ := post(t, srv, p, map[string]any{}); code != http.StatusUnauthorized {
 			t.Errorf("%s without a session: %d, want 401", p, code)
+		}
+	}
+}
+
+// A ClusterClass needs its URL, or a name and the components it's beside.
+func TestClusterClassNeedsASource(t *testing.T) {
+	srv := server(true)
+	defer srv.Close()
+	for _, body := range []map[string]any{{}, {"url": "civo"}} {
+		code, out := post(t, srv, "/v1/hyve/clusterclasses", body)
+		if code != http.StatusBadRequest {
+			t.Errorf("%v: %d %v, want 400", body, code, out)
 		}
 	}
 }

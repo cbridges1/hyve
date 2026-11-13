@@ -11,6 +11,7 @@ import { getSession, rememberCLIServer, setSession, useSession } from './lib/ses
 import { startSession } from './lib/start'
 import Access from './pages/Access'
 import CliLogin from './pages/CliLogin'
+import ClusterClasses from './pages/ClusterClasses'
 import ClusterDetail from './pages/ClusterDetail'
 import LocalCluster from './pages/LocalCluster'
 import ClusterList from './pages/ClusterList'
@@ -20,6 +21,7 @@ import DeploymentPage from './pages/DeploymentPage'
 import Environments from './pages/Environments'
 import Fleet from './pages/Fleet'
 import GenericList from './pages/GenericList'
+import Groups from './pages/Groups'
 import ImportCluster from './pages/ImportCluster'
 import ImportPage from './pages/ImportPage'
 import Login from './pages/Login'
@@ -119,12 +121,14 @@ export default function App() {
           <Route path="fleet/deployments/:namespace/:name/edit" element={<DeploymentEdit />} />
           {/* Before the categories: Status and Groups tabs, and a Groups page. */}
           <Route path="fleet/status" element={<Navigate to={`${paths.fleet}?category=clusters`} replace />} />
-          <Route path="fleet/groups/*" element={<Navigate to={`${paths.fleet}?category=groups`} replace />} />
+          <Route path="fleet/groups/*" element={<Navigate to={paths.groups} replace />} />
+          <Route path="groups" element={<Groups />} />
           {/* Before Fleet: shared resources and repos. */}
           <Route path="resources/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="repos/*" element={<Navigate to={paths.fleet} replace />} />
           <Route path="providers" element={<Providers />} />
           <Route path="providers/:namespace/:provider" element={<ProviderPage />} />
+          <Route path="clusterclasses" element={<ClusterClasses />} />
           <Route element={<People />}>
             <Route path="users" element={<Users />} />
             <Route path="access" element={<Access />} />

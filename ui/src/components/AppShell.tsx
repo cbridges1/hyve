@@ -36,19 +36,21 @@ const groups: { label: string; items: Item[] }[] = [
       { label: 'Clusters', icon: 'clusters', to: paths.clusters, type: TYPES.CLUSTER },
       { label: 'Templates', icon: 'templates', to: paths.templates, type: TYPES.TEMPLATE },
       { label: 'Fleet', icon: 'fleet', to: paths.fleetRoot, type: TYPES.FLEET_HELM_OP },
+      { label: 'Groups', icon: 'groups', to: paths.groups, type: TYPES.FLEET_HELM_OP },
     ],
   },
   {
     label: 'Configuration',
     items: [
       { label: 'Providers', icon: 'providers', to: paths.providers },
+      { label: 'ClusterClasses', icon: 'classes', to: paths.clusterClasses, type: TYPES.CLUSTER_CLASS },
+      { label: 'Environments', icon: 'environments', to: paths.environments },
     ],
   },
   {
     label: 'Administration',
     items: [
       { label: 'People', icon: 'users', to: peoplePath, also: [paths.users, paths.access] },
-      { label: 'Environments', icon: 'environments', to: paths.environments },
       { label: 'Settings', icon: 'settings', to: paths.settings, settings: true },
     ],
   },

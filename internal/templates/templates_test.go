@@ -207,6 +207,7 @@ func TestLockedVersion(t *testing.T) {
 func TestFillAdopted(t *testing.T) {
 	tp := tmpl()
 	tp.Spec.Adopt = &Adopt{IDVariable: "clusterID", Variables: map[string]any{"machineType": nil, "deletionPolicy": "Retain"}, Unset: []string{"project"}}
+	tp.Spec.Workers.Count = nil
 	c := clusters.New("web", "capi-clusters")
 	c.SetAnnotations(map[string]string{clusters.AnnotationAdopted: "true"})
 	_ = clusters.SetVariables(c, map[string]any{"clusterID": "abc"})
@@ -225,6 +226,14 @@ func TestFillAdopted(t *testing.T) {
 	}
 	if bad := CheckLocked(tp, c); len(bad) != 0 {
 		t.Errorf("locked = %v", bad)
+	}
+	// Its pool keeps the nodes it has: no replicas.
+	ws, _, _ := unstructured.NestedSlice(c.Object, "spec", "topology", "workers", "machinePools")
+	if len(ws) != 1 || ws[0].(map[string]any)["class"] != "default-pool" {
+		t.Fatalf("workers = %v", ws)
+	}
+	if r, ok := ws[0].(map[string]any)["replicas"]; ok {
+		t.Errorf("an adopted cluster's pool got replicas %v", r)
 	}
 	if err := Validate(&Template{Spec: Spec{ClusterClassRef: ClassRef{Name: "x"}, Adopt: &Adopt{}}}); err == nil {
 		t.Error("adopt without idVariable passed validation")

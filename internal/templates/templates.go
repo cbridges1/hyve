@@ -246,6 +246,16 @@ func Fill(c *unstructured.Unstructured, t *Template, class *unstructured.Unstruc
 			if err := clusters.SetWorkers(c, typ, wc, count); err != nil {
 				return err
 			}
+			// An adopted cluster's pool keeps the nodes it has, unless the
+			// template gives a count: with no replicas, its provider keeps
+			// them (as an autoscaler's would be).
+			if clusters.Origin(c) == clusters.OriginAdopted && (t.Spec.Workers == nil || t.Spec.Workers.Count == nil) {
+				ws, _, _ := unstructured.NestedSlice(c.Object, "spec", "topology", "workers", typ+"s")
+				for _, w := range ws {
+					delete(w.(map[string]any), "replicas")
+				}
+				_ = unstructured.SetNestedSlice(c.Object, ws, "spec", "topology", "workers", typ+"s")
+			}
 		}
 	}
 

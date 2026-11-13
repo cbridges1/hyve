@@ -262,7 +262,14 @@ export default function ClusterDetail() {
         ["Control plane", String(topo.controlPlane?.replicas ?? "—")],
         [
           "Workers",
-          pools.map((w) => `${w.replicas} × ${w.class}`).join(", ") || "—",
+          // No replicas (an adopted cluster's pool): it keeps the nodes it has.
+          pools
+            .map((w) =>
+              w.replicas === undefined
+                ? `${w.class} (its own count)`
+                : `${w.replicas} × ${w.class}`,
+            )
+            .join(", ") || "—",
         ],
         ["Phase", value.status?.phase || "—"],
         ["Expires", never ? "Never" : new Date(expires).toLocaleString()],
@@ -432,6 +439,7 @@ export default function ClusterDetail() {
                             className="w-24!"
                             type="number"
                             min={0}
+                            placeholder="its own"
                             aria-label={`${w.name} replicas`}
                             value={form.sizes[i] ?? ""}
                             onChange={(e) =>

@@ -11,6 +11,10 @@ const PATHS: Record<string, string[]> = {
   ],
   resources: ['M12 3 20 7.5v9L12 21 4 16.5v-9Z', 'M4 7.5 12 12l8-4.5M12 12v9'],
   repos: ['M6 3v12', 'M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M18 9a9 9 0 0 1-9 9'],
+  // Three clusters in a set.
+  groups: ['M7 5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM17 5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM12 14a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z', 'M3 4a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z'],
+  // A blueprint: a page with a folded corner and lines.
+  classes: ['M5 3h10l4 4v14H5z', 'M15 3v4h4', 'M8 12h8M8 16h5'],
   providers: ['M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4'],
   users: ['M12 4.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z', 'M4.5 20c0-3.6 3.36-6.5 7.5-6.5s7.5 2.9 7.5 6.5'],
   environments: ['M12 3 21 8 12 13 3 8Z', 'M3 12l9 5 9-5', 'M3 16l9 5 9-5'],
