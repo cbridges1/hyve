@@ -75,11 +75,10 @@ export default function Environments() {
         </button>
       </PageHeader>
       <ErrorBanner error={(!creating && error) || loadError} />
-      <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="card-list">
         {!envs.length && <EmptyState>No environments yet.</EmptyState>}
-        <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
           {envs.map((env) => (
-            <div key={env.metadata.name} className="flex items-center justify-between gap-3 px-4 py-3">
+            <div key={env.metadata.name} className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <span className="font-medium text-neutral-900 dark:text-neutral-100">{env.metadata.name}</span>
                 <Pill label={`${counts[env.metadata.name] || 0} clusters`} />
@@ -96,7 +95,6 @@ export default function Environments() {
               </div>
             </div>
           ))}
-        </div>
       </div>
       {creating && (
         <Modal title="New environment" onClose={() => setCreating(false)}>

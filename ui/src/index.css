@@ -42,7 +42,16 @@
    bar or notch (index.html's viewport-fit=cover). */
 :root { --app-header: calc(3.5rem + env(safe-area-inset-top)); }
 
+/* No rubber-band at the page's ends: pulled past the top, the whole app
+   (header included) slid down and showed a gap above it. Scrolling areas
+   inside the page keep theirs. */
+html {
+  overscroll-behavior-y: none;
+  @apply bg-neutral-50 dark:bg-neutral-950;
+}
+
 body {
+  overscroll-behavior-y: none;
   margin: 0;
   font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -150,6 +159,17 @@ body {
     .table-cards td:empty,
     .table-cards td.hidden { @apply hidden; }
     .table-cards tbody tr:hover td { @apply bg-transparent dark:bg-transparent; }
+  }
+
+  /* A list of rows that isn't a table (Clusters, Templates, Users,
+     Environments): below md a list of cards, as a Table is; from md one
+     bordered panel with a line between rows. Rows add their own layout. */
+  .card-list { @apply space-y-3; }
+  .card-list > * { @apply rounded-xl border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900; }
+  @media (width >= 48rem) {
+    .card-list { @apply space-y-0 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900; }
+    .card-list > * { @apply rounded-none border-0 border-t border-neutral-100 bg-transparent shadow-none dark:border-neutral-800 dark:bg-transparent; }
+    .card-list > :first-child { @apply border-t-0; }
   }
 
   .label { @apply mb-1 block text-sm text-neutral-600 dark:text-neutral-400; }

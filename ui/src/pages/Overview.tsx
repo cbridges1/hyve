@@ -19,7 +19,7 @@ import { stateColor } from '../lib/resources'
 import { paths } from '../lib/routes'
 import { useSession } from '../lib/session'
 import { ANNOTATIONS, LABELS, NEVER, TYPES } from '../lib/types'
-import { Table } from '../components/Table'
+import { LinkRow, Table } from '../components/Table'
 
 const SOON_HOURS = 24
 // Clusters whose resources the overview reads at once (each every 30s).
@@ -173,21 +173,21 @@ export default function Overview() {
                   </thead>
                   <tbody>
                     {showLocal && (
-                      <tr>
+                      <LinkRow to={paths.localCluster()}>
                         <td>
                           <Link to={paths.localCluster()}>local</Link>
                         </td>
                         <ResourceSummaryCells clusterId={LOCAL_CLUSTER} />
-                      </tr>
+                      </LinkRow>
                     )}
                     {view.live.slice(0, MAX_MONITORED).map((c) => (
-                      <tr key={idOf(c)}>
+                      <LinkRow key={idOf(c)} to={paths.cluster(c.metadata.namespace!, c.metadata.name)}>
                         <td>
                           <Link to={paths.cluster(c.metadata.namespace!, c.metadata.name)}>{c.metadata.name}</Link>
                           <span className="text-muted ml-1 text-xs">{c.metadata.namespace}</span>
                         </td>
                         <ResourceSummaryCells clusterId={`${c.metadata.namespace}.${c.metadata.name}`} />
-                      </tr>
+                      </LinkRow>
                     ))}
                   </tbody>
                 </Table>
@@ -216,7 +216,7 @@ export default function Overview() {
               </thead>
               <tbody>
                 {showLocal && (
-                  <tr>
+                  <LinkRow to={paths.localCluster()}>
                     <td>
                       <Link to={paths.localCluster()}>local</Link>
                     </td>
@@ -226,7 +226,7 @@ export default function Overview() {
                     <td className="text-muted">-</td>
                     <td>Never</td>
                     <td />
-                  </tr>
+                  </LinkRow>
                 )}
                 {!view.rows.length && !canExplore && (
                   <tr>
@@ -236,7 +236,7 @@ export default function Overview() {
                   </tr>
                 )}
                 {view.rows.map((r) => (
-                  <tr key={idOf(r.cluster)}>
+                  <LinkRow key={idOf(r.cluster)} to={paths.cluster(r.cluster.metadata.namespace!, r.cluster.metadata.name)}>
                     <td>
                       <Link to={paths.cluster(r.cluster.metadata.namespace!, r.cluster.metadata.name)}>{r.cluster.metadata.name}</Link>
                     </td>
@@ -262,7 +262,7 @@ export default function Overview() {
                         </button>
                       )}
                     </td>
-                  </tr>
+                  </LinkRow>
                 ))}
               </tbody>
             </Table>

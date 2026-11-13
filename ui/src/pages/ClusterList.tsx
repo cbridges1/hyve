@@ -118,13 +118,12 @@ export default function ClusterList() {
       {loading ? (
         <Loading />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="card-list">
           {!rows.length && !showLocal && (
             <p className="p-6 text-center text-sm text-neutral-500">
               No clusters yet.
             </p>
           )}
-          <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {showLocal && (
               <Row to={paths.localCluster()} navigate={navigate}>
                 <div className="min-w-0">
@@ -137,7 +136,7 @@ export default function ClusterList() {
                       .join(" · ")}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-3">
+                <div className="flex shrink-0 flex-wrap items-center gap-2 md:gap-3">
                   <Pill
                     tone="info"
                     label="Host"
@@ -161,7 +160,7 @@ export default function ClusterList() {
                       {r.sub}
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 md:gap-3">
                     <Pill tone="env" label={r.c.metadata.namespace!} />
                     <StatusPill status={r.expires} />
                     <StatusPill status={r.status} />
@@ -169,7 +168,6 @@ export default function ClusterList() {
                 </Row>
               );
             })}
-          </div>
         </div>
       )}
     </div>
@@ -189,7 +187,7 @@ function Row({
     <div
       role="link"
       tabIndex={0}
-      className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition-colors hover:bg-neutral-50 sm:flex-row sm:items-center sm:justify-between dark:hover:bg-neutral-800/50"
+      className="flex cursor-pointer flex-col gap-2 transition-colors hover:bg-neutral-50 md:flex-row md:items-center md:justify-between dark:hover:bg-neutral-800/50"
       onClick={() => navigate(to)}
       onKeyDown={(e) => {
         if (e.key === "Enter") navigate(to);

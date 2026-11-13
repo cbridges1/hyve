@@ -36,23 +36,22 @@ export default function TemplateList() {
       {loading ? (
         <Loading />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="card-list">
           {!templates?.length && <p className="p-6 text-center text-sm text-neutral-500">No templates yet.</p>}
-          <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {templates?.map((tpl) => {
               const ready = readyDisplay(tpl)
               const { namespace, name } = tpl.metadata
               return (
                 <div
                   key={idOf(tpl)}
-                  className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition-colors hover:bg-neutral-50 sm:flex-row sm:items-center sm:justify-between dark:hover:bg-neutral-800/50"
+                  className="flex cursor-pointer flex-col gap-2 transition-colors hover:bg-neutral-50 md:flex-row md:items-center md:justify-between dark:hover:bg-neutral-800/50"
                   onClick={() => navigate(paths.template(namespace!, name))}
                 >
                   <div className="min-w-0">
                     <div className="font-medium text-neutral-900 dark:text-neutral-100">{name}</div>
                     <div className="truncate text-xs text-neutral-500">{tpl.spec?.description || templateSummary(tpl)}</div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 md:gap-3">
                     <span className="text-xs text-neutral-500">{namespace}</span>
                     <Pill tone={ready === 'Ready' ? 'good' : 'bad'} label={ready === 'Ready' ? 'Ready' : 'Not ready'} title={ready} />
                     <button
@@ -79,7 +78,6 @@ export default function TemplateList() {
                 </div>
               )
             })}
-          </div>
         </div>
       )}
     </div>

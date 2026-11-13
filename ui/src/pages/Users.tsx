@@ -319,12 +319,11 @@ export default function Users() {
       {loading ? (
         <Loading />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="card-list">
           {!users?.length && <EmptyState>No users yet.</EmptyState>}
-          <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {users?.map((u) => (
               // The buttons go under the user until there's room beside.
-              <div key={u.metadata.name} className="flex flex-col gap-2 px-4 py-3 xl:flex-row xl:items-center xl:justify-between xl:gap-3">
+              <div key={u.metadata.name} className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between xl:gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-neutral-900 dark:text-neutral-100">{u.metadata.name}</span>
@@ -401,7 +400,6 @@ export default function Users() {
                 </div>
               </div>
             ))}
-          </div>
         </div>
       )}
 

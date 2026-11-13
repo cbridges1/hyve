@@ -4,7 +4,8 @@
 // in here from the head as rows come and go, so a table needn't repeat
 // them. A row's first cell is its card's title, and an unheaded column
 // (a row's actions) sits along its foot.
-import { useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 export function Table({ className = 'table', children }: { className?: string; children: ReactNode }) {
   const ref = useRef<HTMLTableElement>(null)
@@ -32,5 +33,24 @@ export function Table({ className = 'table', children }: { className?: string; c
     <table ref={ref} className={`${className} table-cards`}>
       {children}
     </table>
+  )
+}
+
+// A row that opens a page when clicked anywhere on it (its card, on a
+// phone). Its own links and buttons keep their clicks, selecting text
+// doesn't navigate, and a modifier or middle click opens a new tab. The
+// row isn't focusable: a link in its first cell is the keyboard's way in.
+export function LinkRow({ to, children }: { to: string; children: ReactNode }) {
+  const navigate = useNavigate()
+  const open = (e: MouseEvent<HTMLTableRowElement>) => {
+    if ((e.target as HTMLElement).closest('a, button, input, select, textarea, label, [role="button"]')) return
+    if (window.getSelection()?.toString()) return
+    if (e.button === 1 || e.metaKey || e.ctrlKey || e.shiftKey) window.open(to, '_blank', 'noopener')
+    else if (e.button === 0) navigate(to)
+  }
+  return (
+    <tr className="cursor-pointer" onClick={open} onAuxClick={open}>
+      {children}
+    </tr>
   )
 }
