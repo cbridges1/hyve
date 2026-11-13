@@ -1,4 +1,5 @@
-// Sign-in: a username and password against the host's Users. A User that
+// Sign-in: a username or email address and a password against the host's
+// Users. A User that
 // must change its password does it here before signing in.
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
@@ -53,7 +54,7 @@ export function PasswordForm({ onSignedIn, submitLabel = 'Sign in' }: { onSigned
       await onSignedIn()
     } catch (e) {
       if (e instanceof ApiError && (e.body as any)?.code === 'MustChangePassword') setMustChange(true)
-      else setError(e instanceof ApiError && e.status === 401 ? 'Invalid username or password' : (e as Error).message)
+      else setError(e instanceof ApiError && e.status === 401 ? 'Invalid username, email or password' : (e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -83,7 +84,7 @@ export function PasswordForm({ onSignedIn, submitLabel = 'Sign in' }: { onSigned
         }
       }}
     >
-      {field('Username', username, setUsername, 'text', 'username', mustChange, true)}
+      {field('Username or email', username, setUsername, 'text', 'username', mustChange, true)}
       {field('Password', password, setPassword, 'password', 'current-password', mustChange)}
       {mustChange && (
         <>

@@ -274,6 +274,37 @@ func TestLoginEndpoint(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidSession)
 }
 
+// An email address signs in as its user, under that user's lockout; one
+// that two users share signs in as neither.
+func TestLoginByEmail(t *testing.T) {
+	s, _ := newStore(t, nil)
+	addUser(t, s, "alice", "correct-horse-battery")
+	addUser(t, s, "bob", "correct-horse-battery")
+	addUser(t, s, "carol", "correct-horse-battery")
+	setEmail(t, s, "alice", "Alice@Example.com")
+	setEmail(t, s, "bob", "shared@example.com")
+	setEmail(t, s, "carol", "shared@example.com")
+	h := NewServer(s, nil, "test").Handler()
+
+	rec := postJSON(t, h, "/v1-public/login", "", LoginRequest{Username: " alice@example.com", Password: "correct-horse-battery"})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var resp LoginResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "alice", resp.UserID)
+
+	for _, who := range []string{"shared@example.com", "nobody@example.com"} {
+		rec = postJSON(t, h, "/v1-public/login", "", LoginRequest{Username: who, Password: "correct-horse-battery"})
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, who)
+	}
+
+	for range 5 {
+		rec = postJSON(t, h, "/v1-public/login", "", LoginRequest{Username: "alice@example.com", Password: "wrong-wrong-wrong"})
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	}
+	rec = postJSON(t, h, "/v1-public/login", "", LoginRequest{Username: "alice", Password: "correct-horse-battery"})
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "failures by email lock out the username too")
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	s, _ := newStore(t, nil)
 	addUser(t, s, "alice", "correct-horse-battery")

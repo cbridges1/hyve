@@ -158,8 +158,38 @@ func (s *Store) getUser(ctx context.Context, username string) (*hyvev1alpha1.Use
 }
 
 // checkPassword verifies username's password.
+// LoginName is the username a sign-in names: the identifier itself, or,
+// for an email address, the one user with that address (any case). An
+// address no user, or more than one, has is returned as it is, and fails
+// as an unknown username would.
+func (s *Store) LoginName(ctx context.Context, identifier string) (string, error) {
+	identifier = strings.TrimSpace(identifier)
+	if !strings.Contains(identifier, "@") {
+		return identifier, nil
+	}
+	var list hyvev1alpha1.UserList
+	if err := s.Client.List(ctx, &list); err != nil {
+		return "", err
+	}
+	found := ""
+	for i := range list.Items {
+		if strings.EqualFold(list.Items[i].Spec.Email, identifier) {
+			if found != "" {
+				return identifier, nil
+			}
+			found = list.Items[i].Name
+		}
+	}
+	if found == "" {
+		return identifier, nil
+	}
+	return found, nil
+}
+
 func (s *Store) checkPassword(ctx context.Context, username, password string) (*hyvev1alpha1.User, error) {
 	if !ValidUsername(username) {
+		// Spend the same time as a real comparison.
+		_ = bcrypt.CompareHashAndPassword(dummyHash(), []byte(password))
 		return nil, ErrInvalidCredentials
 	}
 	u, err := s.getUser(ctx, username)

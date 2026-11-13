@@ -72,7 +72,7 @@ API token): every command uses them, and nothing is saved.
 func init() {
 	f := LoginCmd.Flags()
 	f.StringVar(&loginName, "name", "", "name to save the server under (default: from the host name)")
-	f.StringVarP(&loginUsername, "username", "u", "", "username (with --password-stdin; otherwise filled in on the sign-in page)")
+	f.StringVarP(&loginUsername, "username", "u", "", "username or email address (with --password-stdin; otherwise filled in on the sign-in page)")
 	f.BoolVar(&loginPasswordStdin, "password-stdin", false, "read the password from stdin (first line; a second line is the new password when one is required)")
 	f.StringVar(&loginCACert, "ca-cert", "", "PEM CA certificate to trust for this server")
 	f.BoolVar(&loginInsecure, "insecure-skip-tls-verify", false, "don't verify the server's certificate (testing only)")
@@ -153,7 +153,8 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		}
 	}
 	srv.Token, srv.ExpiresAt = sess.Token, sess.ExpiresAt
-	if sess.UserID != "" && srv.Username == "" {
+	// The host says who signed in: an email address signs in as its user.
+	if sess.UserID != "" {
 		srv.Username = sess.UserID
 	}
 

@@ -192,6 +192,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "Forbidden", "missing the "+UIHeader+" header")
 		return
 	}
+	// An email address signs in as its user, under that user's lockout.
+	name, err := s.Store.LoginName(r.Context(), req.Username)
+	if err != nil {
+		log.Printf("signin: finding the user for a sign-in: %v", err)
+		writeError(w, http.StatusInternalServerError, "ServerError", "sign-in failed")
+		return
+	}
+	req.Username = name
 	userKey, addrKey := "user:"+req.Username, "addr:"+clientAddr(r)
 	if s.userLimit.Blocked(userKey) || s.addrLimit.Blocked(addrKey) {
 		writeError(w, http.StatusTooManyRequests, "TooManyRequests", "too many failed sign-ins; try again later")
