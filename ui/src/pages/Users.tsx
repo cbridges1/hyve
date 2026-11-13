@@ -6,17 +6,18 @@
 // address, and is either invited (emailed a link to set their own
 // password) or given a password by whoever adds them. Each row says what
 // the user may reach (their grants and their groups', lib/access.ts), with
-// a link to them on Access.
+// a link to them on Access. Their environment access can be granted as
+// they're made.
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiTokens } from '../components/ApiTokens'
 import { Sessions } from '../components/Sessions'
-import { Checkbox, RadioGroup, TextField } from '../components/form'
+import { Checkbox, RadioGroup, SelectField, TextField } from '../components/form'
 import { Modal } from '../components/Modal'
 import { Banner, ErrorBanner, Loading, Pill, ConfirmButton, EmptyState } from '../components/ui'
 import { TrustedCI } from '../components/TrustedCI'
 import { ViewDialog } from '../components/ViewDialog'
-import { describeGrant, grantsFor, loadAccess, type Grant } from '../lib/access'
+import { describeGrant, grantAccess, grantsFor, loadAccess, ROLES, type Grant } from '../lib/access'
 import { auth, errorMessage } from '../lib/api'
 import { useLoad } from '../lib/hooks'
 import { kube, newObject, remove, save, type Obj } from '../lib/kube'
@@ -35,9 +36,42 @@ type Form = {
   onboard: 'invite' | 'password' | 'service'
   password: string
   mustChange: boolean
+  // The username follows the email until it's edited.
+  nameEdited: boolean
+  // Role per environment ('' for none).
+  access: Record<string, string>
 }
 
-const emptyForm = (): Form => ({ name: '', displayName: '', email: '', groups: '', onboard: 'invite', password: '', mustChange: true })
+const emptyForm = (): Form => ({
+  name: '',
+  displayName: '',
+  email: '',
+  groups: '',
+  onboard: 'invite',
+  password: '',
+  mustChange: true,
+  nameEdited: false,
+  access: {},
+})
+
+// A username from an email address's local part: "Ada.Lovelace+x@..." is
+// "ada-lovelace".
+const nameFromEmail = (email: string) =>
+  email
+    .split('@')[0]
+    .split('+')[0]
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 63)
+    .replace(/-+$/, '')
+
+// The roles a new user can be given in an environment: all of a grant's
+// but deployer, which isn't per environment.
+const ENV_ROLES = ROLES.filter((r) => r.value !== 'deployer').map((r) => ({
+  value: r.value,
+  label: r.value === 'env-member' ? r.label : `${r.label} of every cluster`,
+}))
 
 // On a new User: an invitation is coming, so the host doesn't also send
 // "an account was created for you".
@@ -101,10 +135,16 @@ export default function Users() {
   // change here. Rows say nothing about access to whoever can't read it.
   const { data, error: loadError, loading, reload } = useLoad(async (r) => {
     const [users, access] = await Promise.all([r.findAll(TYPES.USER, { force: true }), loadAccess(r)])
-    return { users: users.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name)), grants: access.grants, readable: access.readable }
+    return {
+      users: users.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name)),
+      grants: access.grants,
+      readable: access.readable,
+      envs: access.envs,
+    }
   }, [])
   const users = data?.users
   const grants = data?.grants || []
+  const envs = data?.envs || []
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<Form>(emptyForm)
   const [error, setError] = useState('')
@@ -146,6 +186,18 @@ export default function Users() {
       return
     }
     const service = f.onboard === 'service'
+    const wanted = Object.entries(f.access).filter(([env, role]) => role && envs.includes(env))
+    // Grants follow the user; a failed one leaves the user made, and says
+    // so, rather than undoing it.
+    const grant = async () => {
+      const failed: string[] = []
+      for (const [env, role] of wanted) {
+        await grantAccess({ kind: 'user', subject: f.name, role, env, cluster: '' }).catch((err) =>
+          failed.push(`${env}: ${errorMessage(err)}`),
+        )
+      }
+      if (failed.length) setError(`${f.name} was created, but some access wasn't granted (grant it on Access): ${failed.join('; ')}`)
+    }
     if (!(service && !f.email.trim()) && !EMAIL_RE.test(f.email.trim())) {
       setFormError(f.email.trim() ? "That email address doesn't look right" : 'An email address is required')
       return
@@ -153,7 +205,8 @@ export default function Users() {
     if (service) {
       const ok = await act(async () => {
         await save(TYPES.USER, newObject(TYPES.USER, { metadata: { name: f.name, annotations: { [SERVICE_ANNOTATION]: 'true' } }, spec: withFields({}, f) }))
-        setNotice(`Created service user ${f.name}. Give it access, then an API token or CI sign-in from its row.`)
+        await grant()
+        setNotice(`Created service user ${f.name}. Give it an API token or CI sign-in from its row.`)
       }, setFormError)
       if (ok) {
         setAdding(false)
@@ -177,6 +230,7 @@ export default function Users() {
           await remove(TYPES.USER, u).catch(() => {})
           throw new Error(`${errorMessage(err)} (the user was removed again)`)
         }
+        await grant()
         setNotice(`Invited ${f.name}: they'll get an email at ${f.email.trim()} to set their password. It works for 7 days.`)
         return
       }
@@ -192,6 +246,7 @@ export default function Users() {
         fresh.spec = { ...fresh.spec, mustChangePassword: true }
         await save(TYPES.USER, fresh)
       }
+      await grant()
     }, setFormError)
     if (ok) {
       setAdding(false)
@@ -353,20 +408,44 @@ export default function Users() {
       {adding && (
         <Modal title="New user" onClose={() => setAdding(false)}>
           <form onSubmit={add}>
-            <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              <TextField label="Username" value={form.name} onChange={(v) => set({ name: v })} autoFocus />
-              <TextField label="Display name" value={form.displayName} onChange={(v) => set({ displayName: v })} />
-            </div>
             <TextField
               className="mb-3"
               label="Email"
               type="email"
+              autoFocus
               required={form.onboard !== 'service'}
               value={form.email}
-              onChange={(v) => set({ email: v })}
+              onChange={(v) => set({ email: v, ...(form.nameEdited ? {} : { name: nameFromEmail(v) }) })}
               help={form.onboard === 'service' ? 'Optional for a service user.' : 'Where their invitation, password resets and account emails go.'}
             />
+            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+              <TextField
+                label="Username"
+                value={form.name}
+                onChange={(v) => set({ name: v, nameEdited: true })}
+                help={<>Kubernetes sees them as <code>hyve:{form.name || 'username'}</code>.</>}
+              />
+              <TextField label="Display name" value={form.displayName} onChange={(v) => set({ displayName: v })} />
+            </div>
             <TextField className="mb-3" label="Groups" value={form.groups} onChange={(v) => set({ groups: v })} placeholder="comma-separated" />
+            {envs.length > 0 && (
+              <fieldset className="mb-3">
+                <legend className="mb-1 text-sm font-medium">Environment access</legend>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {envs.map((env) => (
+                    <SelectField
+                      key={env}
+                      label={env}
+                      value={form.access[env] || ''}
+                      onChange={(v) => set({ access: { ...form.access, [env]: v } })}
+                      placeholder="No access"
+                      options={ENV_ROLES}
+                    />
+                  ))}
+                </div>
+                <span className="hint">More, such as one cluster or deploying to templates, on Access.</span>
+              </fieldset>
+            )}
             <div className="mb-3">
               <RadioGroup
                 label="Password"

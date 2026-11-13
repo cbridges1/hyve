@@ -4,8 +4,8 @@
 // the environment and the template namespace), or deploying to templates
 // (a RoleBinding labelled hyve.io/deployer in the template namespace). Read by the Access page and,
 // per user, by Users.
-import { idOf, type Obj, type Reader } from './kube'
-import { LABELS, TYPES } from './types'
+import { idOf, kube, newObject, save, type Obj, type Reader } from './kube'
+import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from './types'
 
 export const ENV_MEMBER = 'hyve.io/env-member'
 // Deployers ('hyve access grant --role deployer'): a RoleBinding of
@@ -126,4 +126,51 @@ export function describeGrant(g: Grant): string {
   if (g.role === 'deployer') return `deploys to templates (${g.ns})`
   if (g.type === TYPES.ROLE_BINDING) return `member of environment ${g.ns}`
   return g.on === 'every cluster' ? `${g.role} on every cluster in ${g.ns}` : `${g.role} of ${g.on} in ${g.ns}`
+}
+
+// The roles a grant gives, as 'hyve access grant --role' names them.
+export const ROLES = [
+  { value: 'owner', label: 'Owner', hint: 'everything on the cluster' },
+  { value: 'member', label: 'Member', hint: 'see the cluster, create namespaces' },
+  { value: 'read-only', label: 'Read-only', hint: 'read everything but Secrets' },
+  { value: 'env-member', label: 'Environment member', hint: 'create and manage clusters in the environment' },
+  { value: 'deployer', label: 'Deployer', hint: 'make and change the Deployments aimed at templates (for CI)' },
+]
+
+export type GrantRequest = { kind: 'user' | 'group'; subject: string; role: string; env: string; cluster: string }
+
+// grantAccess makes (or updates) one grant, under the names 'hyve access
+// grant' gives, so the CLI and UI agree: deployers and environment members
+// are RoleBindings, the cluster roles a ClusterAccess in the environment
+// (on one cluster, or all of them when cluster is empty).
+export async function grantAccess(f: GrantRequest) {
+  const subjectKind = f.kind === 'group' ? 'Group' : 'User'
+  const name = `${subjectKind}-${f.subject}`.toLowerCase()
+  const subjects = [{ apiGroup: 'rbac.authorization.k8s.io', kind: subjectKind, name: `hyve:${f.subject}` }]
+  const binding = async (ns: string, rbName: string, label: string, role: string) => {
+    const rb =
+      (await kube.maybe(TYPES.ROLE_BINDING, ns, rbName)) ||
+      newObject(TYPES.ROLE_BINDING, { metadata: { name: rbName, namespace: ns, labels: { [LABELS.MANAGED_BY]: 'hyve', [label]: 'true' } } })
+    rb.roleRef = { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: role }
+    rb.subjects = subjects
+    await save(TYPES.ROLE_BINDING, rb)
+  }
+  if (f.role === 'deployer') {
+    await binding(DEFAULT_TEMPLATE_NAMESPACE, `hyve-deployer-${name}`, DEPLOYER, 'hyve-deployer')
+    return
+  }
+  if (f.role === 'env-member') {
+    await binding(f.env, `hyve-member-${name}`, ENV_MEMBER, 'hyve-environment-member')
+    await binding(DEFAULT_TEMPLATE_NAMESPACE, `hyve-member-${name}`, ENV_MEMBER, 'hyve-template-reader')
+    return
+  }
+  const spec: Record<string, string> = { role: f.role, [f.kind === 'group' ? 'group' : 'user']: f.subject }
+  let caName = `${f.role}-${name}`
+  if (f.cluster) {
+    spec.clusterName = f.cluster
+    caName = `${f.cluster}-${caName}`
+  }
+  const ca = (await kube.maybe(TYPES.CLUSTER_ACCESS, f.env, caName)) || newObject(TYPES.CLUSTER_ACCESS, { metadata: { name: caName, namespace: f.env } })
+  ca.spec = spec
+  await save(TYPES.CLUSTER_ACCESS, ca)
 }

@@ -12,20 +12,13 @@ import { ViewDialog } from '../components/ViewDialog'
 import { errorMessage } from '../lib/api'
 import { useEnvironment } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
-import { kube, newObject, remove, save } from '../lib/kube'
-import { DEPLOYER, ENV_MEMBER, grantsFor, loadAccess, type Grant } from '../lib/access'
-import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from '../lib/types'
+import { kube, remove } from '../lib/kube'
+import { grantAccess, grantsFor, loadAccess, ROLES, type Grant, type GrantRequest } from '../lib/access'
+import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from '../lib/types'
 import { Table } from '../components/Table'
 
-const ROLES = [
-  { value: 'owner', label: 'Owner', hint: 'everything on the cluster' },
-  { value: 'member', label: 'Member', hint: 'see the cluster, create namespaces' },
-  { value: 'read-only', label: 'Read-only', hint: 'read everything but Secrets' },
-  { value: 'env-member', label: 'Environment member', hint: 'create and manage clusters in the environment' },
-  { value: 'deployer', label: 'Deployer', hint: 'make and change the Deployments aimed at templates (for CI)' },
-]
 
-type Form = { kind: 'user' | 'group'; subject: string; role: string; env: string; cluster: string }
+type Form = GrantRequest
 
 export default function Access() {
   const [picked] = useEnvironment()
@@ -64,48 +57,9 @@ export default function Access() {
       setError('Give a user or group, and an environment.')
       return
     }
-    const subjectKind = f.kind === 'group' ? 'Group' : 'User'
-    // The names 'hyve access grant' gives, so the CLI and UI agree.
-    const name = `${subjectKind}-${f.subject}`.toLowerCase()
     setBusy(true)
     try {
-      if (f.role === 'deployer') {
-        const rbName = `hyve-deployer-${name}`
-        const ns = DEFAULT_TEMPLATE_NAMESPACE
-        const rb =
-          (await kube.maybe(TYPES.ROLE_BINDING, ns, rbName)) ||
-          newObject(TYPES.ROLE_BINDING, { metadata: { name: rbName, namespace: ns, labels: { [LABELS.MANAGED_BY]: 'hyve', [DEPLOYER]: 'true' } } })
-        rb.roleRef = { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'hyve-deployer' }
-        rb.subjects = [{ apiGroup: 'rbac.authorization.k8s.io', kind: subjectKind, name: `hyve:${f.subject}` }]
-        await save(TYPES.ROLE_BINDING, rb)
-      } else if (f.role === 'env-member') {
-        for (const [ns, role] of [
-          [f.env, 'hyve-environment-member'],
-          [DEFAULT_TEMPLATE_NAMESPACE, 'hyve-template-reader'],
-        ]) {
-          const rbName = `hyve-member-${name}`
-          const have = await kube.maybe(TYPES.ROLE_BINDING, ns, rbName)
-          const rb =
-            have ||
-            newObject(TYPES.ROLE_BINDING, {
-              metadata: { name: rbName, namespace: ns, labels: { [LABELS.MANAGED_BY]: 'hyve', [ENV_MEMBER]: 'true' } },
-            })
-          rb.roleRef = { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: role }
-          rb.subjects = [{ apiGroup: 'rbac.authorization.k8s.io', kind: subjectKind, name: `hyve:${f.subject}` }]
-          await save(TYPES.ROLE_BINDING, rb)
-        }
-      } else {
-        const spec: Record<string, string> = { role: f.role, [f.kind === 'group' ? 'group' : 'user']: f.subject }
-        let caName = `${f.role}-${name}`
-        if (f.cluster) {
-          spec.clusterName = f.cluster
-          caName = `${f.cluster}-${caName}`
-        }
-        const have = await kube.maybe(TYPES.CLUSTER_ACCESS, f.env, caName)
-        const ca = have || newObject(TYPES.CLUSTER_ACCESS, { metadata: { name: caName, namespace: f.env } })
-        ca.spec = spec
-        await save(TYPES.CLUSTER_ACCESS, ca)
-      }
+      await grantAccess(f)
       setAdding(false)
       await reload(true)
     } catch (err) {
