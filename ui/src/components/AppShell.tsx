@@ -1,5 +1,6 @@
 // The console's shell: a full-width header (logo, theme, account menu)
-// over a grouped sidebar and the page.
+// over a grouped sidebar and the page. On a phone the header drops the
+// logo, and a floating bar at the foot reaches the main pages.
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { auth, errorMessage } from '../lib/api'
@@ -66,12 +67,16 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
       : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800/70'
   }`
 
-function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+function useVisibleGroups() {
   const { canSettings } = useSession()
-  const { pathname } = useLocation()
-  const visible = groups
+  return groups
     .map((g) => ({ ...g, items: g.items.filter((i) => (!i.type || schemaFor(i.type)) && (!i.settings || canSettings)) }))
     .filter((g) => g.items.length)
+}
+
+function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+  const { pathname } = useLocation()
+  const visible = useVisibleGroups()
   return (
     <nav className="w-full flex-1 space-y-3 overflow-y-auto px-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       {visible.map((g) => (
@@ -92,6 +97,43 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         </div>
       ))}
+    </nav>
+  )
+}
+
+// Phones (below md): icons for the first three pages the user can open
+// (Overview, Clusters, Templates), floating over the page's foot; the
+// menu has the rest.
+const QUICK_ITEMS = 3
+
+function QuickNav() {
+  const items = useVisibleGroups()
+    .flatMap((g) => g.items)
+    .slice(0, QUICK_ITEMS)
+  return (
+    <nav
+      aria-label="Quick access"
+      className="fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-30 flex justify-center px-4 md:hidden"
+    >
+      <div className="flex gap-1 rounded-full border border-neutral-200 bg-white/90 p-1.5 shadow-lg backdrop-blur dark:border-neutral-700 dark:bg-neutral-900/90">
+        {items.map((item) => (
+          <NavLink
+            key={item.label}
+            to={typeof item.to === 'function' ? item.to() : item.to}
+            aria-label={item.label}
+            title={item.label}
+            className={({ isActive }) =>
+              `flex h-11 w-14 items-center justify-center rounded-full no-underline transition-colors hover:no-underline ${
+                isActive
+                  ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-900'
+                  : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'
+              }`
+            }
+          >
+            <Icon name={item.icon} size={22} />
+          </NavLink>
+        ))}
+      </div>
     </nav>
   )
 }
@@ -320,7 +362,7 @@ export function AppShell() {
           >
             <Icon name="menu" size={22} />
           </button>
-          <Link to="/" className="flex items-center" aria-label="hyve home">
+          <Link to="/" className="hidden items-center md:flex" aria-label="hyve home">
             <Logo />
           </Link>
         </div>
@@ -341,7 +383,7 @@ export function AppShell() {
           <Sidebar />
         </aside>
         <main
-          className={`min-w-0 flex-1 py-5 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] sm:py-6 sm:pr-6 sm:pl-6 lg:px-8 ${shell ? 'pb-[calc(40vh+4rem)]' : 'pb-[max(1.25rem,env(safe-area-inset-bottom))]'}`}
+          className={`min-w-0 flex-1 py-5 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] sm:py-6 sm:pr-6 sm:pl-6 lg:px-8 ${shell ? 'pb-[calc(40vh+4rem)]' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-[max(1.25rem,env(safe-area-inset-bottom))]'}`}
         >
           {/* The explorer and YAML pages use a wide screen's width. */}
           <div className={`mx-auto ${/\/explorer$|^\/yaml\//.test(location.pathname) ? 'max-w-[1600px]' : 'max-w-6xl'}`}>
@@ -352,6 +394,8 @@ export function AppShell() {
           </div>
         </main>
       </div>
+      {/* The kubectl shell takes the foot of the screen while it's open. */}
+      {!shell && <QuickNav />}
       {shell && (
         <Suspense fallback={null}>
           <KubectlShell key={shell.cluster} target={shell} />

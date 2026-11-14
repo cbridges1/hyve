@@ -2,7 +2,9 @@
 // is a ClusterAccess in the environment (hyve-controller binds the role on
 // the clusters), or, for environment members, RoleBindings in the
 // environment and the template namespace (lib/access.ts reads them).
-// ?user=<name> shows one user's, their groups' included: Users links here.
+// Every environment's grants the user can read, with no environment
+// picker. ?user=<name> shows one user's, their groups' included: Users
+// links here.
 import { useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SelectField, TextField } from '../components/form'
@@ -10,7 +12,7 @@ import { Modal } from '../components/Modal'
 import { ConfirmButton, ErrorBanner, Loading } from '../components/ui'
 import { ViewDialog } from '../components/ViewDialog'
 import { errorMessage } from '../lib/api'
-import { useEnvironment, useEnvironmentScope } from '../lib/environment'
+import { DEFAULT_ENVIRONMENT } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
 import { kube, remove } from '../lib/kube'
 import { grantAccess, grantsFor, loadAccess, ROLES, type Grant, type GrantRequest } from '../lib/access'
@@ -21,8 +23,6 @@ import { Table } from '../components/Table'
 type Form = GrantRequest
 
 export default function Access() {
-  const [env] = useEnvironment()
-  useEnvironmentScope()
   const { data, error: loadError, loading, reload } = useLoad(loadAccess, [])
   // ?user=<name>: that user's grants, their groups' too (from Users).
   const [params, setParams] = useSearchParams()
@@ -36,7 +36,7 @@ export default function Access() {
 
   const envs = data?.envs || []
   const userGroups = data?.users.find((u) => u.metadata.name === forUser)?.spec?.groups || []
-  const shown = (forUser ? grantsFor(data?.grants || [], forUser, userGroups) : data?.grants || []).filter((g) => !env || g.ns === env)
+  const shown = (forUser ? grantsFor(data?.grants || [], forUser, userGroups) : data?.grants || [])
   const envClusters = (data?.clusters || [])
     .filter((c) => c.metadata.namespace === form.env)
     .map((c) => c.metadata.name)
@@ -45,7 +45,7 @@ export default function Access() {
 
   function startAdd() {
     setError('')
-    setForm({ kind: 'user', subject: '', role: 'owner', env: env || envs[0] || '', cluster: '' })
+    setForm({ kind: 'user', subject: '', role: 'owner', env: envs.includes(DEFAULT_ENVIRONMENT) ? DEFAULT_ENVIRONMENT : envs[0] || '', cluster: '' })
     setAdding(true)
   }
 
@@ -130,7 +130,7 @@ export default function Access() {
               {!shown.length && (
                 <tr>
                   <td colSpan={6} className="text-muted">
-                    No grants here.
+                    No grants yet.
                   </td>
                 </tr>
               )}

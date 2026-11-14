@@ -6,9 +6,7 @@ const PATHS: Record<string, string[]> = {
   // A ship under sail: Fleet.
   fleet: ['M11 2.5v14', 'M11 3.5 19 15h-8', 'M11 7 5 15h6', 'M2.5 18h19l-2.6 3.5H5.1z'],
   plus: ['M12 5v14M5 12h14'],
-  templates: [
-    'M4 3h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM15 3h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM4 14h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1zM15 14h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z',
-  ],
+  templates: ['M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z', 'M3 9h18', 'M9 9v12'],
   resources: ['M12 3 20 7.5v9L12 21 4 16.5v-9Z', 'M4 7.5 12 12l8-4.5M12 12v9'],
   repos: ['M6 3v12', 'M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M18 9a9 9 0 0 1-9 9'],
   // Three clusters in a set.

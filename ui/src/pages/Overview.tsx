@@ -1,6 +1,6 @@
-// Every cluster with its provider, template, environment, phase and
-// expiry, the host cluster (local) first for whoever can reach it (with
-// all environments or the default one, lib/environment.ts); each
+// Every cluster the user can see, in every environment (the overview
+// isn't filtered by one), with its provider, template, environment, phase
+// and expiry, the host cluster (local) first for whoever can reach it; each
 // running cluster's CPU, memory and pods (components/ResourceMonitor.tsx);
 // Deployments failing anywhere (the host's included); and clusters
 // expiring soon.
@@ -10,7 +10,6 @@ import { ApplyYaml } from '../components/ApplyYaml'
 import { ResourceSummaryCells } from '../components/ResourceMonitor'
 import { ErrorBanner, Loading, PageHeader } from '../components/ui'
 import { classOf, extendExpiry, providerOfClass } from '../lib/clusters'
-import { showsLocal, useEnvironment, useEnvironmentScope } from '../lib/environment'
 import { useAction, useLoad } from '../lib/hooks'
 import { LOCAL_CLUSTER } from '../lib/explorer'
 import { idOf, type Obj } from '../lib/kube'
@@ -35,11 +34,9 @@ function Stat({ count, label, tone = '' }: { count: number; label: string; tone?
 }
 
 export default function Overview() {
-  const [environment] = useEnvironment()
-  useEnvironmentScope()
   const [applying, setApplying] = useState(false)
   const { canExplore } = useSession()
-  const showLocal = canExplore && showsLocal(environment)
+  const showLocal = canExplore
   const action = useAction()
   const { data, error, loading, reload } = useLoad(async (r) => {
     const [dl, classes] = await Promise.all([loadDelivery(r), r.findAll(TYPES.CLUSTER_CLASS).catch(() => [] as Obj[])])
@@ -49,8 +46,7 @@ export default function Overview() {
   const view = useMemo(() => {
     if (!data) return null
     const { clusters, templates, classes, dl, now } = data
-    const inEnv = (c: Obj) => !environment || c.metadata.namespace === environment
-    const shown = clusters.filter(inEnv)
+    const shown = clusters
     const rows = shown.map((c) => {
       const l = c.metadata.labels || {}
       const t = templates.find(
@@ -85,7 +81,7 @@ export default function Overview() {
     // Running clusters, whose API can be read for the resource summary.
     const live = shown.filter((c) => c.status?.phase === 'Provisioned' && !c.metadata.deletionTimestamp)
     return { shown, rows, failing, live, expiringSoon: rows.filter((r) => r.soon) }
-  }, [data, environment])
+  }, [data])
 
   if (loading) return <Loading />
 
@@ -194,7 +190,7 @@ export default function Overview() {
               </div>
               {view.live.length > MAX_MONITORED && (
                 <p className="hint -mt-3 mb-5">
-                  The first {MAX_MONITORED} of {view.live.length} running clusters; pick an environment to narrow it, or open a cluster for its own.
+                  The first {MAX_MONITORED} of {view.live.length} running clusters; open a cluster for its own.
                 </p>
               )}
             </>
