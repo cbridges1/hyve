@@ -66,6 +66,8 @@ func secure(r *http.Request) bool {
 	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
+// setSessionCookie keeps token until expiresAt: the longest the session
+// could last (Store.cookieUntil), since its end moves while it's used.
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
@@ -146,13 +148,13 @@ func (s *Server) handleLocalSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "Forbidden", "signing in without a password only works at 127.0.0.1 or localhost")
 		return
 	}
-	token, expiresAt, err := s.Store.NewSession(r.Context(), Identity{Username: s.LocalUser})
+	token, _, err := s.Store.NewSession(r.Context(), Identity{Username: s.LocalUser})
 	if err != nil {
 		log.Printf("signin: local session for %s: %v", s.LocalUser, err)
 		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start a session")
 		return
 	}
-	setSessionCookie(w, r, token, expiresAt)
+	setSessionCookie(w, r, token, s.Store.cookieUntil())
 	ident, err := s.Store.Lookup(r.Context(), token)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ServerError", "couldn't start a session")
@@ -265,11 +267,6 @@ func (s *Server) handleUISession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "Unauthorized", ErrInvalidSession.Error())
 		return
 	}
-	expiresAt, err := s.Store.Expiry(r.Context(), req.Token)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "Unauthorized", ErrInvalidSession.Error())
-		return
-	}
-	setSessionCookie(w, r, req.Token, expiresAt)
+	setSessionCookie(w, r, req.Token, s.Store.cookieUntil())
 	writeJSON(w, http.StatusOK, MeResponse{Username: ident.Username, Groups: ident.Groups, Version: s.Version})
 }

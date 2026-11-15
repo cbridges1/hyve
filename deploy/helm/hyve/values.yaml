@@ -85,14 +85,19 @@ ui:
 host:
   enabled: false
   replicaCount: 1
-  # How long a sign-in lasts (Rancher's default is 16h).
+  # How long a sign-in lasts unused (Rancher's default is 16h): each use
+  # extends it, up to sessionMaxAge after signing in.
   sessionTTL: 16h
+  sessionMaxAge: 720h
   # One JSON line on the host's stdout per request it proxies to a cluster
   # as a user: who, which cluster, verb, path and status.
   auditLog: true
   # Secret (in namespace) with the first admin's bootstrapPassword. If it
   # doesn't exist, the host generates one and logs how to read it.
   bootstrapSecret: bootstrap-secret
+  # The admin user's email address, set when it has none, so it can sign
+  # in with it and get password resets (`hyve install --admin-email`).
+  adminEmail: ""
   # Local mode only: browsers at 127.0.0.1 or localhost are signed in as
   # this user without a password. Never set it on a host others can reach.
   localUser: ""

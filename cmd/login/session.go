@@ -111,6 +111,7 @@ available, it signs in again first, prompting on stderr.`,
 				return err
 			}
 		}
+		login.RenewAndSave(cmd.Context(), cfg, s)
 		if !s.SignedIn(time.Now()) {
 			in := newInput(os.Stdin)
 			if !in.tty {

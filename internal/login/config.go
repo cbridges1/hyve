@@ -4,6 +4,7 @@
 package login
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -43,6 +44,40 @@ type Server struct {
 // SignedIn reports whether the session is present and unexpired.
 func (s *Server) SignedIn(now time.Time) bool {
 	return s.Token != "" && (s.ExpiresAt.IsZero() || now.Before(s.ExpiresAt))
+}
+
+// Renew asks the host when the session ends, once the saved end has
+// passed: the host extends a sign-in's session while it's used, so the
+// saved end is only when it would have ended unused. It reports whether
+// the saved end moved (and the config needs saving). A host that can't be
+// reached, or that no longer accepts the session, leaves it as it was.
+func (s *Server) Renew(ctx context.Context, now time.Time) bool {
+	if s.Token == "" || s.SignedIn(now) {
+		return false
+	}
+	hc, err := HTTPClient(s.CACertFile, s.InsecureSkipVerify)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	me, err := WhoAmI(ctx, hc, s.URL, s.Token)
+	if err != nil {
+		return false
+	}
+	end, err := time.Parse(time.RFC3339, me.ExpiresAt)
+	if err != nil || !now.Before(end) {
+		return false
+	}
+	s.ExpiresAt = end
+	return true
+}
+
+// RenewAndSave is Renew, saving cfg when the session's end moved.
+func RenewAndSave(ctx context.Context, cfg *Config, s *Server) {
+	if s.Renew(ctx, time.Now()) {
+		_ = cfg.Save()
+	}
 }
 
 // Config is every saved server, and which one commands use.

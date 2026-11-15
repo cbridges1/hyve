@@ -51,6 +51,8 @@ var (
 	tlsKeyFile      string
 	namespace       string
 	sessionTTL      time.Duration
+	sessionMaxAge   time.Duration
+	adminEmail      string
 	bootstrapSecret string
 	caCertsFile     string
 	localUser       string
@@ -99,8 +101,10 @@ func init() {
 	runCmd.Flags().StringVar(&tlsCertFile, "tls-cert", "", "TLS certificate file (serves plain HTTP when unset, for use behind a TLS-terminating ingress)")
 	runCmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS key file")
 	runCmd.Flags().StringVar(&namespace, "namespace", ns, "namespace holding password and session Secrets (default: $POD_NAMESPACE or hyve-system)")
-	runCmd.Flags().DurationVar(&sessionTTL, "session-ttl", signin.DefaultSessionTTL, "how long a sign-in lasts")
+	runCmd.Flags().DurationVar(&sessionTTL, "session-ttl", signin.DefaultSessionTTL, "how long a sign-in lasts unused (each use extends it)")
+	runCmd.Flags().DurationVar(&sessionMaxAge, "session-max-age", signin.DefaultSessionMaxAge, "the longest a sign-in lasts, however much it's used")
 	runCmd.Flags().StringVar(&bootstrapSecret, "bootstrap-secret", "bootstrap-secret", "Secret holding the first admin's bootstrapPassword")
+	runCmd.Flags().StringVar(&adminEmail, "admin-email", "", "the admin user's email address, set when it has none: it can sign in with it and get password resets")
 	runCmd.Flags().BoolVar(&serveUI, "ui", false, "serve hyve's own UI at / (built into the binary with 'task ui')")
 	runCmd.Flags().StringVar(&localUser, "local-user", "", "sign browsers at 127.0.0.1 or localhost in as this user without a password (local mode only: never on a host others can reach)")
 	f := runCmd.Flags()
@@ -149,9 +153,12 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("creating a client: %w", err)
 	}
 
-	store := &signin.Store{Client: c, Namespace: namespace, SessionTTL: sessionTTL}
+	store := &signin.Store{Client: c, Namespace: namespace, SessionTTL: sessionTTL, SessionMaxAge: sessionMaxAge}
 	if err := store.EnsureBootstrapAdmin(ctx, bootstrapSecret); err != nil {
 		return fmt.Errorf("creating the bootstrap admin: %w", err)
+	}
+	if err := store.SetBootstrapAdminEmail(ctx, adminEmail); err != nil {
+		return fmt.Errorf("setting the admin's email: %w", err)
 	}
 	proxy, err := signin.NewLocalProxy(cfg, store)
 	if err != nil {

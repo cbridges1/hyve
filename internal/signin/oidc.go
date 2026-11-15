@@ -340,14 +340,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		loginError(w, r, st.Redirect, "Couldn't sign you in; see the host's log.")
 		return
 	}
-	token, expiresAt, err := o.Store.createSessionWithGroups(ctx, u, who.groups)
+	token, _, err := o.Store.createSessionWithGroups(ctx, u, who.groups)
 	if err != nil {
 		log.Printf("signin: oidc: session for %s: %v", u.Name, err)
 		loginError(w, r, st.Redirect, "Couldn't start a session.")
 		return
 	}
 	o.Store.recordLogin(ctx, u)
-	setSessionCookie(w, r, token, expiresAt)
+	setSessionCookie(w, r, token, o.Store.cookieUntil())
 	http.Redirect(w, r, st.Redirect, http.StatusFound)
 }
 

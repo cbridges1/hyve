@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -45,6 +46,9 @@ Run it as a cluster admin. Safe to re-run.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (tlsCert == "") != (tlsKey == "") {
 				return errors.New("--host-tls-cert and --host-tls-key go together")
+			}
+			if o.AdminEmail != "" && (o.HostURL == "" || !strings.Contains(o.AdminEmail, "@")) {
+				return errors.New("--admin-email takes an email address, and needs --host-url (the admin signs in at the host)")
 			}
 			rules := clientcmd.NewDefaultClientConfigLoadingRules()
 			if kubeconfig != "" {
@@ -125,6 +129,7 @@ Run it as a cluster admin. Safe to re-run.`,
 	f.StringVar(&o.Image, "image", "", "hyve image (default: the release's)")
 	f.StringVar(&o.PullPolicy, "image-pull-policy", "", "image pull policy")
 	f.StringVar(&o.HostURL, "host-url", "", "the host endpoint's URL, as users and child clusters reach it")
+	f.StringVar(&o.AdminEmail, "admin-email", "", "the admin user's email address (set when it has none), to sign in with and for password resets")
 	f.StringVar(&tlsCert, "host-tls-cert", "", "certificate for the host to serve (default: plain HTTP, for a TLS-terminating proxy in front)")
 	f.StringVar(&tlsKey, "host-tls-key", "", "key for --host-tls-cert")
 	f.StringVar(&caFile, "host-cacerts", "", "PEM CA the host's certificate chains to, when it isn't publicly trusted")

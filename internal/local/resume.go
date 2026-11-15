@@ -37,6 +37,11 @@ func Resume(ctx context.Context, home string, logf func(string, ...any)) error {
 	if err != nil {
 		return err
 	}
+	if running {
+		// The host extends a session while it's used: ask before signing
+		// in again.
+		login.RenewAndSave(ctx, cfg, s)
+	}
 	if !running || !s.SignedIn(time.Now()) {
 		u, err := url.Parse(s.URL)
 		if err != nil {

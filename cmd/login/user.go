@@ -66,6 +66,7 @@ func newUserContext() (*userContext, error) {
 	if err != nil {
 		return nil, err
 	}
+	login.RenewAndSave(context.Background(), cfg, s)
 	if !s.SignedIn(time.Now()) {
 		return nil, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.URL)
 	}

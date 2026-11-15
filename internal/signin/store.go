@@ -2,6 +2,7 @@ package signin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hyvev1alpha1 "github.com/cbridges1/hyve/internal/apis/hyve/v1alpha1"
@@ -30,7 +32,12 @@ const (
 	MinPasswordLength = 12
 
 	// DefaultSessionTTL matches Rancher's auth-user-session-ttl-minutes.
+	// A sign-in's session slides: each use (checked at most every
+	// extendEvery) moves its end to SessionTTL after it, so it ends after
+	// that long unused, and never later than SessionMaxAge after sign-in.
 	DefaultSessionTTL = 16 * time.Hour
+	// DefaultSessionMaxAge is the longest a sign-in lasts, used or not.
+	DefaultSessionMaxAge = 30 * 24 * time.Hour
 
 	// BootstrapAdmin is the User the host creates on first start.
 	BootstrapAdmin = "admin"
@@ -39,6 +46,8 @@ const (
 	labelSessionFor  = "hyve.io/session-for"
 	keyHash          = "hash"
 	keyExpiresAt     = "expiresAt"
+	// keyNotAfter on a session: the latest its sliding end can move to.
+	keyNotAfter = "notAfter"
 	// keyGroups on a session: the identity provider's groups at sign-in,
 	// one per line, added to the User's own.
 	keyGroups        = "groups"
@@ -108,10 +117,13 @@ func (i Identity) KubeGroups() []string {
 
 // Store keeps Users' password hashes and sessions as Secrets in Namespace.
 type Store struct {
-	Client     client.Client
-	Namespace  string
-	SessionTTL time.Duration
-	Now        func() time.Time
+	Client    client.Client
+	Namespace string
+	// SessionTTL is how long a sign-in's session lasts unused, and
+	// SessionMaxAge the longest it lasts (DefaultSession*).
+	SessionTTL    time.Duration
+	SessionMaxAge time.Duration
+	Now           func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cachedIdentity
@@ -134,6 +146,25 @@ func (s *Store) ttl() time.Duration {
 		return s.SessionTTL
 	}
 	return DefaultSessionTTL
+}
+
+func (s *Store) maxAge() time.Duration {
+	if s.SessionMaxAge > 0 {
+		return s.SessionMaxAge
+	}
+	return DefaultSessionMaxAge
+}
+
+// extendEvery is the least a session's end moves at once, so a session in
+// use is written to at most about once an hour (as its last-used time is).
+func (s *Store) extendEvery() time.Duration {
+	return min(lastUsedEvery, s.ttl()/2)
+}
+
+// cookieUntil is how long a browser keeps a new session's cookie: as long
+// as the session could last, as the host enforces its end.
+func (s *Store) cookieUntil() time.Time {
+	return s.now().Add(s.maxAge()).UTC().Truncate(time.Second)
 }
 
 func passwordSecretName(username string) string { return "hyve-password-" + username }
@@ -375,9 +406,14 @@ func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User, groups 
 	if opts.ttl > 0 {
 		ttl = opts.ttl
 	}
-	expiresAt := s.now().Add(ttl).UTC().Truncate(time.Second)
-	if !opts.notAfter.IsZero() && opts.notAfter.Before(expiresAt) {
-		expiresAt = opts.notAfter.UTC().Truncate(time.Second)
+	now := s.now().UTC().Truncate(time.Second)
+	expiresAt := now.Add(ttl)
+	notAfter := now.Add(s.maxAge())
+	if !opts.notAfter.IsZero() && opts.notAfter.Before(notAfter) {
+		notAfter = opts.notAfter.UTC().Truncate(time.Second)
+	}
+	if notAfter.Before(expiresAt) {
+		expiresAt = notAfter
 	}
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -391,6 +427,7 @@ func (s *Store) createSession(ctx context.Context, u *hyvev1alpha1.User, groups 
 		Data: map[string][]byte{
 			keyHash:      []byte(hash),
 			keyExpiresAt: []byte(expiresAt.Format(time.RFC3339)),
+			keyNotAfter:  []byte(notAfter.Format(time.RFC3339)),
 		},
 	}
 	if len(groups) > 0 {
@@ -444,7 +481,11 @@ func (s *Store) Lookup(ctx context.Context, token string) (Identity, error) {
 	if u.Spec.Disabled {
 		return Identity{}, ErrInvalidSession
 	}
-	ident := Identity{Username: u.Name, Groups: append([]string(nil), u.Spec.Groups...), SessionID: id, Kind: sessionKind(&sec), ExpiresAt: expiresAt}
+	kind := sessionKind(&sec)
+	if kind == KindSession {
+		expiresAt = s.slide(ctx, &sec, expiresAt)
+	}
+	ident := Identity{Username: u.Name, Groups: append([]string(nil), u.Spec.Groups...), SessionID: id, Kind: kind, ExpiresAt: expiresAt}
 	s.noteUse(&sec)
 	for _, g := range strings.Split(string(sec.Data[keyGroups]), "\n") {
 		if g != "" && !slices.Contains(ident.Groups, g) {
@@ -465,17 +506,29 @@ func (s *Store) Lookup(ctx context.Context, token string) (Identity, error) {
 	return ident, nil
 }
 
-// Expiry returns when the session behind a valid token ends.
-func (s *Store) Expiry(ctx context.Context, token string) (time.Time, error) {
-	id, _, ok := parseSessionToken(token)
-	if !ok {
-		return time.Time{}, ErrInvalidSession
+// slide moves a sign-in session's end to SessionTTL from now, no later
+// than its notAfter, when that's at least extendEvery later than now, and
+// returns its end. A session from before sessions slid has no notAfter:
+// its creation plus SessionMaxAge is used. A failed write leaves the end
+// where it was.
+func (s *Store) slide(ctx context.Context, sec *corev1.Secret, expiresAt time.Time) time.Time {
+	notAfter, err := time.Parse(time.RFC3339, string(sec.Data[keyNotAfter]))
+	if err != nil {
+		notAfter = sec.CreationTimestamp.Add(s.maxAge())
 	}
-	var sec corev1.Secret
-	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: sessionSecretName(id)}, &sec); err != nil {
-		return time.Time{}, err
+	next := s.now().UTC().Truncate(time.Second).Add(s.ttl())
+	if notAfter.Before(next) {
+		next = notAfter.UTC().Truncate(time.Second)
 	}
-	return time.Parse(time.RFC3339, string(sec.Data[keyExpiresAt]))
+	if next.Sub(expiresAt) < s.extendEvery() {
+		return expiresAt
+	}
+	patch := []byte(fmt.Sprintf(`{"data":{%q:%q}}`, keyExpiresAt, base64.StdEncoding.EncodeToString([]byte(next.Format(time.RFC3339)))))
+	if err := s.Client.Patch(ctx, sec, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		log.Printf("signin: extending session %s: %v", sec.Name, err)
+		return expiresAt
+	}
+	return next
 }
 
 // Logout deletes the session behind token.
@@ -534,6 +587,25 @@ func (s *Store) DeleteExpiredSessions(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// SetBootstrapAdminEmail gives the admin User email, so it can sign in
+// with it and get password resets, when it has none: an address set since
+// (or cleared on purpose to another) is left alone.
+func (s *Store) SetBootstrapAdminEmail(ctx context.Context, email string) error {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil
+	}
+	u, err := s.getUser(ctx, BootstrapAdmin)
+	if err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if u.Spec.Email != "" {
+		return nil
+	}
+	patch := []byte(fmt.Sprintf(`{"spec":{"email":%q}}`, email))
+	return s.Client.Patch(ctx, u, client.RawPatch(types.MergePatchType, patch))
 }
 
 // EnsureBootstrapAdmin creates the admin User on first start, as Rancher

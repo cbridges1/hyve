@@ -233,7 +233,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	id, _, _ := parseSessionToken(token)
 	if req.ResponseType == "cookie" {
 		// The UI: the session goes in a cookie script can't read.
-		setSessionCookie(w, r, token, expiresAt)
+		setSessionCookie(w, r, token, s.Store.cookieUntil())
 		token = ""
 	}
 	writeJSON(w, http.StatusCreated, LoginResponse{

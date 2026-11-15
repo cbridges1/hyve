@@ -200,10 +200,14 @@ spec:
             - --listen=:8080
             - --namespace={{ .Values.namespace }}
             - --session-ttl={{ .Values.host.sessionTTL }}
+            - --session-max-age={{ .Values.host.sessionMaxAge }}
             {{- if not .Values.host.auditLog }}
             - --audit-log=false
             {{- end }}
             - --bootstrap-secret={{ .Values.host.bootstrapSecret }}
+            {{- with .Values.host.adminEmail }}
+            - --admin-email={{ . }}
+            {{- end }}
             - --shell-image={{ .Values.host.shell.image }}
             {{- if .Values.ui.enabled }}
             - --ui

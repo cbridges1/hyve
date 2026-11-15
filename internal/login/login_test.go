@@ -263,3 +263,31 @@ func TestEnvServer(t *testing.T) {
 		t.Fatal("HYVE_URL without HYVE_TOKEN loaded")
 	}
 }
+
+func TestRenew(t *testing.T) {
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	later := now.Add(10 * time.Hour)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer hs-live":
+			_, _ = io.WriteString(w, `{"username":"alice","expiresAt":"`+later.Format(time.RFC3339)+`"}`)
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer srv.Close()
+
+	// The saved end has passed, but the host has extended the session.
+	s := &Server{URL: srv.URL, Token: "hs-live", ExpiresAt: now.Add(-time.Minute)}
+	assert.True(t, s.Renew(context.Background(), now))
+	assert.Equal(t, later, s.ExpiresAt.UTC())
+	assert.True(t, s.SignedIn(now))
+
+	// Unexpired: the host isn't asked.
+	assert.False(t, s.Renew(context.Background(), now))
+
+	// The host no longer accepts it: left as it was.
+	gone := &Server{URL: srv.URL, Token: "hs-gone", ExpiresAt: now.Add(-time.Minute)}
+	assert.False(t, gone.Renew(context.Background(), now))
+	assert.False(t, gone.SignedIn(now))
+}

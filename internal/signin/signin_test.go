@@ -404,3 +404,88 @@ func TestLimiterWindow(t *testing.T) {
 	clk.t = clk.t.Add(5 * time.Minute)
 	assert.False(t, l.Blocked("k"))
 }
+
+func TestSessionSlides(t *testing.T) {
+	s, clk := newStore(t, nil)
+	ctx := context.Background()
+	addUser(t, s, "alice", "correct-horse-battery")
+	start := clk.t
+
+	tok, end, err := s.Login(ctx, "alice", "correct-horse-battery", "")
+	require.NoError(t, err)
+	assert.Equal(t, start.Add(DefaultSessionTTL), end)
+
+	// Used 10h in, it's extended to 16h from then, and stored.
+	clk.t = start.Add(10 * time.Hour)
+	ident, err := s.Lookup(ctx, tok)
+	require.NoError(t, err)
+	assert.Equal(t, clk.t.Add(DefaultSessionTTL), ident.ExpiresAt)
+	id, _, _ := parseSessionToken(tok)
+	var sec corev1.Secret
+	require.NoError(t, s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: sessionSecretName(id)}, &sec))
+	assert.Equal(t, clk.t.Add(DefaultSessionTTL).Format(time.RFC3339), string(sec.Data[keyExpiresAt]))
+
+	// So it outlives its first end...
+	clk.t = start.Add(20 * time.Hour)
+	_, err = s.Lookup(ctx, tok)
+	require.NoError(t, err)
+	// ...but not 16h unused.
+	clk.t = clk.t.Add(DefaultSessionTTL)
+	_, err = s.Lookup(ctx, tok)
+	assert.ErrorIs(t, err, ErrInvalidSession)
+}
+
+func TestSessionMaxAge(t *testing.T) {
+	s, clk := newStore(t, nil)
+	ctx := context.Background()
+	addUser(t, s, "alice", "correct-horse-battery")
+	start := clk.t
+	tok, _, err := s.Login(ctx, "alice", "correct-horse-battery", "")
+	require.NoError(t, err)
+
+	// Used every 10h, it lasts until DefaultSessionMaxAge, and no longer.
+	for clk.t = start.Add(10 * time.Hour); clk.t.Before(start.Add(DefaultSessionMaxAge)); clk.t = clk.t.Add(10 * time.Hour) {
+		ident, err := s.Lookup(ctx, tok)
+		require.NoError(t, err, clk.t)
+		assert.False(t, ident.ExpiresAt.After(start.Add(DefaultSessionMaxAge)), clk.t)
+	}
+	_, err = s.Lookup(ctx, tok)
+	assert.ErrorIs(t, err, ErrInvalidSession)
+}
+
+func TestTokensDontSlide(t *testing.T) {
+	s, clk := newStore(t, nil)
+	ctx := context.Background()
+	addUser(t, s, "alice", "correct-horse-battery")
+	tok, info, err := s.CreateToken(ctx, "alice", "ci", "", "alice", 4*time.Hour)
+	require.NoError(t, err)
+
+	clk.t = clk.t.Add(3 * time.Hour)
+	ident, err := s.Lookup(ctx, tok)
+	require.NoError(t, err)
+	assert.Equal(t, info.ExpiresAt, ident.ExpiresAt)
+	clk.t = clk.t.Add(time.Hour)
+	_, err = s.Lookup(ctx, tok)
+	assert.ErrorIs(t, err, ErrInvalidSession)
+}
+
+func TestSetBootstrapAdminEmail(t *testing.T) {
+	s, _ := newStore(t, nil)
+	ctx := context.Background()
+	require.NoError(t, s.SetBootstrapAdminEmail(ctx, "admin@example.com"), "no admin yet is a no-op")
+	require.NoError(t, s.EnsureBootstrapAdmin(ctx, "bootstrap-secret"))
+
+	require.NoError(t, s.SetBootstrapAdminEmail(ctx, " admin@example.com "))
+	u, err := s.getUser(ctx, BootstrapAdmin)
+	require.NoError(t, err)
+	assert.Equal(t, "admin@example.com", u.Spec.Email)
+	name, err := s.LoginName(ctx, "Admin@Example.com")
+	require.NoError(t, err)
+	assert.Equal(t, BootstrapAdmin, name)
+
+	// An address set since stays.
+	require.NoError(t, s.SetBootstrapAdminEmail(ctx, "other@example.com"))
+	u, err = s.getUser(ctx, BootstrapAdmin)
+	require.NoError(t, err)
+	assert.Equal(t, "admin@example.com", u.Spec.Email)
+}

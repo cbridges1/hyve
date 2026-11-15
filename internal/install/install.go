@@ -56,6 +56,8 @@ type Options struct {
 	// HostURL is where child clusters' agents, and users, reach the host
 	// endpoint (https://...). Standalone only; empty installs no host.
 	HostURL string
+	// AdminEmail is the admin user's email address, set when it has none.
+	AdminEmail string
 	// HostTLSSecret is a kubernetes.io/tls Secret in Namespace for the host
 	// to serve; empty serves plain HTTP behind a TLS-terminating proxy.
 	HostTLSSecret string
@@ -231,6 +233,9 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 		}
 		if o.HostCACerts != "" {
 			host["caCertsConfigMap"] = "hyve-cacerts"
+		}
+		if o.AdminEmail != "" {
+			host["adminEmail"] = o.AdminEmail
 		}
 		values["host"] = host
 	}
