@@ -266,3 +266,107 @@ func TestGroupsForTemplatesAndEnvironments(t *testing.T) {
 		t.Errorf("labels = %v", l)
 	}
 }
+
+func adoptTemplateObj() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "hyve.io/v1alpha1", "kind": "ClusterTemplate",
+		"metadata": map[string]any{"name": "civo-wg", "namespace": "capi-clusters"},
+		"spec": map[string]any{
+			"clusterClassRef": map[string]any{"name": "civo"},
+			"variables":       map[string]any{"region": "NYC1", "nodeCount": int64(1), "firewall": "tpl"},
+			"adopt": map[string]any{
+				"idVariable": "clusterID",
+				"variables":  map[string]any{"deletionPolicy": "Retain", "firewall": "keep"},
+				"unset":      []any{"nodeCount"},
+			},
+		},
+	}}
+}
+
+func adoptedCluster(expiresAt string) *unstructured.Unstructured {
+	return capiCluster("default", "wireguard",
+		map[string]string{templates.AnnotationExpiresAt: expiresAt, clusters.AnnotationAdopted: "true"},
+		map[string]string{templates.LabelTemplate: "civo-wg", templates.LabelTemplateNamespace: "capi-clusters"},
+		map[string]any{"region": "NYC1", "clusterID": "abc", "deletionPolicy": "Retain", "firewall": "keep"})
+}
+
+func reconcileExpiry(t *testing.T, cl client.Client, now time.Time) *unstructured.Unstructured {
+	t.Helper()
+	r := &Expiry{Client: cl, Now: func() time.Time { return now }}
+	key := types.NamespacedName{Namespace: "default", Name: "wireguard"}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	c := object(clusterGVK)
+	if err := cl.Get(context.Background(), key, c); err != nil {
+		return nil
+	}
+	return c
+}
+
+func setTopologyReconciled(t *testing.T, cl client.Client, c *unstructured.Unstructured) {
+	t.Helper()
+	_ = unstructured.SetNestedSlice(c.Object, []any{map[string]any{
+		"type": "TopologyReconciled", "status": "True", "observedGeneration": c.GetGeneration(),
+	}}, "status", "conditions")
+	if err := cl.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExpiredAdoptedClusterDropsAdoptVariablesFirst(t *testing.T) {
+	cl := fake.NewClientBuilder().WithObjects(adoptTemplateObj(), adoptedCluster("2026-10-10T11:00:00Z")).Build()
+	c := reconcileExpiry(t, cl, testNow)
+	if c == nil {
+		t.Fatal("deleted before its adopt variables were taken off")
+	}
+	if c.GetAnnotations()[templates.AnnotationExpired] == "" {
+		t.Error("not marked expired")
+	}
+	vars := clusters.Variables(c)
+	if _, has := vars["deletionPolicy"]; has {
+		t.Errorf("deletionPolicy still set: %v", vars)
+	}
+	if vars["firewall"] != "tpl" || vars["clusterID"] != "abc" {
+		t.Errorf("vars = %v, want the template's firewall and the ID kept", vars)
+	}
+	if _, has := vars["nodeCount"]; has {
+		t.Errorf("adopt.unset variable set: %v", vars)
+	}
+
+	// Waits for CAPI to apply them, then deletes.
+	if c = reconcileExpiry(t, cl, testNow.Add(time.Minute)); c == nil {
+		t.Fatal("deleted before the topology was applied")
+	}
+	setTopologyReconciled(t, cl, c)
+	if c = reconcileExpiry(t, cl, testNow.Add(time.Minute)); c != nil {
+		t.Error("not deleted once the topology was applied")
+	}
+}
+
+func TestExpiredAdoptedClusterDeletedAfterWaiting(t *testing.T) {
+	cl := fake.NewClientBuilder().WithObjects(adoptTemplateObj(), adoptedCluster("2026-10-10T11:00:00Z")).Build()
+	reconcileExpiry(t, cl, testNow)
+	if c := reconcileExpiry(t, cl, testNow.Add(expiredWait+time.Minute)); c != nil {
+		t.Error("not deleted after waiting")
+	}
+}
+
+func TestExtendedAdoptedClusterGetsAdoptVariablesBack(t *testing.T) {
+	cl := fake.NewClientBuilder().WithObjects(adoptTemplateObj(), adoptedCluster("2026-10-10T11:00:00Z")).Build()
+	c := reconcileExpiry(t, cl, testNow)
+	c.SetAnnotations(map[string]string{templates.AnnotationExpiresAt: "2026-10-10T20:00:00Z", clusters.AnnotationAdopted: "true", templates.AnnotationExpired: c.GetAnnotations()[templates.AnnotationExpired]})
+	if err := cl.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	c = reconcileExpiry(t, cl, testNow)
+	if c == nil {
+		t.Fatal("deleted after its expiry was extended")
+	}
+	if c.GetAnnotations()[templates.AnnotationExpired] != "" {
+		t.Error("still marked expired")
+	}
+	if vars := clusters.Variables(c); vars["deletionPolicy"] != "Retain" || vars["firewall"] != "keep" {
+		t.Errorf("vars = %v, want the adopt variables back", vars)
+	}
+}

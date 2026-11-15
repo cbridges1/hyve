@@ -147,7 +147,10 @@ The template's adopt.variables replace its variables on an adopted
 cluster, and adopt.unset leaves some unset: usually so the provider keeps
 the cluster when the hyve cluster is deleted (deletionPolicy: Retain) and
 leaves its size alone (unset: [nodeCount]).
-An adopted cluster takes no expiry schedule; --ttl gives it one.
+An adopted cluster takes no expiry schedule; --ttl gives it one. When it
+expires, its adopt.variables are dropped first (it gets the template's
+own values for them), so the provider deletes the cluster it adopted,
+whatever adopt.variables said about deleting it.
 
 Give --version as the cluster's Kubernetes version: the template's is
 used otherwise. For a cluster with no provider that adopts, use

@@ -44,6 +44,11 @@ const (
 	// Never is AnnotationExpiresAt's value for a cluster that doesn't
 	// expire, whatever its template's schedule.
 	Never = "never"
+	// AnnotationExpired on an adopted Cluster: the RFC 3339 time
+	// hyve-controller found it expired and put its template's own values
+	// back in place of adopt.variables, so its provider deletes the cluster
+	// it adopted (not only hyve's record of it) once that's applied.
+	AnnotationExpired = "hyve.io/expired"
 )
 
 // Template is a ClusterTemplate.
@@ -163,8 +168,9 @@ func (e *LockedError) Error() string {
 }
 
 // Effective is the template as it applies to c: for an adopted cluster,
-// with the adopt variables in place of the template's and no expiry
-// schedule; otherwise t itself.
+// with the adopt variables in place of the template's (unless it has
+// expired: see AnnotationExpired) and no expiry schedule; otherwise t
+// itself.
 func (t *Template) Effective(c *unstructured.Unstructured) *Template {
 	if clusters.Origin(c) != clusters.OriginAdopted || t.Spec.Adopt == nil {
 		return t
@@ -174,8 +180,10 @@ func (t *Template) Effective(c *unstructured.Unstructured) *Template {
 	for k, v := range t.Spec.Variables {
 		e.Spec.Variables[k] = v
 	}
-	for k, v := range t.Spec.Adopt.Variables {
-		e.Spec.Variables[k] = v
+	if c.GetAnnotations()[AnnotationExpired] == "" {
+		for k, v := range t.Spec.Adopt.Variables {
+			e.Spec.Variables[k] = v
+		}
 	}
 	for _, k := range t.Spec.Adopt.Unset {
 		e.Spec.Variables[k] = nil
