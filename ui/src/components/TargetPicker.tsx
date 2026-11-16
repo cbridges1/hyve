@@ -4,6 +4,7 @@
 // Targets hyve doesn't model (written by hand) show as "Custom target" and
 // are kept.
 import { useState } from 'react'
+import { LOCAL_CLUSTER } from '../lib/explorer'
 import { idOf, type Obj } from '../lib/kube'
 import { groupKind, TARGET_KINDS, targetKey, targetLabel, type Target, type TargetKind } from '../lib/delivery'
 import { SelectField } from './form'
@@ -43,7 +44,12 @@ export function TargetPicker({
       case 'env':
         return options.environments.map((e) => ({ label: e, value: e }))
       case 'cluster':
-        return options.clusters.map((c) => ({ label: idOf(c), value: idOf(c) }))
+        // The host is a cluster too (local, as the Explorer calls it),
+        // wherever the host can be a target.
+        return [
+          ...(kinds.some((k) => k.kind === 'host') ? [{ label: `${LOCAL_CLUSTER} (host)`, value: LOCAL_CLUSTER }] : []),
+          ...options.clusters.map((c) => ({ label: idOf(c), value: idOf(c) })),
+        ]
       case 'group':
         return options.groups.filter((g) => groupKind(g) === 'custom').map((g) => ({ label: g.metadata.name, value: g.metadata.name }))
     }
@@ -54,6 +60,7 @@ export function TargetPicker({
   const add = () => {
     let t: Target
     if (!needsName) t = { kind }
+    else if (kind === 'cluster' && name === LOCAL_CLUSTER) t = { kind: 'host' }
     else if (kind === 'cluster') {
       const [env, n] = name.split('/')
       t = { kind, env, name: n }

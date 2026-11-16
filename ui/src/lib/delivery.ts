@@ -28,7 +28,7 @@ export const TARGET_KINDS: { kind: TargetKind; label: string }[] = [
   { kind: 'cluster', label: 'Cluster' },
   { kind: 'group', label: 'Group' },
   { kind: 'all', label: 'All clusters' },
-  { kind: 'host', label: 'Host cluster' },
+  { kind: 'host', label: 'Host cluster (local)' },
 ]
 
 export function targetKey(t: Target): string {
@@ -60,7 +60,7 @@ export function targetLabel(t: Target): string {
     case 'all':
       return 'All clusters'
     case 'host':
-      return 'Host cluster'
+      return 'Host cluster (local)'
   }
   return 'Custom target'
 }
