@@ -21,6 +21,22 @@ import (
 // isLocal says name is the host cluster's.
 func isLocal(name string) bool { return name == login.LocalCluster }
 
+// clusterName is a new cluster's name, lowercased (said so when that
+// changed it), and not the host's.
+func clusterName(arg string) (string, error) {
+	name, err := clusters.Name(arg)
+	if err != nil {
+		return "", err
+	}
+	if isLocal(name) {
+		return "", fmt.Errorf("%q is the host cluster's name; pick another", name)
+	}
+	if name != arg {
+		logf("Naming the cluster %s: Kubernetes names are lowercase", name)
+	}
+	return name, nil
+}
+
 // The Fleet cluster the host registers itself as.
 const localFleetNS, localFleetName = "fleet-local", "local"
 

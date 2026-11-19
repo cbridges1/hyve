@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SelectField, TextArea, TextField } from "../components/form";
 import { BackLink, Banner, Card, ErrorBanner, Loading } from "../components/ui";
+import { clusterName } from "../lib/clusters";
 import { useEnvironment } from "../lib/environment";
 import { useAction, useLoad } from "../lib/hooks";
 import { host, idOf } from "../lib/kube";
@@ -108,8 +109,8 @@ export default function ImportCluster() {
                 label="Cluster name"
                 required
                 value={name}
-                onChange={setName}
-                hint="Its name in hyve; it needn't match the cluster's own."
+                onChange={(v) => setName(clusterName(v))}
+                hint="Its name in hyve (lowercase letters, digits and dashes); it needn't match the cluster's own."
               />
               <SelectField
                 label="Template"

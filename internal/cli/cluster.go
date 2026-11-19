@@ -38,7 +38,7 @@ func ClusterCmd() *cobra.Command {
 	addEnvFlag(cmd)
 	addTemplateNSFlag(cmd)
 	cmd.AddCommand(clusterCreateCmd(), clusterImportCmd(), clusterAdoptCmd(), clusterListCmd(), clusterShowCmd(), clusterDeleteCmd(), clusterReleaseCmd(),
-		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterUpgradeCmd(), clusterDeploymentsCmd(), clusterResourceCmd())
+		clusterKubeconfigCmd(), clusterAuthCmd(), clusterExpireCmd(), clusterScaleCmd(), clusterSetCmd(), clusterUpgradeCmd(), clusterDeploymentsCmd(), clusterResourceCmd())
 	return cmd
 }
 
@@ -85,6 +85,9 @@ group in Fleet) then reaches it.
 valid JSON (numbers, lists, objects), otherwise used as strings. A variable
 the template locks can't be changed.
 
+NAME is lowercased (Kubernetes names are lowercase: letters, digits and
+dashes).
+
 By default waits until the cluster is ACTIVE and registered with Fleet.`,
 		Example: `  hyve cluster create demo --template capd-small --ttl 4h
   hyve cluster create web --template civo --set region=LON1 --workers 3 -e prod
@@ -94,15 +97,16 @@ By default waits until the cluster is ACTIVE and registered with Fleet.`,
 			if (class == "") == (template == "") {
 				return errors.New("give exactly one of --template or --class")
 			}
-			if isLocal(args[0]) {
-				return fmt.Errorf("%q is the host cluster's name; pick another", args[0])
+			name, err := clusterName(args[0])
+			if err != nil {
+				return err
 			}
 			s, err := newSession()
 			if err != nil {
 				return err
 			}
 			ctx := cmd.Context()
-			c := clusters.New(args[0], s.env())
+			c := clusters.New(name, s.env())
 			if version != "" {
 				_ = unstructured.SetNestedField(c.Object, version, "spec", "topology", "version")
 			}
@@ -707,7 +711,15 @@ func clusterScaleCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "scale NAME (--workers N | --control-plane N)",
 		Short: "Change a cluster's worker or control-plane replicas",
-		Args:  cobra.ExactArgs(1),
+		Long: `Sets the replicas of the cluster's worker group, or its control plane's.
+
+A managed cluster whose ClusterClass has no worker groups (Civo's) counts
+its nodes with the class's nodeCount variable instead: --workers sets
+that, and the provider resizes the node pool. A template that locks
+nodeCount keeps its clusters at its own. To change other variables
+(a node size, say), use 'hyve cluster set'.`,
+		Example: `  hyve cluster scale web --workers 3`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			wc, cc := cmd.Flags().Changed("workers"), cmd.Flags().Changed("control-plane")
 			if !wc && !cc {
@@ -748,7 +760,24 @@ func clusterScaleCmd() *cobra.Command {
 					found = true
 				}
 				if !found {
-					return fmt.Errorf("cluster %s has no workers to scale", c.GetName())
+					// No worker groups: the class's node count, if it has one.
+					name, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "classRef", "name")
+					ns, _, _ := unstructured.NestedString(c.Object, "spec", "topology", "classRef", "namespace")
+					if ns == "" {
+						ns = c.GetNamespace()
+					}
+					cls, err := s.getClass(ctx, ns, name)
+					if err != nil {
+						return err
+					}
+					if !clusters.ClassVariable(cls, clusters.NodeCountVariable) {
+						return fmt.Errorf("cluster %s has no workers to scale, and ClusterClass %s has no %s variable", c.GetName(), name, clusters.NodeCountVariable)
+					}
+					vars := clusters.Variables(c)
+					vars[clusters.NodeCountVariable] = workers
+					if err := clusters.SetVariables(c, vars); err != nil {
+						return err
+					}
 				}
 			}
 			if _, err := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(c.GetNamespace()).Update(ctx, c, metav1.UpdateOptions{FieldManager: kube.FieldManager}); err != nil {
@@ -758,8 +787,65 @@ func clusterScaleCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().Int64Var(&workers, "workers", 0, "worker replicas")
+	cmd.Flags().Int64Var(&workers, "workers", 0, "worker replicas (or nodes, for a class without worker groups)")
 	cmd.Flags().Int64Var(&controlPlane, "control-plane", 0, "control-plane replicas")
+	return cmd
+}
+
+func clusterSetCmd() *cobra.Command {
+	var unset []string
+	cmd := &cobra.Command{
+		Use:   "set NAME [VARIABLE=VALUE...]",
+		Short: "Change a cluster's ClusterClass variables",
+		Long: `Sets (or, with --unset, removes) variables on a cluster's topology;
+Cluster API and the provider then apply them. Values are parsed as JSON
+when they are valid JSON (numbers, lists, objects), otherwise used as
+strings. A variable the template locks can't be changed.
+
+Whether a change reaches a running cluster is up to its provider: Civo
+resizes the node pool for nodeCount, but reads nodeSize only when it
+creates the cluster.`,
+		Example: `  hyve cluster set web nodeCount=2
+  hyve cluster set web --unset firewallID`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			set, err := parseKV(args[1:], true)
+			if err != nil {
+				return err
+			}
+			if len(set) == 0 && len(unset) == 0 {
+				return errors.New("give VARIABLE=VALUE or --unset VARIABLE")
+			}
+			s, err := newSession()
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			c, err := s.getCluster(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			if clusters.Origin(c) == clusters.OriginImported {
+				return fmt.Errorf("cluster %s is imported: it has no variables", c.GetName())
+			}
+			vars := clusters.Variables(c)
+			for k, v := range set {
+				vars[k] = v
+			}
+			for _, k := range unset {
+				delete(vars, k)
+			}
+			if err := clusters.SetVariables(c, vars); err != nil {
+				return err
+			}
+			if _, err := s.kube.Dynamic.Resource(clusters.ClusterGVR).Namespace(c.GetNamespace()).Update(ctx, c, metav1.UpdateOptions{FieldManager: kube.FieldManager}); err != nil {
+				return err
+			}
+			logf("Updated cluster %s's variables", c.GetName())
+			return nil
+		},
+	}
+	cmd.Flags().StringArrayVar(&unset, "unset", nil, "variable to remove (repeatable)")
 	return cmd
 }
 

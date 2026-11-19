@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RadioGroup, SelectField, TextField } from "../components/form";
 import { BackLink, Banner, Card, ErrorBanner, Loading } from "../components/ui";
-import { classOf, isoSeconds, providerOfClass } from "../lib/clusters";
+import { classOf, clusterName, isoSeconds, providerOfClass } from "../lib/clusters";
 import { nextRun } from "../lib/cron";
 import { useEnvironment } from "../lib/environment";
 import { useAction, useLoad } from "../lib/hooks";
@@ -311,7 +311,8 @@ export default function CreateCluster() {
                 label="Cluster name"
                 required
                 value={name}
-                onChange={setName}
+                onChange={(v) => setName(clusterName(v))}
+                hint="Lowercase letters, digits and dashes."
               />
             </div>
 

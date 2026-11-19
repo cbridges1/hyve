@@ -53,9 +53,9 @@ give it with --api-server.`,
   hyve cluster import kind-dev --from-context kind-dev --api-server https://host.docker.internal:6443`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			if isLocal(name) {
-				return fmt.Errorf("%q is the host cluster's name; pick another", name)
+			name, err := clusterName(args[0])
+			if err != nil {
+				return err
 			}
 			s, err := newSession()
 			if err != nil {
@@ -158,12 +158,12 @@ used otherwise. For a cluster with no provider that adopts, use
 		Example: `  hyve cluster adopt web -t civo -e prod --id 7f3c0d6e-0b5d-4b51-9b8a-1c2d3e4f5a6b --set region=NYC1 --version v1.33.0`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
 			if template == "" || id == "" {
 				return errors.New("give --template and --id")
 			}
-			if isLocal(name) {
-				return fmt.Errorf("%q is the host cluster's name; pick another", name)
+			name, err := clusterName(args[0])
+			if err != nil {
+				return err
 			}
 			s, err := newSession()
 			if err != nil {

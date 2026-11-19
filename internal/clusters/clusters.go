@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -223,6 +224,32 @@ func SetVariables(c *unstructured.Unstructured, vars map[string]any) error {
 		out = append(out, map[string]any{"name": n, "value": vars[n]})
 	}
 	return unstructured.SetNestedSlice(c.Object, out, "spec", "topology", "variables")
+}
+
+// NodeCountVariable is the ClusterClass variable a managed cluster's
+// nodes are counted by when its class has no worker groups (Civo's: the
+// provider resizes the cluster's node pool when it changes).
+const NodeCountVariable = "nodeCount"
+
+// ClassVariable reports whether a ClusterClass declares a variable.
+func ClassVariable(class *unstructured.Unstructured, name string) bool {
+	vars, _, _ := unstructured.NestedSlice(class.Object, "spec", "variables")
+	for _, v := range vars {
+		if m, ok := v.(map[string]any); ok && m["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Name is a cluster name as Kubernetes takes it: lowercase (so "Web" is
+// "web"), then a DNS label: letters, digits and dashes, at most 63.
+func Name(s string) (string, error) {
+	n := strings.ToLower(strings.TrimSpace(s))
+	if errs := validation.IsDNS1123Label(n); len(errs) > 0 {
+		return "", fmt.Errorf("cluster name %q: %s", s, strings.Join(errs, "; "))
+	}
+	return n, nil
 }
 
 // New returns a bare topology Cluster: a name, a namespace and a class.

@@ -68,3 +68,27 @@ export function extendExpiry(c: Obj): Promise<Obj> {
   const base = Math.max(Date.now(), Number.isNaN(cur) ? 0 : cur);
   return setExpiry(c, isoSeconds(new Date(base + EXTEND_HOURS * 3600 * 1000)));
 }
+
+// A cluster name as Kubernetes takes it: lowercase, with spaces and
+// underscores as dashes (as 'hyve cluster create' lowercases it).
+export function clusterName(v: string): string {
+  return v.toLowerCase().replace(/[\s_]+/g, "-");
+}
+
+// The ClusterClass variable a managed cluster's nodes are counted by when
+// its class has no worker groups (Civo's: 'hyve cluster scale' sets it).
+export const NODE_COUNT_VARIABLE = "nodeCount";
+
+// A variable's value as text, and back: JSON when it parses, else a string.
+export function variableText(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+
+export function variableValue(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
+}

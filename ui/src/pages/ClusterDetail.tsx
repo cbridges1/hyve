@@ -1,5 +1,6 @@
 // A cluster, the console's way: its fields and conditions in cards, with
-// scale (control plane and each worker pool), expiry, a kubeconfig, YAML
+// scale (control plane and each worker pool, or the class's node count
+// when it has no pools: Civo's), variables, expiry, a kubeconfig, YAML
 // and delete: what 'hyve cluster' does. What's deployed on it, and why, is
 // its Deployments tab, .../<name>/deployments.
 // An imported cluster has no size or version to change, and deleting it
@@ -19,7 +20,15 @@ import {
   StickyHeader,
   Tabs,
 } from "../components/ui";
-import { EXTEND_HOURS, isoSeconds, originOf, setExpiry } from "../lib/clusters";
+import {
+  EXTEND_HOURS,
+  isoSeconds,
+  NODE_COUNT_VARIABLE,
+  originOf,
+  setExpiry,
+  variableText,
+  variableValue,
+} from "../lib/clusters";
 import { clusterStatus, download, expiry, kubeconfig } from "../lib/format";
 import { useAction, useLoad } from "../lib/hooks";
 import { kube, type Obj, patch, remove, save } from "../lib/kube";
@@ -35,7 +44,12 @@ const Explorer = lazy(() =>
   })),
 );
 
-type Form = { controlPlane: string; sizes: string[]; expireAt: string };
+type Form = {
+  controlPlane: string;
+  sizes: string[];
+  nodes: string;
+  expireAt: string;
+};
 
 function poolsOf(c: Obj): any[] {
   const topo = c.spec?.topology || {};
@@ -45,11 +59,20 @@ function poolsOf(c: Obj): any[] {
   ];
 }
 
+// The node-count variable, for a cluster whose class has no worker groups.
+function nodeCountOf(c: Obj): { value: unknown } | undefined {
+  if (poolsOf(c).length) return undefined;
+  return (c.spec?.topology?.variables || []).find(
+    (v: any) => v.name === NODE_COUNT_VARIABLE,
+  );
+}
+
 function formOf(c: Obj): Form {
   const at = Date.parse(c.metadata.annotations?.[ANNOTATIONS.EXPIRES_AT] || "");
   return {
     controlPlane: String(c.spec?.topology?.controlPlane?.replicas ?? ""),
     sizes: poolsOf(c).map((w) => String(w.replicas ?? "")),
+    nodes: variableText(nodeCountOf(c)?.value),
     // datetime-local wants local time, without seconds' zone.
     expireAt: Number.isNaN(at)
       ? ""
@@ -61,6 +84,7 @@ function formOf(c: Obj): Form {
 
 const sameForm = (a: Form, b: Form) =>
   a.controlPlane === b.controlPlane &&
+  a.nodes === b.nodes &&
   a.expireAt === b.expireAt &&
   a.sizes.length === b.sizes.length &&
   a.sizes.every((v, i) => v === b.sizes[i]);
@@ -89,11 +113,16 @@ export default function ClusterDetail() {
   const [form, setForm] = useState<Form>({
     controlPlane: "",
     sizes: [],
+    nodes: "",
     expireAt: "",
   });
   const [pristine, setPristine] = useState<Form>(form);
   const [upgradeTo, setUpgradeTo] = useState("");
   const [removing, setRemoving] = useState<RemoveMode | null>(null);
+  // The variables being edited, as text; null when not editing.
+  const [vars, setVars] = useState<{ name: string; value: string }[] | null>(
+    null,
+  );
 
   const reset = (c: Obj) => {
     const f = formOf(c);
@@ -121,6 +150,7 @@ export default function ClusterDetail() {
   const l = m.labels || {};
   const topo = value.spec?.topology || {};
   const pools = poolsOf(value);
+  const nodeCount = nodeCountOf(value);
   const expires = m.annotations?.[ANNOTATIONS.EXPIRES_AT] || "";
   const never = !expires || expires === NEVER;
 
@@ -166,7 +196,21 @@ export default function ClusterDetail() {
         if (form.sizes[i] !== "" && form.sizes[i] !== undefined)
           w.replicas = Number(form.sizes[i]);
       });
+      const n = nodeCountOf(o);
+      if (n && form.nodes !== "") n.value = Number(form.nodes);
       await save(TYPES.CLUSTER, o);
+    });
+
+  // The webhook refuses a variable the template locks.
+  const saveVariables = () =>
+    act(async () => {
+      const o: Obj = JSON.parse(JSON.stringify(value));
+      o.spec.topology.variables = (vars || []).map((v) => ({
+        name: v.name,
+        value: variableValue(v.value),
+      }));
+      await save(TYPES.CLUSTER, o);
+      setVars(null);
     });
 
   const setExpiryAt = () => {
@@ -213,7 +257,10 @@ export default function ClusterDetail() {
         form.sizes[i] !== "" &&
         form.sizes[i] !== undefined &&
         Number(form.sizes[i]) !== w.replicas,
-    );
+    ) ||
+    (!!nodeCount &&
+      form.nodes !== "" &&
+      Number(form.nodes) !== nodeCount.value);
 
   const origin = originOf(value);
   const cpEndpoint = importedCP?.spec?.controlPlaneEndpoint;
@@ -479,6 +526,21 @@ export default function ClusterDetail() {
                           />
                         </label>
                       ))}
+                      {nodeCount && (
+                        <label className="flex items-center justify-between gap-3 text-sm">
+                          <span>Nodes</span>
+                          <input
+                            className="w-24!"
+                            type="number"
+                            min={1}
+                            aria-label="Nodes"
+                            value={form.nodes}
+                            onChange={(e) =>
+                              setForm({ ...form, nodes: e.target.value })
+                            }
+                          />
+                        </label>
+                      )}
                       <button
                         type="submit"
                         className="btn btn-primary w-full"
@@ -580,12 +642,81 @@ export default function ClusterDetail() {
                 </div>
               </Card>
               {variables.length > 0 && (
-                <Card title="Variables">
-                  {variables.map(([k, v]) => (
-                    <Field key={k} label={k}>
-                      <code>{v}</code>
-                    </Field>
-                  ))}
+                <Card
+                  title="Variables"
+                  action={
+                    !imported &&
+                    !vars && (
+                      <button
+                        type="button"
+                        className="btn btn-tertiary btn-sm"
+                        onClick={() =>
+                          setVars(
+                            (topo.variables || []).map((x: any) => ({
+                              name: x.name,
+                              value: variableText(x.value),
+                            })),
+                          )
+                        }
+                      >
+                        Edit
+                      </button>
+                    )
+                  }
+                >
+                  {vars ? (
+                    <form
+                      className="space-y-3"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        saveVariables();
+                      }}
+                    >
+                      {vars.map((v, i) => (
+                        <label key={v.name} className="block text-sm">
+                          <span>{v.name}</span>
+                          <input
+                            className="mt-1 w-full"
+                            value={v.value}
+                            onChange={(e) =>
+                              setVars(
+                                vars.map((x, j) =>
+                                  j === i ? { ...x, value: e.target.value } : x,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                      ))}
+                      <p className="hint">
+                        Its provider decides what reaches a running cluster:
+                        Civo resizes for nodeCount, but reads nodeSize only
+                        when it creates the cluster.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          className="btn btn-primary"
+                          disabled={action.busy}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => setVars(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    variables.map(([k, v]) => (
+                      <Field key={k} label={k}>
+                        <code>{v}</code>
+                      </Field>
+                    ))
+                  )}
                 </Card>
               )}
             </div>
