@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -166,5 +167,14 @@ func TestCheckGitRepo(t *testing.T) {
 	unseen.SetGeneration(5)
 	if p, _ := Check(ctx, fakeClient(bundle("abc"), ready), unseen); p.Synced {
 		t.Fatalf("a spec change Fleet hasn't seen is synced: %+v", p)
+	}
+}
+
+func TestDownstreamHint(t *testing.T) {
+	if h := DownstreamHint(`downstream Secret dns: secrets "dns" not found`, "capi-clusters"); !strings.Contains(h, "capi-clusters") {
+		t.Errorf("hint = %q", h)
+	}
+	if h := DownstreamHint("some other error", "capi-clusters"); h != "" {
+		t.Errorf("hint for another error: %q", h)
 	}
 }

@@ -95,10 +95,11 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get"]
-  # fleet-controller's image, for the Jobs.
+  # fleet-controller's image, for the Jobs; and its
+  # EXPERIMENTAL_COPY_RESOURCES_DOWNSTREAM, kept on (fleetCopyDownstream).
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get"]
+    verbs: ["get", "patch"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

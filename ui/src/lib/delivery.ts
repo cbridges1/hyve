@@ -276,9 +276,17 @@ export function bdState(bd: Obj): string {
   return bd.status?.display?.state || (bd.status?.ready ? 'Ready' : 'Pending')
 }
 export function bdMessage(bd: Obj): string {
-  if (bd.status?.display?.message) return bd.status.display.message
   const c = (bd.status?.conditions || []).find((x: any) => x.status === 'False' && x.message)
-  return c?.message || ''
+  const m: string = bd.status?.display?.message || c?.message || ''
+  return m + downstreamHint(m, bd.metadata.labels?.['fleet.cattle.io/bundle-namespace'])
+}
+
+// What to do when a Secret or ConfigMap to copy wasn't found: it belongs in
+// the Deployment's namespace, and Fleet copies it only with its
+// downstreamResources on (hyve-controller keeps them on).
+export function downstreamHint(message: string, ns?: string): string {
+  if (!/downstream (Secret|ConfigMap) \S+: .*not found/.test(message) || message.includes('where it must be')) return ''
+  return ` (it must be in ${ns || "the Deployment's namespace"}, and Fleet copies it only with EXPERIMENTAL_COPY_RESOURCES_DOWNSTREAM on in fleet-controller, which hyve-controller keeps on)`
 }
 
 // The Fleet cluster ("namespace/name") a BundleDeployment is for.

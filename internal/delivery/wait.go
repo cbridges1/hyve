@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -79,7 +80,23 @@ func BDState(bd *unstructured.Unstructured) (string, string) {
 			}
 		}
 	}
-	return state, msg
+	return state, msg + DownstreamHint(msg, bd.GetLabels()["fleet.cattle.io/bundle-namespace"])
+}
+
+var downstreamNotFound = regexp.MustCompile(`downstream (Secret|ConfigMap) \S+: .*not found`)
+
+// DownstreamHint says what to do when a Secret or ConfigMap a Deployment
+// copies to its clusters wasn't found: it belongs in the Deployment's
+// namespace, and Fleet copies it only with its downstreamResources on
+// (hyve-controller keeps them on). "" for any other message.
+func DownstreamHint(msg, ns string) string {
+	if !downstreamNotFound.MatchString(msg) || strings.Contains(msg, "where it must be") {
+		return ""
+	}
+	if ns == "" {
+		ns = "the Deployment's namespace"
+	}
+	return fmt.Sprintf(" (it must be in %s, and Fleet copies it only with EXPERIMENTAL_COPY_RESOURCES_DOWNSTREAM on in fleet-controller, which hyve-controller keeps on)", ns)
 }
 
 // Check reads a Deployment's progress. o is the Deployment as just read.

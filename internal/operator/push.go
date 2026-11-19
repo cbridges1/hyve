@@ -647,9 +647,29 @@ func deployInput(content *unstructured.Unstructured, bdName, id string, opts map
 	return append(append(a, []byte("\n---\n")...), append(b, '\n')...), nil
 }
 
+// getDownstream reads a downstream resource from the BundleDeployment's
+// namespace, or else from its bundle's. Not found in either, the error
+// says the bundle's namespace is where it belongs.
+func (r *Push) getDownstream(ctx context.Context, bd *unstructured.Unstructured, name string, o client.Object) error {
+	err := r.Reader.Get(ctx, types.NamespacedName{Namespace: bd.GetNamespace(), Name: name}, o)
+	bundleNS := bd.GetLabels()["fleet.cattle.io/bundle-namespace"]
+	if !apierrors.IsNotFound(err) || bundleNS == "" {
+		return err
+	}
+	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: bundleNS, Name: name}, o); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("not found in %s, the Deployment's namespace, where it must be", bundleNS)
+		}
+		return err
+	}
+	return nil
+}
+
 // copyDownstream copies the Secrets and ConfigMaps a bundle names in
-// downstreamResources to the child, as fleet-agent does: Fleet has already
-// copied them into the BundleDeployment's namespace.
+// downstreamResources to the child, as fleet-agent does: from the
+// BundleDeployment's namespace, where Fleet copies them, or else from the
+// bundle's own (Fleet copies none while its downstreamResources are off:
+// see fleetcopy.go).
 func (r *Push) copyDownstream(ctx context.Context, child Child, bd *unstructured.Unstructured, opts map[string]any) error {
 	list, _, _ := unstructured.NestedSlice(opts, "downstreamResources")
 	if len(list) == 0 {
@@ -671,7 +691,7 @@ func (r *Push) copyDownstream(ctx context.Context, child Child, bd *unstructured
 		switch kind {
 		case "Secret":
 			var s corev1.Secret
-			if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: bd.GetNamespace(), Name: name}, &s); err != nil {
+			if err := r.getDownstream(ctx, bd, name, &s); err != nil {
 				return fmt.Errorf("downstream Secret %s: %w", name, err)
 			}
 			d := map[string]any{}
@@ -681,7 +701,7 @@ func (r *Push) copyDownstream(ctx context.Context, child Child, bd *unstructured
 			data, typ = d, string(s.Type)
 		case "ConfigMap":
 			var c corev1.ConfigMap
-			if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: bd.GetNamespace(), Name: name}, &c); err != nil {
+			if err := r.getDownstream(ctx, bd, name, &c); err != nil {
 				return fmt.Errorf("downstream ConfigMap %s: %w", name, err)
 			}
 			d := map[string]any{}

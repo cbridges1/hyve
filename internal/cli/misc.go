@@ -229,6 +229,7 @@ func ControllerCmd() *cobra.Command {
 	f.StringVar(&o.ValidatingWebhook, "validating-webhook", "hyve-controller", "ValidatingWebhookConfiguration to patch the CA into")
 	f.StringVar(&o.Workspace, "template-namespace", install.DefaultTemplateNamespace, "the default template namespace: environment groups go there, and imported clusters are reachable from it")
 	f.BoolVar(&o.LazyProviders, "lazy-providers", false, "add known Cluster API providers when a ClusterClass or a Fleet bundle first needs them (local mode)")
+	f.BoolVar(&o.FleetCopyDownstream, "fleet-copy-downstream", true, "keep Fleet's downstreamResources on (fleet-controller's "+operator.CopyDownstreamEnv+"), so Deployments' Secrets to copy reach clusters")
 	f.StringVar(&o.FleetImage, "fleet-image", "", "image for push delivery's fleet commands (default: the image fleet-controller runs)")
 	f.BoolVar(&o.NoWebhook, "no-webhook", false, "run without the webhooks (templates then aren't filled in server-side)")
 	f.StringVar(&o.Agents.HostURL, "host-url", "", "the hyve host's URL as child clusters reach it; installs cattle-cluster-agent on each cluster, pointed there")

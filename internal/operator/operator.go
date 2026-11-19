@@ -14,7 +14,9 @@
 //     cluster 'hyve cluster import' brought in are reported ready while
 //     it answers, and deleting one detaches it (imported.go);
 //   - push delivery: for a child whose fleet-agent can't reach this
-//     cluster, BundleDeployments are deployed from here (push.go).
+//     cluster, BundleDeployments are deployed from here (push.go);
+//   - Fleet's downstreamResources (Secrets copied to clusters) kept on in
+//     fleet-controller (fleetcopy.go).
 package operator
 
 import (
@@ -79,6 +81,9 @@ type Options struct {
 	// Workspace is the default template namespace: environment groups are
 	// kept there, and imported clusters are reachable from it.
 	Workspace string
+	// FleetCopyDownstream keeps Fleet's downstreamResources on
+	// (fleetcopy.go).
+	FleetCopyDownstream bool
 }
 
 // Run runs hyve-controller until ctx ends.
@@ -126,6 +131,11 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 		}
 		if err := setupPush(mgr, cs, o.FleetImage); err != nil {
 			return err
+		}
+		if o.FleetCopyDownstream {
+			if err := mgr.Add(&FleetCopyDownstream{Reader: mgr.GetAPIReader(), Client: mgr.GetClient(), Every: 5 * time.Minute}); err != nil {
+				return err
+			}
 		}
 	} else {
 		lg.Info("Fleet isn't installed: push delivery is off")

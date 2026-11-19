@@ -23,6 +23,10 @@ controller:
   # takes cluster-admin, which this grants the controller. Local mode turns
   # it on.
   lazyProviders: false
+  # Keep Fleet's downstreamResources on: fleet-controller's
+  # EXPERIMENTAL_COPY_RESOURCES_DOWNSTREAM, without which Fleet copies none
+  # of a Deployment's Secrets to copy to its clusters.
+  fleetCopyDownstream: true
   resources:
     requests:
       cpu: 20m

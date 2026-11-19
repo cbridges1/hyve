@@ -295,3 +295,29 @@ func decodeRelease(data []byte) (Release, error) {
 	}
 	return fromHelm(r), nil
 }
+
+func TestDownstreamFromTheBundleNamespace(t *testing.T) {
+	ctx := context.Background()
+	bd := object(bundleDeploymentGVK)
+	bd.SetNamespace("cluster-default-demo-1")
+	bd.SetName("tpl-web-dns")
+	bd.SetLabels(map[string]string{"fleet.cattle.io/bundle-namespace": "capi-clusters"})
+	dns := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "capi-clusters", Name: "dns-token"}, Data: map[string][]byte{"token": []byte("t")}}
+	cl := fake.NewClientBuilder().WithObjects(dns).Build()
+	p := &Push{Client: cl, Reader: cl}
+	child := &fakeChild{}
+	opts := map[string]any{"defaultNamespace": "web", "downstreamResources": []any{
+		map[string]any{"kind": "Secret", "name": "dns-token"},
+	}}
+	if err := p.copyDownstream(ctx, child, bd, opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(child.applied, ",") != "Namespace /web,Secret web/dns-token" {
+		t.Errorf("applied %v, want the bundle namespace's Secret", child.applied)
+	}
+	opts["downstreamResources"] = []any{map[string]any{"kind": "Secret", "name": "missing"}}
+	err := p.copyDownstream(ctx, child, bd, opts)
+	if err == nil || !strings.Contains(err.Error(), "not found in capi-clusters") {
+		t.Errorf("err = %v, want it to name the bundle's namespace", err)
+	}
+}
