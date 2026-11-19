@@ -76,7 +76,7 @@ export default function ProviderPage() {
         <button
           type="button"
           className="btn btn-secondary"
-          onClick={() => setViewing({ title: `${p.type} ${p.name}`, sections: [...(op ? [{ label: op.kind || 'Provider', object: op }] : []), { label: 'Deployment', object: p.d }] })}
+          onClick={() => setViewing({ title: `${p.type} ${p.name}`, sections: [...(op ? [{ label: op.kind || 'Provider', object: op }] : []), { label: 'Deployment', object: p.d }, ...p.others.map((o) => ({ label: 'Deployment', object: o.d }))] })}
         >
           View YAML
         </button>
@@ -95,6 +95,11 @@ export default function ProviderPage() {
         <Field label="Image">
           <code className="text-xs break-all">{p.image}</code>
         </Field>
+        {p.others.map((o) => (
+          <Field key={o.id} label="Also runs">
+            {o.d.metadata.name} {o.version} <span className="text-muted text-xs">({o.state} ready)</span>
+          </Field>
+        ))}
         <Field label="Installed by">{op ? `the Cluster API Operator (${op.kind})` : "hyve's own manifests (local mode)"}</Field>
         {url && (
           <Field label="Components">

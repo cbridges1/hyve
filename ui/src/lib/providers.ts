@@ -1,8 +1,10 @@
 // The installed Cluster API providers, however they were installed (the
 // CAPI Operator, or local mode's lean install): every provider's
 // controller is a Deployment labelled cluster.x-k8s.io/provider with its
-// full name (infrastructure-civo). Read by the Providers page and each
-// provider's own page.
+// full name (infrastructure-civo). Some providers run more than one
+// controller under the same label (CAPZ runs Azure Service Operator beside
+// its own): they're one provider, shown with its own controller's version.
+// Read by the Providers page and each provider's own page.
 import { idOf, schemaFor, type Obj, type Reader } from './kube'
 import { TYPES } from './types'
 
@@ -27,6 +29,8 @@ export type Provider = {
   image: string
   healthy: boolean
   state: string
+  // The provider's other controllers (CAPZ's Azure Service Operator).
+  others: Provider[]
 }
 
 export function toProvider(d: Obj): Provider {
@@ -54,14 +58,30 @@ export function toProvider(d: Obj): Provider {
     image,
     healthy: ready >= want && want > 0,
     state: `${ready}/${want}`,
+    others: [],
   }
+}
+
+// The provider's own controller among those sharing its label: Cluster API
+// controllers are named cap*/caapf-*, the ones they bring along aren't.
+function own(p: Provider) {
+  return p.d.metadata.name.startsWith('ca') ? 0 : 1
 }
 
 export async function loadProviders(r: Reader): Promise<Provider[]> {
   const deployments = await r.findAll(DEPLOYMENT, { force: true }).catch(() => [] as Obj[])
-  return deployments
-    .filter((d) => d.metadata.labels?.[PROVIDER_LABEL])
-    .map(toProvider)
+  const byLabel = new Map<string, Provider[]>()
+  for (const d of deployments) {
+    if (!d.metadata.labels?.[PROVIDER_LABEL]) continue
+    const p = toProvider(d)
+    const key = `${p.ns}/${p.full}`
+    byLabel.set(key, [...(byLabel.get(key) || []), p])
+  }
+  return [...byLabel.values()]
+    .map((ps) => {
+      const [main, ...others] = ps.sort((a, b) => own(a) - own(b) || a.d.metadata.name.localeCompare(b.d.metadata.name))
+      return { ...main, others, healthy: ps.every((x) => x.healthy) }
+    })
     .sort((a, b) => `${a.type}${a.name}`.localeCompare(`${b.type}${b.name}`))
 }
 
