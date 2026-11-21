@@ -95,6 +95,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get"]
+  # fleet-controller's config: agents trust the host's certificate
+  # (FleetAgentTLS).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["fleet-controller"]
+    verbs: ["update"]
   # fleet-controller's image, for the Jobs; and its
   # EXPERIMENTAL_COPY_RESOURCES_DOWNSTREAM, kept on (fleetCopyDownstream).
   - apiGroups: ["apps"]

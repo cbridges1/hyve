@@ -16,7 +16,9 @@
 //   - push delivery: for a child whose fleet-agent can't reach this
 //     cluster, BundleDeployments are deployed from here (push.go);
 //   - Fleet's downstreamResources (Secrets copied to clusters) kept on in
-//     fleet-controller (fleetcopy.go).
+//     fleet-controller (fleetcopy.go);
+//   - fleet-agents trusting the host's publicly trusted certificate when
+//     they reach this cluster through it (fleettls.go).
 package operator
 
 import (
@@ -134,6 +136,13 @@ func Run(ctx context.Context, cfg *rest.Config, o Options) error {
 		}
 		if o.FleetCopyDownstream {
 			if err := mgr.Add(&FleetCopyDownstream{Reader: mgr.GetAPIReader(), Client: mgr.GetClient(), Every: 5 * time.Minute}); err != nil {
+				return err
+			}
+		}
+		// Agents reach this cluster through the host, whose certificate is
+		// publicly trusted when it was given no CA.
+		if o.Agents.HostURL != "" && o.Agents.CACerts == "" {
+			if err := mgr.Add(&FleetAgentTLS{Reader: mgr.GetAPIReader(), Client: mgr.GetClient(), HostURL: o.Agents.HostURL, Every: 5 * time.Minute}); err != nil {
 				return err
 			}
 		}

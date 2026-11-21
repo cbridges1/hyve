@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -232,10 +233,14 @@ func accessRevokeCmd() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			if strings.HasPrefix(args[0], "hyve-member-") {
-				for _, ns := range []string{s.env(), s.templateNS()} {
-					if err := s.kube.Dynamic.Resource(roleBindingGVR).Namespace(ns).Delete(ctx, args[0], metav1.DeleteOptions{}); err != nil && ns == s.env() {
-						return err
-					}
+				if err := s.kube.Dynamic.Resource(roleBindingGVR).Namespace(s.env()).Delete(ctx, args[0], metav1.DeleteOptions{}); err != nil {
+					return err
+				}
+				// The template namespace's binding (reading templates) is
+				// the same for each of the subject's environments: it goes
+				// with the last membership.
+				if !otherMembership(ctx, s, args[0]) {
+					_ = s.kube.Dynamic.Resource(roleBindingGVR).Namespace(s.templateNS()).Delete(ctx, args[0], metav1.DeleteOptions{})
 				}
 				logf("Removed environment membership %s", args[0])
 				return nil
@@ -254,6 +259,25 @@ func accessRevokeCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// otherMembership reports whether the subject of environment membership
+// name is still a member of another environment; true, to be safe, when
+// that can't be listed.
+func otherMembership(ctx context.Context, s *session, name string) bool {
+	rbs, err := s.kube.Dynamic.Resource(roleBindingGVR).Namespace("").List(ctx, metav1.ListOptions{
+		LabelSelector: "hyve.io/env-member=true",
+		FieldSelector: "metadata.name=" + name,
+	})
+	if err != nil {
+		return true
+	}
+	for _, rb := range rbs.Items {
+		if ns := rb.GetNamespace(); ns != s.env() && ns != s.templateNS() {
+			return true
+		}
+	}
+	return false
 }
 
 func countTrue(bs ...bool) int {

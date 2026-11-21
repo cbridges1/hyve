@@ -4,7 +4,7 @@
 // the environment and the template namespace), or deploying to templates
 // (a RoleBinding labelled hyve.io/deployer in the template namespace). Read by the Access page and,
 // per user, by Users.
-import { idOf, kube, newObject, save, type Obj, type Reader } from './kube'
+import { idOf, kube, newObject, remove, save, type Obj, type Reader } from './kube'
 import { DEFAULT_TEMPLATE_NAMESPACE, LABELS, TYPES } from './types'
 
 export const ENV_MEMBER = 'hyve.io/env-member'
@@ -173,4 +173,34 @@ export async function grantAccess(f: GrantRequest) {
   const ca = (await kube.maybe(TYPES.CLUSTER_ACCESS, f.env, caName)) || newObject(TYPES.CLUSTER_ACCESS, { metadata: { name: caName, namespace: f.env } })
   ca.spec = spec
   await save(TYPES.CLUSTER_ACCESS, ca)
+}
+
+// A user's own grants on a whole environment, as the Users page edits
+// them: membership ('env-member'), or a role on every cluster in it. Their
+// grants on one cluster, as deployers, or through groups are left to
+// Access.
+export type EnvGrant = { env: string; role: string; grant: Grant }
+
+export function envGrantsOf(grants: Grant[], user: string): EnvGrant[] {
+  return grants
+    .filter((g) => g.kind === 'user' && g.who === user && g.role !== 'deployer')
+    .flatMap((g) =>
+      g.type === TYPES.ROLE_BINDING
+        ? [{ env: g.ns, role: 'env-member', grant: g }]
+        : g.on === 'every cluster'
+          ? [{ env: g.ns, role: g.role, grant: g }]
+          : [],
+    )
+}
+
+// revokeGrant removes one grant (a name from 'hyve access list'). An
+// environment membership is two RoleBindings, the environment's and the
+// template namespace's; the second is the same for each of the subject's
+// environments, so it goes with their last one.
+export async function revokeGrant(g: Grant, grants: Grant[]) {
+  await remove(g.type, g.model)
+  if (!g.id.startsWith('rb:')) return
+  if (grants.some((x) => x.id.startsWith('rb:') && x.name === g.name && x.ns !== g.ns)) return
+  const other = await kube.maybe(TYPES.ROLE_BINDING, DEFAULT_TEMPLATE_NAMESPACE, g.name)
+  if (other) await remove(TYPES.ROLE_BINDING, other)
 }

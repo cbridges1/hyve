@@ -18,7 +18,7 @@ import { Modal } from '../components/Modal'
 import { Banner, ErrorBanner, Loading, Pill, ConfirmButton, EmptyState } from '../components/ui'
 import { TrustedCI } from '../components/TrustedCI'
 import { ViewDialog } from '../components/ViewDialog'
-import { describeGrant, grantAccess, grantsFor, loadAccess, ROLES, type Grant } from '../lib/access'
+import { describeGrant, envGrantsOf, grantAccess, grantsFor, loadAccess, revokeGrant, ROLES, type Grant } from '../lib/access'
 import { auth, errorMessage } from '../lib/api'
 import { useLoad } from '../lib/hooks'
 import { kube, newObject, remove, save, type Obj } from '../lib/kube'
@@ -99,7 +99,64 @@ function withFields(spec: any, f: { email: string; groups: string }) {
   }
 }
 
-type EditForm = { email: string; groups: string }
+type EditForm = { email: string; groups: string; access: EnvRow[] }
+
+type EnvRow = { env: string; role: string }
+
+// Environment access as rows, a grant each: an environment (each once, for
+// rows added here) and a role in it.
+function EnvAccessRows({ rows, envs, onChange }: { rows: EnvRow[]; envs: string[]; onChange: (rows: EnvRow[]) => void }) {
+  return (
+    <>
+      {/* Only the environments chosen: a row per grant, so the dialog
+          stays short however many there are. */}
+      {rows.map((a, i) => {
+        const taken = new Set(rows.filter((_, j) => j !== i).map((x) => x.env))
+        const setRow = (patch: Partial<EnvRow>) => onChange(rows.map((x, j) => (j === i ? { ...x, ...patch } : x)))
+        return (
+          <div key={i} className="mb-2 flex items-center gap-2">
+            <select className="min-w-0 flex-1" aria-label="Environment" value={a.env} onChange={(e) => setRow({ env: e.target.value })}>
+              {envs
+                .filter((e) => e === a.env || !taken.has(e))
+                .map((e) => (
+                  <option key={e} value={e}>
+                    {e}
+                  </option>
+                ))}
+            </select>
+            <select className="min-w-0 flex-1" aria-label={`Role in ${a.env}`} value={a.role} onChange={(e) => setRow({ role: e.target.value })}>
+              {ENV_ROLES.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn btn-tertiary btn-sm shrink-0"
+              aria-label={`Remove access to ${a.env}`}
+              onClick={() => onChange(rows.filter((_, j) => j !== i))}
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        )
+      })}
+      {envs.some((e) => !rows.some((x) => x.env === e)) && (
+        <button
+          type="button"
+          className="btn btn-tertiary btn-sm"
+          onClick={() => {
+            const next = envs.find((e) => !rows.some((x) => x.env === e))!
+            onChange([...rows, { env: next, role: 'env-member' }])
+          }}
+        >
+          + Add environment access
+        </button>
+      )}
+    </>
+  )
+}
 
 // The first few of a user's grants, in words (a group's say which group;
 // all of them on hover), and a link to them on Access.
@@ -153,7 +210,7 @@ export default function Users() {
   const [viewing, setViewing] = useState<Obj | null>(null)
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Obj | null>(null)
-  const [editForm, setEditForm] = useState<EditForm>({ email: '', groups: '' })
+  const [editForm, setEditForm] = useState<EditForm>({ email: '', groups: '', access: [] })
   const [passwordFor, setPasswordFor] = useState('')
   const [tokensFor, setTokensFor] = useState('')
   const [sessionsFor, setSessionsFor] = useState('')
@@ -264,7 +321,11 @@ export default function Users() {
 
   function startEdit(u: Obj) {
     setEditing(u)
-    setEditForm({ email: u.spec?.email || '', groups: (u.spec?.groups || []).join(', ') })
+    setEditForm({
+      email: u.spec?.email || '',
+      groups: (u.spec?.groups || []).join(', '),
+      access: envGrantsOf(grants, u.metadata.name).map(({ env, role }) => ({ env, role })),
+    })
     setFormError('')
   }
 
@@ -275,10 +336,25 @@ export default function Users() {
       setFormError("That email address doesn't look right")
       return
     }
+    const name = editing.metadata.name
     // Fresh, so a sign-in's changes in the meantime aren't undone.
     const ok = await act(async () => {
-      const fresh = await kube.find(TYPES.USER, undefined, editing.metadata.name)
+      const fresh = await kube.find(TYPES.USER, undefined, name)
       await save(TYPES.USER, { ...fresh, spec: withFields(fresh.spec, editForm) })
+      if (!data?.readable) return
+      // Environment access: grant what's new, then revoke what was
+      // dropped (a changed role is both).
+      const had = envGrantsOf(grants, name)
+      const want = editForm.access.filter((a) => envs.includes(a.env))
+      const same = (a: EnvRow, b: EnvRow) => a.env === b.env && a.role === b.role
+      for (const a of want.filter((w) => !had.some((h) => same(h, w)))) {
+        await grantAccess({ kind: 'user', subject: name, role: a.role, env: a.env, cluster: '' })
+      }
+      let left = grants
+      for (const h of had.filter((h) => !want.some((w) => same(h, w)))) {
+        left = left.filter((g) => g.id !== h.grant.id)
+        await revokeGrant(h.grant, left)
+      }
     }, setFormError)
     if (ok) setEditing(null)
   }
@@ -427,54 +503,7 @@ export default function Users() {
             {envs.length > 0 && (
               <fieldset className="mb-3">
                 <legend className="mb-1 text-sm font-medium">Environment access</legend>
-                {/* Only the environments chosen, each once: a row per grant,
-                    so the dialog stays short however many there are. */}
-                {form.access.map((a, i) => {
-                  const taken = new Set(form.access.filter((_, j) => j !== i).map((x) => x.env))
-                  const setRow = (patch: Partial<{ env: string; role: string }>) =>
-                    set({ access: form.access.map((x, j) => (j === i ? { ...x, ...patch } : x)) })
-                  return (
-                    <div key={i} className="mb-2 flex items-center gap-2">
-                      <select className="min-w-0 flex-1" aria-label="Environment" value={a.env} onChange={(e) => setRow({ env: e.target.value })}>
-                        {envs
-                          .filter((e) => e === a.env || !taken.has(e))
-                          .map((e) => (
-                            <option key={e} value={e}>
-                              {e}
-                            </option>
-                          ))}
-                      </select>
-                      <select className="min-w-0 flex-1" aria-label={`Role in ${a.env}`} value={a.role} onChange={(e) => setRow({ role: e.target.value })}>
-                        {ENV_ROLES.map((r) => (
-                          <option key={r.value} value={r.value}>
-                            {r.label}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="btn btn-tertiary btn-sm shrink-0"
-                        aria-label={`Remove access to ${a.env}`}
-                        onClick={() => set({ access: form.access.filter((_, j) => j !== i) })}
-                      >
-                        <Icon name="close" size={16} />
-                      </button>
-                    </div>
-                  )
-                })}
-                {form.access.length < envs.length && (
-                  <button
-                    type="button"
-                    className="btn btn-tertiary btn-sm"
-                    onClick={() => {
-                      const taken = new Set(form.access.map((x) => x.env))
-                      const next = envs.find((e) => !taken.has(e))!
-                      set({ access: [...form.access, { env: next, role: 'env-member' }] })
-                    }}
-                  >
-                    + Add environment access
-                  </button>
-                )}
+                <EnvAccessRows rows={form.access} envs={envs} onChange={(access) => set({ access })} />
                 <span className="hint block">
                   {form.access.length ? '' : 'None yet: they can sign in but reach no clusters. '}More, such as one cluster or deploying to templates, on Access.
                 </span>
@@ -554,6 +583,16 @@ export default function Users() {
               placeholder="comma-separated"
               help="They're emailed when their groups change."
             />
+            {data?.readable && envs.length > 0 && (
+              <fieldset className="mb-3">
+                <legend className="mb-1 text-sm font-medium">Environment access</legend>
+                <EnvAccessRows rows={editForm.access} envs={envs} onChange={(access) => setEditForm((f) => ({ ...f, access }))} />
+                <span className="hint block">
+                  {editForm.access.length ? '' : 'None: they can sign in but reach no clusters (unless a group gives them some). '}Their access to one
+                  cluster, as a deployer, or through groups is on Access.
+                </span>
+              </fieldset>
+            )}
             {formError && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{formError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn btn-tertiary" onClick={() => setEditing(null)}>

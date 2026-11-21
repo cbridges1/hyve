@@ -14,9 +14,8 @@ import { ViewDialog } from '../components/ViewDialog'
 import { errorMessage } from '../lib/api'
 import { DEFAULT_ENVIRONMENT } from '../lib/environment'
 import { useLoad } from '../lib/hooks'
-import { kube, remove } from '../lib/kube'
-import { grantAccess, grantsFor, loadAccess, ROLES, type Grant, type GrantRequest } from '../lib/access'
-import { DEFAULT_TEMPLATE_NAMESPACE, TYPES } from '../lib/types'
+import { grantAccess, grantsFor, loadAccess, revokeGrant, ROLES, type Grant, type GrantRequest } from '../lib/access'
+import { DEFAULT_TEMPLATE_NAMESPACE } from '../lib/types'
 import { Table } from '../components/Table'
 
 
@@ -72,13 +71,7 @@ export default function Access() {
   async function revoke(g: Grant) {
     setError('')
     try {
-      await remove(g.type, g.model)
-      if (g.id.startsWith('rb:')) {
-        // Membership is two RoleBindings: the environment's and the
-        // template namespace's.
-        const other = await kube.maybe(TYPES.ROLE_BINDING, DEFAULT_TEMPLATE_NAMESPACE, g.name)
-        if (other) await remove(TYPES.ROLE_BINDING, other)
-      }
+      await revokeGrant(g, data?.grants || [])
       await reload(true)
     } catch (err) {
       setError(errorMessage(err))
