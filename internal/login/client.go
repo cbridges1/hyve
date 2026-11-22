@@ -233,7 +233,7 @@ func UISession(ctx context.Context, c *http.Client, s *Server) (Session, error) 
 	case http.StatusCreated, http.StatusOK:
 		return parseSession(data)
 	case http.StatusUnauthorized:
-		return Session{}, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.URL)
+		return Session{}, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.Name)
 	case http.StatusNotFound, http.StatusMethodNotAllowed:
 		return Session{}, errors.New("this hyve host is too old to sign the browser in; upgrade it")
 	default:

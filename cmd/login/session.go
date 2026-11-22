@@ -115,7 +115,7 @@ available, it signs in again first, prompting on stderr.`,
 		if !s.SignedIn(time.Now()) {
 			in := newInput(os.Stdin)
 			if !in.tty {
-				return fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.URL)
+				return fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.Name)
 			}
 			fmt.Fprintf(os.Stderr, "The session for %s has expired; signing in again.\n", s.Name)
 			hc, err := login.HTTPClient(s.CACertFile, s.InsecureSkipVerify)

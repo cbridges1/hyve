@@ -39,9 +39,11 @@ var (
 
 // LoginCmd is `hyve login`.
 var LoginCmd = &cobra.Command{
-	Use:   "login URL",
+	Use:   "login [URL | NAME]",
 	Short: "Sign in to a hyve host",
 	Long: `Signs in to a hyve host and saves it as the server later commands use.
+Without a URL it signs in again to the current server; a saved server's
+name ('hyve context list') signs in to that one.
 
 It opens the host's sign-in page in your browser: sign in there with your
 password or the identity provider, and the CLI gets the session.
@@ -61,11 +63,13 @@ A pipeline can also skip 'hyve login' and set HYVE_URL and HYVE_TOKEN (an
 API token): every command uses them, and nothing is saved.
 
   hyve login https://hyve.example.com
+  hyve login                                   # the current server, again
+  hyve login hyve-example-com                  # a saved server, by name
   hyve login https://hyve.example.com --username ci --github-actions
   hyve login https://hyve.example.com --username ci --id-token-env HYVE_ID_TOKEN    # GitLab: id_tokens
   echo "$HYVE_TOKEN" | hyve login https://hyve.example.com --token-stdin
   echo "$PW" | hyve login https://hyve.example.com --username ci --password-stdin`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: runLogin,
 }
 
@@ -85,16 +89,16 @@ func init() {
 
 func runLogin(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	base, err := login.NormalizeURL(args[0])
+	cfg, err := login.Load(shared.HyveHome())
+	if err != nil {
+		return err
+	}
+	base, err := loginURL(cfg, args)
 	if err != nil {
 		return err
 	}
 	if strings.HasPrefix(base, "http://") {
 		fmt.Fprintln(os.Stderr, "warning: over plain HTTP your session (and with --password-stdin, your password) travels unencrypted; use the host's https:// URL")
-	}
-	cfg, err := login.Load(shared.HyveHome())
-	if err != nil {
-		return err
 	}
 
 	srv := login.Server{URL: base, CACertFile: loginCACert, InsecureSkipVerify: loginInsecure}
@@ -178,6 +182,23 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "The session lasts until %s.\n", srv.ExpiresAt.Local().Format(time.DateTime))
 	}
 	return nil
+}
+
+// loginURL is the host to sign in to: the URL given, the saved server
+// it names, or (with neither) the current server.
+func loginURL(cfg *login.Config, args []string) (string, error) {
+	if len(args) == 0 {
+		if s := cfg.Find(cfg.Current); s != nil {
+			return s.URL, nil
+		}
+		return "", errors.New("not signed in anywhere yet: give the host's URL, 'hyve login https://hyve.example.com'")
+	}
+	if !strings.Contains(args[0], "://") {
+		if s := cfg.Find(args[0]); s != nil {
+			return s.URL, nil
+		}
+	}
+	return login.NormalizeURL(args[0])
 }
 
 func countTrue(bs ...bool) int {

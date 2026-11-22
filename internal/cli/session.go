@@ -105,7 +105,7 @@ func newSession() (*session, error) {
 	}
 	login.RenewAndSave(context.Background(), cfg, s)
 	if !s.SignedIn(time.Now()) {
-		return nil, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.URL)
+		return nil, fmt.Errorf("the session for %s has expired; run 'hyve login %s'", s.Name, s.Name)
 	}
 	rc := login.RESTConfig(s, login.LocalCluster)
 	kc, err := kube.New(rc)
