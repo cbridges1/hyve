@@ -24,7 +24,7 @@ import (
 	"github.com/cbridges1/hyve/internal/kube"
 )
 
-// Saved state (HYVE-PROPOSAL.md, "Local mode"): local mode's Cluster API
+// Saved state (docs: running/local-mode): local mode's Cluster API
 // objects, with hyve's templates (their CRDs are labelled for clusterctl
 // move), written as files by clusterctl's move --to-directory, and the
 // Deployments, which Fleet's CRDs don't let clusterctl move, beside them. A fresh local cluster restores them before anything

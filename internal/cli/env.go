@@ -23,8 +23,8 @@ var namespaceGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespa
 // LabelEnvironment marks a namespace as a hyve environment.
 const LabelEnvironment = install.LabelEnvironment
 
-// EnvCmd is `hyve env`: environments are namespaces (HYVE-PROPOSAL.md,
-// "Environments: namespaces, not organizations").
+// EnvCmd is `hyve env`: environments are namespaces (docs:
+// concepts/environments).
 func EnvCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "env",

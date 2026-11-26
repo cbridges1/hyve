@@ -31,7 +31,7 @@ var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 // SecretsCmd is `hyve deploy secret`: Deployments name the Kubernetes Secrets
 // Fleet copies to their clusters. hyve can make and change them, or the install
-// can fill them some other way (HYVE-PROPOSAL.md, "Secrets").
+// can fill them some other way (docs: concepts/secrets).
 func SecretsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "secret",

@@ -1,6 +1,6 @@
 // Package login is the client side of `hyve login`: signing in to a hyve
 // host, keeping the session, and building kubeconfigs that use it
-// (HYVE-PROPOSAL.md, "Signing in: one URL, a username and a password").
+// (docs: cli/login).
 package login
 
 import (

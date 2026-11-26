@@ -5,7 +5,7 @@ import (
 )
 
 // UserSpec is a person who signs in to hyve's host endpoint with a username
-// and password (HYVE-PROPOSAL.md, "Signing in").
+// and password (docs: concepts/access).
 // metadata.name is the username. The password never lives here: its bcrypt
 // hash is a Secret in the host's namespace, owned by this User, the way
 // Rancher keeps local passwords in cattle-local-user-passwords — see

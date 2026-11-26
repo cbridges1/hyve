@@ -1,5 +1,5 @@
-// Package shell runs the UI's kubectl shell (HYVE-PROPOSAL.md, "Kubectl
-// shell"): a short-lived pod on the cluster, from an image with kubectl,
+// Package shell runs the UI's kubectl shell (docs: guides/web-ui,
+// "The kubectl shell"): a short-lived pod on the cluster, from an image with kubectl,
 // helm and k9s, whose terminal the browser reaches through the host.
 //
 // kubectl in the pod is the signed-in user. The pod runs as its own

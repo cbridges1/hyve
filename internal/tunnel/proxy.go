@@ -38,7 +38,7 @@ type Authenticate func(r *http.Request) (Identity, bool)
 // port-forward and watch work: the connection is upgraded end to end.
 //
 // A cluster whose agent isn't connected (one that can't reach this host:
-// push delivery, HYVE-PROPOSAL.md) is reached directly instead, when Direct
+// push delivery, docs: concepts/delivery) is reached directly instead, when Direct
 // gives its credentials: the same impersonation, with them.
 type Proxy struct {
 	Server       *Server

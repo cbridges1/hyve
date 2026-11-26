@@ -1,6 +1,6 @@
-// Package webui is hyve's UI (HYVE-PROPOSAL.md, "UI: on or off at
-// install"): the React app in ui/, built into dist and embedded in the
-// binary, so the host serves it with no image or files of its own.
+// Package webui is hyve's UI (docs: guides/web-ui): the React app in ui/,
+// built into dist and embedded in the binary, so the host serves it with no
+// image or files of its own.
 //
 // A plain `go build` embeds only dist/PLACEHOLDER (checked in, so the
 // embed has something to hold), and Handler serves a page saying so;

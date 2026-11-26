@@ -25,7 +25,7 @@ import (
 
 // DefaultAgentImage is the cattle-cluster-agent hyve's host endpoint is
 // tested against. It moves only after the tests pass on a new version
-// (HYVE-PROPOSAL.md, Decisions).
+// (hack/e2e-agent.sh).
 const DefaultAgentImage = "rancher/rancher-agent:v2.14.3"
 
 // annotAgentManifest on an agent's Secret: the hash of the manifest last

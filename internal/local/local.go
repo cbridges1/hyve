@@ -1,4 +1,4 @@
-// Package local is hyve's local mode (HYVE-PROPOSAL.md, "Local mode"): a
+// Package local is hyve's local mode (docs: running/local-mode): a
 // standalone install on a K3s cluster in Docker that the CLI creates,
 // stops and removes itself, so laptops and CI get the same templates with
 // no server to run. It runs on Docker's "kind" network, where CAPD puts its

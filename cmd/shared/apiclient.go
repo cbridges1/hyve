@@ -193,7 +193,7 @@ func httpClientTrustingCA(caCertPEM string) (*http.Client, error) {
 
 // UseClusterMode reports whether the current command should talk to
 // hyve-api instead of local files. It never does any more: hyve-api's
-// login was replaced by 'hyve login' (HYVE-PROPOSAL.md, "Signing in"), so
+// login was replaced by 'hyve login' (docs: cli/login), so
 // no new hyve-api session can be made. A context that still points at a
 // hyve-api server is a hard failure rather than a silent fall back to its
 // local directory, which in cluster mode was never the source of truth.

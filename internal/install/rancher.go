@@ -18,8 +18,8 @@ import (
 	"github.com/cbridges1/hyve/internal/kube"
 )
 
-// Moving a management cluster off Rancher (HYVE-PROPOSAL.md, open question
-// 3), rehearsed on Rancher 2.14 with Turtles: Rancher, Turtles, their
+// Moving a management cluster off Rancher (docs:
+// running/replacing-rancher), rehearsed on Rancher 2.14 with Turtles: Rancher, Turtles, their
 // charts, CRDs, webhooks, namespaces and RBAC go; Fleet (its release, CRDs,
 // GitRepos and bundles) and Cluster API (its CRDs, objects and running
 // providers) stay. herd, which installed Rancher on some hosts, goes too.

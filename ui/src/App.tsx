@@ -1,5 +1,4 @@
-// hyve's UI, served by the host (HYVE-PROPOSAL.md, "UI: on or off at
-// install").
+// hyve's UI, served by the host (docs: guides/web-ui).
 import { useEffect, useState, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from './components/AppShell'

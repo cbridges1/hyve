@@ -52,4 +52,5 @@ task local          # build the binary and a hyve:dev image (which builds the UI
 HYVE_HOST=https://127.0.0.1:30444 task ui:dev    # the UI with hot reload, against a running host
 ```
 
-The design is in nexus-config's `docs/HYVE-PROPOSAL.md`.
+The docs are in [hyve-website](https://cbridges1.github.io/hyve-website/); proposals for what's
+next are in nexus-config's `docs/HYVE-PROPOSAL.md`.

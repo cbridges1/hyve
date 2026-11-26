@@ -1,5 +1,5 @@
-// Package resources turns what hyve puts on clusters into Fleet objects
-// (HYVE-PROPOSAL.md, "Resources: owned by templates").
+// Package resources turns what hyve puts on clusters into Fleet
+// objects.
 //
 // An Entry is one item of a ClusterTemplate's resources, the spec of a
 // per-cluster ClusterResource, or the spec of a shared Resource. It embeds

@@ -1,6 +1,6 @@
 // Package cli is hyve's cluster command tree: clusters, templates,
 // resources, environments, providers, repos and the controller
-// (HYVE-PROPOSAL.md, "Commands"). Every command reaches the management
+// (docs: cli). Every command reaches the management
 // cluster the same way: through the signed-in server's /k8s/clusters/local
 // proxy.
 package cli

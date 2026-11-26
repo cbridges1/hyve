@@ -7,7 +7,7 @@
 // hyve reads/writes cluster definitions from (see
 // internal/reconcile.StateProvider). Contexts that point at a hyve-api
 // server (--api-url) can no longer be created: hyve-api's login was
-// replaced by 'hyve login' (HYVE-PROPOSAL.md, "Signing in"). Existing ones
+// replaced by 'hyve login' (docs: cli/login). Existing ones
 // still list, and cluster commands refuse to run against them. Git sync is
 // not a native hyve capability either: these commands only ever manage
 // entries in internal/repository's registry, they never clone, pull,

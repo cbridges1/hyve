@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Push delivery (HYVE-PROPOSAL.md, "Push delivery"): for a child whose
+// Push delivery (docs: concepts/delivery): for a child whose
 // fleet-agent can't reach the management cluster, hyve-controller does the
 // agent's job from here, with the child's CAPI kubeconfig. Fleet still
 // works out what goes where and makes a BundleDeployment per bundle per

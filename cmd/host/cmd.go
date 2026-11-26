@@ -1,5 +1,5 @@
 // Package host is `hyve host`: hyve's host endpoint, the server that stands
-// in for Rancher's (HYVE-PROPOSAL.md, "hyve as the Rancher host"): sign-in, the management cluster's API at
+// in for Rancher's (docs: how-it-works): sign-in, the management cluster's API at
 // /k8s/clusters/local, the tunnel child clusters' cattle-cluster-agents
 // dial (/v3/connect), their APIs through it at /k8s/clusters/<id>, and
 // hyve's own UI at / (--ui).

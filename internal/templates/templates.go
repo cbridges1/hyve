@@ -1,6 +1,6 @@
 // Package templates is hyve's ClusterTemplate: a ClusterClass plus
 // defaults, locked variables, expiry and the resources every cluster made
-// from it gets (HYVE-PROPOSAL.md, "Objects").
+// from it gets (docs: concepts/templates).
 //
 // A cluster is made from a template by creating a Cluster labelled
 // hyve.io/template (and hyve.io/template-namespace when the template is in

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The agent-version test (HYVE-PROPOSAL.md, Decisions): hyve's host
+# The agent-version test: hyve's host
 # endpoint against the pinned rancher/rancher-agent. It creates two k3d
 # clusters on one Docker network, installs hyve with its host endpoint on
 # the first, registers the second as a child (a CAPI Cluster stand-in with

@@ -16,7 +16,7 @@ import (
 	"github.com/cbridges1/hyve/internal/kube"
 )
 
-// Lazy providers (HYVE-PROPOSAL.md, "Local mode"): local mode starts with
+// Lazy providers (docs: running/local-mode): local mode starts with
 // core Cluster API and CAAPF only, and adds a provider the first time
 // something needs one of its kinds: a ClusterClass that refers to them, a
 // cluster created from such a class, or a Fleet bundle that failed for

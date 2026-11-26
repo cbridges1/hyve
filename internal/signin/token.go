@@ -1,6 +1,6 @@
 // Package signin is the server side of hyve's username-and-password
-// sign-in (HYVE-PROPOSAL.md, "Signing in: one
-// URL, a username and a password"). It runs inside `hyve host run`:
+// sign-in (docs:
+// concepts/access). It runs inside `hyve host run`:
 //
 //   - Users are hyve.io User objects. Each password is a bcrypt hash in a
 //     Secret owned by its User; there's no database.

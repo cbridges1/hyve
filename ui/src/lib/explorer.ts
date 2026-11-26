@@ -1,6 +1,6 @@
 // The cluster explorer's view of a cluster, a child or the management
-// cluster (HYVE-PROPOSAL.md,
-// "Cluster explorer"): everything goes through the host's
+// cluster (docs: guides/web-ui,
+// "The Explorer"): everything goes through the host's
 // /k8s/clusters/<id> as the signed-in user, so the child's RBAC decides
 // what each person sees. The Kubernetes API does the work: discovery for
 // the types, server-side tables for lists, server-side apply for edits.

@@ -55,7 +55,7 @@ func init() {
 	}
 	add("clusters", cli.ClusterCmd(), cli.TemplateCmd(), cli.EnvCmd(), cli.ProviderCmd())
 	add("delivery", cli.DeployCmd(), cli.ApplyCmd())
-	// Signing in (HYVE-PROPOSAL.md, "Signing in"): one URL, the hyve host.
+	// Signing in (docs: cli/login): one URL, the hyve host.
 	add("access", logincmd.LoginCmd, logincmd.LogoutCmd, cli.ContextCmd(), logincmd.UserCmd, cli.AccessCmd(), cli.UICmd())
 	add("setup", cli.InstallCmd(), cli.LocalCmd())
 	add("server", cli.ControllerCmd(), host.Cmd)

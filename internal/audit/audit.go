@@ -1,5 +1,5 @@
-// Package audit writes the host's audit log (HYVE-PROPOSAL.md, plan step
-// 5): one structured line per request the host proxies to a cluster as a
+// Package audit writes the host's audit log (docs:
+// running/standalone): one structured line per request the host proxies to a cluster as a
 // user (user, groups, cluster, verb, path, status, duration). Each child's
 // own API-server audit policy stays its provider's concern.
 package audit

@@ -1,5 +1,5 @@
 // Package operator is hyve-controller: it runs on the management cluster
-// and does what can't be left to the CLI (HYVE-PROPOSAL.md, "Controller"):
+// and does what can't be left to the CLI (docs: how-it-works):
 //
 //   - templates: a mutating webhook fills in each Cluster labelled with a
 //     ClusterTemplate as it's created, and a validating webhook keeps its

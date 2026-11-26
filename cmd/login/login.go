@@ -1,7 +1,7 @@
 // Package logincmd holds `hyve login`, `logout`, `token`, `kubeconfig` and
-// `user`: signing in to a hyve host with one URL, and using that sign-in (HYVE-PROPOSAL.md, "Signing in: one URL, a username and a
-// password"). These are separate from `hyve context login`, which signs in
-// to the old hyve-api.
+// `user`: signing in to a hyve host with one URL, and using that sign-in
+// (docs: cli/login). These are separate from `hyve context login`, which
+// signs in to the old hyve-api.
 package logincmd
 
 import (

@@ -368,7 +368,7 @@ func clusterKubeconfig(ctx context.Context, name string) ([]byte, error) {
 		return nil, errors.New("needs a signed-in server ('hyve login'), not --kubeconfig")
 	}
 	// The host serves child clusters through the agent's tunnel, or its
-	// direct path (HYVE-PROPOSAL.md, "hyve as the Rancher host"); a
+	// direct path (docs: how-it-works); a
 	// cluster's ID is <environment>.<name>, and the host's own is local.
 	id := login.LocalCluster
 	if !isLocal(name) {

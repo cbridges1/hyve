@@ -1,6 +1,6 @@
 {{- if .Values.host.enabled }}
 # hyve's host endpoint: sign-in and /k8s/clusters/local. See values.yaml's
-# host: block and HYVE-PROPOSAL.md, "Signing in".
+# host: block and the docs, running/standalone.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

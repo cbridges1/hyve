@@ -1,5 +1,5 @@
-// Package install puts hyve on a management cluster (HYVE-PROPOSAL.md,
-// "Two ways to run, one model"): hyve-controller, hyve's host endpoint (the
+// Package install puts hyve on a management cluster (docs:
+// running/standalone, running/local-mode): hyve-controller, hyve's host endpoint (the
 // host the child clusters' agents dial), and whatever else is missing:
 // cert-manager, the Cluster API Operator with core Cluster API, and CAAPF
 // (which installs Fleet).
@@ -121,7 +121,7 @@ func Install(ctx context.Context, kc *kube.Client, o Options) (*Result, error) {
 	}
 	res := &Result{}
 	if HasRancher(ctx, kc) {
-		// Moving a host off Rancher (HYVE-PROPOSAL.md, open question 3):
+		// Moving a host off Rancher (docs: running/replacing-rancher):
 		// Turtles manages Cluster API there, and the CAPI Operator can't
 		// add CAAPF to a core it doesn't own, so Rancher goes first.
 		if !o.ReplaceRancher {

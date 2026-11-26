@@ -1,5 +1,5 @@
 // Package clusters builds and reads Cluster API topology Clusters, and the
-// Fleet clusters CAAPF registers them as (HYVE-PROPOSAL.md, "Objects").
+// Fleet clusters CAAPF registers them as (docs: how-it-works).
 package clusters
 
 import (

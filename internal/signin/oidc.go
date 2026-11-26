@@ -1,6 +1,6 @@
 package signin
 
-// Single sign-in (HYVE-PROPOSAL.md, "Single sign-in"): the host is an
+// Single sign-in (docs: guides/oidc): the host is an
 // OpenID Connect client. The browser goes to the identity provider from
 // /v1-public/oidc/start and comes back to /v1-public/oidc/callback, which
 // makes the user a session exactly as a password sign-in does. Users from

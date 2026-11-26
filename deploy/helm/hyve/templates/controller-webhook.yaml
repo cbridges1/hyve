@@ -13,7 +13,7 @@ spec:
       targetPort: webhook
 ---
 # Fills in a Cluster labelled hyve.io/template from its ClusterTemplate when
-# it's created (HYVE-PROPOSAL.md, open question 1, option B). Fails closed:
+# it's created. Fails closed:
 # a templated Cluster can't be created while the controller is down, rather
 # than being created half-filled. caBundle is set by the controller.
 # The API server calls mutating webhooks in the order of their

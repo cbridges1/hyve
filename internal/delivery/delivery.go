@@ -1,5 +1,5 @@
 // Package delivery is what hyve puts on clusters, as Fleet itself models it
-// (HYVE-PROPOSAL.md, "Delivery"): a Deployment is one Fleet GitRepo, HelmOp
+// (docs: concepts/deployments): a Deployment is one Fleet GitRepo, HelmOp
 // or Bundle, and its targets name Fleet ClusterGroups. hyve keeps a group
 // for each ClusterTemplate (template-NAME) and each environment (env-NAME);
 // CAAPF keeps one for each ClusterClass (named after the class). hyve has

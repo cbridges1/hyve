@@ -1,6 +1,6 @@
 # hyve's chart: hyve-controller (templates, template resources, expiry)
 # and hyve's host endpoint (sign-in, the agent tunnel, the /k8s/clusters
-# proxy and the UI). See HYVE-PROPOSAL.md in nexus-config.
+# proxy and the UI). See the docs, running/standalone.
 
 image:
   # Published with every hyve release. tag defaults to the chart's
@@ -34,7 +34,7 @@ controller:
     limits:
       memory: 256Mi
 
-# How people sign in to the host (HYVE-PROPOSAL.md, "Signing in").
+# How people sign in to the host (docs: concepts/access, guides/oidc).
 auth:
   # Username and password sign-in for hyve's own Users. Turn it off only
   # with oidc set: the bootstrap admin signs in with a password.
@@ -85,7 +85,7 @@ ui:
 
 # host is hyve's host endpoint (`hyve host run`): sign-in, and the
 # management cluster's API at /k8s/clusters/local as the signed-in user
-# (HYVE-PROPOSAL.md, "Signing in"). `hyve install --host-url` turns it on.
+# (docs: running/standalone). `hyve install --host-url` turns it on.
 host:
   enabled: false
   replicaCount: 1
